@@ -160,7 +160,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   directory, reminder lease). ioredis ≥5 as a peer dependency; provider
   tests are env-gated on `REDIS_URL`.
 - `examples/counter` — end-to-end demo (dev silo, client swap, streams,
-  file persistence). Not published.
+  file persistence, and a runnable 3-silo cluster demo:
+  `pnpm --filter counter-example cluster`). Not published.
 
 Path aliases: `tsconfig.json` and `vitest.config.ts` map `@sigx/actors` and
 its subpaths to `packages/actors/src`, so tests and typecheck run against

@@ -5,7 +5,8 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
-        "start": "node server.mjs"
+        "start": "node server.mjs",
+        "cluster": "node cluster-demo.mjs"
     },
     "dependencies": {
         "@sigx/actors": "workspace:*",

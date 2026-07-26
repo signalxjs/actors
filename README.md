@@ -36,7 +36,8 @@ A runnable end-to-end demo lives in [`examples/counter`](examples/counter):
 
 ```sh
 pnpm install && pnpm build
-pnpm --filter counter-example dev
+pnpm --filter counter-example dev       # single-silo dev server
+pnpm --filter counter-example cluster   # 3-silo cluster demo over real HTTP
 ```
 
 ## Development
