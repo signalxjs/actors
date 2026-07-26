@@ -1,0 +1,19 @@
+{
+    "name": "counter-example",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "start": "node server.mjs"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:"
+    },
+    "devDependencies": {
+        "vite": "^8.0.3"
+    }
+}

@@ -21,12 +21,12 @@ This is the sigx standard agent setup. The same pattern (this file +
 it originates in [`signalxjs/repo-template`](https://github.com/signalxjs/repo-template).
 See "Adopting this setup in another sigx repo" at the bottom.
 
-<!-- TODO(sigx-standard): replace this paragraph with what THIS repo is. Example: -->
-SignalX (sigx) actors is a pnpm monorepo (ESM, `"type": "module"`) of the
-packages under `packages/`. Tech stack: TypeScript (strict), Vite, Vitest,
-oxlint. Published to npm under the `@sigx` scope.
-<!-- Single-package repo? Say so here ("…is a single npm package, not a workspace")
-     and drop the workspace/`--filter` bits from "Build, Test, Lint" and "Packages". -->
+SignalX Actors is the home of `@sigx/actors` — Orleans-style virtual actors
+for SignalX: addressable, single-threaded, persistent server objects riding
+the serverFn wire protocol. A pnpm workspace (ESM, `"type": "module"`) with
+one published package under `packages/` plus runnable demos under
+`examples/`. Tech stack: TypeScript (strict), Vite, Vitest, oxlint.
+Published to npm under the `@sigx` scope.
 
 ## Development workflow (issue → PR → Copilot review → merge)
 
@@ -130,9 +130,6 @@ agents the issue-first flow below is required.)
 
 ## Build, Test, Lint
 
-<!-- TODO(sigx-standard): adapt these to THIS repo's scripts. The defaults below
-     are the monorepo shape from signalxjs/core. -->
-
 ```bash
 pnpm install
 pnpm build       # build all packages
@@ -151,13 +148,19 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 
 ## Packages
 
-<!-- TODO(sigx-standard): list THIS repo's packages, or delete this section for a
-     single-package repo. Example shape: -->
+- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Six
+  entries: `.` (defineActor + isomorphic `actor()`), `./silo` (createSilo,
+  runtime, memoryStorage), `./server` (WinterCG wire endpoint), `./node`
+  (connect adapter, fileStorage, signal handlers), `./client` (build-swap
+  target + configureActors), `./vite` (`sigxActors()` plugin).
+- `examples/counter` — end-to-end demo (dev silo, client swap, streams,
+  file persistence). Not published.
 
-- `packages/<name>` → `@sigx/<name>` — what it does.
-
-Path aliases: `tsconfig.json` and `vitest.config.ts` map `@sigx/*` to
-`packages/*/src`, so tests and typecheck run against source, not dist.
+Path aliases: `tsconfig.json` and `vitest.config.ts` map `@sigx/actors` and
+its subpaths to `packages/actors/src`, so tests and typecheck run against
+source, not dist. The example resolves `@sigx/actors` from the built `dist/`
+via the workspace link — run `pnpm build` before `pnpm --filter
+counter-example dev`.
 
 ## Parallel work with git worktrees
 

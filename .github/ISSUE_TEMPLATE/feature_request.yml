@@ -34,15 +34,13 @@ body:
     validations:
       required: false
 
-  # TODO(sigx-standard): list this repo's packages, or delete this dropdown for
-  # a single-package repo.
   - type: dropdown
     id: scope
     attributes:
       label: Which package(s) would this affect?
       multiple: true
       options:
-        - "@sigx/<package>"
+        - "@sigx/actors"
         - Not sure
     validations:
       required: true

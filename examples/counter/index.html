@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>@sigx/actors — counter</title>
+        <style>
+            body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 90vh; }
+            main { text-align: center; }
+            #count { font-size: 4rem; font-variant-numeric: tabular-nums; }
+            button { font-size: 1.2rem; padding: 0.5rem 1.5rem; }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>Counter actor</h1>
+            <div id="count">…</div>
+            <p>last visit: <span id="visit">–</span></p>
+            <button id="inc">+1</button>
+            <p><small>?counter=&lt;key&gt; addresses a different actor — each key is its own state.</small></p>
+        </main>
+        <script type="module" src="/src/main.ts"></script>
+    </body>
+</html>

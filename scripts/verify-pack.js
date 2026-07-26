@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @sigx/store - Pre-publish pack smoke test
+ * @sigx/actors - Pre-publish pack smoke test
  *
  * Catches packaging bugs that lint/typecheck/test miss:
  *   - missing files in `files` array
@@ -30,9 +30,9 @@ import { tmpdir } from 'os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
 
-const PACKAGES = ['packages/store'];
+const PACKAGES = ['packages/actors'];
 
-const sandbox = join(tmpdir(), `sigx-store-verify-pack-${Date.now()}`);
+const sandbox = join(tmpdir(), `sigx-actors-verify-pack-${Date.now()}`);
 const tarballDir = join(sandbox, 'tarballs');
 const appDir = join(sandbox, 'app');
 
@@ -81,7 +81,7 @@ function main() {
         packed.map((p) => [p.name, `file:${p.tarball.replace(/\\/g, '/')}`])
     );
     const appPkg = {
-        name: 'sigx-store-pack-smoke',
+        name: 'sigx-actors-pack-smoke',
         version: '0.0.0',
         private: true,
         type: 'module',
@@ -93,11 +93,11 @@ function main() {
     writeFileSync(
         join(appDir, 'smoke.mjs'),
         [
-            "import * as store from '@sigx/store';",
-            "if (!store || typeof store !== 'object') throw new Error('import returned non-object');",
-            "const keys = Object.keys(store);",
-            "if (keys.length === 0) throw new Error('@sigx/store exports no named bindings');",
-            "console.log('✓ @sigx/store named exports:', keys.join(', '));",
+            "import * as actors from '@sigx/actors';",
+            "if (!actors || typeof actors !== 'object') throw new Error('import returned non-object');",
+            "const keys = Object.keys(actors);",
+            "if (keys.length === 0) throw new Error('@sigx/actors exports no named bindings');",
+            "console.log('✓ @sigx/actors named exports:', keys.join(', '));",
             '',
         ].join('\n')
     );

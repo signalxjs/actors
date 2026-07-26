@@ -47,12 +47,20 @@ export function mayDefineActors(code: string): boolean {
     return code.includes('defineActor') && code.includes('@sigx/actors');
 }
 
+const LANG_BY_EXT: Record<string, 'ts' | 'tsx' | 'js' | 'jsx'> = {
+    '.ts': 'ts',
+    '.tsx': 'tsx',
+    '.js': 'js',
+    '.jsx': 'jsx'
+};
+
 export function extractActors(
     code: string,
     file: string,
     options: { endpoint: string; requireGuards: boolean | 'warn' }
 ): ActorExtraction & { warnings: string[] } {
-    const program = parseAst(code) as Node;
+    const ext = file.slice(file.lastIndexOf('.'));
+    const program = parseAst(code, { lang: LANG_BY_EXT[ext] ?? 'tsx' }, file) as unknown as Node;
     const actors: ExtractedActor[] = [];
     const otherExports: string[] = [];
     const errors: { message: string; offset: number }[] = [];

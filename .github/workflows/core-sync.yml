@@ -7,9 +7,7 @@
 # and `scripts/sync-core.mjs` present; see repo-template's docs/adopting.md
 # ("Wire up core catalog alignment") for the one-time setup.
 #
-# TODO(sigx-standard): `node-version` below must match the version this repo's
-# ci.yml uses. The align job runs the repo's real build/typecheck/test, so a
-# mismatch means it validates against a runtime CI never uses.
+# `node-version` matches the CI/release workflows (22).
 name: Sync with core
 
 on:

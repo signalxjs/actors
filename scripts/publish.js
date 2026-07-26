@@ -36,7 +36,7 @@ const rootDir = join(__dirname, '..');
 // live in their own repos under https://github.com/signalxjs and are published
 // from there.
 const PACKAGES = [
-    'packages/store',
+    'packages/actors',
 ];
 
 const args = process.argv.slice(2);

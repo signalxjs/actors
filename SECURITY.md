@@ -27,5 +27,4 @@ Please include:
 
 ## Supported versions
 
-<!-- TODO(sigx-standard): set the supported version line for this repo. -->
 Security fixes are applied to the latest released minor line.
