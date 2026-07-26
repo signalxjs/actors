@@ -51,6 +51,38 @@ jobs:
       - name: Test
         run: pnpm test
 
+  # The @sigx/actors-redis provider suite is env-gated on REDIS_URL; only
+  # this job provides it (the main matrix, incl. Windows, skips cleanly).
+  test-redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test against Redis
+        run: pnpm test -- actors-redis
+        env:
+          REDIS_URL: redis://localhost:6379
+
   verify-pack:
     runs-on: ubuntu-latest
     steps:

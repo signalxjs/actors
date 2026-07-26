@@ -29,6 +29,7 @@ await actor(CartActor, cartId).addItem(item);
 | Package | Description |
 |---|---|
 | [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./silo`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
+| [`@sigx/actors-redis`](packages/actors-redis) | Redis cluster providers — membership, actor directory, reminder lease |
 
 Full documentation lives in the [package README](packages/actors/README.md).
 A runnable end-to-end demo lives in [`examples/counter`](examples/counter):

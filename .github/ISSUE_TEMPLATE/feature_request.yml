@@ -41,6 +41,7 @@ body:
       multiple: true
       options:
         - "@sigx/actors"
+        - "@sigx/actors-redis"
         - Not sure
     validations:
       required: true

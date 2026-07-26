@@ -155,6 +155,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   target + configureActors), `./cluster` (clusterPlacement, silo-to-silo
   endpoint, cluster provider seams, memoryClusterHub), `./vite`
   (`sigxActors()` plugin).
+- `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) cluster
+  providers for `@sigx/actors/cluster`: `redisCluster` (membership,
+  directory, reminder lease). ioredis ≥5 as a peer dependency; provider
+  tests are env-gated on `REDIS_URL`.
 - `examples/counter` — end-to-end demo (dev silo, client swap, streams,
   file persistence). Not published.
 

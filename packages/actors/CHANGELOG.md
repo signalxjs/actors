@@ -31,21 +31,6 @@
 - `DeactivationReason` gains `'migrated'` — reserved for cluster
   rebalancing, not yet emitted.
 
-### Changed
-
-- Reminder-table mutations now reload-and-reapply on a storage etag
-  conflict (up to 3 attempts) instead of failing — the table legitimately
-  has concurrent writers once silos share storage.
-- `mintCallId()` ids carry a per-process random component so ids from
-  different hosts and restarts are distinguishable. The format remains
-  opaque.
-
-### Fixed
-
-- External wire calls now inherit the silo's `callTimeoutMs` deadline, as
-  documented. Previously only in-process external calls got a deadline;
-  wire calls could hang past the configured timeout without a 504.
-
 - Initial release of `@sigx/actors` — Orleans-style virtual actors for
   SignalX.
 - `defineActor` with options-object + `methods`/`streams` factories; state
@@ -70,3 +55,22 @@
 - `sigxActors()` Vite plugin: `*.actor.ts` client-module swap, prod registry
   (`virtual:sigx-actors`), dev silo through the SSR module runner, HMR
   deactivate-through-storage.
+
+### Changed
+
+- Reminder-table mutations now reload-and-reapply on a storage etag
+  conflict (up to 3 attempts) instead of failing — the table legitimately
+  has concurrent writers once silos share storage.
+- `mintCallId()` ids carry a per-process random component so ids from
+  different hosts and restarts are distinguishable. The format remains
+  opaque.
+
+### Fixed
+
+- Subpath `types` conditions in the exports map now point at the emitted
+  declaration files (`./dist/<entry>/index.d.ts`) — previously they named
+  `./dist/<entry>.d.ts`, which the build never produced, so TypeScript
+  consumers of `@sigx/actors/silo` etc. got an implicit-`any` module.
+- External wire calls now inherit the silo's `callTimeoutMs` deadline, as
+  documented. Previously only in-process external calls got a deadline;
+  wire calls could hang past the configured timeout without a 504.

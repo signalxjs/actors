@@ -32,7 +32,8 @@ export default defineConfig({
             '@sigx/actors/client': resolve(__dirname, 'packages/actors/src/client/index.ts'),
             '@sigx/actors/cluster': resolve(__dirname, 'packages/actors/src/cluster/index.ts'),
             '@sigx/actors/vite': resolve(__dirname, 'packages/actors/src/vite/index.ts'),
-            '@sigx/actors': resolve(__dirname, 'packages/actors/src/index.ts')
+            '@sigx/actors': resolve(__dirname, 'packages/actors/src/index.ts'),
+            '@sigx/actors-redis': resolve(__dirname, 'packages/actors-redis/src/index.ts')
         }
     }
 });

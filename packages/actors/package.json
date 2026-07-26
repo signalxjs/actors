@@ -13,37 +13,37 @@
             "import": "./dist/index.js"
         },
         "./silo": {
-            "types": "./dist/silo.d.ts",
+            "types": "./dist/silo/index.d.ts",
             "development": "./dist/silo.js",
             "production": "./dist/silo.prod.js",
             "import": "./dist/silo.js"
         },
         "./server": {
-            "types": "./dist/server.d.ts",
+            "types": "./dist/server/index.d.ts",
             "development": "./dist/server.js",
             "production": "./dist/server.prod.js",
             "import": "./dist/server.js"
         },
         "./node": {
-            "types": "./dist/node.d.ts",
+            "types": "./dist/node/index.d.ts",
             "development": "./dist/node.js",
             "production": "./dist/node.prod.js",
             "import": "./dist/node.js"
         },
         "./client": {
-            "types": "./dist/client.d.ts",
+            "types": "./dist/client/index.d.ts",
             "development": "./dist/client.js",
             "production": "./dist/client.prod.js",
             "import": "./dist/client.js"
         },
         "./cluster": {
-            "types": "./dist/cluster.d.ts",
+            "types": "./dist/cluster/index.d.ts",
             "development": "./dist/cluster.js",
             "production": "./dist/cluster.prod.js",
             "import": "./dist/cluster.js"
         },
         "./vite": {
-            "types": "./dist/vite.d.ts",
+            "types": "./dist/vite/index.d.ts",
             "import": "./dist/vite.js"
         }
     },
