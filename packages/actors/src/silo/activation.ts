@@ -4,6 +4,7 @@
  * outside this file touches activation memory.
  */
 import { effectScope, signal, toRaw, watch } from '@sigx/reactivity';
+import { mintCallId } from '../call-id';
 import type { Mailbox } from './mailbox';
 import {
     ActorActivationError,
@@ -627,9 +628,4 @@ export class Activation {
     }
 }
 
-let callCounter = 0;
-
-/** Mint a correlation id — unique within the process, cheap. */
-export function mintCallId(): string {
-    return `c${(++callCounter).toString(36)}.${Date.now().toString(36)}`;
-}
+export { mintCallId };
