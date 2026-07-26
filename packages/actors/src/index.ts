@@ -13,12 +13,7 @@ import { isActorDefinition } from './define';
 import { runGuards } from './guards';
 import { resolveServerContext } from './context';
 import { currentSilo } from './seam';
-import type {
-    ActorCallOptions,
-    ActorClient,
-    ActorClientWith,
-    AnyActorDefinition
-} from './types';
+import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './types';
 
 export { defineActor, isActorDefinition } from './define';
 export { currentSilo, peekSilo } from './seam';

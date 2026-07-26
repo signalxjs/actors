@@ -9,18 +9,15 @@ import {
 } from '@sigx/serialize';
 import { isActorDefinition } from '../define';
 import { clearSilo, stampSilo } from '../seam';
-import {
-    actorId,
-    type ActorCallContext,
-    type ActorClient,
-    type ActorClientWith,
-    type ActorDispatcher,
-    type ActorPlacement,
-    type ActorRef,
-    type ActorStorage,
-    type AnyActorDefinition,
-    type Silo,
-    type SiloStats
+import type {
+    ActorCallContext,
+    ActorClientWith,
+    ActorPlacement,
+    ActorRef,
+    ActorStorage,
+    AnyActorDefinition,
+    Silo,
+    SiloStats
 } from '../types';
 import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } from './activation';
 import { LocalHost } from './local-host';
@@ -345,6 +342,11 @@ class SiloImpl implements Silo {
     }
 
     deactivateType(type: string): Promise<void> {
+        // Dev/HMR contract: also drop the resolved-definition cache so a
+        // lazy-registered type reloads its (possibly edited) module on the
+        // next dispatch. Array-registered definitions stay reachable via
+        // the registry map.
+        this.#resolved.delete(type);
         return this.#local.deactivateType(type);
     }
 
