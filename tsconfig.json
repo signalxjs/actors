@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "sigx",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@sigx/actors": ["./packages/actors/src/index.ts"],
+      "@sigx/actors/silo": ["./packages/actors/src/silo/index.ts"],
+      "@sigx/actors/server": ["./packages/actors/src/server/index.ts"],
+      "@sigx/actors/node": ["./packages/actors/src/node/index.ts"],
+      "@sigx/actors/client": ["./packages/actors/src/client/index.ts"],
+      "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "packages/*/dist"
+  ]
+}

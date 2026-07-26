@@ -1,0 +1,102 @@
+{
+    "name": "@sigx/actors",
+    "version": "0.1.0",
+    "description": "Orleans-style virtual actors for SignalX — addressable, single-threaded, persistent server state",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "development": "./dist/index.js",
+            "production": "./dist/index.prod.js",
+            "import": "./dist/index.js"
+        },
+        "./silo": {
+            "types": "./dist/silo.d.ts",
+            "development": "./dist/silo.js",
+            "production": "./dist/silo.prod.js",
+            "import": "./dist/silo.js"
+        },
+        "./server": {
+            "types": "./dist/server.d.ts",
+            "development": "./dist/server.js",
+            "production": "./dist/server.prod.js",
+            "import": "./dist/server.js"
+        },
+        "./node": {
+            "types": "./dist/node.d.ts",
+            "development": "./dist/node.js",
+            "production": "./dist/node.prod.js",
+            "import": "./dist/node.js"
+        },
+        "./client": {
+            "types": "./dist/client.d.ts",
+            "development": "./dist/client.js",
+            "production": "./dist/client.prod.js",
+            "import": "./dist/client.js"
+        },
+        "./vite": {
+            "types": "./dist/vite.d.ts",
+            "import": "./dist/vite.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "sideEffects": false,
+    "scripts": {
+        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly",
+        "dev": "vite build --watch"
+    },
+    "keywords": [
+        "sigx",
+        "actors",
+        "virtual-actors",
+        "orleans",
+        "grains",
+        "stateful",
+        "server"
+    ],
+    "author": "Andreas Ekdahl",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/signalxjs/actors.git",
+        "directory": "packages/actors"
+    },
+    "homepage": "https://sigx.dev/actors/",
+    "bugs": {
+        "url": "https://github.com/signalxjs/actors/issues"
+    },
+    "devDependencies": {
+        "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/server-renderer": "catalog:",
+        "@sigx/vite": "catalog:",
+        "@types/node": "^25.9.1",
+        "sigx": "catalog:",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "peerDependencies": {
+        "@sigx/reactivity": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/vite": "catalog:",
+        "vite": ">=6"
+    },
+    "peerDependenciesMeta": {
+        "@sigx/vite": {
+            "optional": true
+        },
+        "vite": {
+            "optional": true
+        }
+    }
+}

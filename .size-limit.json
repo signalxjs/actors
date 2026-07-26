@@ -1,0 +1,27 @@
+[
+  {
+    "name": "@sigx/actors",
+    "path": "packages/actors/dist/index.prod.js",
+    "limit": "3 KB",
+    "ignore": ["@sigx/reactivity", "@sigx/runtime-core", "@sigx/serialize", "@sigx/server", "sigx"]
+  },
+  {
+    "name": "@sigx/actors { actor } (tree-shaking guard)",
+    "path": "packages/actors/dist/index.prod.js",
+    "import": "{ actor }",
+    "limit": "2 KB",
+    "ignore": ["@sigx/reactivity", "@sigx/runtime-core", "@sigx/serialize", "@sigx/server", "sigx"]
+  },
+  {
+    "name": "@sigx/actors/client",
+    "path": "packages/actors/dist/client.prod.js",
+    "limit": "5 KB",
+    "ignore": ["@sigx/serialize"]
+  },
+  {
+    "name": "@sigx/actors/server",
+    "path": "packages/actors/dist/server.prod.js",
+    "limit": "6 KB",
+    "ignore": ["@sigx/server", "@sigx/serialize"]
+  }
+]

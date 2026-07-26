@@ -1,0 +1,635 @@
+/**
+ * One live activation: state signal, method tables, mailbox, timers, and the
+ * change feed. Created lazily by the local host on first dispatch; nothing
+ * outside this file touches activation memory.
+ */
+import { effectScope, signal, toRaw, watch } from '@sigx/reactivity';
+import type { Mailbox } from './mailbox';
+import {
+    ActorActivationError,
+    ActorMethodNotFoundError,
+    ActorStateConflictError,
+    isStorageConflict
+} from '../errors';
+import {
+    actorId,
+    actorLabel,
+    type ActorCallContext,
+    type ActorClient,
+    type ActorContext,
+    type ActorRef,
+    type AnyActorDefinition,
+    type DeactivationReason,
+    type ReminderApi,
+    type TimerHandle,
+    type TimerOptions
+} from '../types';
+
+/** Reserved dispatch method routing to `onReminder`. */
+export const REMINDER_METHOD = '$sigx:reminder';
+
+/** Change-feed buffer bound — drop-oldest beyond this. */
+const CHANGE_BUFFER = 16;
+
+/** What the silo provides to every activation. */
+export interface ActivationHost {
+    readonly idleAfterMs: number;
+    readonly slowTurnMs: number;
+    loadState(ref: ActorRef): Promise<{ state: object; etag: string } | null>;
+    saveState(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
+    clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
+    /** Deep, detached copy through the codec vocabulary. */
+    cloneState<S>(raw: S): S;
+    reminders(ref: ActorRef): ReminderApi;
+    actorClient<D extends AnyActorDefinition>(
+        def: D,
+        key: string,
+        parentCall: () => ActorCallContext | null
+    ): ActorClient<D>;
+    /** A save hit a conflict: forget this activation after the current turn. */
+    onFault(activation: Activation): void;
+    /** `ctx.deactivate()` was requested and the queue just emptied. */
+    onIdleRequest(activation: Activation): void;
+}
+
+interface ChangeSub {
+    queue: object[];
+    wake: (() => void) | null;
+    done: boolean;
+}
+
+type AnyFn = (...args: unknown[]) => unknown;
+type AnyStreamFn = (...args: unknown[]) => AsyncIterable<unknown>;
+
+export class Activation {
+    readonly ref: ActorRef;
+    readonly def: AnyActorDefinition;
+    readonly mailbox: Mailbox;
+
+    #host: ActivationHost;
+    #scope: ReturnType<typeof effectScope>;
+    #state!: object;
+    #etag: string | null = null;
+    #ctx!: ActorContext<object>;
+    #methods!: Record<string, AnyFn>;
+    #streams: Record<string, AnyStreamFn> = {};
+    #abort = new AbortController();
+    #timers = new Map<string, { clear(): void }>();
+    #subs = new Set<ChangeSub>();
+    #version = 0;
+    #notifiedVersion = 0;
+    #savedVersion = 0;
+    #deepWatchStop: (() => void) | null = null;
+    #writeBehindTimer: ReturnType<typeof setTimeout> | null = null;
+    #currentCall: ActorCallContext | null = null;
+    #faulted: unknown = null;
+    #faultReported = false;
+    #deactivateRequested = false;
+    #keepAlive = 0;
+    #warnedDroppedChanges = false;
+    lastActivityMs = Date.now();
+
+    private constructor(
+        ref: ActorRef,
+        def: AnyActorDefinition,
+        host: ActivationHost,
+        mailbox: Mailbox
+    ) {
+        this.ref = ref;
+        this.def = def;
+        this.#host = host;
+        this.mailbox = mailbox;
+        this.#scope = effectScope();
+    }
+
+    /**
+     * Build and activate. Any throw here (storage load, factories,
+     * onActivate) is wrapped in ActorActivationError; the caller (local
+     * host) fails every parked dispatch with it and forgets the slot.
+     */
+    static async create(
+        ref: ActorRef,
+        def: AnyActorDefinition,
+        host: ActivationHost,
+        mailbox: Mailbox
+    ): Promise<Activation> {
+        const a = new Activation(ref, def, host, mailbox);
+        try {
+            const opts = def.__sigxActor;
+            const stored = await host.loadState(ref);
+            const initial = stored ? stored.state : (opts.state(ref.key) as object);
+            a.#etag = stored ? stored.etag : null;
+            a.#state = signal(initial);
+            a.#ctx = a.#buildContext();
+            // The factories (and onActivate) run inside the activation's
+            // effect scope so computeds/watches they create die with it.
+            a.#scope.run(() => {
+                a.#methods = opts.methods(a.#ctx) as Record<string, AnyFn>;
+                if (opts.streams) {
+                    a.#streams = opts.streams(a.#ctx) as Record<string, AnyStreamFn>;
+                }
+            });
+            if (opts.persistence && typeof opts.persistence === 'object') {
+                a.#ensureDeepWatch();
+            }
+            if (opts.onActivate) {
+                await a.#scope.run(() => opts.onActivate!(a.#ctx));
+            }
+            return a;
+        } catch (cause) {
+            a.#scope.stop();
+            throw new ActorActivationError(actorLabel(ref), { cause });
+        }
+    }
+
+    get faulted(): unknown {
+        return this.#faulted;
+    }
+
+    get idle(): boolean {
+        return this.mailbox.depth === 0 && this.#keepAlive === 0;
+    }
+
+    get keptAlive(): boolean {
+        return this.#keepAlive > 0;
+    }
+
+    get deactivateRequested(): boolean {
+        return this.#deactivateRequested;
+    }
+
+    /** The identity used in call chains. */
+    get id(): string {
+        return actorId(this.ref);
+    }
+
+    // -----------------------------------------------------------------------
+    // Dispatch surface (called by the local host only)
+
+    /** Enqueue one turn. */
+    enqueue(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
+        return this.mailbox.run(() => this.#turn(method, args, call));
+    }
+
+    /**
+     * Call-chain reentrancy: run inline against the CURRENT turn (the
+     * activation's own turn is up-stack awaiting this call, so no foreign
+     * interleaving can occur). Swaps the current-call context so nested
+     * `ctx.actor` chains keep growing.
+     */
+    async runInline(
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext
+    ): Promise<unknown> {
+        const prev = this.#currentCall;
+        this.#currentCall = call;
+        try {
+            return await this.#invoke(method, args);
+        } finally {
+            this.#currentCall = prev;
+        }
+    }
+
+    /**
+     * Stream dispatch. The setup turn only RESOLVES the generator and takes
+     * a keep-alive ref — it must NOT pull the first chunk: a feed like
+     * `yield* ctx.changes()` waits for a future turn of this same actor,
+     * and holding the mailbox for that pull would self-deadlock. Iteration
+     * (including the first pull) is therefore fully detached, and stream
+     * bodies get no turn exclusivity by contract — they are observers,
+     * reading `ctx.snapshot()` / `ctx.changes()`, never live state. The
+     * keep-alive ref makes idle collection skip the activation until the
+     * stream ends or the consumer disconnects.
+     */
+    openStream(
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext
+    ): AsyncIterable<unknown> {
+        const setup = this.mailbox.run(async () => {
+            if (this.#faulted) throw this.#faulted;
+            const fn = this.#streams[method];
+            if (!fn) throw new ActorMethodNotFoundError(this.ref.type, method);
+            const prev = this.#currentCall;
+            this.#currentCall = call;
+            this.#keepAlive++;
+            try {
+                // Async generator bodies are lazy: this runs no user code.
+                return fn(...(args as unknown[]))[Symbol.asyncIterator]();
+            } catch (error) {
+                this.#keepAlive--;
+                throw error;
+            } finally {
+                this.#currentCall = prev;
+                this.#afterTurn(Date.now());
+            }
+        });
+
+        let released = false;
+        const release = () => {
+            if (!released) {
+                released = true;
+                this.#keepAlive--;
+                this.lastActivityMs = Date.now();
+            }
+        };
+        // If setup itself failed (unknown method, faulted), the keep-alive
+        // was already rolled back — never release twice.
+        setup.catch(() => {
+            released = true;
+        });
+
+        return {
+            [Symbol.asyncIterator](): AsyncIterator<unknown> {
+                return {
+                    async next(): Promise<IteratorResult<unknown>> {
+                        try {
+                            const gen = await setup;
+                            const result = await gen.next();
+                            if (result.done) release();
+                            return result;
+                        } catch (error) {
+                            release();
+                            throw error;
+                        }
+                    },
+                    async return(): Promise<IteratorResult<unknown>> {
+                        try {
+                            const gen = await setup;
+                            if (gen.return) await gen.return(undefined);
+                        } catch {
+                            // setup failure already handled via next()
+                        } finally {
+                            release();
+                        }
+                        return { value: undefined, done: true };
+                    }
+                };
+            }
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle (driven by the local host)
+
+    /**
+     * Graceful deactivation: close the mailbox, drain queued turns, run
+     * onDeactivate, flush a pending write-behind save, tear down.
+     */
+    async deactivate(reason: DeactivationReason): Promise<void> {
+        this.mailbox.close();
+        await this.mailbox.drain();
+        const opts = this.def.__sigxActor;
+        if (opts.onDeactivate && reason !== 'activation-failed') {
+            try {
+                await opts.onDeactivate(this.#ctx, reason);
+            } catch (error) {
+                if (__DEV__) {
+                    console.error(
+                        `[sigx actors] onDeactivate of ${actorLabel(this.ref)} threw (ignored):`,
+                        error
+                    );
+                }
+            }
+        }
+        if (this.#writeBehindTimer) {
+            clearTimeout(this.#writeBehindTimer);
+            this.#writeBehindTimer = null;
+        }
+        // A stale activation must not overwrite the winning state.
+        if (reason !== 'conflict' && this.#version > this.#savedVersion && this.#isWriteBehind()) {
+            try {
+                await this.#doSave();
+            } catch (error) {
+                if (__DEV__) {
+                    console.error(
+                        `[sigx actors] final write-behind flush of ${actorLabel(this.ref)} failed:`,
+                        error
+                    );
+                }
+            }
+        }
+        for (const t of this.#timers.values()) t.clear();
+        this.#timers.clear();
+        this.#abort.abort();
+        this.#scope.stop();
+        for (const sub of this.#subs) {
+            sub.done = true;
+            sub.wake?.();
+        }
+        this.#subs.clear();
+    }
+
+    /** Force-drop on shutdown deadline: abort and tear down without drain. */
+    forceStop(): void {
+        this.mailbox.close();
+        for (const t of this.#timers.values()) t.clear();
+        this.#timers.clear();
+        this.#abort.abort();
+        this.#scope.stop();
+        for (const sub of this.#subs) {
+            sub.done = true;
+            sub.wake?.();
+        }
+        this.#subs.clear();
+    }
+
+    // -----------------------------------------------------------------------
+    // Internals
+
+    async #turn(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
+        if (this.#faulted) throw this.#faulted;
+        const started = Date.now();
+        this.#currentCall = call;
+        try {
+            return await this.#invoke(method, args);
+        } finally {
+            this.#currentCall = null;
+            if (__DEV__) {
+                const elapsed = Date.now() - started;
+                if (elapsed > this.#host.slowTurnMs) {
+                    console.warn(
+                        `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
+                            `mailbox for ${elapsed}ms. Awaits inside a turn block every queued ` +
+                            `message — move slow I/O out of the actor or split the method.`
+                    );
+                }
+            }
+            this.#afterTurn(started);
+        }
+    }
+
+    async #invoke(method: string, args: readonly unknown[]): Promise<unknown> {
+        const opts = this.def.__sigxActor;
+        if (method === REMINDER_METHOD) {
+            const name = String(args[0]);
+            if (!opts.onReminder) {
+                if (__DEV__) {
+                    console.warn(
+                        `[sigx actors] reminder "${name}" fired on ${actorLabel(this.ref)}, which ` +
+                            `has no onReminder handler — clearing it.`
+                    );
+                }
+                await this.#ctx.reminders.clear(name);
+                return undefined;
+            }
+            return opts.onReminder(this.#ctx, name);
+        }
+        const fn = this.#methods[method];
+        if (!fn) {
+            if (this.def.streamNames.includes(method)) {
+                throw new ActorMethodNotFoundError(
+                    this.ref.type,
+                    `${method} (it is a stream method — iterate it instead of awaiting it)`
+                );
+            }
+            throw new ActorMethodNotFoundError(this.ref.type, method);
+        }
+        return fn(...(args as unknown[]));
+    }
+
+    #afterTurn(startedMs: number): void {
+        this.lastActivityMs = Math.max(this.lastActivityMs, startedMs, Date.now());
+        if (this.#version > this.#notifiedVersion) {
+            this.#notifiedVersion = this.#version;
+            if (this.#subs.size > 0) {
+                const snap = this.#snapshot();
+                for (const sub of this.#subs) {
+                    sub.queue.push(snap);
+                    if (sub.queue.length > CHANGE_BUFFER) {
+                        sub.queue.shift();
+                        if (__DEV__ && !this.#warnedDroppedChanges) {
+                            this.#warnedDroppedChanges = true;
+                            console.warn(
+                                `[sigx actors] ${actorLabel(this.ref)} change feed dropped ` +
+                                    `snapshots — a stream consumer is slower than the actor's ` +
+                                    `mutation rate (buffer: ${CHANGE_BUFFER}).`
+                            );
+                        }
+                    }
+                    sub.wake?.();
+                }
+            }
+            if (this.#isWriteBehind() && this.#version > this.#savedVersion) {
+                this.#scheduleWriteBehind();
+            }
+        }
+        if (this.#faulted && !this.#faultReported) {
+            this.#faultReported = true;
+            this.#host.onFault(this);
+        } else if (this.#deactivateRequested && this.mailbox.depth <= 1 && !this.#faulted) {
+            // depth 1 = only the turn that is settling right now — the
+            // queue is empty, so the requested deactivation can begin.
+            this.#host.onIdleRequest(this);
+        }
+    }
+
+    #isWriteBehind(): boolean {
+        const p = this.def.__sigxActor.persistence;
+        return typeof p === 'object' && p.mode === 'write-behind';
+    }
+
+    #scheduleWriteBehind(): void {
+        if (this.#writeBehindTimer) return;
+        const p = this.def.__sigxActor.persistence as { debounceMs?: number };
+        this.#writeBehindTimer = setTimeout(() => {
+            this.#writeBehindTimer = null;
+            // A system turn — serialized with user turns, so the save always
+            // captures a between-turns state, never a mid-turn one.
+            this.mailbox.run(() => this.#doSave()).catch(() => {
+                // Save failures fault the activation via #doSave; a closed
+                // mailbox at deactivation time is handled by the final flush.
+            });
+        }, p.debounceMs ?? 50);
+        // Don't hold the process open for a debounce.
+        (this.#writeBehindTimer as { unref?: () => void }).unref?.();
+    }
+
+    async #doSave(): Promise<void> {
+        if (this.#faulted) throw this.#faulted;
+        const version = this.#version;
+        try {
+            this.#etag = await this.#host.saveState(this.ref, toRaw(this.#state), this.#etag);
+            this.#savedVersion = version;
+        } catch (error) {
+            if (isStorageConflict(error)) {
+                const conflict = new ActorStateConflictError(actorLabel(this.ref));
+                this.#faulted = conflict;
+                throw conflict;
+            }
+            throw error;
+        }
+    }
+
+    #ensureDeepWatch(): void {
+        if (this.#deepWatchStop) return;
+        this.#scope.run(() => {
+            const stop = watch(
+                () => this.#state,
+                () => {
+                    this.#version++;
+                },
+                { deep: true }
+            );
+            this.#deepWatchStop = () => stop.stop();
+        });
+    }
+
+    #snapshot(): object {
+        return this.#host.cloneState(toRaw(this.#state));
+    }
+
+    #buildContext(): ActorContext<object> {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const self = this;
+        const opts = this.def.__sigxActor;
+        return {
+            ref: this.ref,
+            key: this.ref.key,
+            get state() {
+                return self.#state;
+            },
+            async save(): Promise<void> {
+                // Explicit-mode saves don't need the deep watch; bump the
+                // version so savedVersion bookkeeping stays consistent.
+                self.#version++;
+                await self.#doSave();
+            },
+            async clearState(): Promise<void> {
+                await self.#host.clearStoredState(self.ref, self.#etag);
+                self.#etag = null;
+                const fresh = opts.state(self.ref.key) as Record<string, unknown>;
+                const live = self.#state as Record<string, unknown>;
+                // Reset in place — the proxy identity is captured by closures.
+                for (const k of Object.keys(live)) {
+                    if (!(k in fresh)) delete live[k];
+                }
+                Object.assign(live, fresh);
+            },
+            timer(name: string, cb: () => void | Promise<void>, options: TimerOptions): TimerHandle {
+                self.#timers.get(name)?.clear();
+                let queued = false;
+                const tick = () => {
+                    // Coalesce: a tick behind a slow turn must not pile up.
+                    if (queued) return;
+                    queued = true;
+                    self.mailbox
+                        .run(async () => {
+                            queued = false;
+                            if (self.#faulted) return;
+                            const started = Date.now();
+                            const prev = self.#currentCall;
+                            self.#currentCall = {
+                                callChain: [self.id],
+                                callId: mintCallId()
+                            };
+                            try {
+                                await cb();
+                            } finally {
+                                self.#currentCall = prev;
+                                if (options.keepAlive) self.#afterTurn(started);
+                                else {
+                                    const keep = self.lastActivityMs;
+                                    self.#afterTurn(started);
+                                    self.lastActivityMs = keep;
+                                }
+                            }
+                        })
+                        .catch((error) => {
+                            if (__DEV__) {
+                                console.error(
+                                    `[sigx actors] timer "${name}" of ${actorLabel(self.ref)} threw:`,
+                                    error
+                                );
+                            }
+                        });
+                };
+                let interval: ReturnType<typeof setInterval> | null = null;
+                const timeout = setTimeout(() => {
+                    tick();
+                    if (options.period !== undefined) {
+                        interval = setInterval(tick, options.period);
+                        (interval as { unref?: () => void }).unref?.();
+                    }
+                }, options.due);
+                (timeout as { unref?: () => void }).unref?.();
+                const handle = {
+                    clear() {
+                        clearTimeout(timeout);
+                        if (interval) clearInterval(interval);
+                    }
+                };
+                self.#timers.set(name, handle);
+                return { cancel: () => handle.clear() };
+            },
+            reminders: this.#host.reminders(this.ref),
+            actor<D extends AnyActorDefinition>(def: D, key: string): ActorClient<D> {
+                // The outbound context appends SELF to the chain — that is
+                // what lets the target detect A→B→A cycles.
+                return self.#host.actorClient(def, key, () => {
+                    const current = self.#currentCall;
+                    if (!current) {
+                        if (__DEV__) {
+                            console.warn(
+                                `[sigx actors] ctx.actor() called on ${actorLabel(self.ref)} with ` +
+                                    `no turn in progress (a detached callback?) — the call starts ` +
+                                    `a fresh chain, so reentrancy detection cannot see this hop.`
+                            );
+                        }
+                        return null;
+                    }
+                    return {
+                        callChain: [...current.callChain, self.id],
+                        callId: current.callId,
+                        deadline: current.deadline,
+                        abortSignal: current.abortSignal
+                    };
+                });
+            },
+            deactivate(): void {
+                self.#deactivateRequested = true;
+            },
+            abortSignal: this.#abort.signal,
+            snapshot(): object {
+                return self.#snapshot();
+            },
+            changes(): AsyncIterable<object> {
+                // The feed needs change detection even in explicit mode.
+                self.#ensureDeepWatch();
+                const sub: ChangeSub = { queue: [], wake: null, done: false };
+                self.#subs.add(sub);
+                return {
+                    [Symbol.asyncIterator](): AsyncIterator<object> {
+                        return {
+                            async next(): Promise<IteratorResult<object>> {
+                                for (;;) {
+                                    if (sub.queue.length > 0) {
+                                        return { value: sub.queue.shift()!, done: false };
+                                    }
+                                    if (sub.done) return { value: undefined, done: true };
+                                    await new Promise<void>((r) => {
+                                        sub.wake = r;
+                                    });
+                                    sub.wake = null;
+                                }
+                            },
+                            async return(): Promise<IteratorResult<object>> {
+                                sub.done = true;
+                                self.#subs.delete(sub);
+                                return { value: undefined, done: true };
+                            }
+                        };
+                    }
+                };
+            }
+        };
+    }
+}
+
+let callCounter = 0;
+
+/** Mint a correlation id — unique within the process, cheap. */
+export function mintCallId(): string {
+    return `c${(++callCounter).toString(36)}.${Date.now().toString(36)}`;
+}
