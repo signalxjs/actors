@@ -12,6 +12,7 @@ const base = defineLibConfig({
         server: 'src/server/index.ts',
         node: 'src/node/index.ts',
         client: 'src/client/index.ts',
+        cluster: 'src/cluster/index.ts',
         vite: 'src/vite/index.ts'
     },
     external: [/@sigx\/.*/, /^node:/, 'vite'],

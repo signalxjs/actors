@@ -207,6 +207,47 @@ independently of `configureServerFn`.
 Renaming an actor's `type` or its methods is a **wire break** (and `type`
 is also the storage identity).
 
+## Clustering (multi-host)
+
+One silo per host, many hosts, one actor system — plug `clusterPlacement`
+into the placement seam and mount the internal silo-to-silo endpoint beside
+the public one:
+
+```ts
+import { createSilo } from '@sigx/actors/silo';
+import { clusterPlacement, handleSiloRequest, matchesSiloRequest } from '@sigx/actors/cluster';
+import { redisCluster } from '@sigx/actors-redis';
+
+const placement = clusterPlacement({
+    ...redisCluster({ url: process.env.REDIS_URL }), // membership + directory + reminder lease
+    advertise: 'http://10.0.4.7:7311',               // this silo's peer-reachable origin
+    secret: process.env.SILO_SECRET                  // shared cluster secret
+});
+const silo = createSilo({ actors, storage, placement });
+
+// On the same listener, before the public mount:
+//   matchesSiloRequest(req) ? handleSiloRequest(req, { silo, placement, secret }) : …
+```
+
+How it works, in one paragraph: every activation writes a **claim** into a
+distributed directory (create-if-absent; released on deactivation), so a
+key activates on exactly one silo; calls for actors placed elsewhere are
+forwarded over the internal endpoint with the full call context (chain,
+call id, deadline as *remaining* ms — clock-skew-proof) so deadlock
+detection and timeouts work across hosts; a misdirected call answers
+**421 wrong-host** with the owner and the caller re-routes (bounded, never
+proxied); membership is TTL-heartbeat liveness in the shared store; the
+reminder table gets exactly one ticker via a leader lease. Under all of it,
+the storage etag CAS remains the integrity floor — a briefly-stale route
+costs a rejected save and a fault-and-reload, never corrupted state.
+
+Guards still run once, at the public edge — silo-to-silo hops are
+intra-system, authenticated by the shared `secret` (run mTLS/VPC between
+hosts; transport encryption is deliberately out of scope). Streams cross
+hops with cancellation and keep-alive release intact. For tests,
+`memoryClusterHub()` gives an N-silo in-process cluster with no external
+store.
+
 ## Entry points
 
 | Entry | Contents |
@@ -216,14 +257,15 @@ is also the storage identity).
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors` — the build-swap target |
+| `@sigx/actors/cluster` | `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()` |
 
 ## Design notes & deliberate limits (v1)
 
-- **Single-node.** All activations live in one process. The
-  `ActorDispatcher`/`ActorPlacement` seams are the extension point for
-  distributed backends (Cloudflare Durable Objects map naturally); every
-  call already flows through them, and dev-mode `devSerializeChecks`
+- **One silo per process; many processes via `./cluster`.** The
+  `ActorDispatcher`/`ActorPlacement` seams remain the extension point for
+  other distributed backends (Cloudflare Durable Objects map naturally);
+  every call already flows through them, and dev-mode `devSerializeChecks`
   verifies your arguments would survive a remote hop.
 - **String keys**; POST-only wire (no GET caching/forms); no WebSocket/SSE
   push layer (NDJSON streams cover server→client per call); full

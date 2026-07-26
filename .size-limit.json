@@ -19,6 +19,12 @@
     "ignore": ["@sigx/serialize"]
   },
   {
+    "name": "@sigx/actors/cluster",
+    "path": "packages/actors/dist/cluster.prod.js",
+    "limit": "8 KB",
+    "ignore": ["@sigx/server", "@sigx/serialize"]
+  },
+  {
     "name": "@sigx/actors/server",
     "path": "packages/actors/dist/server.prod.js",
     "limit": "6 KB",

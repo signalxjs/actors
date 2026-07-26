@@ -148,11 +148,13 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 
 ## Packages
 
-- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Six
+- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Seven
   entries: `.` (defineActor + isomorphic `actor()`), `./silo` (createSilo,
   runtime, memoryStorage), `./server` (WinterCG wire endpoint), `./node`
   (connect adapter, fileStorage, signal handlers), `./client` (build-swap
-  target + configureActors), `./vite` (`sigxActors()` plugin).
+  target + configureActors), `./cluster` (clusterPlacement, silo-to-silo
+  endpoint, cluster provider seams, memoryClusterHub), `./vite`
+  (`sigxActors()` plugin).
 - `examples/counter` — end-to-end demo (dev silo, client swap, streams,
   file persistence). Not published.
 

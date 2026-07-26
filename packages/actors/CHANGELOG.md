@@ -4,6 +4,20 @@
 
 ### Added
 
+- **`@sigx/actors/cluster` — multi-host clustering** (#20): `clusterPlacement()`
+  plugs into `createSilo({ placement })` for silos on many hosts forming one
+  actor system. Claim-on-activate distributed directory (one activation per
+  key cluster-wide), TTL-heartbeat membership with self-fencing, internal
+  silo-to-silo endpoint (`handleSiloRequest`/`matchesSiloRequest`, default
+  mount `/_sigx/silo`) reusing the serverFn wire with a versioned envelope
+  header (call chain, call id, remaining-ms deadline), shared-secret auth,
+  wrong-host 421 redirect-not-proxy routing with bounded retry, cross-host
+  NDJSON streams with cancellation/keep-alive release, and a reminder
+  leader lease so reminders fire exactly once. Provider seams
+  (`ClusterMembership`, `ActorDirectory`, `ReminderLease`) with
+  `memoryClusterHub()` in-process implementations for tests; Redis
+  providers ship separately as `@sigx/actors-redis`.
+
 - Cluster seams on the placement contract (groundwork for multi-host
   clustering, #20): `ActorPlacement.bind?(local, silo)`
   returning `PlacementBindings` — activation claim/release hooks

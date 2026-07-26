@@ -28,7 +28,7 @@ await actor(CartActor, cartId).addItem(item);
 
 | Package | Description |
 |---|---|
-| [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./silo`, `./server`, `./node`, `./client`, `./vite`) |
+| [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./silo`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
 
 Full documentation lives in the [package README](packages/actors/README.md).
 A runnable end-to-end demo lives in [`examples/counter`](examples/counter):

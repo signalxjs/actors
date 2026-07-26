@@ -36,6 +36,12 @@
             "production": "./dist/client.prod.js",
             "import": "./dist/client.js"
         },
+        "./cluster": {
+            "types": "./dist/cluster.d.ts",
+            "development": "./dist/cluster.js",
+            "production": "./dist/cluster.prod.js",
+            "import": "./dist/cluster.js"
+        },
         "./vite": {
             "types": "./dist/vite.d.ts",
             "import": "./dist/vite.js"
