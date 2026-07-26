@@ -9,12 +9,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { actor, defineActor, isActorError, type ActorContext } from '@sigx/actors';
 import {
+    clusterPlacement,
     decodeEnvelope,
     encodeEnvelope,
-    SILO_CALL_HEADER
+    memoryClusterHub,
+    SILO_CALL_HEADER,
+    type ClusterMembership
 } from '@sigx/actors/cluster';
+import { createSilo } from '@sigx/actors/silo';
 import { __actorRef, configureActors } from '@sigx/actors/client';
-import { createCluster, selfPolicy, type ClusterHarness } from './harness';
+import { createCluster, quiet, selfPolicy, type ClusterHarness } from './harness';
 
 let running: ClusterHarness | null = null;
 afterEach(async () => {
@@ -360,5 +364,196 @@ describe('cluster: guards, streams, reminders, failover', () => {
         // activation from shared storage — state survives the crash.
         await expect(cluster.silos[1]!.actor(def, 'phoenix').increment(1)).resolves.toBe(42);
         expect(events.filter((e) => e === 'activate:phoenix')).toHaveLength(2);
+    });
+});
+
+describe('cluster: milestone 2 — failover & directory hygiene', () => {
+    it('survivors proactively evict a dead silo’s directory entries (no call needed)', async () => {
+        const cluster = await createCluster(2, { actors: [counterActor()] });
+        running = cluster;
+        // A phantom third silo joins, claims two actors, then crashes
+        // WITHOUT any self-cleanup (a real dead process runs nothing).
+        const phantom = cluster.hub.providers();
+        await phantom.membership.join({
+            siloId: 's.phantom',
+            epoch: 1,
+            address: 'http://phantom.test',
+            status: 'active'
+        });
+        const key = (k: string) => ['Counter', k].join(String.fromCharCode(0));
+        await cluster.hub.directory.claim(key('lost1'), {
+            siloId: 's.phantom',
+            activationId: 's.phantom/1/1'
+        });
+        await cluster.hub.directory.claim(key('lost2'), {
+            siloId: 's.phantom',
+            activationId: 's.phantom/1/2'
+        });
+
+        cluster.hub.kill('s.phantom');
+        // Survivors observe the departure and sweep — entries disappear
+        // without any dispatch touching those actors.
+        await vi.waitFor(async () => {
+            await expect(cluster.hub.directory.lookup(key('lost1'))).resolves.toBeNull();
+            await expect(cluster.hub.directory.lookup(key('lost2'))).resolves.toBeNull();
+        });
+    });
+
+    it('a transient view drop does not forget a silo — the sweep retries on the next change', async () => {
+        const hub = memoryClusterHub();
+        const providers = hub.providers();
+        // A membership whose store answer diverges from the view once:
+        // the phantom is absent from the view but isAlive still says true
+        // (e.g. a stale poll racing the heartbeat store).
+        let lieOnce = true;
+        const membership: ClusterMembership = {
+            ...providers.membership,
+            isAlive: async (id) => {
+                if (id === 's.phantom' && lieOnce) {
+                    lieOnce = false;
+                    return true;
+                }
+                return providers.membership.isAlive(id);
+            }
+        };
+        const placement = clusterPlacement({
+            membership,
+            directory: providers.directory,
+            advertise: 'http://self.test'
+        });
+        const silo = createSilo({ actors: [counterActor()], placement, defaults: quiet });
+        await silo.start();
+        try {
+            const phantom = hub.providers();
+            await phantom.membership.join({
+                siloId: 's.phantom',
+                epoch: 1,
+                address: 'http://phantom.test',
+                status: 'active'
+            });
+            const key = ['Counter', 'ghost'].join(String.fromCharCode(0));
+            await hub.directory.claim(key, {
+                siloId: 's.phantom',
+                activationId: 's.phantom/1/1'
+            });
+
+            hub.kill('s.phantom');
+            await new Promise((r) => setTimeout(r, 20));
+            // First departure saw the transient "alive" answer: no sweep —
+            // and crucially the phantom must NOT be forgotten.
+            await expect(hub.directory.lookup(key)).resolves.not.toBeNull();
+
+            // Any later membership change re-runs the diff; the store now
+            // tells the truth and the sweep completes.
+            const late = hub.providers();
+            await late.membership.join({
+                siloId: 's.late',
+                epoch: 1,
+                address: 'http://late.test',
+                status: 'active'
+            });
+            await vi.waitFor(async () => {
+                await expect(hub.directory.lookup(key)).resolves.toBeNull();
+            });
+        } finally {
+            await silo.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    it('unreachable-but-alive peers get backed-off bounded retries, then recovery after death', async () => {
+        const urls: string[] = [];
+        const cluster = await createCluster(2, {
+            actors: [counterActor()],
+            policy: selfPolicy,
+            retries: 2,
+            retryBackoffMs: 15,
+            onRequest: (url) => urls.push(url)
+        });
+        running = cluster;
+        const def = counterActor();
+        // Owner: silo 1, with saved state.
+        await cluster.silos[1]!.actor(def, 'flaky').increment(7);
+
+        // Kill only the ADDRESS (network partition) — membership stays alive.
+        cluster.unbind(1);
+        urls.length = 0;
+        const before = Date.now();
+        await expect(cluster.silos[0]!.actor(def, 'flaky').get()).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'activation'
+        );
+        // Bounded: retries+1 attempts at the dead address, spaced by backoff.
+        expect(urls.filter((u) => u.includes('silo1.test'))).toHaveLength(3);
+        expect(Date.now() - before).toBeGreaterThanOrEqual(15 + 30);
+
+        // The silo then actually dies: survivors evict and re-place.
+        cluster.hub.kill(cluster.placements[1]!.identity.siloId);
+        await expect(cluster.silos[0]!.actor(def, 'flaky').get()).resolves.toBe(7);
+    });
+
+    it('a mid-call owner crash makes chain re-entry a loud retryable error (migrated guard, for real)', async () => {
+        let betaEntered!: () => void;
+        const entered = new Promise<void>((r) => (betaEntered = r));
+        let proceed!: () => void;
+        const gate = new Promise<void>((r) => (proceed = r));
+
+        type BetaClient = { poke(): Promise<unknown> };
+        const alpha = defineActor({
+            type: 'Alpha',
+            unguarded: true,
+            reentrant: true,
+            state: () => ({}),
+            methods: (ctx: ActorContext<object>) => ({
+                async poke() {
+                    return (ctx.actor(beta, 'b') as BetaClient).poke();
+                },
+                async back() {
+                    return 'alpha-back';
+                },
+                async warm() {
+                    return 'warm';
+                }
+            })
+        });
+        const beta = defineActor({
+            type: 'Beta',
+            unguarded: true,
+            state: () => ({}),
+            methods: (ctx: ActorContext<object>) => ({
+                async poke() {
+                    betaEntered();
+                    await gate; // the test crashes alpha's silo here
+                    try {
+                        return await (
+                            ctx.actor(alpha, 'a') as { back(): Promise<string> }
+                        ).back();
+                    } catch (error) {
+                        return {
+                            kind: isActorError(error) ? error.kind : 'other',
+                            message: (error as Error).message
+                        };
+                    }
+                },
+                async warm() {
+                    return 'warm';
+                }
+            })
+        });
+
+        const cluster = await createCluster(2, { actors: [alpha, beta], policy: selfPolicy });
+        running = cluster;
+        await cluster.silos[0]!.actor(alpha, 'a').warm(); // Alpha/a on silo 0
+        await cluster.silos[1]!.actor(beta, 'b').warm(); // Beta/b on silo 1
+
+        const call = cluster.silos[0]!.actor(alpha, 'a').poke();
+        await entered;
+        // Alpha's silo dies while its turn is up-stack awaiting beta. The
+        // chain re-entering "alpha" now finds no activation anywhere it can
+        // legally run inline — a second copy would break single-activation.
+        cluster.crash(0);
+        proceed();
+
+        const outcome = (await call) as { kind: string; message: string };
+        expect(outcome.kind).toBe('deadlock');
+        expect(outcome.message).toMatch(/mid-turn|moved mid-call/);
     });
 });

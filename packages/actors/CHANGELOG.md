@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Clustering milestone 2 — failover & directory hygiene** (#20):
+  `ActorDirectory` gains optional `evictSilo(siloId)`; `clusterPlacement`
+  now sweeps a departed silo's directory entries proactively on membership
+  change (store-confirmed dead; lazy eviction on lookup remains the
+  backstop) and spaces unreachable retries with a linear backoff
+  (`retryBackoffMs`, default 100 — wrong-host redirects still retry
+  immediately).
+
 - **`@sigx/actors/cluster` — multi-host clustering** (#20): `clusterPlacement()`
   plugs into `createSilo({ placement })` for silos on many hosts forming one
   actor system. Claim-on-activate distributed directory (one activation per

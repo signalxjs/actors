@@ -62,6 +62,16 @@ export function memoryClusterHub(): MemoryClusterHub {
                 return true;
             }
             return false;
+        },
+        async evictSilo(siloId) {
+            let removed = 0;
+            for (const [actorId, entry] of entries) {
+                if (entry.siloId === siloId) {
+                    entries.delete(actorId);
+                    removed++;
+                }
+            }
+            return removed;
         }
     };
 

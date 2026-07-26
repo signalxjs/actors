@@ -49,6 +49,12 @@ export interface ClusterPlacementOptions extends ClusterProviders {
     policy?: PlacementPolicy;
     /** Wrong-host / unreachable re-resolve attempts. Default 3. */
     retries?: number;
+    /**
+     * Backoff between UNREACHABLE retries, ms (linear: n × this) — rides
+     * out transient network blips without burning every attempt at once.
+     * Wrong-host redirects retry immediately. Default 100.
+     */
+    retryBackoffMs?: number;
     /** Free-form placement hints published in the membership descriptor. */
     meta?: Record<string, string>;
 }
@@ -107,6 +113,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #options: ClusterPlacementOptions;
     #policy: PlacementPolicy;
     #retries: number;
+    #retryBackoffMs: number;
+    /** Silo ids seen in a membership view — the departure diff base. */
+    #seenSilos = new Set<string>();
     #transport: SiloTransport;
     #local: ActorDispatcher | null = null;
     #silo: Silo | null = null;
@@ -124,6 +133,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#options = options;
         this.#policy = options.policy ?? randomPolicy;
         this.#retries = options.retries ?? 3;
+        this.#retryBackoffMs = options.retryBackoffMs ?? 100;
         this.#transport = createSiloTransport({
             siloId: this.identity.siloId,
             internalBase: options.internalBase ?? '/_sigx/silo',
@@ -199,8 +209,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
     async start(): Promise<void> {
         this.#status = 'active';
         await this.#options.membership.join(this.descriptor());
+        this.#seenSilos = new Set(
+            this.#options.membership.view().silos.map((s) => s.siloId)
+        );
         this.#unsubscribe.push(
-            this.#options.membership.onChange((view) => this.#pruneRoutes(view)),
+            this.#options.membership.onChange((view) => {
+                this.#pruneRoutes(view);
+                void this.#sweepDeparted(view);
+            }),
             this.#options.membership.onSelfSuspect(() => void this.#fence())
         );
     }
@@ -289,6 +305,37 @@ class ClusterPlacementImpl implements ClusterPlacement {
         }
     }
 
+    /**
+     * Proactive directory hygiene: when a silo we have seen disappears
+     * from the view AND the store confirms it dead (a graceful leaver
+     * already released its claims), sweep its entries so callers never
+     * trip over them. Racing survivors are fine — eviction is idempotent.
+     * Lazy eviction on lookup remains the backstop.
+     */
+    async #sweepDeparted(view: MembershipView): Promise<void> {
+        const live = new Set(view.silos.map((s) => s.siloId));
+        const departed = [...this.#seenSilos].filter(
+            (id) => !live.has(id) && id !== this.identity.siloId
+        );
+        for (const id of live) this.#seenSilos.add(id);
+        if (departed.length === 0 || !this.#options.directory.evictSilo) return;
+        for (const id of departed) {
+            // A silo only stops being "seen" once its sweep completed (or
+            // the store says it is in fact alive-and-absent-from-view for
+            // now) — a transient view drop or a failed sweep keeps it on
+            // the list, so the next membership change tries again.
+            try {
+                if (await this.#options.membership.isAlive(id)) continue;
+                await this.#options.directory.evictSilo(id);
+                this.#seenSilos.delete(id);
+            } catch (error) {
+                if (__DEV__) {
+                    console.error(`[sigx actors] directory sweep for ${id} failed:`, error);
+                }
+            }
+        }
+    }
+
     /** Self-fence: membership lost — stop claiming, drop what we hold. */
     async #fence(): Promise<void> {
         if (this.#fenced) return;
@@ -339,15 +386,19 @@ class ClusterPlacementImpl implements ClusterPlacement {
         return chosen.siloId === this.identity.siloId ? 'local' : chosen;
     }
 
-    /** Consume a routing failure; true = re-resolve and retry. */
-    async #noteFailure(id: string, error: unknown): Promise<boolean> {
+    /**
+     * Consume a routing failure. Returns how to retry: wrong-host retries
+     * immediately (the redirect told us where), unreachable retries after
+     * a backoff (the peer may be mid-blip), null = not ours, rethrow.
+     */
+    async #noteFailure(id: string, error: unknown): Promise<'wrong-host' | 'unreachable' | null> {
         if (isActorError(error) && error.kind === 'wrong-host') {
             this.#routeCache.delete(id);
             const owner = (error as ActorWrongHostError).owner;
             if (owner?.siloId && owner.siloId !== this.identity.siloId) {
                 this.#cacheRoute(id, owner.siloId);
             }
-            return true;
+            return 'wrong-host';
         }
         if (isActorError(error) && error.kind === 'unreachable') {
             this.#routeCache.delete(id);
@@ -356,9 +407,15 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 await this.#options.directory.evict(id, entry);
             }
             await this.#options.membership.refresh();
-            return true;
+            return 'unreachable';
         }
-        return false;
+        return null;
+    }
+
+    #backoff(attempt: number): Promise<void> {
+        const ms = this.#retryBackoffMs * (attempt + 1);
+        if (ms <= 0) return Promise.resolve();
+        return new Promise((r) => setTimeout(r, ms));
     }
 
     async #routedDispatch(
@@ -379,7 +436,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     .dispatcherFor(target)
                     .dispatch(ref, method, args, call);
             } catch (error) {
-                if (!(await this.#noteFailure(id, error))) throw error;
+                const failure = await this.#noteFailure(id, error);
+                if (!failure) throw error;
+                if (failure === 'unreachable' && attempt < this.#retries) {
+                    await this.#backoff(attempt);
+                }
                 lastError = error;
             }
         }
@@ -398,7 +459,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
     ): AsyncIterable<unknown> {
         const id = actorId(ref);
         const resolveTarget = (): Promise<'local' | SiloDescriptor> => this.#resolveTarget(ref);
-        const noteFailure = (error: unknown): Promise<boolean> => this.#noteFailure(id, error);
+        const noteFailure = (error: unknown): Promise<'wrong-host' | 'unreachable' | null> =>
+            this.#noteFailure(id, error);
+        const backoff = (attempt: number): Promise<void> => this.#backoff(attempt);
         const local = this.#local!;
         const transport = this.#transport;
         const retries = this.#retries;
@@ -420,7 +483,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 try {
                     first = await iterator.next();
                 } catch (error) {
-                    if (!(await noteFailure(error))) throw error;
+                    const failure = await noteFailure(error);
+                    if (!failure) throw error;
+                    if (failure === 'unreachable' && attempt < retries) await backoff(attempt);
                     lastError = error;
                     continue;
                 }

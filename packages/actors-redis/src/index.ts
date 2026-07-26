@@ -224,6 +224,16 @@ if cur == ARGV[1] then redis.call('DEL', KEYS[1]); return 1 end
 return 0
 `;
 
+/** Delete the key only if its value is owned by the silo (prefix match on
+ *  the "siloId\n" value format) — the evictSilo sweep primitive. */
+const DEL_IF_OWNER = `
+local cur = redis.call('GET', KEYS[1])
+if cur and string.sub(cur, 1, string.len(ARGV[1])) == ARGV[1] then
+  redis.call('DEL', KEYS[1]); return 1
+end
+return 0
+`;
+
 const entryValue = (entry: DirectoryEntry): string =>
     `${entry.siloId}\n${entry.activationId}`;
 
@@ -258,6 +268,28 @@ export function redisDirectory(
         async evict(actorId, expected) {
             const removed = await client.eval(COMPARE_DEL, 1, dirKey(actorId), entryValue(expected));
             return removed === 1;
+        },
+        async evictSilo(siloId) {
+            // Cursor SCAN over the directory prefix + per-key owner-checked
+            // delete. Assumes a single logical Redis (the demo/default
+            // deployment); on Redis Cluster, run against each node.
+            const prefix = `${siloId}\n`;
+            let cursor = '0';
+            let removed = 0;
+            do {
+                const [next, keys] = await client.scan(
+                    cursor,
+                    'MATCH',
+                    `${ns}:dir:*`,
+                    'COUNT',
+                    500
+                );
+                cursor = next;
+                for (const key of keys) {
+                    removed += (await client.eval(DEL_IF_OWNER, 1, key, prefix)) === 1 ? 1 : 0;
+                }
+            } while (cursor !== '0');
+            return removed;
         }
     };
 }

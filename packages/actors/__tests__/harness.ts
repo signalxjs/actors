@@ -61,6 +61,9 @@ export interface ClusterOptions {
     policy?: PlacementPolicy;
     secret?: string;
     retries?: number;
+    retryBackoffMs?: number;
+    /** Spy hook: called with every URL crossing the pipe. */
+    onRequest?: (url: string) => void;
 }
 
 export interface ClusterHarness {
@@ -75,6 +78,9 @@ export interface ClusterHarness {
     /** Simulate a crash of silo `i`: membership drops it AND its address
      *  stops resolving (fetch → unreachable). No cleanup runs. */
     crash(i: number): void;
+    /** Simulate a network partition: silo `i`'s address stops resolving
+     *  but its membership heartbeat stays alive. */
+    unbind(i: number): void;
     stop(): Promise<void>;
 }
 
@@ -87,6 +93,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const pipeFetch: typeof globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
         const url = new URL(request.url);
+        options.onRequest?.(request.url);
         const member = registry.get(url.host);
         // No listener at that address — exactly a connection refusal, which
         // the transport classifies as unreachable.
@@ -111,7 +118,10 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             secret,
             fetch: pipeFetch,
             ...(options.policy ? { policy: options.policy } : {}),
-            ...(options.retries !== undefined ? { retries: options.retries } : {})
+            ...(options.retries !== undefined ? { retries: options.retries } : {}),
+            ...(options.retryBackoffMs !== undefined
+                ? { retryBackoffMs: options.retryBackoffMs }
+                : {})
         });
         const silo = createSilo({
             actors: options.actors,
@@ -135,6 +145,9 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         crash: (i) => {
             registry.delete(`silo${i}.test`);
             hub.kill(placements[i]!.identity.siloId);
+        },
+        unbind: (i) => {
+            registry.delete(`silo${i}.test`);
         },
         stop: async () => {
             await Promise.allSettled(silos.map((s) => s.stop({ timeoutMs: 1000 })));

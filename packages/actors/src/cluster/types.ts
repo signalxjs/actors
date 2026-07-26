@@ -88,6 +88,13 @@ export interface ActorDirectory {
     release(actorId: string, expected: DirectoryEntry): Promise<void>;
     /** Compare-and-delete for dead-silo entries; true if removed. */
     evict(actorId: string, expected: DirectoryEntry): Promise<boolean>;
+    /**
+     * Sweep every entry owned by one silo (proactive hygiene when a silo
+     * dies) — idempotent, safe for racing survivors. Optional: without it
+     * dead entries are still reclaimed lazily on lookup. Returns the
+     * number removed.
+     */
+    evictSilo?(siloId: string): Promise<number>;
 }
 
 /**
