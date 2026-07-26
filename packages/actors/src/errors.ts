@@ -15,7 +15,9 @@ export type ActorErrorKind =
     | 'state-conflict'
     | 'method-not-found'
     | 'silo-shutdown'
-    | 'call-timeout';
+    | 'call-timeout'
+    | 'wrong-host'
+    | 'unreachable';
 
 export interface ActorErrorShape extends Error {
     readonly __sigxActorError: true;
@@ -115,6 +117,46 @@ export class ActorCallTimeoutError extends ActorError {
                 `The turn keeps running; only this caller gave up.`
         );
         this.name = 'ActorCallTimeoutError';
+    }
+}
+
+/** The owner hint a wrong-host error carries — enough to re-route. */
+export interface ActorOwnerHint {
+    readonly siloId: string;
+    readonly address?: string;
+}
+
+/**
+ * This host is not (or no longer) the actor's owner — a distributed
+ * placement answers a misdirected dispatch with this instead of proxying.
+ * Internal to silo-to-silo traffic: the calling placement consumes the
+ * `owner` hint and re-dispatches; it should never reach an application.
+ */
+export class ActorWrongHostError extends ActorError {
+    /** Where the actor actually lives, if this host knows. */
+    readonly owner?: ActorOwnerHint;
+
+    constructor(ref: string, owner?: ActorOwnerHint) {
+        super(
+            'wrong-host',
+            `[sigx actors] ${ref} is not placed on this host` +
+                (owner ? ` (owner: ${owner.siloId})` : '') +
+                `; the caller should re-resolve placement and retry.`
+        );
+        this.name = 'ActorWrongHostError';
+        this.owner = owner;
+    }
+}
+
+/** A peer silo's address did not respond. Retryable by the caller. */
+export class ActorUnreachableError extends ActorError {
+    constructor(target: string, options?: { cause?: unknown }) {
+        super(
+            'unreachable',
+            `[sigx actors] silo ${target} is unreachable; the call may be retried.`,
+            options
+        );
+        this.name = 'ActorUnreachableError';
     }
 }
 

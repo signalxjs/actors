@@ -16,11 +16,24 @@
  * one firing per tick, and a crash between persist and dispatch skips one
  * firing rather than double-firing (documented).
  */
+import { isStorageConflict } from '../errors';
 import type { ActorRef, ActorStorage, ReminderApi } from '../types';
 
 export const REMINDER_TYPE = '$sigx:reminders';
 const REMINDER_KEY = '$all';
 const MIN_PERIOD_MS = 60_000;
+/** Etag-conflict retries per mutation — the table has multiple writers
+ *  once silos cluster (every silo mutates; one leader ticks). */
+const MUTATE_ATTEMPTS = 3;
+
+export interface ReminderServiceOptions {
+    /**
+     * Gates `#tick()` — a cluster placement returns true only on the
+     * leader so N silos over shared storage fire each reminder once.
+     * Default: always tick.
+     */
+    shouldTick?: () => boolean | Promise<boolean>;
+}
 
 interface ReminderEntry {
     nextDue: number;
@@ -31,12 +44,18 @@ type ReminderTable = Record<string, Record<string, ReminderEntry>>;
 export class ReminderService {
     #storage: ActorStorage;
     #fire: (ref: ActorRef, name: string) => Promise<unknown>;
+    #shouldTick: () => boolean | Promise<boolean>;
     #chain: Promise<unknown> = Promise.resolve();
     #timer: ReturnType<typeof setInterval> | null = null;
 
-    constructor(storage: ActorStorage, fire: (ref: ActorRef, name: string) => Promise<unknown>) {
+    constructor(
+        storage: ActorStorage,
+        fire: (ref: ActorRef, name: string) => Promise<unknown>,
+        options?: ReminderServiceOptions
+    ) {
         this.#storage = storage;
         this.#fire = fire;
+        this.#shouldTick = options?.shouldTick ?? (() => true);
     }
 
     start(tickMs: number): void {
@@ -99,9 +118,20 @@ export class ReminderService {
     }
 
     async #mutateNow(edit: (table: ReminderTable) => void): Promise<void> {
-        const { table, etag } = await this.#load();
-        edit(table);
-        await this.#storage.save(REMINDER_TYPE, REMINDER_KEY, table, etag);
+        // Reload-and-reapply on etag conflict: with N silos over shared
+        // storage the table legitimately has concurrent writers, and every
+        // edit here is expressed against the CURRENT table, so replaying it
+        // on a fresh load is safe.
+        for (let attempt = 1; ; attempt++) {
+            const { table, etag } = await this.#load();
+            edit(table);
+            try {
+                await this.#storage.save(REMINDER_TYPE, REMINDER_KEY, table, etag);
+                return;
+            } catch (error) {
+                if (!isStorageConflict(error) || attempt >= MUTATE_ATTEMPTS) throw error;
+            }
+        }
     }
 
     async #load(): Promise<{ table: ReminderTable; etag: string | null }> {
@@ -113,6 +143,7 @@ export class ReminderService {
     }
 
     async #tick(): Promise<void> {
+        if (!(await this.#shouldTick())) return;
         const now = Date.now();
         const due: { ref: ActorRef; name: string }[] = [];
         await this.#mutate((table) => {

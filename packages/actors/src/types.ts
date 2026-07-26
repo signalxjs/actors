@@ -77,8 +77,50 @@ export interface ActorDispatcher {
  */
 export interface ActorPlacement {
     dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher>;
+    /**
+     * Called once by `createSilo` with the silo's own local dispatcher and
+     * the silo itself, before `start()`. A distributed placement returns
+     * bindings hooking the activation lifecycle (directory claims) and the
+     * reminder tick; the default local placement doesn't implement it.
+     */
+    bind?(local: ActorDispatcher, silo: Silo): PlacementBindings | void;
     start?(): void | Promise<void>;
     stop?(): void | Promise<void>;
+}
+
+/**
+ * What a placement's `bind()` hands back to the silo. Every member is
+ * optional; omitting all of them is the single-node behavior.
+ */
+export interface PlacementBindings {
+    /**
+     * Runs inside the activation reserve, after the definition resolves and
+     * before any state loads — the distributed directory's claim point.
+     * Throwing (e.g. a wrong-host error carrying the winning owner) refuses
+     * the activation: every parked caller rejects and nothing is remembered.
+     */
+    beforeActivate?(ref: ActorRef): void | Promise<void>;
+    /**
+     * Runs after an activation is fully deactivated and forgotten — the
+     * claim release point. Errors are swallowed (dev-logged): a failed
+     * release must not break callers parked on re-activation. Not called
+     * for activations force-dropped at the shutdown deadline.
+     */
+    afterDeactivate?(ref: ActorRef, reason: DeactivationReason): void | Promise<void>;
+    /**
+     * Cluster posture for a call-chain hit on a REENTRANT actor with no
+     * local activation: the chain proves the target is mid-turn somewhere,
+     * so activating a second copy here would violate single-activation.
+     * `true` = throw a retryable deadlock error; default (single-node)
+     * falls back to a normal dispatch.
+     */
+    strictChainPresence?: boolean;
+    /**
+     * Gates the durable-reminder tick loop — a cluster runs the ticker on
+     * one silo (leader lease) while every silo still mutates the table.
+     * Default: always tick.
+     */
+    shouldTickReminders?(): boolean | Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +174,14 @@ export interface ReminderApi {
     list(): Promise<string[]>;
 }
 
-export type DeactivationReason = 'idle' | 'explicit' | 'shutdown' | 'conflict' | 'activation-failed';
+/** `'migrated'` is reserved for cluster rebalancing — not yet emitted. */
+export type DeactivationReason =
+    | 'idle'
+    | 'explicit'
+    | 'shutdown'
+    | 'conflict'
+    | 'activation-failed'
+    | 'migrated';
 
 /**
  * The per-activation context — created once per activation and closed over

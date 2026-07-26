@@ -176,6 +176,11 @@ function toWireError(error: unknown): unknown {
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'call-timeout':
             return new ServerFnError(504, error.message, { kind: error.kind });
+        case 'wrong-host':
+        case 'unreachable':
+            // Cluster routing errors are resolved silo-to-silo and should
+            // never surface here; if one does, it's retryable — 503.
+            return new ServerFnError(503, error.message, { kind: error.kind });
         case 'deadlock':
         case 'activation':
         default:

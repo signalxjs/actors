@@ -4,6 +4,34 @@
 
 ### Added
 
+- Cluster seams on the placement contract (groundwork for multi-host
+  clustering, #20): `ActorPlacement.bind?(local, silo)`
+  returning `PlacementBindings` — activation claim/release hooks
+  (`beforeActivate` / `afterDeactivate`), `strictChainPresence`, and a
+  `shouldTickReminders` gate for reminder leader election. All optional;
+  single-node behavior unchanged.
+- New `ActorErrorKind`s `'wrong-host'` (`ActorWrongHostError`, carries an
+  owner hint) and `'unreachable'` (`ActorUnreachableError`); both map to a
+  retryable 503 if they ever reach the public wire. Exhaustive switches on
+  `ActorErrorKind` gain two cases.
+- `DeactivationReason` gains `'migrated'` — reserved for cluster
+  rebalancing, not yet emitted.
+
+### Changed
+
+- Reminder-table mutations now reload-and-reapply on a storage etag
+  conflict (up to 3 attempts) instead of failing — the table legitimately
+  has concurrent writers once silos share storage.
+- `mintCallId()` ids carry a per-process random component so ids from
+  different hosts and restarts are distinguishable. The format remains
+  opaque.
+
+### Fixed
+
+- External wire calls now inherit the silo's `callTimeoutMs` deadline, as
+  documented. Previously only in-process external calls got a deadline;
+  wire calls could hang past the configured timeout without a 504.
+
 - Initial release of `@sigx/actors` — Orleans-style virtual actors for
   SignalX.
 - `defineActor` with options-object + `methods`/`streams` factories; state

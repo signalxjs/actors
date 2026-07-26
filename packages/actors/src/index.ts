@@ -25,11 +25,14 @@ export {
     ActorMethodNotFoundError,
     SiloShutdownError,
     ActorCallTimeoutError,
+    ActorWrongHostError,
+    ActorUnreachableError,
     ActorStorageConflict,
     isActorError,
     isStorageConflict,
     type ActorErrorKind,
-    type ActorErrorShape
+    type ActorErrorShape,
+    type ActorOwnerHint
 } from './errors';
 export type {
     ActorCallContext,
@@ -46,6 +49,7 @@ export type {
     ActorStorageRecord,
     AnyActorDefinition,
     DeactivationReason,
+    PlacementBindings,
     ReminderApi,
     Silo,
     SiloStats,

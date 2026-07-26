@@ -8,6 +8,7 @@ import {
     ActorActivationError,
     ActorCallTimeoutError,
     ActorDeadlockError,
+    ActorError,
     SiloShutdownError
 } from '../errors';
 import {
@@ -18,6 +19,7 @@ import {
     type ActorRef,
     type AnyActorDefinition,
     type DeactivationReason,
+    type PlacementBindings,
     type SiloStats
 } from '../types';
 import { Activation, type ActivationHost } from './activation';
@@ -33,15 +35,19 @@ export class LocalHost implements ActorDispatcher {
     #host: ActivationHost;
     #resolveDefinition: (type: string) => AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
     #shuttingDown = false;
+    /** Read per use, not captured: `placement.bind()` runs after construction. */
+    #bindings: () => PlacementBindings | undefined;
 
     constructor(
         host: ActivationHost,
         resolveDefinition: (
             type: string
-        ) => AnyActorDefinition | Promise<AnyActorDefinition | null> | null
+        ) => AnyActorDefinition | Promise<AnyActorDefinition | null> | null,
+        bindings: () => PlacementBindings | undefined = () => undefined
     ) {
         this.#host = host;
         this.#resolveDefinition = resolveDefinition;
+        this.#bindings = bindings;
     }
 
     async dispatch(
@@ -123,8 +129,18 @@ export class LocalHost implements ActorDispatcher {
             throw new ActorDeadlockError([...call.callChain, id]);
         }
         if (!active) {
-            // Chain says it's up-stack but the slot is gone (shouldn't
-            // happen single-node); fall back to a normal dispatch.
+            // Chain says it's up-stack but the slot is gone. Single-node
+            // this shouldn't happen; fall back to a normal dispatch. In a
+            // cluster it means the turn runs on ANOTHER host — activating a
+            // second copy here would break single-activation, so a strict
+            // placement makes it a loud, retryable error instead.
+            if (this.#bindings()?.strictChainPresence) {
+                throw new ActorError(
+                    'deadlock',
+                    `[sigx actors] ${actorLabel(ref)} is mid-turn in this call chain but has ` +
+                        `no activation on this host — the activation moved mid-call. Retry.`
+                );
+            }
             return null;
         }
         return active;
@@ -154,6 +170,10 @@ export class LocalHost implements ActorDispatcher {
                 let reserved!: Slot;
                 const promise = (async () => {
                     const def = await this.#definition(ref.type);
+                    // The distributed directory's claim point: a throw here
+                    // (wrong-host) rejects every parked caller and the slot
+                    // is dropped below — nothing activates.
+                    await this.#bindings()?.beforeActivate?.(ref);
                     const activation = await Activation.create(ref, def, this.#host, mailbox);
                     const current = this.#directory.get(id);
                     if (current === reserved) {
@@ -200,6 +220,20 @@ export class LocalHost implements ActorDispatcher {
                 await activation.deactivate(reason);
             } finally {
                 if (this.#directory.get(id) === next) this.#directory.delete(id);
+                // Directory-claim release. Swallowed: a failed release must
+                // not reject callers parked on `drained` — a stale remote
+                // entry is reclaimed lazily by its owner's liveness.
+                try {
+                    await this.#bindings()?.afterDeactivate?.(activation.ref, reason);
+                } catch (error) {
+                    if (__DEV__) {
+                        console.error(
+                            `[sigx actors] afterDeactivate hook for ` +
+                                `${actorLabel(activation.ref)} failed:`,
+                            error
+                        );
+                    }
+                }
             }
         })();
         next = { phase: 'deactivating', drained };

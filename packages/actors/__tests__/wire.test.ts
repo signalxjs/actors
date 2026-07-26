@@ -217,6 +217,33 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         expect(silo.stats().activations).toBe(0);
     });
 
+    it('external wire calls inherit the silo callTimeoutMs deadline (504 on overrun)', async () => {
+        const slowpoke = defineActor({
+            type: 'Slowpoke',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => ({
+                async nap() {
+                    await new Promise((r) => setTimeout(r, 500));
+                    return 'rested';
+                }
+            })
+        });
+        const silo = createSilo({
+            actors: [slowpoke],
+            defaults: { ...quiet, callTimeoutMs: 40 }
+        });
+        configureActors({
+            endpoint: ENDPOINT,
+            fetch: async (input, init) =>
+                handleActorRequest(new Request(input, init), { silo, origin: false })
+        });
+        const ref = __actorRef('Slowpoke', ENDPOINT) as unknown as typeof slowpoke;
+        await expect(actor(ref, 't1').nap()).rejects.toSatisfy(
+            (e: unknown) => isServerFnError(e) && e.status === 504
+        );
+    });
+
     it('the endpoint-level guard is a wire-only backstop over the same mount', async () => {
         const silo = createSilo({ actors: [cart], defaults: quiet });
         const response = await handleActorRequest(

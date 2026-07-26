@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineActor } from '@sigx/actors';
-import { createSilo, memoryStorage, type Silo } from '@sigx/actors/silo';
+import {
+    ActorStorageConflict,
+    defineActor,
+    type ActorDispatcher,
+    type ActorPlacement,
+    type ActorStorage
+} from '@sigx/actors';
+import { createSilo, memoryStorage, REMINDER_TYPE, type Silo } from '@sigx/actors/silo';
 
 let running: Silo | null = null;
 afterEach(async () => {
@@ -101,5 +107,64 @@ describe('reminders', () => {
         running = siloB;
         await siloB.start();
         await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
+    });
+
+    it('shouldTickReminders gates the tick loop (the leader-lease seam)', async () => {
+        const events: string[] = [];
+        const def = wakingActor(events);
+        let leader = false;
+        const out: { local?: ActorDispatcher } = {};
+        const placement: ActorPlacement = {
+            dispatcherFor: () => out.local!,
+            bind(local) {
+                out.local = local;
+                return { shouldTickReminders: () => leader };
+            }
+        };
+        const silo = createSilo({
+            actors: [def],
+            storage: memoryStorage(),
+            placement,
+            defaults: { reminderTickMs: 25, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
+        });
+        running = silo;
+        await silo.start();
+        await silo.actor(def, 'g1').wakeMeIn(0);
+
+        // Several tick intervals pass while gated off: nothing fires.
+        await new Promise((r) => setTimeout(r, 120));
+        expect(events).not.toContain('reminder:wake');
+
+        leader = true;
+        await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
+    });
+
+    it('reminder mutations retry on a storage etag conflict (reload + reapply)', async () => {
+        const events: string[] = [];
+        const def = wakingActor(events);
+        const base = memoryStorage();
+        let conflicts = 0;
+        const storage: ActorStorage = {
+            load: (type, key) => base.load(type, key),
+            save: async (type, key, state, expectedEtag) => {
+                // The reminder table has concurrent writers in a cluster —
+                // simulate another silo winning the first CAS.
+                if (type === REMINDER_TYPE && conflicts === 0) {
+                    conflicts++;
+                    throw new ActorStorageConflict(type, key);
+                }
+                return base.save(type, key, state, expectedEtag);
+            },
+            clear: (type, key, expectedEtag) => base.clear(type, key, expectedEtag)
+        };
+        const silo = createSilo({
+            actors: [def],
+            storage,
+            defaults: { reminderTickMs: 60_000, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
+        });
+        const client = silo.actor(def, 'cas');
+        await expect(client.wakeMeIn(120_000)).resolves.toBeUndefined();
+        expect(conflicts).toBe(1);
+        await expect(client.listReminders()).resolves.toEqual(['wake']);
     });
 });

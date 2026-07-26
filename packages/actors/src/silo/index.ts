@@ -15,6 +15,7 @@ export type {
     ActorRef,
     ActorStorage,
     ActorStorageRecord,
+    PlacementBindings,
     Silo,
     SiloStats
 } from '../types';

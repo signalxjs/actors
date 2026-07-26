@@ -13,33 +13,17 @@
  * `{"args": [key, ...args]}` → `{"data"}` / `{"error"}` envelope, or NDJSON
  * `{"chunk"}* ({"done"}|{"error"})` for stream methods. Errors are
  * re-created with the `__sigxServerFnError` brand so `isServerFnError`
- * matches them.
+ * matches them. The parsing/branding plumbing lives in `../wire-shared` —
+ * shared with the silo-to-silo transport.
  */
 import {
-    encodeWithHandlers,
-    reviveWithHandlers,
-    type TypeHandler
-} from '@sigx/serialize';
-
-// ---------------------------------------------------------------------------
-// Codec binding — the same `__SIGX_SERVERFN_CODEC__` seam the serverFn wire
-// uses (documented in core's docs/seams.md), read through this entry's one
-// accessor. Actor payloads share the serverFn vocabulary by design: one
-// `serverPlugin({ types })` registration covers both wires.
-
-function extraHandlers(): readonly TypeHandler[] {
-    const extra = (globalThis as { __SIGX_SERVERFN_CODEC__?: TypeHandler[] })
-        .__SIGX_SERVERFN_CODEC__;
-    return Array.isArray(extra) ? extra : [];
-}
-
-const encodeWire = (value: unknown): unknown => encodeWithHandlers(value, extraHandlers());
-const reviveWire = (value: unknown): unknown => reviveWithHandlers(value, extraHandlers());
-
-/** Prototype-pollution keys DROPPED from every parsed payload. */
-const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-const reviver = (key: string, value: unknown): unknown =>
-    DANGEROUS_KEYS.has(key) ? undefined : value;
+    encodeWire,
+    readNdjson,
+    reviveWire,
+    reviver,
+    wireFail,
+    type WireError
+} from '../wire-shared';
 
 // ---------------------------------------------------------------------------
 // Transport config — deliberately SEPARATE from `configureServerFn`: a
@@ -70,12 +54,6 @@ export interface ActorClientCallOptions {
     headers?: Record<string, string>;
 }
 
-interface WireError {
-    message?: string;
-    status?: number;
-    data?: unknown;
-}
-
 async function send(
     endpoint: string,
     symbol: string,
@@ -103,15 +81,6 @@ async function send(
     };
     const url = `${prefix}/${encodeURIComponent(symbol)}`;
     return config?.fetch ? config.fetch(url, init) : fetch(url, init);
-}
-
-/** Re-create a wire error with the `__sigxServerFnError` brand. */
-function wireFail(status: number, wire: WireError | undefined, message: string): Error {
-    return Object.assign(new Error(wire?.message ?? message), {
-        __sigxServerFnError: true,
-        status: wire?.status ?? status,
-        data: wire?.data !== undefined ? reviveWire(wire.data) : undefined
-    });
 }
 
 function skewHint(symbol: string, status: number): string {
@@ -163,53 +132,7 @@ function callStream(
                 }
                 throw wireFail(res.status, wire, skewHint(symbol, res.status));
             }
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            const parseLine = (
-                text: string
-            ): { chunk?: unknown; done?: number; error?: WireError } =>
-                JSON.parse(text, reviver) as { chunk?: unknown; done?: number; error?: WireError };
-            for (;;) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                let nl;
-                while ((nl = buffer.indexOf('\n')) >= 0) {
-                    const text = buffer.slice(0, nl);
-                    buffer = buffer.slice(nl + 1);
-                    if (!text) continue;
-                    const obj = parseLine(text);
-                    if ('error' in obj) {
-                        throw wireFail(500, obj.error, `[sigx actors] stream "${symbol}" failed`);
-                    }
-                    if ('done' in obj) return;
-                    yield reviveWire(obj.chunk);
-                }
-            }
-            // EOF: honor a final line missing its trailing newline (proxies
-            // may strip it); a partial line is genuine truncation.
-            buffer += decoder.decode();
-            const tail = buffer.trim();
-            if (tail) {
-                let obj: { chunk?: unknown; done?: number; error?: WireError } | null = null;
-                try {
-                    obj = parseLine(tail);
-                } catch {
-                    obj = null;
-                }
-                if (obj) {
-                    if ('error' in obj) {
-                        throw wireFail(500, obj.error, `[sigx actors] stream "${symbol}" failed`);
-                    }
-                    if ('done' in obj) return;
-                    yield reviveWire(obj.chunk);
-                }
-            }
-            throw new Error(
-                `[sigx actors] stream "${symbol}" ended without a done/error terminator ` +
-                    `(connection lost?)`
-            );
+            yield* readNdjson(res, symbol);
         } finally {
             controller.abort(); // consumer break/return, error, or normal end
         }

@@ -16,6 +16,7 @@ import type {
     ActorRef,
     ActorStorage,
     AnyActorDefinition,
+    PlacementBindings,
     Silo,
     SiloStats
 } from '../types';
@@ -80,6 +81,7 @@ class SiloImpl implements Silo {
     #storage: ActorStorage;
     #types: readonly TypeHandler[];
     #placement: ActorPlacement;
+    #bindings: PlacementBindings | undefined;
     #local: LocalHost;
     #reminders: ReminderService;
     #registry = new Map<
@@ -155,10 +157,17 @@ class SiloImpl implements Silo {
                 void this.#local.deactivate(activation.ref, 'explicit');
             }
         };
-        this.#local = new LocalHost(host, (type) => this.definition(type));
+        this.#local = new LocalHost(
+            host,
+            (type) => this.definition(type),
+            () => this.#bindings
+        );
         this.#placement = options.placement ?? { dispatcherFor: () => this.#local };
-        this.#reminders = new ReminderService(this.#storage, (ref, name) =>
-            this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall())
+        this.#bindings = this.#placement.bind?.(this.#local, this) ?? undefined;
+        this.#reminders = new ReminderService(
+            this.#storage,
+            (ref, name) => this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall()),
+            { shouldTick: () => this.#bindings?.shouldTickReminders?.() ?? true }
         );
     }
 
@@ -173,7 +182,18 @@ class SiloImpl implements Silo {
     ): Promise<unknown> {
         const checked = this.#devCheckArgs(ref, method, args);
         const dispatcher = await this.#placement.dispatcherFor(ref);
-        return dispatcher.dispatch(ref, method, checked, call);
+        return dispatcher.dispatch(ref, method, checked, this.#withDefaultDeadline(call));
+    }
+
+    /**
+     * External calls without a deadline (the wire endpoint builds a bare
+     * context) inherit the silo's `callTimeoutMs`, same as in-process
+     * external calls. In-chain calls keep their inherited deadline as-is.
+     */
+    #withDefaultDeadline(call: ActorCallContext): ActorCallContext {
+        const timeout = this.#defaults.callTimeoutMs;
+        if (call.deadline !== undefined || call.callChain.length > 0 || timeout <= 0) return call;
+        return { ...call, deadline: Date.now() + timeout };
     }
 
     dispatchStream(

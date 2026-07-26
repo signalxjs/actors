@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { defineActor, isActorError, type ActorStorage } from '@sigx/actors';
+import {
+    ActorWrongHostError,
+    defineActor,
+    isActorError,
+    type ActorDispatcher,
+    type ActorPlacement,
+    type ActorStorage,
+    type PlacementBindings
+} from '@sigx/actors';
 import { createSilo, memoryStorage, type Silo } from '@sigx/actors/silo';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
@@ -406,6 +414,99 @@ describe('timers', () => {
         const settled = ticks.length;
         await new Promise((r) => setTimeout(r, 30));
         expect(ticks.length).toBe(settled); // timers died with the activation
+    });
+});
+
+describe('placement bindings (the cluster seam)', () => {
+    function boundPlacement(bindings: PlacementBindings, out: { local?: ActorDispatcher; silo?: Silo } = {}) {
+        const placement: ActorPlacement = {
+            dispatcherFor: () => out.local!,
+            bind(local, silo) {
+                out.local = local;
+                out.silo = silo;
+                return bindings;
+            }
+        };
+        return { placement, out };
+    }
+
+    it('bind() receives the local dispatcher and the silo before any dispatch', async () => {
+        const { placement, out } = boundPlacement({});
+        const silo = createSilo({ actors: [counterActor()], placement, defaults: quiet });
+        expect(out.local).toBeDefined();
+        expect(out.silo).toBe(silo);
+        // The captured local dispatcher is what dispatcherFor answers with.
+        await expect(silo.actor(counterActor(), 'b1').increment(1)).resolves.toBe(1);
+    });
+
+    it('beforeActivate claims before activation; afterDeactivate releases with the reason', async () => {
+        const log: string[] = [];
+        const events: string[] = [];
+        const { placement } = boundPlacement({
+            beforeActivate(ref) {
+                log.push(`claim:${ref.key}`);
+            },
+            afterDeactivate(ref, reason) {
+                log.push(`release:${ref.key}:${reason}`);
+            }
+        });
+        const silo = createSilo({ actors: [counterActor(events)], placement, defaults: quiet });
+        await silo.actor(counterActor(), 'b2').increment(1);
+        expect(log).toEqual(['claim:b2']);
+        // The claim ran before the activation lifecycle, not after.
+        expect(events[0]).toBe('activate:b2');
+        await silo.deactivateType('Counter');
+        expect(log).toEqual(['claim:b2', 'release:b2:explicit']);
+    });
+
+    it('a beforeActivate throw refuses the activation and remembers nothing', async () => {
+        let refuse = true;
+        const events: string[] = [];
+        const { placement } = boundPlacement({
+            beforeActivate(ref) {
+                if (refuse) throw new ActorWrongHostError(`${ref.type}/${ref.key}`, { siloId: 's.other' });
+            }
+        });
+        const silo = createSilo({ actors: [counterActor(events)], placement, defaults: quiet });
+        const client = silo.actor(counterActor(), 'b3');
+        await expect(client.increment(1)).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'wrong-host'
+        );
+        expect(events).toEqual([]); // never activated
+        // Claim allowed now: the failed attempt left no trace.
+        refuse = false;
+        await expect(client.increment(1)).resolves.toBe(1);
+    });
+
+    it('strictChainPresence turns the reentrant missing-slot fallback into a retryable error', async () => {
+        const reentrant = defineActor({
+            type: 'Re',
+            unguarded: true,
+            reentrant: true,
+            state: () => ({}),
+            methods: () => ({
+                async ping() {
+                    return 'pong';
+                }
+            })
+        });
+        const forged = { callChain: ['Re\u0000k'], callId: 'test' };
+
+        // Single-node posture: chain-hit + no slot falls back to a dispatch.
+        const loose = createSilo({ actors: [reentrant], defaults: quiet });
+        await expect(loose.dispatch({ type: 'Re', key: 'k' }, 'ping', [], forged)).resolves.toBe(
+            'pong'
+        );
+
+        // Cluster posture: the turn provably runs elsewhere — loud error.
+        const { placement } = boundPlacement({ strictChainPresence: true });
+        const strict = createSilo({ actors: [reentrant], placement, defaults: quiet });
+        await expect(
+            strict.dispatch({ type: 'Re', key: 'k' }, 'ping', [], forged)
+        ).rejects.toSatisfy(
+            (e: unknown) =>
+                isActorError(e) && e.kind === 'deadlock' && /mid-turn/.test((e as Error).message)
+        );
     });
 });
 
