@@ -12,11 +12,15 @@
  */
 import { expect } from 'vitest';
 import type { ActorStorage, AnyActorDefinition, Silo } from '@sigx/actors';
-import { createSilo, memoryStorage, type SiloDefaults } from '@sigx/actors/silo';
+import {
+    defineActorApp,
+    memoryStorage,
+    type ActorApp,
+    type SiloDefaults
+} from '@sigx/actors/silo';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import {
-    clusterPlacement,
-    handleSiloRequest,
+    cluster,
     matchesSiloRequest,
     memoryClusterHub,
     type ClusterPlacement,
@@ -89,7 +93,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const hub = memoryClusterHub();
     const storage = options.storage ?? memoryStorage();
     const secret = options.secret ?? 'test-secret';
-    const registry = new Map<string, { silo: Silo; placement: ClusterPlacement }>();
+    const registry = new Map<string, { app: ActorApp; silo: Silo }>();
 
     const pipeFetch: typeof globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
@@ -99,12 +103,11 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         // No listener at that address — exactly a connection refusal, which
         // the transport classifies as unreachable.
         if (!member) throw new TypeError(`fetch failed: connection refused to ${url.host}`);
-        const response = matchesSiloRequest(request)
-            ? await handleSiloRequest(request, {
-                  silo: member.silo,
-                  placement: member.placement,
-                  secret
-              })
+        // The internal mount arrives as a PLUGIN ROUTE now, so the whole
+        // existing suite exercises the cluster() wiring end to end.
+        const route = member.app.routes.find((candidate) => candidate.match(request));
+        const response = route
+            ? await route.handle(request, member.silo)
             : await handleActorRequest(request, { silo: member.silo, origin: false });
         expect(matchesSiloRequest(request) || matchesActorRequest(request)).toBe(true);
         return abortLinked(response, init?.signal ?? request.signal);
@@ -112,9 +115,10 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
 
     const silos: Silo[] = [];
     const placements: ClusterPlacement[] = [];
+    const apps: ActorApp[] = [];
     for (let i = 0; i < n; i++) {
-        const placement = clusterPlacement({
-            ...hub.providers(),
+        const plugin = cluster({
+            providers: hub.providers(),
             advertise: `http://silo${i}.test`,
             secret,
             fetch: pipeFetch,
@@ -125,16 +129,16 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
                 ? { retryBackoffMs: options.retryBackoffMs }
                 : {})
         });
-        const silo = createSilo({
+        const app = defineActorApp({
             actors: options.actors,
             storage,
-            placement,
             defaults: { ...quiet, ...options.defaults }
-        });
-        registry.set(`silo${i}.test`, { silo, placement });
+        }).use(plugin);
+        const silo = await app.start();
+        registry.set(`silo${i}.test`, { app, silo });
         silos.push(silo);
-        placements.push(placement);
-        await silo.start();
+        placements.push(plugin.placement);
+        apps.push(app);
     }
 
     return {
@@ -152,7 +156,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             registry.delete(`silo${i}.test`);
         },
         stop: async () => {
-            await Promise.allSettled(silos.map((s) => s.stop({ timeoutMs: 1000 })));
+            await Promise.allSettled(apps.map((a) => a.stop({ timeoutMs: 1000 })));
         }
     };
 }

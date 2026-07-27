@@ -4,6 +4,31 @@
 
 ### Added
 
+- **`cluster()` as an app plugin, and a Node adapter for every mount**
+  (#44): a clustered silo used to repeat itself — `secret` went to both
+  `clusterPlacement` and `handleSiloRequest`, `internalBase` had to agree
+  with `matchesSiloRequest`'s default, and routing the internal mount was
+  left to the entry, with nothing type-checking any of it.
+  `defineActorApp({ actors, storage }).use(cluster({ providers, advertise,
+  secret }))` states each value once and contributes the silo-to-silo mount
+  as a route. `providers` is a named field rather than a spread, so the
+  provider/config boundary is visible. `cluster()` exposes `.placement` for
+  the operational primitives (`identity`, `descriptor()`, `migrate(ref)`).
+
+  `createAppHandler(app)` in `@sigx/actors/node` mounts the public actor
+  endpoint **and** every plugin route on one connect-style handler. It
+  carries the `IncomingMessage`→`Request` bridge — header copying, body
+  buffering, streamed responses with backpressure, and disconnect→abort —
+  that every clustered deployment previously hand-wrote, because core's
+  adapter resolves symbols and nothing in sigx exposed a general
+  fetch-handler→Node bridge. Responses stream (NDJSON cross-host `watch()`
+  depends on it); request bodies are buffered under the endpoint's existing
+  byte cap.
+
+  `clusterPlacement`, `handleSiloRequest` and `matchesSiloRequest` remain
+  exported for hand-rolled mounts, and the entire cluster test suite passes
+  unchanged against the plugin.
+
 - **`defineActorApp` — the composition root and typed plugin model**
   (#41): `createSilo` takes exactly one `placement` and one `storage`, and
   `ActorPlacement.bind()` → `PlacementBindings` was the only lifecycle-hook

@@ -152,9 +152,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   entries: `.` (defineActor + isomorphic `actor()`), `./silo` (defineActorApp
   + the plugin model, createSilo, runtime, memoryStorage), `./server`
   (WinterCG wire endpoint), `./node`
-  (connect adapter, fileStorage, signal handlers), `./client` (build-swap
-  target + configureActors), `./cluster` (clusterPlacement, silo-to-silo
-  endpoint, cluster provider seams, memoryClusterHub), `./vite`
+  (createAppHandler + connect adapter, fileStorage, signal handlers),
+  `./client` (build-swap target + configureActors), `./cluster` (the
+  `cluster()` plugin, clusterPlacement, silo-to-silo endpoint, cluster
+  provider seams, memoryClusterHub), `./vite`
   (`sigxActors()` plugin).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) cluster
   providers for `@sigx/actors/cluster`: `redisCluster` (membership,

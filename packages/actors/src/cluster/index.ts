@@ -6,6 +6,7 @@
  * `handleSiloRequest` is the internal silo-to-silo endpoint mounted beside
  * the public one.
  */
+export { cluster, type ClusterPlugin, type ClusterPluginOptions } from './plugin';
 export {
     clusterPlacement,
     consistentHashPolicy,

@@ -5,3 +5,4 @@
  */
 export { fileStorage } from './file-storage';
 export { createActorHandler, attachSignalHandlers, type ActorHandlerOptions } from './handler';
+export { createAppHandler, type AppHandlerOptions } from './app-handler';

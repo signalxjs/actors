@@ -361,25 +361,47 @@ is also the storage identity).
 
 ## Clustering (multi-host)
 
-One silo per host, many hosts, one actor system — plug `clusterPlacement`
-into the placement seam and mount the internal silo-to-silo endpoint beside
-the public one:
+One silo per host, many hosts, one actor system — add the `cluster()`
+plugin:
 
 ```ts
-import { createSilo } from '@sigx/actors/silo';
-import { clusterPlacement, handleSiloRequest, matchesSiloRequest } from '@sigx/actors/cluster';
+import { defineActorApp } from '@sigx/actors/silo';
+import { cluster } from '@sigx/actors/cluster';
 import { redisCluster } from '@sigx/actors-redis';
 
-const placement = clusterPlacement({
-    ...redisCluster({ url: process.env.REDIS_URL }), // membership + directory
-    advertise: 'http://10.0.4.7:7311',               // this silo's peer-reachable origin
-    secret: process.env.SILO_SECRET                  // shared cluster secret
-});
-const silo = createSilo({ actors, storage, placement });
-
-// On the same listener, before the public mount:
-//   matchesSiloRequest(req) ? handleSiloRequest(req, { silo, placement, secret }) : …
+export const app = defineActorApp({ actors, storage }).use(
+    cluster({
+        providers: redisCluster({ url: process.env.REDIS_URL }), // membership + directory
+        advertise: 'http://10.0.4.7:7311',   // this silo's peer-reachable origin
+        secret: process.env.SILO_SECRET      // declared ONCE
+    })
+);
 ```
+
+The plugin contributes the internal silo-to-silo mount as a route, so
+`secret` and `internalBase` are stated once instead of being repeated at
+the endpoint, and an adapter that mounts `app.routes` picks up
+silo-to-silo traffic automatically:
+
+```ts
+import { createServer } from 'node:http';
+import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
+
+// ONE handler for both mounts — public endpoint and internal route.
+const server = createServer(createAppHandler(app));
+
+// Listen BEFORE starting: `app.start()` joins membership, and from that
+// moment peers may place actors here and call them. Bind first and there
+// is no window where this silo is routable but nothing is listening.
+await new Promise<void>((resolve) => server.listen(7311, resolve));
+const silo = await app.start();
+attachSignalHandlers(silo);
+```
+
+On other runtimes, route `app.routes` yourself — each is a
+`{ match(request), handle(request, silo) }` pair. The lower-level
+`clusterPlacement` / `handleSiloRequest` / `matchesSiloRequest` remain
+exported for hand-rolled mounts.
 
 How it works, in one paragraph: every activation writes a **claim** into a
 distributed directory (create-if-absent; released on deactivation), so a
@@ -417,9 +439,9 @@ store.
 | `@sigx/actors` | `defineActor`, `actor`, `useActor`, errors, types — isomorphic, light |
 | `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
-| `@sigx/actors/node` | `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
+| `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors` — the build-swap target |
-| `@sigx/actors/cluster` | `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
+| `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()` |
 
 ## Design notes & deliberate limits (v1)
