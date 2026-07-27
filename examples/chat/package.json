@@ -1,0 +1,22 @@
+{
+    "name": "chat-example",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "node dev-server.mjs",
+        "build": "vite build",
+        "start": "node server.mjs"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/server-renderer": "catalog:",
+        "sigx": "catalog:"
+    },
+    "devDependencies": {
+        "@sigx/vite": "catalog:",
+        "vite": "^8.0.3"
+    }
+}

@@ -175,7 +175,34 @@ describe('sigxActors() transform', () => {
             '/app/src/rogue.ts'
         );
         expect(result).toBeNull();
-        expect(client.warnings[0]).toMatch(/does not match the actor-module pattern/);
+        expect(client.warnings[0]).toMatch(/matches none of the actor-module patterns/);
+        // The message names the patterns actually in force, not a hard-coded
+        // "*.actor.ts" — the defaults include .actor.tsx as well.
+        expect(client.warnings[0]).toContain("**/*.actor.tsx");
+    });
+
+    it('does NOT warn about EXCLUDED files — a dependency is not yours to move', () => {
+        const plugin = makePlugin();
+        const client = makeCtx('client');
+        // `@sigx/actors`' own bundled dist mentions defineActor and is
+        // excluded by `**/dist/**`. Before the fix this warned on every
+        // client build of an app that links the package from a workspace,
+        // telling the developer to move code they do not own.
+        const result = plugin.transform!.call(
+            client,
+            `import { defineActor } from '@sigx/actors'; export const X = defineActor({});`,
+            '/repo/packages/actors/dist/seam-abc123.prod.js'
+        );
+        expect(result).toBeNull();
+        expect(client.warnings).toEqual([]);
+
+        const inNodeModules = plugin.transform!.call(
+            client,
+            `import { defineActor } from '@sigx/actors'; export const X = defineActor({});`,
+            '/app/node_modules/@sigx/actors/dist/index.js'
+        );
+        expect(inNodeModules).toBeNull();
+        expect(client.warnings).toEqual([]);
     });
 
     it('the requireGuards gate fails the client transform loudly', () => {

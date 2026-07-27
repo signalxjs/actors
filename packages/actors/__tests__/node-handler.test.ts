@@ -14,6 +14,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import { connect } from 'node:net';
 import { defineActor, type ActorStorage } from '@sigx/actors';
 import {
     defineActorApp,
@@ -124,6 +125,38 @@ describe('createAppHandler over real sockets', () => {
         // Still exactly one activation, on the owner.
         expect(nodes[0]!.app.silo!.stats().activations).toBe(0);
         expect(nodes[1]!.app.silo!.stats().perType['Counter']).toBe(1);
+    });
+
+    it('falls through on an unparseable request target instead of 500ing', async () => {
+        const nodes = await serveCluster(1, memoryStorage());
+        running = nodes;
+
+        // `req.url` is the RAW request target and Node neither normalizes
+        // nor validates it, so a client can send one that `new URL()`
+        // refuses. It cannot address an actor, so it belongs to whatever is
+        // mounted after us — a 500 here would also mean a document handler
+        // never got the chance to answer.
+        const raw = (target: string): Promise<string> =>
+            new Promise((resolve) => {
+                const socket = connect(nodes[0]!.port, '127.0.0.1', () => {
+                    socket.write(
+                        `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`
+                    );
+                });
+                let buffer = '';
+                socket.on('data', (chunk) => (buffer += chunk));
+                socket.on('close', () => resolve(buffer));
+            });
+
+        for (const target of ['//', 'http://[']) {
+            const response = await raw(target);
+            // 404 is the harness's own fallthrough, i.e. `next()` ran.
+            expect(response.split('\r\n')[0], target).toContain('404');
+        }
+
+        // …and the server is still alive afterwards.
+        const ok = await raw('/_sigx/actor');
+        expect(ok).toBeTruthy();
     });
 
     it('streams a cross-host watch() back through the bridge', async () => {

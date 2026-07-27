@@ -88,10 +88,23 @@ export function createAppHandler(
             // The seal is memoized, so this is free after the first call.
             const routes = app.routes;
             const headers = toHeaders(req);
-            const url = new URL(
-                req.url ?? '/',
-                req.headers.host ? `http://${req.headers.host}` : fallbackOrigin
-            );
+            // Not every request target parses. `//` and absolute forms like
+            // `http://[` both throw here, and `req.url` is the RAW target —
+            // Node does not normalize or validate it. An unparseable target
+            // cannot address an actor route or the actor mount, so it is a
+            // FALLTHROUGH, not our 500: whatever is mounted after us (a
+            // document handler) gets to answer, exactly as for any other
+            // path we do not own.
+            let url: URL;
+            try {
+                url = new URL(
+                    req.url ?? '/',
+                    req.headers.host ? `http://${req.headers.host}` : fallbackOrigin
+                );
+            } catch {
+                fallthrough();
+                return;
+            }
             if (routes.length > 0) {
                 // Headers included: `ActorRoute.match` receives a Request, so
                 // a route keying on auth or content-type must be able to see

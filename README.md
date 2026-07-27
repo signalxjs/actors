@@ -32,10 +32,22 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors-redis`](packages/actors-redis) | Redis cluster providers — membership, actor directory, reminder lease |
 
 Full documentation lives in the [package README](packages/actors/README.md).
-A runnable end-to-end demo lives in [`examples/counter`](examples/counter):
+Two runnable demos:
+
+[`examples/chat`](examples/chat) — actors inside a **real SignalX app**: SSR
+with `useActorState`, guards that run on both transports, a serverFn beside
+the actor endpoint, and hydration with no refetch.
 
 ```sh
 pnpm install && pnpm build
+pnpm --filter chat-example dev                                    # dev silo through Vite
+pnpm --filter chat-example build && pnpm --filter chat-example start
+```
+
+[`examples/counter`](examples/counter) — the same runtime with **no
+framework at all**: plain DOM, plus a 3-silo cluster demo.
+
+```sh
 pnpm --filter counter-example dev       # single-silo dev server
 pnpm --filter counter-example cluster   # 3-silo cluster demo over real HTTP
 ```

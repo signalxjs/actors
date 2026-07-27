@@ -97,6 +97,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
         options.include ?? DEFAULT_INCLUDE,
         options.exclude ?? DEFAULT_EXCLUDE
     );
+    /** Exclude patterns on their own — `filter()` cannot tell them apart. */
+    const isExcluded = createFilter(options.exclude ?? DEFAULT_EXCLUDE);
     const base = options.base ?? DEFAULT_BASE;
     const endpoint = options.endpoint ?? base;
     const requireGuards = options.requireGuards ?? true;
@@ -283,15 +285,32 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
             if (!filter(clean)) {
                 // defineActor outside *.actor.ts silently stays a server value
                 // AND leaks its implementation to the browser — warn early.
+                //
+                // NOT for EXCLUDED files. `filter()` answers false for two
+                // different things — "not an actor module" and "explicitly
+                // excluded" — and only the first is worth warning about.
+                // Conflating them meant `@sigx/actors`' own bundled dist
+                // (which mentions defineActor, and is excluded by
+                // `**/dist/**`) warned on every client build of an app that
+                // links the package from a workspace.
                 if (
+                    !isExcluded(clean) &&
                     isClientOut(this) &&
                     mayDefineActors(code, appHints()) &&
                     !isGeneratedClientModule(code)
                 ) {
+                    // Name the patterns actually in force: the default set
+                    // includes .actor.tsx too, and `options.include` can
+                    // replace both — so a hard-coded "*.actor.ts" tells a
+                    // developer using either of those they are wrong.
+                    const patterns = [options.include ?? DEFAULT_INCLUDE]
+                        .flat()
+                        .map((p) => String(p))
+                        .join(', ');
                     this.warn(
-                        `[sigx:actors] ${relPath(clean)} calls defineActor but does not match ` +
-                            `the actor-module pattern (*.actor.ts) — it will NOT be swapped for ` +
-                            `the browser. Move the definition into a *.actor.ts module.`
+                        `[sigx:actors] ${relPath(clean)} calls defineActor but matches none of ` +
+                            `the actor-module patterns (${patterns}) — it will NOT be swapped ` +
+                            `for the browser. Move the definition into an actor module.`
                     );
                 }
                 return null;

@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`examples/chat` — actors in a real SignalX app** (#60). It runs the
+  composition this repo had never actually run before: `sigx()` +
+  `sigxServer()` + `sigxActors()` in one Vite build, a guarded actor read
+  resolving during SSR, a serverFn beside the actor endpoint calling an
+  actor in-process, and a first paint that costs **one request — the
+  document**. Dev and production start the same app module.
+  `examples/counter` stays as the framework-free demo.
+
 - **Invalidation: a write refreshes the reads it staled** (#66).
   `useActorAction` now invalidates on success, so the manual
   `await read.refresh()` after every mutation is gone:
@@ -362,6 +370,23 @@
   opaque.
 
 ### Fixed
+
+- **`createAppHandler` no longer 500s on an unparseable request target**
+  (#60). `req.url` is the RAW target — Node neither normalizes nor
+  validates it — so `GET //` or an absolute form like `GET http://[` made
+  `new URL()` throw, and the handler answered 500. Such a target cannot
+  address an actor, so it is now a fallthrough: whatever is mounted after
+  the actor handler (a document handler, typically) gets to answer, exactly
+  as for any other path it does not own. Found by pointing a raw socket at
+  `examples/chat`.
+
+- **The "defineActor outside `*.actor.ts`" warning no longer fires for
+  excluded files** (#60). `filter()` answers `false` for two different
+  things — "not an actor module" and "explicitly excluded" — and the warning
+  treated them alike, so `@sigx/actors`' own bundled dist (which mentions
+  `defineActor`, and is excluded by `**/dist/**`) warned on every client
+  build of an app that links the package from a workspace, telling the
+  developer to go move code they do not own.
 
 - Subpath `types` conditions in the exports map now point at the emitted
   declaration files (`./dist/<entry>/index.d.ts`) — previously they named
