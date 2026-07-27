@@ -16,6 +16,7 @@ import { currentSilo } from './seam';
 import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './types';
 
 export { defineActor, isActorDefinition } from './define';
+export { actorKey, ACTOR_KEY_NS, type ActorKeyArg } from './actor-key';
 export { currentSilo, peekSilo } from './seam';
 export {
     ActorError,
@@ -44,11 +45,14 @@ export type {
     ActorDefinition,
     ActorDispatcher,
     ActorOptions,
+    ActorArgs,
     ActorPlacement,
     ActorPlacementStrategy,
+    ActorReadName,
     ActorRef,
     ActorReminders,
     ActorRemindersContext,
+    ActorResult,
     ActorStorage,
     ActorStorageRecord,
     AnyActorDefinition,
@@ -103,8 +107,9 @@ export function actor<D extends AnyActorDefinition>(def: D, key: string): ActorC
 
 /**
  * Component-flavored alias of {@link actor} — same client, named for call
- * sites inside components. (A reactive `useActorState` integration is a
- * later, separate design.)
+ * sites inside components. This is the IMPERATIVE escape hatch; for a
+ * reactive read that seeds through SSR and dedupes across components, use
+ * `useActorState` from `@sigx/actors/app`.
  */
 export function useActor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D> {
     return actor(def, key);

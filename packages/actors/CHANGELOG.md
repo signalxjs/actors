@@ -4,6 +4,46 @@
 
 ### Added
 
+- **`actorKey()`, `useActorState()`, `useActorAction()`** (#57): actor reads
+  and writes as component data.
+
+  ```ts
+  const total = useActorState(CartActor, id, 'total');
+  const add = useActorAction(CartActor, id, 'add');
+  return () => total.match({ ready: (n) => `${n} items`, pending: () => '…' });
+  ```
+
+  Built **on `useData`** rather than on core's `AsyncEngine` seam. That seam
+  is app-exclusive and `defaultAsyncEngine` exists so a pack can delegate
+  reads it has no policy for — that pack is `@sigx/cache`, and actors taking
+  the token would make `app.use(cachePlugin()).use(actorsPlugin())`
+  unresolvable. Building on `useData` also inherits the four things that
+  matter, at no cost: canonical tuple keys, the SSR provider, page-payload
+  restore, and **in-flight dedupe by key** — so ten components reading one
+  actor make one dispatch, not ten.
+
+  The payoff is SSR seeding with no new code: the read resolves during the
+  server render (in-process through the silo seam, guards and all),
+  serializes into the page under its canonical actor key, and the browser
+  restores it **without refetching**. There is an end-to-end test for exactly
+  that — render a document over a real silo, then mount over the emitted
+  payload with `fetch` spied, asserting zero dispatches and zero requests.
+
+  `actorKey()` is isomorphic and lives in the root entry, so server-side
+  declarations use the same function the browser does; a test pins that a
+  definition and a build-swapped client ref produce byte-identical tuples,
+  since SSR seeding, hydration, invalidation and live-subscription identity
+  all rest on it. It returns a **tuple**, not core's `__sigxKey` string:
+  `['@actor','Cart','c1']` prefix-matches every read of that cart, which is
+  the granularity invalidation needs and which a single-element key cannot
+  express.
+
+  Key arguments are constrained to JSON primitives **at compile time**, not
+  just checked at runtime: a method parameter that cannot canonicalize makes
+  that argument position a type error naming the rule. Optional primitives
+  stay usable, and `useActorAction` is deliberately unconstrained — a
+  mutation's arguments are not key material.
+
 - **Pluggable client transports** (#55): the client proxy no longer speaks
   HTTP itself — it delegates to an `ActorTransport` (`call` / `stream`, plus
   an optional `live()` push channel), so batching, a different auth scheme,

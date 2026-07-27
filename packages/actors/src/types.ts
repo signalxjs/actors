@@ -471,6 +471,46 @@ export type ActorClientWith<D> = ActorClient<D> & {
     with(options?: ActorCallOptions): ActorClient<D>;
 };
 
+/**
+ * The names of a definition's `methods` — what `useActorState` reads and
+ * `useActorAction` runs. Stream methods are deliberately excluded: they
+ * return an `AsyncIterable`, not a value a data key can hold.
+ */
+export type ActorReadName<D> = D extends ActorDefinition<infer _S, infer M, infer _St>
+    ? keyof M & string
+    : never;
+
+/** The parameters of one of a definition's methods. */
+export type ActorArgs<D, M extends PropertyKey> = D extends ActorDefinition<
+    infer _S,
+    infer T,
+    infer _St
+>
+    ? M extends keyof T
+        ? T[M] extends (...a: infer A) => unknown
+            ? A
+            : never
+        : never
+    : never;
+
+/** The awaited result of one of a definition's methods. */
+export type ActorResult<D, M extends PropertyKey> = D extends ActorDefinition<
+    infer _S,
+    infer T,
+    infer _St
+>
+    ? M extends keyof T
+        ? // Same `(...a: infer _A)` shape as ActorArgs on purpose: a
+          // `never[]` parameter list also matches (never is the bottom
+          // type, verified for both method-shorthand and arrow-property
+          // declarations), but having the two helpers read identically
+          // keeps the question from being asked again.
+          T[M] extends (...a: infer _A) => infer R
+            ? Awaited<R>
+            : never
+        : never
+    : never;
+
 // ---------------------------------------------------------------------------
 // The silo seam contract (what the wire layer and `actor()` consume)
 

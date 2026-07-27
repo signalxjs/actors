@@ -11,6 +11,12 @@
  * app uses any of this.
  */
 export { actorsPlugin, type ActorsPluginOptions } from './plugin';
+export {
+    useActorState,
+    type ActorCall,
+    type UseActorStateOptions
+} from './use-actor-state';
+export { useActorAction } from './use-actor-action';
 export { ACTORS_TOKEN, useActorsContext, type ActorsContext } from './context';
 export type {
     ActorCallInit,

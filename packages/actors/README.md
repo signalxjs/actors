@@ -409,14 +409,49 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
   the **caller** gets `ActorCallTimeoutError`; the turn itself always runs
   to completion.
 
-## SSR reads
+## Reads and writes in components
 
-`actor()` is isomorphic, so the standard `useData` recipe transfers actor
-state to the client like any other server data — no bespoke integration:
+`useActorState` reads an actor method as component data; `useActorAction`
+runs a mutation. Both come from `@sigx/actors/app`:
 
 ```ts
-const summary = useData(['cart', id], () => actor(CartActor, id).getSummary());
+import { useActorAction, useActorState } from '@sigx/actors/app';
+
+const Cart = component(({ props }) => {
+    const total = useActorState(CartActor, props.id, 'total');
+    const add = useActorAction(CartActor, props.id, 'add');
+    return () => (
+        <button disabled={add.loading} onClick={() => add.run(['apple'])}>
+            {total.match({ ready: (n) => `${n} items`, pending: () => '…' })}
+        </button>
+    );
+});
 ```
+
+Method names, argument types and results all come from the definition, so a
+rename surfaces at every call site. Pass a getter for a reactive key —
+`useActorState(CartActor, () => [selectedId(), 'total'])` — and a falsy
+return parks the read in `'idle'`.
+
+These are built on core's `useData`/`useAction`, which is where the
+behaviour comes from: an `AsyncState` with `match()`/`refresh()` that
+`errorScope` and `all()` already understand, and **in-flight dedupe by
+canonical key** — ten components reading one actor make one dispatch.
+
+**SSR seeding is free.** `actor()` is isomorphic, so during a server render
+the read dispatches in-process through the silo (guards and all), resolves
+into the markup, and serializes into the page under its canonical actor key.
+The browser restores it on mount **without refetching**.
+
+`actorKey(def, key, method?, ...args)` is that key, and is isomorphic too —
+a definition and a build-swapped client ref produce identical tuples. It is
+a tuple rather than a single string because the prefix relation is what
+invalidation needs: `['@actor','Cart','c1']` addresses every read of that
+cart, `['@actor','Cart']` every cart on the page.
+
+The raw `useData` recipe still works if you want it —
+`useData(['cart', id], () => actor(CartActor, id).getSummary())` — but it
+does not share keys with `useActorState`.
 
 ## Dev & HMR
 
@@ -567,12 +602,12 @@ store.
 
 | Entry | Contents |
 |---|---|
-| `@sigx/actors` | `defineActor`, `actor`, `useActor`, errors, types — isomorphic, light |
+| `@sigx/actors` | `defineActor`, `actor`, `useActor`, `actorKey`, errors, types — isomorphic, light |
 | `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |
-| `@sigx/actors/app` | `actorsPlugin()` — the sigx app integration (the only entry that imports `sigx`) |
+| `@sigx/actors/app` | `actorsPlugin()`, `useActorState`, `useActorAction` — the sigx app integration (the only entry that imports `sigx`) |
 | `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
 | `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |
