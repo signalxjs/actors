@@ -52,6 +52,9 @@ lerna-debug.log*
 # Testing
 coverage/
 
+# Runtime data (fileStorage of running examples/dev silos)
+.actors/
+
 # Misc
 .cache/
 .temp/
