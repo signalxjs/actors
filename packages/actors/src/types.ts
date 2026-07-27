@@ -85,6 +85,12 @@ export interface ActorPlacement {
      */
     bind?(local: ActorDispatcher, silo: Silo): PlacementBindings | void;
     start?(): void | Promise<void>;
+    /**
+     * Called by `silo.stop()` BEFORE the drain begins — a cluster placement
+     * announces `leaving` here so peers stop placing new actors on this
+     * silo while it hands its activations off.
+     */
+    beginStop?(): void | Promise<void>;
     stop?(): void | Promise<void>;
 }
 
@@ -123,6 +129,13 @@ export interface PlacementBindings {
      * Default: own every shard.
      */
     ownsReminderShard?(shard: string): boolean | Promise<boolean>;
+    /**
+     * The deactivation reason a graceful `silo.stop()` uses. A cluster
+     * placement answers `'migrated'`: the stop is a HANDOFF — claims are
+     * released as activations drain and peers re-place them — not the end
+     * of the actor system. Default `'shutdown'`.
+     */
+    stopReason?: Extract<DeactivationReason, 'shutdown' | 'migrated'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +363,12 @@ export interface Silo extends ActorDispatcher {
     start(): Promise<void>;
     /** Drain, flush, clear the seam. Default timeout 30s. */
     stop(opts?: { timeoutMs?: number }): Promise<void>;
+    /**
+     * Gracefully deactivate ONE activation (drain its mailbox, flush,
+     * forget). No-op if the actor isn't active here. `reason` defaults to
+     * `'explicit'`; a cluster rebalancer passes `'migrated'`.
+     */
+    deactivate(ref: ActorRef, reason?: DeactivationReason): Promise<void>;
     /** Deactivate every activation of one type (dev/HMR hook). */
     deactivateType(type: string): Promise<void>;
     stats(): SiloStats;

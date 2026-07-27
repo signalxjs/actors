@@ -8,6 +8,9 @@
  */
 export {
     clusterPlacement,
+    consistentHashPolicy,
+    preferLocalPolicy,
+    randomPlacementPolicy,
     type ClusterPlacement,
     type ClusterPlacementOptions
 } from './placement';

@@ -510,6 +510,30 @@ describe('placement bindings (the cluster seam)', () => {
     });
 });
 
+describe('placement stop lifecycle', () => {
+    it('a throwing beginStop never aborts the drain', async () => {
+        const events: string[] = [];
+        const { placement } = (() => {
+            const out: { local?: ActorDispatcher } = {};
+            const placement: ActorPlacement = {
+                dispatcherFor: () => out.local!,
+                bind(local) {
+                    out.local = local;
+                },
+                beginStop() {
+                    throw new Error('announcement store is down');
+                }
+            };
+            return { placement };
+        })();
+        const silo = createSilo({ actors: [counterActor(events)], placement, defaults: quiet });
+        await silo.actor(counterActor(), 'bs1').increment(1);
+        await silo.stop({ timeoutMs: 1000 }); // must not reject
+        expect(events).toContain('deactivate:bs1:shutdown');
+        expect(silo.stats().activations).toBe(0);
+    });
+});
+
 describe('storage conflict brand across module copies', () => {
     it('a foreign storage implementation throwing the brand still faults the activation', async () => {
         // Simulate a storage from another module graph: plain object error

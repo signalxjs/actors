@@ -10,11 +10,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { actor, defineActor, isActorError, type ActorContext } from '@sigx/actors';
 import {
     clusterPlacement,
+    consistentHashPolicy,
     decodeEnvelope,
     encodeEnvelope,
     memoryClusterHub,
+    preferLocalPolicy,
     SILO_CALL_HEADER,
-    type ClusterMembership
+    type ClusterMembership,
+    type SiloDescriptor
 } from '@sigx/actors/cluster';
 import { createSilo } from '@sigx/actors/silo';
 import { __actorRef, configureActors } from '@sigx/actors/client';
@@ -572,5 +575,139 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         const outcome = (await call) as { kind: string; message: string };
         expect(outcome.kind).toBe('deadlock');
         expect(outcome.message).toMatch(/mid-turn|moved mid-call/);
+    });
+});
+
+describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
+    it('a rolling deploy hands actors off: zero failed calls, migrated reasons, state intact', async () => {
+        const events: string[] = [];
+        const cluster = await createCluster(2, {
+            actors: [counterActor(events)],
+            policy: selfPolicy,
+            retryBackoffMs: 10
+        });
+        running = cluster;
+        const def = counterActor();
+        const keys = ['h1', 'h2', 'h3'];
+        for (const key of keys) await cluster.silos[0]!.actor(def, key).increment(1);
+
+        // Stop silo 0 while traffic keeps arriving through silo 1.
+        const stopping = cluster.silos[0]!.stop({ timeoutMs: 2000 });
+        const results = await Promise.all(
+            keys.map((key) => cluster.silos[1]!.actor(def, key).increment(1))
+        );
+        await stopping;
+
+        expect(results.sort()).toEqual([2, 2, 2]); // every call succeeded, state intact
+        for (const key of keys) {
+            expect(events).toContain(`deactivate:${key}:migrated`);
+            expect(events.filter((e) => e === `activate:${key}`)).toHaveLength(2);
+        }
+        expect(cluster.silos[1]!.stats().activations).toBe(3);
+    });
+
+    it('the leaver announces `leaving` BEFORE the drain, so peers stop placing there', async () => {
+        const slow = defineActor({
+            type: 'Slow',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => ({
+                async nap(ms: number) {
+                    await new Promise((r) => setTimeout(r, ms));
+                    return 'rested';
+                }
+            })
+        });
+        const cluster = await createCluster(2, { actors: [slow], policy: selfPolicy });
+        running = cluster;
+        const viewer = cluster.hub.providers().membership; // shared hub view
+        const leaverId = cluster.placements[0]!.identity.siloId;
+
+        // A turn in flight holds the drain open…
+        const napping = cluster.silos[0]!.actor(slow, 'z').nap(150);
+        await new Promise((r) => setTimeout(r, 20));
+        const stopping = cluster.silos[0]!.stop({ timeoutMs: 2000 });
+
+        // …and while it drains, the view already says leaving — peers'
+        // placement policies (which filter on 'active') skip it.
+        await vi.waitFor(() => {
+            const member = viewer.view().silos.find((m) => m.siloId === leaverId);
+            expect(member?.status).toBe('leaving');
+        });
+        await expect(napping).resolves.toBe('rested'); // in-flight turn completed
+        await stopping;
+        // Fully left after the drain.
+        expect(viewer.view().silos.find((m) => m.siloId === leaverId)).toBeUndefined();
+    });
+
+    it('consistentHashPolicy: all silos agree on the target; keys spread across silos', () => {
+        const silos: SiloDescriptor[] = ['s.aaa', 's.bbb', 's.ccc'].map((siloId, i) => ({
+            siloId,
+            epoch: 1,
+            address: `http://${i}.test`,
+            status: 'active' as const
+        }));
+        const policy = consistentHashPolicy();
+        const perSilo = new Map<string, number>();
+        for (let k = 0; k < 100; k++) {
+            const ref = { type: 'Counter', key: `k${k}` };
+            const targets = silos.map(
+                (self) => policy.choose(ref, { version: 1, silos }, self).siloId
+            );
+            // Every silo picks the SAME owner, whatever its own identity.
+            expect(new Set(targets).size).toBe(1);
+            perSilo.set(targets[0]!, (perSilo.get(targets[0]!) ?? 0) + 1);
+        }
+        // …and the keys spread over all three.
+        expect(perSilo.size).toBe(3);
+        for (const count of perSilo.values()) expect(count).toBeGreaterThan(10);
+    });
+
+    it('typePolicies pin selected types local while the default policy handles the rest', async () => {
+        const sticky = defineActor({
+            type: 'Sticky',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => ({
+                async ping() {
+                    return 'pong';
+                }
+            })
+        });
+        const cluster = await createCluster(2, {
+            actors: [sticky],
+            typePolicies: { Sticky: preferLocalPolicy() }
+        });
+        running = cluster;
+        await cluster.silos[1]!.actor(sticky, 'a').ping();
+        await cluster.silos[1]!.actor(sticky, 'b').ping();
+        expect(cluster.silos[1]!.stats().perType['Sticky']).toBe(2);
+        expect(cluster.silos[0]!.stats().activations).toBe(0);
+    });
+
+    it('migrate() releases the claim and the next call re-places with state intact', async () => {
+        const events: string[] = [];
+        const cluster = await createCluster(2, {
+            actors: [counterActor(events)],
+            policy: selfPolicy
+        });
+        running = cluster;
+        const def = counterActor();
+        const ref = { type: 'Counter', key: 'mover' };
+        await cluster.silos[0]!.actor(def, 'mover').increment(5);
+
+        await cluster.placements[0]!.migrate(ref);
+        expect(events).toContain('deactivate:mover:migrated');
+        expect(cluster.silos[0]!.stats().activations).toBe(0);
+        const key = ['Counter', 'mover'].join(String.fromCharCode(0));
+        await expect(cluster.hub.directory.lookup(key)).resolves.toBeNull();
+
+        // Re-placed where the next call lands (selfPolicy → silo 1).
+        await expect(cluster.silos[1]!.actor(def, 'mover').increment(1)).resolves.toBe(6);
+        expect(cluster.silos[1]!.stats().perType['Counter']).toBe(1);
+
+        // migrate() on a non-owner is a harmless no-op.
+        await cluster.placements[0]!.migrate(ref);
+        await expect(cluster.silos[1]!.actor(def, 'mover').get()).resolves.toBe(6);
     });
 });

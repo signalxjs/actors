@@ -265,20 +265,22 @@ export class LocalHost implements ActorDispatcher {
     }
 
     /**
-     * Shutdown: close the front door, drain everyone (reason 'shutdown'),
-     * force-drop stragglers at the deadline.
+     * Shutdown: close the front door, drain everyone, force-drop
+     * stragglers at the deadline. `reason` is `'shutdown'` for a plain
+     * stop and `'migrated'` when a cluster placement hands its
+     * activations off (peers re-place them).
      */
-    async stopAll(timeoutMs: number): Promise<void> {
+    async stopAll(timeoutMs: number, reason: DeactivationReason = 'shutdown'): Promise<void> {
         this.#shuttingDown = true;
         const waits: Promise<void>[] = [];
         for (const [, slot] of this.#directory) {
             if (slot.phase === 'active') {
-                waits.push(this.deactivate(slot.activation.ref, 'shutdown'));
+                waits.push(this.deactivate(slot.activation.ref, reason));
             } else if (slot.phase === 'deactivating') {
                 waits.push(slot.drained);
             } else {
                 waits.push(slot.promise.then(
-                    (a) => this.deactivate(a.ref, 'shutdown'),
+                    (a) => this.deactivate(a.ref, reason),
                     () => {}
                 ));
             }

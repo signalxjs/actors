@@ -246,7 +246,13 @@ costs a rejected save and a fault-and-reload, never corrupted state.
 Guards still run once, at the public edge — silo-to-silo hops are
 intra-system, authenticated by the shared `secret` (run mTLS/VPC between
 hosts; transport encryption is deliberately out of scope). Streams cross
-hops with cancellation and keep-alive release intact. For tests,
+hops with cancellation and keep-alive release intact. Placement is
+pluggable per cluster and per type (`policy`, `typePolicies`:
+`consistentHashPolicy()`, `preferLocalPolicy()`, uniform random by
+default), a graceful `silo.stop()` hands actors off (`'migrated'`
+deactivations, claims released as they drain, callers retry through
+routing — rolling deploys drop zero calls), and
+`placement.migrate(ref)` moves one actor explicitly. For tests,
 `memoryClusterHub()` gives an N-silo in-process cluster with no external
 store.
 

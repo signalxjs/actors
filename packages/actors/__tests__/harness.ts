@@ -59,6 +59,7 @@ export interface ClusterOptions {
     storage?: ActorStorage;
     defaults?: SiloDefaults;
     policy?: PlacementPolicy;
+    typePolicies?: Record<string, PlacementPolicy>;
     secret?: string;
     retries?: number;
     retryBackoffMs?: number;
@@ -118,6 +119,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             secret,
             fetch: pipeFetch,
             ...(options.policy ? { policy: options.policy } : {}),
+            ...(options.typePolicies ? { typePolicies: options.typePolicies } : {}),
             ...(options.retries !== undefined ? { retries: options.retries } : {}),
             ...(options.retryBackoffMs !== undefined
                 ? { retryBackoffMs: options.retryBackoffMs }

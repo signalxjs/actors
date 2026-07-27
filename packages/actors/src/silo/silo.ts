@@ -16,6 +16,7 @@ import type {
     ActorRef,
     ActorStorage,
     AnyActorDefinition,
+    DeactivationReason,
     PlacementBindings,
     Silo,
     SiloStats
@@ -356,9 +357,26 @@ class SiloImpl implements Silo {
         if (this.#sweeper) clearInterval(this.#sweeper);
         this.#sweeper = null;
         this.#reminders.stop();
-        await this.#local.stopAll(opts?.timeoutMs ?? 30_000);
+        // Announce the departure BEFORE draining, so cluster peers stop
+        // placing new actors here while activations hand off. Best-effort:
+        // a failed announcement must never abort the drain itself.
+        try {
+            await this.#placement.beginStop?.();
+        } catch (error) {
+            if (__DEV__) {
+                console.error('[sigx actors] placement.beginStop() failed:', error);
+            }
+        }
+        await this.#local.stopAll(
+            opts?.timeoutMs ?? 30_000,
+            this.#bindings?.stopReason ?? 'shutdown'
+        );
         await this.#placement.stop?.();
         clearSilo(this);
+    }
+
+    deactivate(ref: ActorRef, reason?: DeactivationReason): Promise<void> {
+        return this.#local.deactivate(ref, reason ?? 'explicit');
     }
 
     deactivateType(type: string): Promise<void> {

@@ -48,6 +48,8 @@ export interface ClusterPlacementOptions extends ClusterProviders {
     fetch?: typeof globalThis.fetch;
     /** Placement policy for NEW activations. Default: uniform random. */
     policy?: PlacementPolicy;
+    /** Per-actor-type policy overrides (e.g. pin hot session types local). */
+    typePolicies?: Record<string, PlacementPolicy>;
     /** Wrong-host / unreachable re-resolve attempts. Default 3. */
     retries?: number;
     /**
@@ -66,6 +68,14 @@ export interface ClusterPlacement extends ActorPlacement {
     descriptor(): SiloDescriptor;
     /** Whether THIS silo owns a reminder shard under the current view. */
     ownsReminderShard(shard: string): boolean;
+    /**
+     * Explicit rebalance primitive: gracefully deactivate ONE locally-owned
+     * activation with reason `'migrated'` and release its claim — the next
+     * call re-places it under the current policy. No-op if the actor is
+     * not active on this silo. Automatic load-driven rebalancing composes
+     * on top of this.
+     */
+    migrate(ref: ActorRef): Promise<void>;
     /**
      * Inbound side, consumed by `handleSiloRequest`: dispatch LOCALLY or
      * throw wrong-host — never forward (redirect-not-proxy).
@@ -106,6 +116,50 @@ const randomPolicy: PlacementPolicy = {
         return active[Math.floor(Math.random() * active.length)]!;
     }
 };
+
+/** Uniform random over active silos (the default). Exported for
+ *  `typePolicies` maps that override only some types. */
+export function randomPlacementPolicy(): PlacementPolicy {
+    return randomPolicy;
+}
+
+/**
+ * Rendezvous (highest-random-weight) placement: every silo deterministically
+ * picks the SAME target for a new key, so racing activations agree without
+ * a directory round-trip and misses stay rare. The directory remains the
+ * arbiter; membership changes only re-home keys that hashed to the departed
+ * silo.
+ */
+export function consistentHashPolicy(): PlacementPolicy {
+    return {
+        choose(ref, view, self) {
+            const active = view.silos.filter((s) => s.status === 'active');
+            if (active.length === 0) return self;
+            const id = actorId(ref);
+            let best = active[0]!;
+            let bestScore = -1;
+            for (const s of active) {
+                const score = fnv1a(`${id}|${s.siloId}`);
+                if (
+                    score > bestScore ||
+                    (score === bestScore && s.siloId < best.siloId)
+                ) {
+                    bestScore = score;
+                    best = s;
+                }
+            }
+            return best;
+        }
+    };
+}
+
+/** Pin new activations to the calling silo — sticky-LB-friendly for hot
+ *  session-shaped types. */
+export function preferLocalPolicy(): PlacementPolicy {
+    return {
+        choose: (_ref, _view, self) => self
+    };
+}
 
 export function clusterPlacement(options: ClusterPlacementOptions): ClusterPlacement {
     return new ClusterPlacementImpl(options);
@@ -202,8 +256,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 await this.#options.directory.release(id, entry);
             },
             strictChainPresence: true,
-            ownsReminderShard: (shard) => this.ownsReminderShard(shard)
+            ownsReminderShard: (shard) => this.ownsReminderShard(shard),
+            stopReason: 'migrated'
         };
+    }
+
+    async migrate(ref: ActorRef): Promise<void> {
+        if (!this.#claimed.has(actorId(ref))) return;
+        await this.#silo?.deactivate(ref, 'migrated');
     }
 
     /**
@@ -245,17 +305,23 @@ class ClusterPlacementImpl implements ClusterPlacement {
         );
     }
 
-    async stop(): Promise<void> {
-        // silo.stop() has already drained activations (releasing claims)
-        // before placement.stop() runs.
-        for (const unsub of this.#unsubscribe) unsub();
-        this.#unsubscribe = [];
+    async beginStop(): Promise<void> {
+        // Runs BEFORE the drain: peers must stop placing new actors here
+        // while activations hand off (their policies filter on 'active').
         this.#status = 'leaving';
         try {
             await this.#options.membership.setStatus('leaving');
         } catch {
             // Leaving is best-effort; the heartbeat TTL is the backstop.
         }
+    }
+
+    async stop(): Promise<void> {
+        // silo.stop() has already drained activations (releasing claims,
+        // reason 'migrated') between beginStop() and here.
+        for (const unsub of this.#unsubscribe) unsub();
+        this.#unsubscribe = [];
+        this.#status = 'leaving';
         await this.#options.membership.leave();
     }
 
@@ -396,7 +462,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
         const view = this.#options.membership.view();
         if (view.silos.length === 0) return 'local'; // not started / solo
-        const chosen = this.#policy.choose(ref, view, this.descriptor());
+        const policy = this.#options.typePolicies?.[ref.type] ?? this.#policy;
+        const chosen = policy.choose(ref, view, this.descriptor());
         // Sticky: concurrent activations of one key must agree on a target
         // so racing dispatches join one claim instead of splitting.
         this.#cacheRoute(id, chosen.siloId);
@@ -405,10 +472,16 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
     /**
      * Consume a routing failure. Returns how to retry: wrong-host retries
-     * immediately (the redirect told us where), unreachable retries after
-     * a backoff (the peer may be mid-blip), null = not ours, rethrow.
+     * immediately (the redirect told us where); unreachable and a REMOTE
+     * peer's shutdown retry after a backoff (a blip, or a rolling deploy
+     * releasing its claims as it drains); null = not ours, rethrow. A
+     * LOCAL shutdown is never retried — this silo really is stopping.
      */
-    async #noteFailure(id: string, error: unknown): Promise<'wrong-host' | 'unreachable' | null> {
+    async #noteFailure(
+        id: string,
+        error: unknown,
+        remote: boolean
+    ): Promise<'wrong-host' | 'unreachable' | 'draining' | null> {
         if (isActorError(error) && error.kind === 'wrong-host') {
             this.#routeCache.delete(id);
             const owner = (error as ActorWrongHostError).owner;
@@ -425,6 +498,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
             }
             await this.#options.membership.refresh();
             return 'unreachable';
+        }
+        if (remote && isActorError(error) && error.kind === 'silo-shutdown') {
+            // The owner is handing off: its claim releases as the actor
+            // drains — don't evict, just re-resolve after a backoff (the
+            // refreshed view excludes the leaver from placement).
+            this.#routeCache.delete(id);
+            await this.#options.membership.refresh();
+            return 'draining';
         }
         return null;
     }
@@ -453,9 +534,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     .dispatcherFor(target)
                     .dispatch(ref, method, args, call);
             } catch (error) {
-                const failure = await this.#noteFailure(id, error);
+                const failure = await this.#noteFailure(id, error, target !== 'local');
                 if (!failure) throw error;
-                if (failure === 'unreachable' && attempt < this.#retries) {
+                if (failure !== 'wrong-host' && attempt < this.#retries) {
                     await this.#backoff(attempt);
                 }
                 lastError = error;
@@ -476,8 +557,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
     ): AsyncIterable<unknown> {
         const id = actorId(ref);
         const resolveTarget = (): Promise<'local' | SiloDescriptor> => this.#resolveTarget(ref);
-        const noteFailure = (error: unknown): Promise<'wrong-host' | 'unreachable' | null> =>
-            this.#noteFailure(id, error);
+        const noteFailure = (
+            error: unknown,
+            remote: boolean
+        ): Promise<'wrong-host' | 'unreachable' | 'draining' | null> =>
+            this.#noteFailure(id, error, remote);
         const backoff = (attempt: number): Promise<void> => this.#backoff(attempt);
         const local = this.#local!;
         const transport = this.#transport;
@@ -500,9 +584,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 try {
                     first = await iterator.next();
                 } catch (error) {
-                    const failure = await noteFailure(error);
+                    const failure = await noteFailure(error, target !== 'local');
                     if (!failure) throw error;
-                    if (failure === 'unreachable' && attempt < retries) await backoff(attempt);
+                    if (failure !== 'wrong-host' && attempt < retries) await backoff(attempt);
                     lastError = error;
                     continue;
                 }

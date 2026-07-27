@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Clustering milestone 4 — rebalancing & graceful handoff** (#20):
+  `silo.stop()` on a cluster silo is now a HANDOFF — it announces
+  `leaving` before draining (peers immediately stop placing new actors
+  there), deactivates with the `'migrated'` reason, and releases each
+  directory claim as its activation drains; callers hitting the leaver
+  retry through routing (a remote `silo-shutdown` is retryable with
+  backoff) so rolling deploys drop zero calls. New placement policies
+  `consistentHashPolicy()` (all silos deterministically agree on a new
+  key's target) and `preferLocalPolicy()`, a `typePolicies` per-actor-type
+  override map on `clusterPlacement`, `Silo.deactivate(ref, reason?)`, and
+  the explicit rebalance primitive `ClusterPlacement.migrate(ref)`.
+
 - **Clustering milestone 3 — sharded reminders** (#20): the reminder table
   is split into 16 fixed hash shards (`$sigx:reminders/p0..p15`, FNV-1a of
   the actorId — pinned forever); a silo ticks only the shards it owns.
