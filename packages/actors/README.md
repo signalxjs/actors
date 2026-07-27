@@ -441,6 +441,55 @@ independently of `configureServerFn`.
 Renaming an actor's `type` or its methods is a **wire break** (and `type`
 is also the storage identity).
 
+### Transports are pluggable, on both sides
+
+The client proxy never speaks HTTP itself — it delegates to an
+`ActorTransport`, so batching, a different auth scheme, or a protocol other
+than fetch drops in without any call site changing:
+
+```ts
+import { configureActors, fetchTransport } from '@sigx/actors/client';
+
+configureActors({ endpoint: '/actors', headers: () => ({ authorization: token() }) });
+// …sugar for fetchTransport(config). Or supply the whole seam:
+configureActors({
+    name: 'batching',
+    call: (symbol, args, init) => /* … */,
+    stream: (symbol, args, init) => /* … */,
+    live: () => /* optional push channel */
+});
+```
+
+`fetchTransport()` is the default and implements exactly the wire contract
+above. `init.endpoint` carries the endpoint the build baked into the ref, so
+`configureActors({ headers })` can override headers alone without restating
+where the server is.
+
+**Server-side**, a transport is a plugin: `PluginRegistry.route()` lets one
+contribute its own mount, which `createAppHandler` / `createFetchHandler`
+serve in dev and prod alike. (One current limit: `ActorRoute.handle` returns
+a `Response`, which cannot express a Node WebSocket upgrade — that needs the
+raw socket. Workers can express it.)
+
+### The app plugin
+
+```ts
+import { actorsPlugin } from '@sigx/actors/app';
+app.use(actorsPlugin({ transport: { endpoint: '/actors' } }));
+```
+
+`actorsPlugin()` exists for a reason `configureActors()` alone cannot cover:
+a **server app installs per request**, and the transport seam is
+page-global, so a server writing to it would let one request's config bleed
+into another's concurrent render. The plugin installs a transport on live
+clients only, tears it down on `app.unmount()`, and provides the per-app
+context the hooks resolve through. It is optional — `actor()` works without
+it, because the build bakes an endpoint into every client ref.
+
+It deliberately does **not** register codec type handlers: the actor wire
+reads core's `__SIGX_SERVERFN_CODEC__` seam directly, so one
+`serverPlugin({ types })` already covers both wires.
+
 ## Clustering (multi-host)
 
 One silo per host, many hosts, one actor system — add the `cluster()`
@@ -522,7 +571,8 @@ store.
 | `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
-| `@sigx/actors/client` | `__actorRef`, `configureActors` — the build-swap target |
+| `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |
+| `@sigx/actors/app` | `actorsPlugin()` — the sigx app integration (the only entry that imports `sigx`) |
 | `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
 | `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |

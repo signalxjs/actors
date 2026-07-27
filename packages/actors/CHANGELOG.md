@@ -4,6 +4,40 @@
 
 ### Added
 
+- **Pluggable client transports** (#55): the client proxy no longer speaks
+  HTTP itself — it delegates to an `ActorTransport` (`call` / `stream`, plus
+  an optional `live()` push channel), so batching, a different auth scheme,
+  or a protocol other than fetch drops in without any call site changing.
+  `fetchTransport()` is the default and implements exactly the wire contract
+  that shipped before; `configureActors()` now takes either a full transport
+  or — unchanged, the common case — a config object as sugar for
+  `fetchTransport(config)`. Per-call `init.endpoint` carries the endpoint the
+  build baked into the ref, so `configureActors({ headers })` still overrides
+  headers alone without restating where the server is.
+
+  Server-side, transports were already pluggable: a plugin contributes a
+  mount through `PluginRegistry.route()`. One limit worth naming:
+  `ActorRoute.handle` returns a `Response` and so cannot express a Node
+  WebSocket upgrade, which needs the raw socket (Workers can express it).
+
+- **`@sigx/actors/app` and `actorsPlugin()`** (#55): the sigx app
+  integration, and the only entry that imports `sigx` — the isomorphic root,
+  `./client`, `./silo`, `./server`, `./node` and `./cluster` stay free of the
+  framework, so a headless Worker deployment never drags the runtime in.
+  `sigx` and `@sigx/runtime-core` are therefore **optional** peer
+  dependencies.
+
+  The plugin exists for something `configureActors()` cannot cover: a server
+  app installs per request, and the transport seam is page-global, so a
+  server writing to it would let one request's config bleed into another's
+  concurrent render. It installs a transport on live clients only (matching
+  `serverPlugin`'s posture exactly), tears it down on `app.unmount()` without
+  stripping a transport another app has since installed, and provides the
+  per-app context the coming hooks resolve through. It is optional — `actor()`
+  works without it. It deliberately does not register codec type handlers:
+  the actor wire reads `__SIGX_SERVERFN_CODEC__` directly, so one
+  `serverPlugin({ types })` already covers both wires.
+
 - **Pluggable durable reminders** (#50): `ReminderService` was constructed
   directly by `createSilo`, so its sharded design was the only one
   possible. Reminders are now an `ActorReminders` seam
@@ -236,6 +270,11 @@
   deactivate-through-storage.
 
 ### Changed
+
+- `ActorTransport` is now the transport **interface**; the old
+  `{ endpoint, headers, fetch }` config type is `ActorTransportConfig`, and
+  `ActorClientCallOptions` is `ActorCallInit`. `configureActors({ … })` call
+  sites are unaffected.
 
 - Reminder-table mutations now reload-and-reapply on a storage etag
   conflict (up to 3 attempts) instead of failing — the table legitimately

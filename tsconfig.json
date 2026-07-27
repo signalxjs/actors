@@ -16,6 +16,7 @@
       "@sigx/actors/server": ["./packages/actors/src/server/index.ts"],
       "@sigx/actors/node": ["./packages/actors/src/node/index.ts"],
       "@sigx/actors/client": ["./packages/actors/src/client/index.ts"],
+      "@sigx/actors/app": ["./packages/actors/src/app/index.ts"],
       "@sigx/actors/cluster": ["./packages/actors/src/cluster/index.ts"],
       "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"],
       "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"]

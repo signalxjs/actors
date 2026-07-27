@@ -36,6 +36,12 @@
             "production": "./dist/client.prod.js",
             "import": "./dist/client.js"
         },
+        "./app": {
+            "types": "./dist/app/index.d.ts",
+            "development": "./dist/app.js",
+            "production": "./dist/app.prod.js",
+            "import": "./dist/app.js"
+        },
         "./cluster": {
             "types": "./dist/cluster/index.d.ts",
             "development": "./dist/cluster.js",
@@ -95,13 +101,21 @@
     },
     "peerDependencies": {
         "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "@sigx/vite": "catalog:",
+        "sigx": "catalog:",
         "vite": ">=6"
     },
     "peerDependenciesMeta": {
         "@sigx/vite": {
+            "optional": true
+        },
+        "@sigx/runtime-core": {
+            "optional": true
+        },
+        "sigx": {
             "optional": true
         },
         "vite": {
