@@ -58,7 +58,14 @@ function resolverFor(silo: Silo): (symbol: string) => unknown | Promise<unknown>
 /**
  * symbol (`Cart#addItem`) → synthesized wrapped function, memoized per
  * method. Exposed for hand-rolled mounts (custom bases, other adapters).
- * Unknown type or malformed symbol → null → the endpoint's structured 404.
+ *
+ * An unknown type or malformed symbol resolves to a wrapper that THROWS a
+ * 404 `ServerFnError` (see `notFound`) rather than to `null`. Returning
+ * `null` would hand the miss to core's generic resolver failure, which
+ * answers "Unknown server function" — the wrong noun on the actor mount.
+ * Callers get the same status and envelope either way, but a hand-rolled
+ * mount that tests the result for `null` to fall through to another handler
+ * must instead compare against its own registry first.
  */
 export function createActorResolver(silo: Silo): (symbol: string) => unknown | Promise<unknown> {
     const cache = new Map<string, unknown>();
@@ -66,14 +73,14 @@ export function createActorResolver(silo: Silo): (symbol: string) => unknown | P
         const hit = cache.get(symbol);
         if (hit !== undefined) return hit;
         const hash = symbol.lastIndexOf('#');
-        if (hash <= 0 || hash === symbol.length - 1) return null;
+        if (hash <= 0 || hash === symbol.length - 1) return notFound(symbol);
         const type = symbol.slice(0, hash);
         const method = symbol.slice(hash + 1);
         const def = silo.definition(type);
-        if (!def) return null;
+        if (!def) return notFound(symbol, type);
         if (isPromise(def)) {
             return def.then((resolved) => {
-                if (!resolved) return null;
+                if (!resolved) return notFound(symbol, type);
                 const wrapped = synthesize(silo, resolved, symbol, method);
                 cache.set(symbol, wrapped);
                 return wrapped;
@@ -87,6 +94,32 @@ export function createActorResolver(silo: Silo): (symbol: string) => unknown | P
 
 function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
     return typeof (value as { then?: unknown })?.then === 'function';
+}
+
+/**
+ * A resolved-but-always-throwing wrapper, rather than `null`. Returning
+ * `null` hands the request to core's generic miss, which answers "Unknown
+ * server function" — the wrong noun on the actor mount, and the first thing
+ * a developer sees when a client and server build fall out of sync. The
+ * status and envelope shape are identical either way.
+ *
+ * Deliberately NOT memoized: `silo.definition()` is lazy behind the
+ * `virtual:sigx-actors` registry, so a type that misses now can resolve
+ * after an HMR edit adds it.
+ */
+function notFound(symbol: string, type?: string): unknown {
+    const detail = type
+        ? `no actor type "${type}" is registered with this silo — is it registered, ` +
+          `and are the client and server builds from the same deploy?`
+        : `expected a "Type#method" symbol.`;
+    return {
+        __sigxName: symbol,
+        __sigxFn: () => {
+            throw new ServerFnError(404, `Unknown actor "${symbol}" — ${detail}`, {
+                kind: 'method-not-found'
+            });
+        }
+    };
 }
 
 function synthesize(

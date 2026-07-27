@@ -352,8 +352,7 @@ clients get them as `AsyncIterable` over NDJSON:
 ```ts
 streams: (ctx) => ({
     async *watch() {
-        yield ctx.snapshot();
-        for await (const state of ctx.changes()) yield state;
+        yield* ctx.changes({ initial: true });
     }
 })
 // client: for await (const s of actor(CartActor, id).watch()) render(s);
@@ -362,10 +361,17 @@ streams: (ctx) => ({
 Stream bodies are **observers, not turns**: they run detached from the
 mailbox (a stream that waited on its own actor's next turn while holding the
 mailbox would self-deadlock), so they must read `ctx.snapshot()` /
-`ctx.changes()` — never mutate live state. An open stream keeps the
-activation alive; consumer disconnect runs the generator's `finally`.
-`ctx.changes()` yields a detached snapshot after every mutating turn
-(bounded buffer, drop-oldest).
+`ctx.changes()` — never mutate live state. Dev builds warn when a stream
+body reads live `ctx.state`. An open stream keeps the activation alive;
+consumer disconnect runs the generator's `finally`. `ctx.changes()` yields a
+detached snapshot after every mutating turn (bounded buffer, drop-oldest).
+
+- **Use `changes({ initial: true })` to seed**, not a `yield ctx.snapshot()`
+  prologue. The prologue subscribes only once the consumer resumes past that
+  first yield, so every mutation in between is lost — and the snapshot it
+  yielded is already stale. `{ initial: true }` queues the current snapshot
+  in the same synchronous call that registers the subscription, leaving no
+  gap.
 
 - The `streams:` factory must not touch `ctx` while *constructing* the table
   (its method names are read at definition time); inside generator bodies,

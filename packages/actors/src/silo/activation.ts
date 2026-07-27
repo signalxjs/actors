@@ -101,6 +101,7 @@ export class Activation {
     #deactivateRequested = false;
     #keepAlive = 0;
     #warnedDroppedChanges = false;
+    #warnedStreamState = false;
     lastActivityMs = Date.now();
 
     private constructor(
@@ -140,7 +141,16 @@ export class Activation {
             a.#scope.run(() => {
                 a.#methods = opts.methods(a.#ctx) as Record<string, AnyFn>;
                 if (opts.streams) {
-                    a.#streams = opts.streams(a.#ctx) as Record<string, AnyStreamFn>;
+                    // Stream bodies get a DERIVED context whose `state` warns:
+                    // bracketing the dispatch call sites cannot work, because
+                    // an async generator's return() awaits before resuming, so
+                    // a `finally` reading ctx.state runs in a later microtask.
+                    // Handing the factory its own context makes the guard exact
+                    // and timing-independent — and no mailbox turn can trip it,
+                    // since `methods` still gets the real ctx.
+                    a.#streams = opts.streams(
+                        __DEV__ ? a.#streamContext() : a.#ctx
+                    ) as Record<string, AnyStreamFn>;
                 }
             });
             if (opts.persistence && typeof opts.persistence === 'object') {
@@ -532,6 +542,36 @@ export class Activation {
         return base;
     }
 
+    /**
+     * Dev-only context for `streams:` bodies: the real context with `state`
+     * shadowed by a warning accessor. Stream bodies run detached from the
+     * mailbox, so a turn can mutate underneath a live read — they must use
+     * `snapshot()` / `changes()`. Everything else is inherited unchanged
+     * (the built-in accessors close over `self`, not `this`).
+     */
+    #streamContext(): ActorContext<object> {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const self = this;
+        const derived = Object.create(this.#ctx) as ActorContext<object>;
+        Object.defineProperty(derived, 'state', {
+            get() {
+                if (!self.#warnedStreamState) {
+                    self.#warnedStreamState = true;
+                    console.warn(
+                        `[sigx actors] a streams: body on ${actorLabel(self.ref)} read live ` +
+                            `ctx.state. Stream bodies run DETACHED from the mailbox — a turn ` +
+                            `can mutate underneath the read. Use ctx.snapshot() or ` +
+                            `ctx.changes({ initial: true }) instead.`
+                    );
+                }
+                return self.#state;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        return derived;
+    }
+
     #buildBaseContext(): ActorContext<object> {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
@@ -644,10 +684,15 @@ export class Activation {
             snapshot(): object {
                 return self.#snapshot();
             },
-            changes(): AsyncIterable<object> {
+            changes(options?: { initial?: boolean }): AsyncIterable<object> {
                 // The feed needs change detection even in explicit mode.
                 self.#ensureDeepWatch();
                 const sub: ChangeSub = { queue: [], wake: null, done: false };
+                // Seed BEFORE the subscription goes live, in this same
+                // synchronous call: a `yield ctx.snapshot()` prologue would
+                // instead subscribe only after the consumer resumes, losing
+                // every mutation in that window.
+                if (options?.initial) sub.queue.push(self.#snapshot());
                 self.#subs.add(sub);
                 return {
                     [Symbol.asyncIterator](): AsyncIterator<object> {

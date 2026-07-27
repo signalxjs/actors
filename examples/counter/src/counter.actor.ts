@@ -24,10 +24,9 @@ export const Counter = defineActor({
         }
     }),
     streams: (ctx) => ({
-        /** Push a snapshot to the client after every change. */
+        /** Push the current snapshot, then one after every change. */
         async *watch() {
-            yield ctx.snapshot();
-            for await (const state of ctx.changes()) yield state;
+            yield* ctx.changes({ initial: true });
         }
     })
 });

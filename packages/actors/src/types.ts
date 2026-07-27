@@ -284,8 +284,15 @@ export interface ActorContextBase<S extends object> {
      * Change feed: yields a `snapshot()` after every turn that mutated
      * state. Bounded buffer (drop-oldest); made for `streams:` methods,
      * which must not touch live state after their setup turn returns.
+     *
+     * `{ initial: true }` queues the CURRENT snapshot as the first value,
+     * synchronously, in the same call that registers the subscription — so
+     * `yield* ctx.changes({ initial: true })` has no gap. Prefer it to the
+     * `yield ctx.snapshot()` prologue, which subscribes only after the
+     * consumer resumes past that first yield and therefore loses every
+     * mutation in between.
      */
-    changes(): AsyncIterable<S>;
+    changes(options?: { initial?: boolean }): AsyncIterable<S>;
 }
 
 /**

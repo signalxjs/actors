@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import { createSilo } from '@sigx/actors/silo';
 
@@ -25,13 +25,38 @@ const feed = defineActor({
         },
         async *watch() {
             for await (const s of ctx.changes()) yield s.n;
+        },
+        // The collapsed form: subscribe and seed in ONE synchronous call, so
+        // no mutation can land in the gap a `yield ctx.snapshot()` prologue
+        // would open.
+        async *watchSeeded() {
+            for await (const s of ctx.changes({ initial: true })) yield s.n;
+        },
+        // Reads LIVE state from a detached stream body — the mistake the dev
+        // guard exists to catch.
+        async *watchLive() {
+            yield (ctx.state as { n: number }).n;
+        },
+        // Same mistake, but in the cleanup path a consumer disconnect runs.
+        async *watchLiveOnCleanup() {
+            try {
+                yield 0;
+            } finally {
+                void (ctx.state as { n: number }).n;
+            }
         }
     })
 });
 
 describe('streams', () => {
     it('enumerates stream names at definition time', () => {
-        expect([...feed.streamNames].sort()).toEqual(['countTo', 'watch']);
+        expect([...feed.streamNames].sort()).toEqual([
+            'countTo',
+            'watch',
+            'watchLive',
+            'watchLiveOnCleanup',
+            'watchSeeded'
+        ]);
     });
 
     it('a streams factory touching ctx during construction throws at define time', () => {
@@ -83,6 +108,72 @@ describe('streams', () => {
         // Keep-alive released → deactivation can proceed.
         await silo.deactivateType('Feed');
         expect(silo.stats().activations).toBe(0);
+    });
+
+    it('changes({ initial: true }) seeds the current snapshot and drops nothing after it', async () => {
+        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const client = silo.actor(feed, 'seed');
+        await client.bump(); // n = 1
+
+        const iterator = client.watchSeeded()[Symbol.asyncIterator]();
+        // The seed arrives with NO settle delay and NO snapshot() prologue:
+        // changes() registered the subscription in the same synchronous call
+        // that queued the seed.
+        expect((await iterator.next()).value).toBe(1);
+        await client.bump(); // n = 2
+        await client.bump(); // n = 3
+        expect((await iterator.next()).value).toBe(2);
+        expect((await iterator.next()).value).toBe(3);
+
+        await iterator.return?.();
+        await silo.deactivateType('Feed');
+        expect(silo.stats().activations).toBe(0);
+    });
+
+    it('changes() without the option still yields no seed frame', async () => {
+        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const client = silo.actor(feed, 'noseed');
+        await client.bump(); // n = 1
+
+        const iterator = client.watch()[Symbol.asyncIterator]();
+        const first = iterator.next();
+        // Give the body a turn to reach changes(), then mutate: the FIRST
+        // value must be the mutation, never the pre-existing snapshot.
+        await new Promise((r) => setTimeout(r, 20));
+        await client.bump(); // n = 2
+        expect((await first).value).toBe(2);
+        await iterator.return?.();
+    });
+
+    it('warns in dev when a stream body reads live ctx.state', async () => {
+        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const iterator = silo.actor(feed, 'live').watchLive()[Symbol.asyncIterator]();
+            await iterator.next();
+            await iterator.return?.();
+            expect(warn.mock.calls.flat().join(' ')).toMatch(/ctx\.state/);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('warns in dev when a stream body reads live ctx.state while cleaning up', async () => {
+        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const iterator = silo
+                .actor(feed, 'livefin')
+                .watchLiveOnCleanup()[Symbol.asyncIterator]();
+            await iterator.next();
+            expect(warn.mock.calls.flat().join(' ')).not.toMatch(/ctx\.state/);
+            // The read happens in the generator's finally, which only runs
+            // once the consumer disconnects.
+            await iterator.return?.();
+            expect(warn.mock.calls.flat().join(' ')).toMatch(/ctx\.state/);
+        } finally {
+            warn.mockRestore();
+        }
     });
 
     it('snapshot() is detached from live state', async () => {

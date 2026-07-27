@@ -4,6 +4,28 @@
 
 ### Added
 
+- **`ctx.changes({ initial: true })`** (#53): queues the current snapshot as
+  the feed's first value, synchronously, in the same call that registers the
+  subscription — so `yield* ctx.changes({ initial: true })` replaces the
+  `yield ctx.snapshot()` prologue with no gap. The prologue subscribed only
+  after the consumer resumed past that first yield, silently losing every
+  mutation in between and yielding an already-stale snapshot; the wire suite
+  had to paper over it with a settle delay. Plain `changes()` is unchanged.
+
+- **Dev warning when a `streams:` body reads live `ctx.state`** (#53). Stream
+  bodies run detached from the mailbox, so a turn can mutate underneath the
+  read. The warning names the actor and points at `ctx.snapshot()` /
+  `ctx.changes({ initial: true })`.
+
+### Fixed
+
+- **An unknown actor now 404s as an actor** (#53): the endpoint rides core's
+  serverFn resolver, so a missing type answered `Unknown server function` —
+  the wrong noun on the actor mount, and the first thing a developer sees
+  when client and server builds fall out of sync. The message now names the
+  actor and asks whether the builds are from the same deploy. Status and
+  envelope shape are unchanged.
+
 - **The clock seam, and `createFetchHandler`** (#48): every recurring or
   delayed job — the idle sweeper, the reminder tick, `ctx.timer`, and
   write-behind flushes — now runs through an `ActorScheduler`

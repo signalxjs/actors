@@ -151,7 +151,26 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         );
     });
 
-    it('an unknown actor type 404s with the version-skew hint', async () => {
+    it('an unknown actor type 404s naming the ACTOR, not a "server function"', async () => {
+        const silo = wireSilo();
+        // Straight at the endpoint: the client proxy replaces the server's
+        // message with its own skew hint, so assert the wire body itself.
+        const response = await handleActorRequest(
+            new Request(`${ENDPOINT}/${encodeURIComponent('Ghost#spook')}`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ args: ['g'] })
+            }),
+            { silo, origin: false }
+        );
+        expect(response.status).toBe(404);
+        const body = (await response.json()) as { error: { message: string } };
+        expect(body.error.message).toMatch(/actor/i);
+        expect(body.error.message).toContain('Ghost');
+        expect(body.error.message).not.toMatch(/server function/i);
+    });
+
+    it('the 404 the client sees names the actor and points at build skew', async () => {
         wireSilo();
         const ghost = __actorRef('Ghost', ENDPOINT) as unknown as {
             __sigxActorProxy: (key: string) => { spook(): Promise<unknown> };
@@ -160,7 +179,8 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
             (e: unknown) =>
                 isServerFnError(e) &&
                 e.status === 404 &&
-                /does the server know|server function/i.test((e as Error).message)
+                /Unknown actor "Ghost#spook"/.test((e as Error).message) &&
+                /same deploy/i.test((e as Error).message)
         );
     });
 
