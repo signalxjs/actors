@@ -116,11 +116,13 @@ export interface PlacementBindings {
      */
     strictChainPresence?: boolean;
     /**
-     * Gates the durable-reminder tick loop — a cluster runs the ticker on
-     * one silo (leader lease) while every silo still mutates the table.
-     * Default: always tick.
+     * Durable-reminder shard ownership — the reminder table is split into
+     * fixed hash shards and each tick a silo processes only the shards it
+     * owns (a cluster answers via rendezvous hashing over the membership
+     * view, spreading reminder load; every silo still mutates any shard).
+     * Default: own every shard.
      */
-    shouldTickReminders?(): boolean | Promise<boolean>;
+    ownsReminderShard?(shard: string): boolean | Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

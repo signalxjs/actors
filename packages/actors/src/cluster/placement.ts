@@ -26,6 +26,7 @@ import {
     type PlacementBindings,
     type Silo
 } from '../types';
+import { fnv1a } from '../silo/reminder-shards';
 import { createSiloTransport, type SiloTransport } from './transport';
 import type {
     ClusterProviders,
@@ -63,6 +64,8 @@ export interface ClusterPlacement extends ActorPlacement {
     readonly identity: SiloIdentity;
     /** This silo's current membership descriptor. */
     descriptor(): SiloDescriptor;
+    /** Whether THIS silo owns a reminder shard under the current view. */
+    ownsReminderShard(shard: string): boolean;
     /**
      * Inbound side, consumed by `handleSiloRequest`: dispatch LOCALLY or
      * throw wrong-host — never forward (redirect-not-proxy).
@@ -199,11 +202,32 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 await this.#options.directory.release(id, entry);
             },
             strictChainPresence: true,
-            shouldTickReminders: () =>
-                this.#options.reminderLease
-                    ? this.#options.reminderLease.tryHold(this.identity.siloId)
-                    : true
+            ownsReminderShard: (shard) => this.ownsReminderShard(shard)
         };
+    }
+
+    /**
+     * Rendezvous hashing over the ACTIVE membership view: for each shard,
+     * the silo with the highest hash(shard, siloId) owns it. Deterministic
+     * per view — no stored assignment, no lease. Transient view divergence
+     * (two silos both claiming a shard) is safe: the reminder shard's etag
+     * CAS keeps firing at-most-once regardless.
+     */
+    ownsReminderShard(shard: string): boolean {
+        const active = this.#options.membership
+            .view()
+            .silos.filter((s) => s.status === 'active');
+        if (active.length === 0) return true; // solo / not started
+        let best: string | null = null;
+        let bestScore = -1;
+        for (const s of active) {
+            const score = fnv1a(`${shard}|${s.siloId}`);
+            if (score > bestScore || (score === bestScore && (best === null || s.siloId < best))) {
+                bestScore = score;
+                best = s.siloId;
+            }
+        }
+        return best === this.identity.siloId;
     }
 
     async start(): Promise<void> {
@@ -231,13 +255,6 @@ class ClusterPlacementImpl implements ClusterPlacement {
             await this.#options.membership.setStatus('leaving');
         } catch {
             // Leaving is best-effort; the heartbeat TTL is the backstop.
-        }
-        if (this.#options.reminderLease) {
-            try {
-                await this.#options.reminderLease.release(this.identity.siloId);
-            } catch {
-                // Lease expiry is the backstop.
-            }
         }
         await this.#options.membership.leave();
     }

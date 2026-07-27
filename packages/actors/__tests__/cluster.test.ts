@@ -317,7 +317,7 @@ describe('cluster: guards, streams, reminders, failover', () => {
         expect(cluster.silos[1]!.stats().activations).toBe(0);
     });
 
-    it('reminders fire exactly once across silos (leader lease gates the tick)', async () => {
+    it('reminders fire exactly once across silos (rendezvous shard ownership)', async () => {
         const events: string[] = [];
         const waking = defineActor({
             type: 'Waking',
@@ -343,6 +343,23 @@ describe('cluster: guards, streams, reminders, failover', () => {
         // Both silos tick fast; several windows must not double-fire.
         await new Promise((r) => setTimeout(r, 150));
         expect(events.filter((e) => e === 'reminder:wake')).toHaveLength(1);
+    });
+
+    it('every reminder shard has exactly one owner across the cluster (rendezvous)', async () => {
+        const cluster = await createCluster(3, { actors: [counterActor()] });
+        running = cluster;
+        for (let i = 0; i < 16; i++) {
+            const owners = cluster.placements.filter((pl) => pl.ownsReminderShard(`p${i}`));
+            expect(owners).toHaveLength(1);
+        }
+        // Both survivors re-cover the dead silo's shards deterministically.
+        cluster.crash(0);
+        for (let i = 0; i < 16; i++) {
+            const owners = cluster.placements
+                .slice(1)
+                .filter((pl) => pl.ownsReminderShard(`p${i}`));
+            expect(owners).toHaveLength(1);
+        }
     });
 
     it('crash failover: the survivor evicts the dead claim and resumes from storage', async () => {

@@ -219,7 +219,7 @@ import { clusterPlacement, handleSiloRequest, matchesSiloRequest } from '@sigx/a
 import { redisCluster } from '@sigx/actors-redis';
 
 const placement = clusterPlacement({
-    ...redisCluster({ url: process.env.REDIS_URL }), // membership + directory + reminder lease
+    ...redisCluster({ url: process.env.REDIS_URL }), // membership + directory
     advertise: 'http://10.0.4.7:7311',               // this silo's peer-reachable origin
     secret: process.env.SILO_SECRET                  // shared cluster secret
 });
@@ -237,7 +237,9 @@ call id, deadline as *remaining* ms — clock-skew-proof) so deadlock
 detection and timeouts work across hosts; a misdirected call answers
 **421 wrong-host** with the owner and the caller re-routes (bounded, never
 proxied); membership is TTL-heartbeat liveness in the shared store; the
-reminder table gets exactly one ticker via a leader lease. Under all of it,
+reminder table is split into 16 hash shards, each ticked by exactly one
+silo via rendezvous hashing over the view (the per-shard etag CAS keeps
+firing at-most-once even if views transiently diverge). Under all of it,
 the storage etag CAS remains the integrity floor — a briefly-stale route
 costs a rejected save and a fault-and-reload, never corrupted state.
 

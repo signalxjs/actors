@@ -7,6 +7,9 @@ import {
     type ActorStorage
 } from '@sigx/actors';
 import { createSilo, memoryStorage, REMINDER_TYPE, type Silo } from '@sigx/actors/silo';
+// The service class itself is internal — imported directly for the
+// concurrent-ticker CAS test.
+import { ReminderService } from '../src/silo/reminders';
 
 let running: Silo | null = null;
 afterEach(async () => {
@@ -109,7 +112,7 @@ describe('reminders', () => {
         await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
     });
 
-    it('shouldTickReminders gates the tick loop (the leader-lease seam)', async () => {
+    it('ownsReminderShard gates the tick loop per shard (the cluster seam)', async () => {
         const events: string[] = [];
         const def = wakingActor(events);
         let leader = false;
@@ -118,7 +121,7 @@ describe('reminders', () => {
             dispatcherFor: () => out.local!,
             bind(local) {
                 out.local = local;
-                return { shouldTickReminders: () => leader };
+                return { ownsReminderShard: () => leader };
             }
         };
         const silo = createSilo({
@@ -137,6 +140,58 @@ describe('reminders', () => {
 
         leader = true;
         await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
+    });
+
+    it('reminders live in fixed hash shards (p0..p15), never in $all', async () => {
+        const events: string[] = [];
+        const def = wakingActor(events);
+        const storage = memoryStorage();
+        const silo = createSilo({
+            actors: [def],
+            storage,
+            defaults: { reminderTickMs: 60_000, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
+        });
+        for (const key of ['a', 'b', 'c', 'd', 'e']) {
+            await silo.actor(def, key).wakeMeIn(120_000);
+        }
+        // Every reminder landed in a p<n> shard record.
+        const found: string[] = [];
+        for (let i = 0; i < 16; i++) {
+            const record = await storage.load(REMINDER_TYPE, `p${i}`);
+            if (record && Object.keys(record.state as object).length > 0) found.push(`p${i}`);
+        }
+        expect(found.length).toBeGreaterThan(0);
+        const total = (
+            await Promise.all(
+                found.map(async (shard) => {
+                    const record = await storage.load(REMINDER_TYPE, shard);
+                    return Object.keys(record!.state as object).length;
+                })
+            )
+        ).reduce((a, b) => a + b, 0);
+        expect(total).toBe(5);
+        // The same actor always resolves to the same shard: list() finds it.
+        await expect(silo.actor(def, 'a').listReminders()).resolves.toEqual(['wake']);
+    });
+
+    it('two tickers on the same shard fire a reminder exactly once (CAS, no lease)', async () => {
+        const storage = memoryStorage();
+        const fired: string[] = [];
+        // Two services both claim ownership of every shard — the divergent
+        // membership-view case. The per-shard etag CAS must arbitrate.
+        const a = new ReminderService(storage, async (_ref, name) => void fired.push(`A:${name}`));
+        const b = new ReminderService(storage, async (_ref, name) => void fired.push(`B:${name}`));
+        await a.apiFor({ type: 'Waking', key: 'race' }).set('wake', { due: 0 });
+        a.start(20);
+        b.start(20);
+        try {
+            await vi.waitFor(() => expect(fired.length).toBeGreaterThan(0), { timeout: 3000 });
+            await new Promise((r) => setTimeout(r, 150)); // several tick windows
+            expect(fired).toHaveLength(1);
+        } finally {
+            a.stop();
+            b.stop();
+        }
     });
 
     it('reminder mutations retry on a storage etag conflict (reload + reapply)', async () => {

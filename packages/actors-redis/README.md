@@ -1,8 +1,8 @@
 # @sigx/actors-redis
 
 Redis-backed cluster providers for [`@sigx/actors`](../actors) — membership
-(TTL heartbeats), the distributed actor directory (claim CAS), and the
-reminder-leader lease. Requires **Redis ≥ 7**; [`ioredis`](https://github.com/redis/ioredis)
+(TTL heartbeats) and the distributed actor directory (claim CAS).
+Requires **Redis ≥ 7**; [`ioredis`](https://github.com/redis/ioredis)
 (≥ 5) is a peer dependency.
 
 ```ts
@@ -23,8 +23,8 @@ const silo = createSilo({
 
 Pass an existing `ioredis` client instead of `url` to share the app's
 connection: `redisCluster({ client })`. Call `redisCluster()` once per silo
-— each call returns that silo's own membership handle (directory and lease
-are safely shared).
+— each call returns that silo's own membership handle (the directory is
+safely shared).
 
 ## Options
 
@@ -35,7 +35,6 @@ are safely shared).
 | `heartbeatMs` | `5000` | membership heartbeat cadence |
 | `ttlMs` | `15000` | heartbeat key TTL — missed beats past this = dead |
 | `pollMs` | `5000` | membership view poll cadence |
-| `leaseTtlMs` | `30000` | reminder-leader lease TTL |
 
 ## Key layout
 
@@ -44,7 +43,6 @@ are safely shared).
 {ns}:silos            SET of siloIds              lazily pruned
 {ns}:mver             INCR'd version counter      cheap view-poll compare
 {ns}:dir:{actorId}    "siloId\nactivationId"      no TTL (validity = owner liveness)
-{ns}:lease:reminders  siloId                      PX leaseTtlMs, compare-renewed
 ```
 
 A silo that cannot heartbeat past `ttlMs` self-fences (stops claiming
@@ -52,8 +50,8 @@ actors, deactivates what it holds); directory entries of dead silos are
 evicted lazily on lookup. State integrity never rests on any of this — the
 actor runtime's storage etag CAS is the floor.
 
-Individual providers are exported too: `redisMembership(client, opts)`,
-`redisDirectory(client, opts)`, `redisReminderLease(client, opts)`.
+Individual providers are exported too: `redisMembership(client, opts)`
+and `redisDirectory(client, opts)`.
 
 ## Tests
 

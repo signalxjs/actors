@@ -1,11 +1,10 @@
 /**
- * Cluster provider contracts — membership, the distributed actor directory,
- * and the reminder-leader lease. Domain interfaces rather than a generic KV
- * so a real store can use its native atomics (key TTLs for heartbeats,
- * create-if-absent and compare-and-delete for claims). In-memory providers
- * live in `./memory`; Redis providers ship as `@sigx/actors-redis`; a
- * Kubernetes or gossip provider is a pure addition behind the same
- * interfaces.
+ * Cluster provider contracts — membership and the distributed actor
+ * directory. Domain interfaces rather than a generic KV so a real store
+ * can use its native atomics (key TTLs for heartbeats, create-if-absent
+ * and compare-and-delete for claims). In-memory providers live in
+ * `./memory`; Redis providers ship as `@sigx/actors-redis`; a Kubernetes
+ * or gossip provider is a pure addition behind the same interfaces.
  */
 import type { ActorRef } from '../types';
 
@@ -97,21 +96,10 @@ export interface ActorDirectory {
     evictSilo?(siloId: string): Promise<number>;
 }
 
-/**
- * The reminder-leader lease: exactly one silo ticks the reminder table.
- * `tryHold` acquires the lease if free (or renews if held by `siloId`) and
- * answers whether this silo is the leader right now.
- */
-export interface ReminderLease {
-    tryHold(siloId: string): Promise<boolean>;
-    release(siloId: string): Promise<void>;
-}
-
 /** What a cluster-store package provides for one silo. */
 export interface ClusterProviders {
     membership: ClusterMembership;
     directory: ActorDirectory;
-    reminderLease?: ReminderLease;
 }
 
 /** Picks the silo to host a NEW activation. */

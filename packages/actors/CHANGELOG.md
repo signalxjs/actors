@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Clustering milestone 3 — sharded reminders** (#20): the reminder table
+  is split into 16 fixed hash shards (`$sigx:reminders/p0..p15`, FNV-1a of
+  the actorId — pinned forever); a silo ticks only the shards it owns.
+  Cluster ownership is rendezvous hashing over the membership view —
+  deterministic, no stored assignment, and the M1 leader lease is REMOVED
+  (`ReminderLease`, `ClusterProviders.reminderLease`): the per-shard etag
+  CAS already keeps firing at-most-once through view divergence.
+
 - **Clustering milestone 2 — failover & directory hygiene** (#20):
   `ActorDirectory` gains optional `evictSilo(siloId)`; `clusterPlacement`
   now sweeps a departed silo's directory entries proactively on membership
@@ -20,8 +28,8 @@
   mount `/_sigx/silo`) reusing the serverFn wire with a versioned envelope
   header (call chain, call id, remaining-ms deadline), shared-secret auth,
   wrong-host 421 redirect-not-proxy routing with bounded retry, cross-host
-  NDJSON streams with cancellation/keep-alive release, and a reminder
-  leader lease so reminders fire exactly once. Provider seams
+  NDJSON streams with cancellation/keep-alive release, and sharded
+  reminders (below) firing exactly once cluster-wide. Provider seams
   (`ClusterMembership`, `ActorDirectory`, `ReminderLease`) with
   `memoryClusterHub()` in-process implementations for tests; Redis
   providers ship separately as `@sigx/actors-redis`.
@@ -30,7 +38,7 @@
   clustering, #20): `ActorPlacement.bind?(local, silo)`
   returning `PlacementBindings` — activation claim/release hooks
   (`beforeActivate` / `afterDeactivate`), `strictChainPresence`, and a
-  `shouldTickReminders` gate for reminder leader election. All optional;
+  `ownsReminderShard` gate for reminder-shard ownership. All optional;
   single-node behavior unchanged.
 - New `ActorErrorKind`s `'wrong-host'` (`ActorWrongHostError`, carries an
   owner hint) and `'unreachable'` (`ActorUnreachableError`); both map to a

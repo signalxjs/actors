@@ -1,8 +1,8 @@
 /**
  * `@sigx/actors-redis` — Redis-backed cluster providers for
- * `@sigx/actors/cluster`: TTL-heartbeat membership, the claim directory,
- * and the reminder-leader lease. Redis ≥ 7; ioredis is a peer dependency
- * (the compare-ops are Lua scripts, which need a concrete client API).
+ * `@sigx/actors/cluster`: TTL-heartbeat membership and the claim
+ * directory. Redis ≥ 7; ioredis is a peer dependency (the compare-ops are
+ * Lua scripts, which need a concrete client API).
  *
  * Key layout under `{namespace}` (default `sigx`):
  *
@@ -11,7 +11,6 @@
  *   {ns}:mver             INCR'd version counter      cheap poll compare
  *   {ns}:dir:{actorId}    "siloId\nactivationId"      no TTL — validity is the
  *                                                     owner's liveness
- *   {ns}:lease:reminders  siloId                      PX leaseTtlMs, compare-renewed
  *
  * Directory entries carry no TTL by design: one heartbeat per silo, not per
  * activation. The storage etag CAS in the actor runtime remains the
@@ -24,7 +23,6 @@ import type {
     ClusterProviders,
     DirectoryEntry,
     MembershipView,
-    ReminderLease,
     SiloDescriptor,
     SiloStatus
 } from '@sigx/actors/cluster';
@@ -45,8 +43,6 @@ export interface RedisClusterOptions {
     ttlMs?: number;
     /** Membership view poll cadence, ms. Default 5000. */
     pollMs?: number;
-    /** Reminder lease TTL, ms. Default 30000. */
-    leaseTtlMs?: number;
 }
 
 interface Resolved {
@@ -55,7 +51,6 @@ interface Resolved {
     heartbeatMs: number;
     ttlMs: number;
     pollMs: number;
-    leaseTtlMs: number;
 }
 
 function resolve(options: RedisClusterOptions): Resolved {
@@ -70,12 +65,11 @@ function resolve(options: RedisClusterOptions): Resolved {
         ns: options.namespace ?? 'sigx',
         heartbeatMs: options.heartbeatMs ?? 5_000,
         ttlMs: options.ttlMs ?? 15_000,
-        pollMs: options.pollMs ?? 5_000,
-        leaseTtlMs: options.leaseTtlMs ?? 30_000
+        pollMs: options.pollMs ?? 5_000
     };
 }
 
-/** Membership + directory + reminder lease for ONE silo. */
+/** Membership + directory for ONE silo. */
 export function redisCluster(options: RedisClusterOptions): ClusterProviders {
     const resolved = resolve(options);
     return {
@@ -85,11 +79,7 @@ export function redisCluster(options: RedisClusterOptions): ClusterProviders {
             ttlMs: resolved.ttlMs,
             pollMs: resolved.pollMs
         }),
-        directory: redisDirectory(resolved.client, { namespace: resolved.ns }),
-        reminderLease: redisReminderLease(resolved.client, {
-            namespace: resolved.ns,
-            leaseTtlMs: resolved.leaseTtlMs
-        })
+        directory: redisDirectory(resolved.client, { namespace: resolved.ns })
     };
 }
 
@@ -290,33 +280,6 @@ export function redisDirectory(
                 }
             } while (cursor !== '0');
             return removed;
-        }
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Reminder lease
-
-/** Acquire if free, renew if ours: returns 1 while we hold the lease. */
-const ACQUIRE_OR_RENEW = `
-local cur = redis.call('GET', KEYS[1])
-if cur == false then redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2]); return 1 end
-if cur == ARGV[1] then redis.call('PEXPIRE', KEYS[1], ARGV[2]); return 1 end
-return 0
-`;
-
-export function redisReminderLease(
-    client: RedisClient,
-    options: { namespace?: string; leaseTtlMs?: number } = {}
-): ReminderLease {
-    const key = `${options.namespace ?? 'sigx'}:lease:reminders`;
-    const ttl = options.leaseTtlMs ?? 30_000;
-    return {
-        async tryHold(siloId) {
-            return (await client.eval(ACQUIRE_OR_RENEW, 1, key, siloId, ttl)) === 1;
-        },
-        async release(siloId) {
-            await client.eval(COMPARE_DEL, 1, key, siloId);
         }
     };
 }

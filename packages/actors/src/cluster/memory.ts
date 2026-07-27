@@ -12,7 +12,6 @@ import type {
     ClusterProviders,
     DirectoryEntry,
     MembershipView,
-    ReminderLease,
     SiloDescriptor,
     SiloStatus
 } from './types';
@@ -32,7 +31,6 @@ export function memoryClusterHub(): MemoryClusterHub {
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Map<string, Set<() => void>>();
     const entries = new Map<string, DirectoryEntry>();
-    let leaseOwner: string | null = null;
 
     const view = (): MembershipView => ({ version, silos: [...members.values()] });
     const bump = (): void => {
@@ -114,21 +112,10 @@ export function memoryClusterHub(): MemoryClusterHub {
         };
     };
 
-    const lease: ReminderLease = {
-        async tryHold(siloId) {
-            if (leaseOwner === null || !members.has(leaseOwner)) leaseOwner = siloId;
-            return leaseOwner === siloId;
-        },
-        async release(siloId) {
-            if (leaseOwner === siloId) leaseOwner = null;
-        }
-    };
-
     return {
         providers: () => ({
             membership: membershipFor(),
-            directory,
-            reminderLease: lease
+            directory
         }),
         kill(siloId) {
             if (!members.delete(siloId)) return;

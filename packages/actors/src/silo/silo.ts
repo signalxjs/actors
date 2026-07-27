@@ -167,7 +167,7 @@ class SiloImpl implements Silo {
         this.#reminders = new ReminderService(
             this.#storage,
             (ref, name) => this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall()),
-            { shouldTick: () => this.#bindings?.shouldTickReminders?.() ?? true }
+            { ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true }
         );
     }
 

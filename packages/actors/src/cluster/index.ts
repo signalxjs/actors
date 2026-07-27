@@ -33,7 +33,6 @@ export type {
     DirectoryEntry,
     MembershipView,
     PlacementPolicy,
-    ReminderLease,
     SiloDescriptor,
     SiloIdentity,
     SiloStatus
