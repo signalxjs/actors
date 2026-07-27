@@ -203,6 +203,47 @@ export interface ActorStorage {
     clear(type: string, key: string, expectedEtag: string | null): Promise<void>;
 }
 
+/**
+ * What the silo hands a reminder implementation at bind time — everything
+ * it would otherwise have to be told twice (and could be told wrongly).
+ */
+export interface ActorRemindersContext {
+    /** The silo's storage, AFTER any plugin decorators. */
+    readonly storage: ActorStorage;
+    /** The silo's clock, so reminder ticks are drivable like everything else. */
+    readonly scheduler: ActorScheduler;
+    /** Requested tick cadence, ms (`SiloDefaults.reminderTickMs`). */
+    readonly tickMs: number;
+    /**
+     * Does THIS silo own the given reminder shard? A cluster answers via
+     * rendezvous hashing so N silos split the load; single-node owns all.
+     * Meaningless to an implementation that does not shard.
+     */
+    ownsShard(shard: string): boolean | Promise<boolean>;
+    /** Deliver a due reminder to its actor, activating it if idle. */
+    deliver(ref: ActorRef, name: string): Promise<unknown>;
+}
+
+/**
+ * Durable reminders, as a seam.
+ *
+ * The default (`shardedReminders()`) keeps the table in `ActorStorage` under
+ * a reserved type, split into fixed hash shards that silos divide between
+ * them — which assumes MANY actors per silo. A runtime where that is false
+ * replaces it: under Cloudflare's one-Durable-Object-per-actor model each
+ * actor's reminders live in its own DO and fire from its own alarm, so
+ * there is nothing to shard and nothing to poll.
+ *
+ * `bind()` runs once before `start()`, mirroring `ActorPlacement.bind()`.
+ */
+export interface ActorReminders {
+    bind(context: ActorRemindersContext): void;
+    start(): void | Promise<void>;
+    stop(): void | Promise<void>;
+    /** The per-actor API behind `ctx.reminders`. */
+    apiFor(ref: ActorRef): ReminderApi;
+}
+
 // ---------------------------------------------------------------------------
 // Definition
 

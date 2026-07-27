@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Pluggable durable reminders** (#50): `ReminderService` was constructed
+  directly by `createSilo`, so its sharded design was the only one
+  possible. Reminders are now an `ActorReminders` seam
+  (`createSilo`/`defineActorApp`'s `reminders` option), with
+  `shardedReminders()` as the unchanged default. An implementation
+  receives `bind({ storage, scheduler, tickMs, ownsShard, deliver })` once
+  before `start()`, mirroring `ActorPlacement.bind()` — so it is handed the
+  silo's real (plugin-decorated) storage and clock rather than being told
+  them twice.
+
+  The shard table assumes many actors per silo. Under Cloudflare's
+  one-Durable-Object-per-actor model each actor's reminders belong in its
+  own DO storage, fired by its own alarm — nothing to shard, nothing to
+  poll. The whole silo-level reminder suite passes unchanged.
+
 - **`ctx.changes({ initial: true })`** (#53): queues the current snapshot as
   the feed's first value, synchronously, in the same call that registers the
   subscription — so `yield* ctx.changes({ initial: true })` replaces the
@@ -16,15 +31,6 @@
   bodies run detached from the mailbox, so a turn can mutate underneath the
   read. The warning names the actor and points at `ctx.snapshot()` /
   `ctx.changes({ initial: true })`.
-
-### Fixed
-
-- **An unknown actor now 404s as an actor** (#53): the endpoint rides core's
-  serverFn resolver, so a missing type answered `Unknown server function` —
-  the wrong noun on the actor mount, and the first thing a developer sees
-  when client and server builds fall out of sync. The message now names the
-  actor and asks whether the builds are from the same deploy. Status and
-  envelope shape are unchanged.
 
 - **The clock seam, and `createFetchHandler`** (#48): every recurring or
   delayed job — the idle sweeper, the reminder tick, `ctx.timer`, and
@@ -72,13 +78,6 @@
   New `@sigx/actors/vite-client` export carries ambient types for
   `virtual:sigx-actors` (reference it from your `env.d.ts`, as with
   `vite/client`).
-
-### Removed
-
-- **`sigxActors({ storage })` and `sigxActors({ guard })`** (#46): the
-  path-string options are replaced by `app`, which supplies both (and
-  everything else) as real values. Nothing is published, so there is no
-  shim.
 
 - **`cluster()` as an app plugin, and a Node adapter for every mount**
   (#44): a clustered silo used to repeat itself — `secret` went to both
@@ -254,3 +253,19 @@
 - External wire calls now inherit the silo's `callTimeoutMs` deadline, as
   documented. Previously only in-process external calls got a deadline;
   wire calls could hang past the configured timeout without a 504.
+
+### Fixed
+
+- **An unknown actor now 404s as an actor** (#53): the endpoint rides core's
+  serverFn resolver, so a missing type answered `Unknown server function` —
+  the wrong noun on the actor mount, and the first thing a developer sees
+  when client and server builds fall out of sync. The message now names the
+  actor and asks whether the builds are from the same deploy. Status and
+  envelope shape are unchanged.
+
+### Removed
+
+- **`sigxActors({ storage })` and `sigxActors({ guard })`** (#46): the
+  path-string options are replaced by `app`, which supplies both (and
+  everything else) as real values. Nothing is published, so there is no
+  shim.

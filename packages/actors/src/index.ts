@@ -47,6 +47,8 @@ export type {
     ActorPlacement,
     ActorPlacementStrategy,
     ActorRef,
+    ActorReminders,
+    ActorRemindersContext,
     ActorStorage,
     ActorStorageRecord,
     AnyActorDefinition,

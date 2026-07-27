@@ -14,6 +14,7 @@ import type {
     ActorClientWith,
     ActorPlacement,
     ActorRef,
+    ActorReminders,
     ActorStorage,
     AnyActorDefinition,
     DeactivationReason,
@@ -24,7 +25,7 @@ import type {
 } from '../types';
 import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } from './activation';
 import { LocalHost } from './local-host';
-import { ReminderService } from './reminders';
+import { shardedReminders } from './reminders';
 import { memoryStorage } from './storage-memory';
 import { timerScheduler } from './scheduler';
 
@@ -64,6 +65,13 @@ export interface CreateSiloOptions {
     /** Extra codec handlers for state persistence and dev checks. */
     types?: readonly TypeHandler[];
     /**
+     * Durable-reminder implementation. Default `shardedReminders()` — the
+     * table in `ActorStorage`, split into hash shards. Replace it where
+     * that model does not fit: a Cloudflare Durable Object holds ONE actor,
+     * so its reminders live in its own storage and fire from its own alarm.
+     */
+    reminders?: ActorReminders;
+    /**
      * The clock for the sweeper, reminder tick, `ctx.timer` and write-behind
      * flushes. Default `timerScheduler()` (host timers). Replace it on a
      * runtime without background execution — a Worker never fires an
@@ -100,7 +108,7 @@ class SiloImpl implements Silo {
     #placement: ActorPlacement;
     #bindings: PlacementBindings | undefined;
     #local: LocalHost;
-    #reminders: ReminderService;
+    #reminders: ActorReminders;
     #registry = new Map<
         string,
         AnyActorDefinition | (() => Promise<AnyActorDefinition | Record<string, unknown>>)
@@ -109,6 +117,7 @@ class SiloImpl implements Silo {
     #scheduler: ActorScheduler;
     #stopSweeper: (() => void) | null = null;
     #started = false;
+    #startPromise: Promise<void> | null = null;
     #stopped = false;
 
     constructor(options: CreateSiloOptions) {
@@ -185,14 +194,15 @@ class SiloImpl implements Silo {
         );
         this.#placement = options.placement ?? { dispatcherFor: () => this.#local };
         this.#bindings = this.#placement.bind?.(this.#local, this) ?? undefined;
-        this.#reminders = new ReminderService(
-            this.#storage,
-            (ref, name) => this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall()),
-            {
-                ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true,
-                scheduler: this.#scheduler
-            }
-        );
+        this.#reminders = options.reminders ?? shardedReminders();
+        this.#reminders.bind({
+            storage: this.#storage,
+            scheduler: this.#scheduler,
+            tickMs: this.#defaults.reminderTickMs,
+            ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true,
+            deliver: (ref, name) =>
+                this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall())
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -359,25 +369,85 @@ class SiloImpl implements Silo {
     // -----------------------------------------------------------------------
     // Lifecycle
 
-    async start(): Promise<void> {
-        if (this.#started) return;
-        this.#started = true;
-        this.#stopped = false;
+    start(): Promise<void> {
+        if (this.#started) return Promise.resolve();
+        // Concurrent callers share ONE start, so `await silo.start()` is a
+        // real barrier for every one of them rather than resolving early
+        // for all but the first. Same shape as ActorApp.start().
+        if (this.#startPromise) return this.#startPromise;
+        const starting = this.#start().catch((error: unknown) => {
+            // Never cache a rejection — a start that failed on a bad
+            // placement or reminders must stay retryable.
+            if (this.#startPromise === starting) this.#startPromise = null;
+            throw error;
+        });
+        this.#startPromise = starting;
+        return starting;
+    }
+
+    async #start(): Promise<void> {
+        // Everything that can FAIL runs before anything is registered or
+        // claimed, so a rejected start leaves nothing behind: no sweeper
+        // ticking, no `#started`, no stamped seam.
         await this.#placement.start?.();
+        try {
+            // Awaited: the seam allows async start, and an implementation
+            // that opens an alarm or a connection must be up before
+            // start() resolves.
+            await this.#reminders.start();
+        } catch (error) {
+            // The placement already joined — undo that rather than leave
+            // this silo advertised but not really running.
+            try {
+                await this.#placement.stop?.();
+            } catch (stopError) {
+                if (__DEV__) {
+                    console.error(
+                        '[sigx actors] rolling back a failed start did not stop the placement:',
+                        stopError
+                    );
+                }
+            }
+            throw error;
+        }
         this.#stopSweeper = this.#scheduler.every(this.#defaults.sweepIntervalMs, () =>
             this.#local.sweep(Date.now(), this.#defaults.idleAfterMs)
         );
-        this.#reminders.start(this.#defaults.reminderTickMs);
+        this.#started = true;
+        this.#stopped = false;
         stampSilo(this);
     }
 
     async stop(opts?: { timeoutMs?: number }): Promise<void> {
         if (this.#stopped) return;
+        // Let an in-flight start finish first. Otherwise its continuation
+        // runs AFTER this returns and re-registers the sweeper and the seam,
+        // leaving background work behind a stop that already resolved.
+        if (this.#startPromise) {
+            try {
+                await this.#startPromise;
+            } catch {
+                // A failed start left nothing running to tear down.
+            }
+            // Another stop may have won while we waited.
+            if (this.#stopped) return;
+        }
         this.#stopped = true;
         this.#started = false;
+        // Drop the cached start so a later start() really restarts.
+        this.#startPromise = null;
         this.#stopSweeper?.();
         this.#stopSweeper = null;
-        this.#reminders.stop();
+        // Awaited so an async teardown really finishes, but guarded for the
+        // same reason `placement.beginStop()` is: failing to stop reminders
+        // must never cost us the drain.
+        try {
+            await this.#reminders.stop();
+        } catch (error) {
+            if (__DEV__) {
+                console.error('[sigx actors] reminders.stop() failed:', error);
+            }
+        }
         // Announce the departure BEFORE draining, so cluster peers stop
         // placing new actors here while activations hand off. Best-effort:
         // a failed announcement must never abort the drain itself.

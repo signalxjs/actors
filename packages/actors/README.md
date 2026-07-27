@@ -280,6 +280,22 @@ export default { fetch: createFetchHandler(app) };  // Bun, Workers
 core's connect adapter for the public endpoint (backpressure-aware body
 pumping) rather than routing everything through the generic bridge.
 
+### Pluggable reminders
+
+Durable reminders are a seam too. The default `shardedReminders()` keeps the
+table in `ActorStorage` under a reserved type, split into 16 hash shards that
+silos divide between them — which assumes **many actors per silo**:
+
+```ts
+defineActorApp({ actors, reminders: shardedReminders() })   // the default
+```
+
+Where that assumption is false, replace it. Under Cloudflare's
+one-Durable-Object-per-actor model each actor's reminders live in its own DO
+and fire from its own alarm, so there is nothing to shard and nothing to
+poll. An implementation gets `bind({ storage, scheduler, tickMs, ownsShard,
+deliver })` once before `start()`, mirroring `ActorPlacement.bind()`.
+
 ### The clock seam
 
 **Background** work — the idle sweeper, the reminder tick, `ctx.timer`,

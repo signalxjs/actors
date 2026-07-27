@@ -20,8 +20,13 @@
  * firing rather than double-firing (documented).
  */
 import { isStorageConflict } from '../errors';
-import type { ActorRef, ActorStorage, ReminderApi, ActorScheduler } from '../types';
-import { timerScheduler } from './scheduler';
+import type {
+    ActorReminders,
+    ActorRemindersContext,
+    ActorRef,
+    ActorStorage,
+    ReminderApi
+} from '../types';
 import { reminderShardKeys, reminderShardOf } from './reminder-shards';
 
 export const REMINDER_TYPE = '$sigx:reminders';
@@ -30,45 +35,55 @@ const MIN_PERIOD_MS = 60_000;
  *  once silos cluster (every silo mutates; the owner ticks). */
 const MUTATE_ATTEMPTS = 3;
 
-export interface ReminderServiceOptions {
-    /**
-     * Shard-ownership gate for `#tick()` — a cluster placement owns a
-     * subset of shards so N silos split the reminder load and fire each
-     * reminder once. Default: own every shard (single-node).
-     */
-    ownsShard?: (shard: string) => boolean | Promise<boolean>;
-    /** Clock for the tick loop. Default: host timers. */
-    scheduler?: ActorScheduler;
-}
-
 interface ReminderEntry {
     nextDue: number;
     period?: number;
 }
 type ReminderTable = Record<string, Record<string, ReminderEntry>>;
 
-export class ReminderService {
-    #storage: ActorStorage;
-    #fire: (ref: ActorRef, name: string) => Promise<unknown>;
-    #ownsShard: (shard: string) => boolean | Promise<boolean>;
+/** The default `ActorReminders`: the sharded table described above. */
+export function shardedReminders(): ActorReminders {
+    return new ReminderService();
+}
+
+export class ReminderService implements ActorReminders {
+    #context: ActorRemindersContext | null = null;
     #chain: Promise<unknown> = Promise.resolve();
-    #scheduler: ActorScheduler;
     #stopTick: (() => void) | null = null;
 
-    constructor(
-        storage: ActorStorage,
-        fire: (ref: ActorRef, name: string) => Promise<unknown>,
-        options?: ReminderServiceOptions
-    ) {
-        this.#storage = storage;
-        this.#fire = fire;
-        this.#ownsShard = options?.ownsShard ?? (() => true);
-        this.#scheduler = options?.scheduler ?? timerScheduler();
+    bind(context: ActorRemindersContext): void {
+        if (this.#context) {
+            // One instance per silo. Re-binding would leave the tick loop
+            // running against the previous silo's storage and scheduler
+            // while answering with the new one's — fail fast instead.
+            throw new Error(
+                '[sigx actors] this reminders instance is already bound to a silo — ' +
+                    'construct a new one per silo.'
+            );
+        }
+        this.#context = context;
     }
 
-    start(tickMs: number): void {
+    get #storage(): ActorStorage {
+        return this.#require().storage;
+    }
+
+    get #ownsShard(): (shard: string) => boolean | Promise<boolean> {
+        const context = this.#require();
+        return (shard) => context.ownsShard(shard);
+    }
+
+    #require(): ActorRemindersContext {
+        if (!this.#context) {
+            throw new Error('[sigx actors] reminders used before bind() — this is a silo bug.');
+        }
+        return this.#context;
+    }
+
+    start(): void {
         if (this.#stopTick) return;
-        this.#stopTick = this.#scheduler.every(tickMs, () => {
+        const context = this.#require();
+        this.#stopTick = context.scheduler.every(context.tickMs, () => {
             void this.#tick().catch((error) => {
                 if (__DEV__) console.error('[sigx actors] reminder tick failed:', error);
             });
@@ -189,7 +204,7 @@ export class ReminderService {
         // not kill the loop.
         await Promise.allSettled(
             due.map(({ ref, name }) =>
-                this.#fire(ref, name).catch((error) => {
+                this.#require().deliver(ref, name).catch((error) => {
                     if (__DEV__) {
                         console.error(
                             `[sigx actors] reminder "${name}" on ${ref.type}/${ref.key} failed:`,

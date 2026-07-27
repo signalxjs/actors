@@ -17,12 +17,14 @@ export { memoryStorage } from './storage-memory';
 export { timerScheduler, manualScheduler, type ManualScheduler } from './scheduler';
 export { Mailbox } from './mailbox';
 export { REMINDER_METHOD } from './activation';
-export { REMINDER_TYPE } from './reminders';
+export { REMINDER_TYPE, shardedReminders } from './reminders';
 export type {
     ActorCallContext,
     ActorDispatcher,
     ActorPlacement,
     ActorRef,
+    ActorReminders,
+    ActorRemindersContext,
     ActorStorage,
     ActorStorageRecord,
     PlacementBindings,

@@ -23,6 +23,7 @@ import type {
     ActorPlacement,
     ActorRef,
     ActorStorage,
+    ActorReminders,
     ActorScheduler,
     ActorStreamTable,
     AnyActorDefinition,
@@ -160,6 +161,8 @@ export interface ActorAppOptions {
     types?: readonly TypeHandler[];
     /** The clock for background work. Default: host timers. */
     scheduler?: ActorScheduler;
+    /** Durable-reminder implementation. Default: the sharded table. */
+    reminders?: ActorReminders;
     defaults?: SiloDefaults;
 }
 
@@ -316,6 +319,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             ...(placement ? { placement } : {}),
             ...(c.typeHandlers.length ? { types: c.typeHandlers } : {}),
             ...(this.#options.scheduler ? { scheduler: this.#options.scheduler } : {}),
+            ...(this.#options.reminders ? { reminders: this.#options.reminders } : {}),
             ...(c.contextFactories.length
                 ? { extendContext: contextExtender(c.contextFactories) }
                 : {}),

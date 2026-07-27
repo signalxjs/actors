@@ -6,10 +6,19 @@ import {
     type ActorPlacement,
     type ActorStorage
 } from '@sigx/actors';
-import { createSilo, memoryStorage, REMINDER_TYPE, type Silo } from '@sigx/actors/silo';
+import {
+    createSilo,
+    manualScheduler,
+    memoryStorage,
+    shardedReminders,
+    timerScheduler,
+    REMINDER_TYPE,
+    type Silo
+} from '@sigx/actors/silo';
 // The service class itself is internal — imported directly for the
 // concurrent-ticker CAS test.
 import { ReminderService } from '../src/silo/reminders';
+import { peekSilo, type ActorReminders, type ActorRemindersContext } from '@sigx/actors';
 
 let running: Silo | null = null;
 afterEach(async () => {
@@ -179,11 +188,22 @@ describe('reminders', () => {
         const fired: string[] = [];
         // Two services both claim ownership of every shard — the divergent
         // membership-view case. The per-shard etag CAS must arbitrate.
-        const a = new ReminderService(storage, async (_ref, name) => void fired.push(`A:${name}`));
-        const b = new ReminderService(storage, async (_ref, name) => void fired.push(`B:${name}`));
+        const ticker = (label: string): ReminderService => {
+            const service = new ReminderService();
+            service.bind({
+                storage,
+                scheduler: timerScheduler(),
+                tickMs: 20,
+                ownsShard: () => true,
+                deliver: async (_ref, name) => void fired.push(`${label}:${name}`)
+            });
+            return service;
+        };
+        const a = ticker('A');
+        const b = ticker('B');
         await a.apiFor({ type: 'Waking', key: 'race' }).set('wake', { due: 0 });
-        a.start(20);
-        b.start(20);
+        a.start();
+        b.start();
         try {
             await vi.waitFor(() => expect(fired.length).toBeGreaterThan(0), { timeout: 3000 });
             await new Promise((r) => setTimeout(r, 150)); // several tick windows
@@ -221,5 +241,168 @@ describe('reminders', () => {
         await expect(client.wakeMeIn(120_000)).resolves.toBeUndefined();
         expect(conflicts).toBe(1);
         await expect(client.listReminders()).resolves.toEqual(['wake']);
+    });
+});
+
+describe('reminders are pluggable', () => {
+    it('accepts a custom ActorReminders instead of the sharded table', async () => {
+        // Stands in for the Cloudflare shape: no shard table, no polling —
+        // reminders held per actor and fired directly, the way a Durable
+        // Object's alarm would.
+        const set: string[] = [];
+        let deliver: ActorRemindersContext['deliver'] | null = null;
+        const perActor: ActorReminders = {
+            bind(context) {
+                deliver = context.deliver;
+            },
+            start() {},
+            stop() {},
+            apiFor(ref) {
+                return {
+                    set: async (name) => void set.push(`${ref.key}/${name}`),
+                    clear: async () => {},
+                    // Names only — the ReminderApi contract. The key is this
+                    // stub's own bookkeeping, not part of the return value.
+                    list: async () =>
+                        set
+                            .filter((entry) => entry.startsWith(`${ref.key}/`))
+                            .map((entry) => entry.slice(ref.key.length + 1))
+                };
+            }
+        };
+
+        const events: string[] = [];
+        const def = wakingActor(events);
+        const silo = createSilo({
+            actors: [def],
+            reminders: perActor,
+            defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
+        });
+        await silo.start();
+        try {
+            await silo.actor(def, 'a').wakeMeIn(0);
+            // Went to the plugin, not to `$sigx:reminders` in storage.
+            expect(set).toEqual(['a/wake']);
+
+            // And the silo handed it a working delivery callback: firing it
+            // re-activates the actor and runs onReminder.
+            await deliver!({ type: 'Waking', key: 'a' }, 'wake');
+            expect(events).toContain('reminder:wake');
+            // The stub honours the ReminderApi contract: names, not keys.
+            await expect(silo.actor(def, 'a').listReminders()).resolves.toEqual(['wake']);
+        } finally {
+            await silo.stop({ timeoutMs: 1000 });
+        }
+    });
+});
+
+describe('reminders lifecycle is strict', () => {
+    it('leaves nothing running when reminders fail to start', async () => {
+        const scheduler = manualScheduler();
+        const exploding: ActorReminders = {
+            bind() {},
+            start() {
+                return Promise.reject(new Error('alarm unavailable'));
+            },
+            stop() {},
+            apiFor: () => ({
+                set: async () => {},
+                clear: async () => {},
+                list: async () => []
+            })
+        };
+        const silo = createSilo({
+            actors: [wakingActor([])],
+            reminders: exploding,
+            scheduler,
+            defaults: { sweepIntervalMs: 1_000, callTimeoutMs: 0 }
+        });
+        await expect(silo.start()).rejects.toThrow('alarm unavailable');
+        // The sweeper must NOT have been registered by a start that failed.
+        expect(scheduler.pending).toBe(0);
+        // ...and the seam must not be stamped with a silo that is not running.
+        expect(peekSilo()).toBeUndefined();
+    });
+
+    it('makes concurrent start() calls a real barrier', async () => {
+        let started = false;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const slow: ActorReminders = {
+            bind() {},
+            async start() {
+                await gate;
+                started = true;
+            },
+            stop() {},
+            apiFor: () => ({
+                set: async () => {},
+                clear: async () => {},
+                list: async () => []
+            })
+        };
+        const silo = createSilo({
+            actors: [wakingActor([])],
+            reminders: slow,
+            scheduler: manualScheduler(),
+            defaults: { sweepIntervalMs: 1_000, callTimeoutMs: 0 }
+        });
+        const first = silo.start();
+        // Await ONLY the second caller: if it gets its own already-resolved
+        // promise instead of the in-flight one, it returns before startup
+        // has happened. (Awaiting both would hide that behind the first.)
+        const second = silo.start();
+        setTimeout(release, 0);
+        await second;
+        expect(started).toBe(true);
+        await first;
+        await silo.stop({ timeoutMs: 1000 });
+    });
+
+    it('lets a stop racing an in-flight start tear it down anyway', async () => {
+        const scheduler = manualScheduler();
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const slow: ActorReminders = {
+            bind() {},
+            start: () => gate,
+            stop() {},
+            apiFor: () => ({
+                set: async () => {},
+                clear: async () => {},
+                list: async () => []
+            })
+        };
+        const silo = createSilo({
+            actors: [wakingActor([])],
+            reminders: slow,
+            scheduler,
+            defaults: { sweepIntervalMs: 1_000, callTimeoutMs: 0 }
+        });
+        const starting = silo.start();
+        // Stop while the start is still in flight; it must not let that
+        // start's continuation re-register the sweeper behind our back.
+        const stopping = silo.stop({ timeoutMs: 1000 });
+        release();
+        await Promise.all([starting, stopping]);
+        expect(scheduler.pending).toBe(0);
+        expect(peekSilo()).toBeUndefined();
+    });
+
+    it('refuses to bind one reminders instance to two silos', () => {
+        const service = shardedReminders();
+        const context = {
+            storage: memoryStorage(),
+            scheduler: manualScheduler(),
+            tickMs: 1_000,
+            ownsShard: () => true,
+            deliver: async () => undefined
+        };
+        service.bind(context);
+        expect(() => service.bind(context)).toThrow(/already bound/);
     });
 });
