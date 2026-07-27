@@ -7,19 +7,19 @@
  * non-owner silo, and crash failover with state recovered from storage.
  *
  * Run after `pnpm build`:   node examples/counter/cluster-demo.mjs
- * Needs Node >= 22.18 (built-in type stripping for the .ts actor import,
- * same as server.mjs). Ports default to 5391-5393; override with
+ * Needs Node >= 22.18 (built-in type stripping for the .ts actor import).
+ * Ports default to 5391-5393; override with
  * CLUSTER_DEMO_PORTS=7001,7002,7003.
+ *
+ * Each silo is a `defineActorApp` with the `cluster()` plugin, mounted
+ * with ONE `createAppHandler`. The plugin contributes the silo-to-silo
+ * route, so `secret` is stated once and the internal mount needs no
+ * hand-written Node bridge.
  */
 import { createServer } from 'node:http';
-import { createSilo, memoryStorage } from '@sigx/actors/silo';
-import { createActorHandler } from '@sigx/actors/node';
-import {
-    clusterPlacement,
-    handleSiloRequest,
-    matchesSiloRequest,
-    memoryClusterHub
-} from '@sigx/actors/cluster';
+import { defineActorApp, memoryStorage } from '@sigx/actors/silo';
+import { createAppHandler } from '@sigx/actors/node';
+import { cluster, memoryClusterHub } from '@sigx/actors/cluster';
 import { Counter } from './src/counter.actor.ts';
 
 const SEP = String.fromCharCode(0); // actorId separator: `${type}${SEP}${key}`
@@ -33,70 +33,25 @@ const storage = memoryStorage(); // one shared store = the cluster's database
 const log = (...args) => console.log(...args);
 const step = (title) => log(`\n=== ${title} ===`);
 
-/**
- * Node req/res ↔ WinterCG bridge for the INTERNAL silo-to-silo mount.
- * The abort wiring matters: a peer cancelling a cross-host stream closes
- * the socket, and that must reach the actor's generator (keep-alive
- * release) — so the request's AbortSignal is tied to the connection.
- */
-function bridgeSiloRequest(req, res, url, silo, placement) {
-    const abort = new AbortController();
-    res.on('close', () => abort.abort());
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(req.headers)) {
-        if (value === undefined) continue;
-        for (const v of Array.isArray(value) ? value : [value]) headers.append(name, v);
-    }
-    const method = req.method ?? 'GET';
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-        void handleSiloRequest(
-            new Request(url, {
-                method,
-                headers,
-                signal: abort.signal,
-                ...(method === 'GET' || method === 'HEAD'
-                    ? {}
-                    : { body: Buffer.concat(chunks) })
-            }),
-            { silo, placement, secret }
-        ).then(async (response) => {
-            res.writeHead(response.status, Object.fromEntries(response.headers));
-            if (response.body) {
-                try {
-                    for await (const chunk of response.body) res.write(chunk);
-                } catch {
-                    // Peer disconnected mid-stream; the abort above already
-                    // cancelled the actor-side generator.
-                }
-            }
-            res.end();
-        });
-    });
-}
-
-const members = []; // { silo, placement, server, port }
+const members = []; // { app, silo, placement, server, port }
 for (const port of PORTS) {
-    const placement = clusterPlacement({
-        ...hub.providers(),
+    const plugin = cluster({
+        providers: hub.providers(),
         advertise: `http://127.0.0.1:${port}`,
         secret
     });
-    const silo = createSilo({ actors: [Counter], storage, placement });
-    const actorHandler = createActorHandler({ silo });
-    const server = createServer((req, res) => {
-        const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
-        if (matchesSiloRequest(new Request(url, { method: req.method ?? 'GET' }))) {
-            bridgeSiloRequest(req, res, url, silo, placement);
-            return;
-        }
-        void actorHandler(req, res, () => res.writeHead(404).end());
-    });
+    const app = defineActorApp({ actors: [Counter], storage }).use(plugin);
+
+    // ONE handler for both mounts: the public endpoint and the internal
+    // silo-to-silo route the plugin contributed.
+    const server = createServer(createAppHandler(app));
+    // Listen BEFORE starting — app.start() joins membership, and from that
+    // moment peers may place actors here and call them.
     await new Promise((r) => server.listen(port, r));
-    await silo.start();
-    members.push({ silo, placement, server, port });
-    log(`silo ${placement.identity.siloId} listening on :${port}`);
+    const silo = await app.start();
+
+    members.push({ app, silo, placement: plugin.placement, server, port });
+    log(`silo ${plugin.placement.identity.siloId} listening on :${port}`);
 }
 
 const spread = () =>
@@ -126,14 +81,21 @@ log(`'cart' has exactly one owner: ${entry.siloId} (:${owner.port})`);
 step('3. Cross-host stream — watch() consumed from a NON-owner silo');
 const nonOwner = members.find((m) => m !== owner);
 const snapshots = [];
+let subscribed;
+const attached = new Promise((r) => {
+    subscribed = r;
+});
 const watching = (async () => {
     for await (const s of nonOwner.silo.actor(Counter, 'cart').watch()) {
         snapshots.push(s.count);
         log(`  watch (via ${nonOwner.placement.identity.siloId}): count=${s.count}`);
+        if (snapshots.length === 1) subscribed();
         if (snapshots.length >= 3) break;
     }
 })();
-await new Promise((r) => setTimeout(r, 50));
+// Wait for the subscription to actually attach (its first snapshot), not
+// for a guessed interval.
+await attached;
 await owner.silo.actor(Counter, 'cart').increment(10);
 await owner.silo.actor(Counter, 'cart').increment(100);
 await watching;
@@ -152,7 +114,9 @@ log('(state came back from shared storage — nothing was lost)');
 
 step('5. Graceful shutdown of the survivors');
 await Promise.all(
-    members.filter((m) => m !== owner).map((m) => m.silo.stop({ timeoutMs: 2000 }))
+    members.filter((m) => m !== owner).map((m) => m.app.stop({ timeoutMs: 2000 }))
 );
-members.forEach((m) => m.server.close());
+// The crashed owner's server is already closed — closing twice
+// reports ERR_SERVER_NOT_RUNNING.
+members.filter((m) => m.server.listening).forEach((m) => m.server.close());
 log('\nCLUSTER DEMO COMPLETE — one actor system across three HTTP silos.');

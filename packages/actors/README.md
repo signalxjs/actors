@@ -82,12 +82,17 @@ plugin are identical in both. The app module gets its registry from
 /// <reference types="@sigx/actors/vite-client" />
 ```
 
-`virtual:sigx-actors` resolves under Vite, so an app module that imports it
-is shared by dev and a **Vite-built** server. If your production entry runs
-outside Vite (plain Node, type-stripping the sources), have the app module
-take its registry instead — `export const createApp = (actors) =>
-defineActorApp({ actors, ... })` — and pass `virtual:sigx-actors` in dev,
-the emitted `dist/server/sigx-actors.js` in prod.
+`virtual:sigx-actors` resolves **only under Vite**, so an app module that
+imports it is shared by dev and a Vite-built server. A production entry that
+runs outside Vite (plain Node, type-stripping the sources) cannot import
+that module — and neither can an actor module that imports its bound
+`defineActor` from it, which makes the actor Vite-only too.
+
+Until [#61](https://github.com/andtii/actors/issues/61) moves the registry
+into the plugin, an off-Vite entry should build its own app with an explicit
+actor array, and its actor modules should import `defineActor` from
+`@sigx/actors`. `examples/counter` does exactly that — compare
+`src/actors.app.ts` (dev) with `server.mjs` and `cluster-demo.mjs`.
 
 **Production server entry** — explicit composition, the sigx idiom:
 
