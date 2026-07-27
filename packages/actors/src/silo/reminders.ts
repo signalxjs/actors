@@ -20,7 +20,8 @@
  * firing rather than double-firing (documented).
  */
 import { isStorageConflict } from '../errors';
-import type { ActorRef, ActorStorage, ReminderApi } from '../types';
+import type { ActorRef, ActorStorage, ReminderApi, ActorScheduler } from '../types';
+import { timerScheduler } from './scheduler';
 import { reminderShardKeys, reminderShardOf } from './reminder-shards';
 
 export const REMINDER_TYPE = '$sigx:reminders';
@@ -36,6 +37,8 @@ export interface ReminderServiceOptions {
      * reminder once. Default: own every shard (single-node).
      */
     ownsShard?: (shard: string) => boolean | Promise<boolean>;
+    /** Clock for the tick loop. Default: host timers. */
+    scheduler?: ActorScheduler;
 }
 
 interface ReminderEntry {
@@ -49,7 +52,8 @@ export class ReminderService {
     #fire: (ref: ActorRef, name: string) => Promise<unknown>;
     #ownsShard: (shard: string) => boolean | Promise<boolean>;
     #chain: Promise<unknown> = Promise.resolve();
-    #timer: ReturnType<typeof setInterval> | null = null;
+    #scheduler: ActorScheduler;
+    #stopTick: (() => void) | null = null;
 
     constructor(
         storage: ActorStorage,
@@ -59,21 +63,21 @@ export class ReminderService {
         this.#storage = storage;
         this.#fire = fire;
         this.#ownsShard = options?.ownsShard ?? (() => true);
+        this.#scheduler = options?.scheduler ?? timerScheduler();
     }
 
     start(tickMs: number): void {
-        if (this.#timer) return;
-        this.#timer = setInterval(() => {
+        if (this.#stopTick) return;
+        this.#stopTick = this.#scheduler.every(tickMs, () => {
             void this.#tick().catch((error) => {
                 if (__DEV__) console.error('[sigx actors] reminder tick failed:', error);
             });
-        }, tickMs);
-        (this.#timer as { unref?: () => void }).unref?.();
+        });
     }
 
     stop(): void {
-        if (this.#timer) clearInterval(this.#timer);
-        this.#timer = null;
+        this.#stopTick?.();
+        this.#stopTick = null;
     }
 
     apiFor(ref: ActorRef): ReminderApi {

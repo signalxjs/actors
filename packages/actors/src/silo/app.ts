@@ -23,6 +23,7 @@ import type {
     ActorPlacement,
     ActorRef,
     ActorStorage,
+    ActorScheduler,
     ActorStreamTable,
     AnyActorDefinition,
     DeactivationReason,
@@ -157,6 +158,8 @@ export interface ActorAppOptions {
     /** Base storage, before any plugin decorators. Omit = in-memory. */
     storage?: ActorStorage;
     types?: readonly TypeHandler[];
+    /** The clock for background work. Default: host timers. */
+    scheduler?: ActorScheduler;
     defaults?: SiloDefaults;
 }
 
@@ -312,6 +315,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             ...(storage ? { storage } : {}),
             ...(placement ? { placement } : {}),
             ...(c.typeHandlers.length ? { types: c.typeHandlers } : {}),
+            ...(this.#options.scheduler ? { scheduler: this.#options.scheduler } : {}),
             ...(c.contextFactories.length
                 ? { extendContext: contextExtender(c.contextFactories) }
                 : {}),

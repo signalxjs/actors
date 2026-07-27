@@ -4,6 +4,29 @@
 
 ### Added
 
+- **The clock seam, and `createFetchHandler`** (#48): every recurring or
+  delayed job — the idle sweeper, the reminder tick, `ctx.timer`, and
+  write-behind flushes — now runs through an `ActorScheduler`
+  (`createSilo`/`defineActorApp`'s `scheduler` option) instead of calling
+  `setInterval` directly. `timerScheduler()` is the default and behaves
+  exactly as before; `manualScheduler()` drives time by hand in tests
+  (`advance(ms)`, `now`, `pending`), replacing the suite-wide
+  `{ sweepIntervalMs: 60_000 }` trick that merely pushed background work
+  past the end of each test. The seam is what makes a runtime with no
+  background execution possible: a Cloudflare Worker only runs while
+  handling a request, so an interval registered at startup never fires.
+
+  `createFetchHandler(app)` in `@sigx/actors/server` is the portable
+  entry — the public endpoint plus every plugin route as one
+  `(Request) => Response`, so Deno and Bun need no adapter at all.
+  `createAppHandler` remains the Node mount and deliberately keeps core's
+  connect adapter for the public endpoint rather than routing everything
+  through the generic bridge.
+
+  The seam is named `ActorScheduler`, not `Scheduler`: the latter is a DOM
+  global (the Prioritized Task Scheduling API), and a file that forgot the
+  import silently resolved to it.
+
 - **Vite unification — `sigxActors({ app })`** (#46): dev and prod used to
   configure the same silo twice in different languages. The plugin took
   `storage` as a root-relative PATH STRING whose module needed a magic

@@ -18,6 +18,7 @@ import type {
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,
+    ActorScheduler,
     Silo,
     SiloStats
 } from '../types';
@@ -25,6 +26,7 @@ import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } fro
 import { LocalHost } from './local-host';
 import { ReminderService } from './reminders';
 import { memoryStorage } from './storage-memory';
+import { timerScheduler } from './scheduler';
 
 export interface SiloDefaults {
     /** Idle collection age, ms. Default 20 min — single-node processes
@@ -62,6 +64,13 @@ export interface CreateSiloOptions {
     /** Extra codec handlers for state persistence and dev checks. */
     types?: readonly TypeHandler[];
     /**
+     * The clock for the sweeper, reminder tick, `ctx.timer` and write-behind
+     * flushes. Default `timerScheduler()` (host timers). Replace it on a
+     * runtime without background execution — a Worker never fires an
+     * interval registered at startup — or with `manualScheduler()` in tests.
+     */
+    scheduler?: ActorScheduler;
+    /**
      * Extra members merged onto every activation's `ctx`. Built-in members
      * are never overwritten. `defineActorApp` folds every plugin's
      * `extendContext` into this one function; hand-rolled silos can pass it
@@ -97,7 +106,8 @@ class SiloImpl implements Silo {
         AnyActorDefinition | (() => Promise<AnyActorDefinition | Record<string, unknown>>)
     >();
     #resolved = new Map<string, AnyActorDefinition>();
-    #sweeper: ReturnType<typeof setInterval> | null = null;
+    #scheduler: ActorScheduler;
+    #stopSweeper: (() => void) | null = null;
     #started = false;
     #stopped = false;
 
@@ -118,6 +128,7 @@ class SiloImpl implements Silo {
             );
         }
         this.#storage = options.storage ?? memoryStorage();
+        this.#scheduler = options.scheduler ?? timerScheduler();
         this.#types = options.types ?? [];
 
         if (Array.isArray(options.actors)) {
@@ -137,6 +148,7 @@ class SiloImpl implements Silo {
         const host: ActivationHost = {
             idleAfterMs: this.#defaults.idleAfterMs,
             slowTurnMs: this.#defaults.slowTurnMs,
+            scheduler: this.#scheduler,
             loadState: async (ref) => {
                 const record = await this.#storage.load(ref.type, ref.key);
                 if (!record) return null;
@@ -176,7 +188,10 @@ class SiloImpl implements Silo {
         this.#reminders = new ReminderService(
             this.#storage,
             (ref, name) => this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall()),
-            { ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true }
+            {
+                ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true,
+                scheduler: this.#scheduler
+            }
         );
     }
 
@@ -349,11 +364,9 @@ class SiloImpl implements Silo {
         this.#started = true;
         this.#stopped = false;
         await this.#placement.start?.();
-        this.#sweeper = setInterval(
-            () => this.#local.sweep(Date.now(), this.#defaults.idleAfterMs),
-            this.#defaults.sweepIntervalMs
+        this.#stopSweeper = this.#scheduler.every(this.#defaults.sweepIntervalMs, () =>
+            this.#local.sweep(Date.now(), this.#defaults.idleAfterMs)
         );
-        (this.#sweeper as { unref?: () => void }).unref?.();
         this.#reminders.start(this.#defaults.reminderTickMs);
         stampSilo(this);
     }
@@ -362,8 +375,8 @@ class SiloImpl implements Silo {
         if (this.#stopped) return;
         this.#stopped = true;
         this.#started = false;
-        if (this.#sweeper) clearInterval(this.#sweeper);
-        this.#sweeper = null;
+        this.#stopSweeper?.();
+        this.#stopSweeper = null;
         this.#reminders.stop();
         // Announce the departure BEFORE draining, so cluster peers stop
         // placing new actors here while activations hand off. Best-effort:

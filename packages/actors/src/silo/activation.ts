@@ -15,6 +15,7 @@ import {
 import {
     actorId,
     actorLabel,
+    type ActorScheduler,
     type ActorCallContext,
     type ActorClient,
     type ActorContext,
@@ -39,6 +40,8 @@ const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export interface ActivationHost {
     readonly idleAfterMs: number;
     readonly slowTurnMs: number;
+    /** Clock for `ctx.timer` and write-behind flushes. */
+    readonly scheduler: ActorScheduler;
     loadState(ref: ActorRef): Promise<{ state: object; etag: string } | null>;
     saveState(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
     clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
@@ -91,7 +94,7 @@ export class Activation {
     #notifiedVersion = 0;
     #savedVersion = 0;
     #deepWatchStop: (() => void) | null = null;
-    #writeBehindTimer: ReturnType<typeof setTimeout> | null = null;
+    #cancelWriteBehind: (() => void) | null = null;
     #currentCall: ActorCallContext | null = null;
     #faulted: unknown = null;
     #faultReported = false;
@@ -304,9 +307,9 @@ export class Activation {
                 }
             }
         }
-        if (this.#writeBehindTimer) {
-            clearTimeout(this.#writeBehindTimer);
-            this.#writeBehindTimer = null;
+        if (this.#cancelWriteBehind) {
+            this.#cancelWriteBehind();
+            this.#cancelWriteBehind = null;
         }
         // A stale activation must not overwrite the winning state.
         if (reason !== 'conflict' && this.#version > this.#savedVersion && this.#isWriteBehind()) {
@@ -442,19 +445,17 @@ export class Activation {
     }
 
     #scheduleWriteBehind(): void {
-        if (this.#writeBehindTimer) return;
+        if (this.#cancelWriteBehind) return;
         const p = this.def.__sigxActor.persistence as { debounceMs?: number };
-        this.#writeBehindTimer = setTimeout(() => {
-            this.#writeBehindTimer = null;
+        this.#cancelWriteBehind = this.#host.scheduler.after(p.debounceMs ?? 50, () => {
+            this.#cancelWriteBehind = null;
             // A system turn — serialized with user turns, so the save always
             // captures a between-turns state, never a mid-turn one.
             this.mailbox.run(() => this.#doSave()).catch(() => {
                 // Save failures fault the activation via #doSave; a closed
                 // mailbox at deactivation time is handled by the final flush.
             });
-        }, p.debounceMs ?? 50);
-        // Don't hold the process open for a debounce.
-        (this.#writeBehindTimer as { unref?: () => void }).unref?.();
+        });
     }
 
     async #doSave(): Promise<void> {
@@ -596,19 +597,17 @@ export class Activation {
                             }
                         });
                 };
-                let interval: ReturnType<typeof setInterval> | null = null;
-                const timeout = setTimeout(() => {
+                let cancelInterval: (() => void) | null = null;
+                const cancelDue = self.#host.scheduler.after(options.due, () => {
                     tick();
                     if (options.period !== undefined) {
-                        interval = setInterval(tick, options.period);
-                        (interval as { unref?: () => void }).unref?.();
+                        cancelInterval = self.#host.scheduler.every(options.period, tick);
                     }
-                }, options.due);
-                (timeout as { unref?: () => void }).unref?.();
+                });
                 const handle = {
                     clear() {
-                        clearTimeout(timeout);
-                        if (interval) clearInterval(interval);
+                        cancelDue();
+                        cancelInterval?.();
                     }
                 };
                 self.#timers.set(name, handle);

@@ -14,6 +14,7 @@ export {
     type PluginRegistry
 } from './app';
 export { memoryStorage } from './storage-memory';
+export { timerScheduler, manualScheduler, type ManualScheduler } from './scheduler';
 export { Mailbox } from './mailbox';
 export { REMINDER_METHOD } from './activation';
 export { REMINDER_TYPE } from './reminders';
@@ -25,6 +26,7 @@ export type {
     ActorStorage,
     ActorStorageRecord,
     PlacementBindings,
+    ActorScheduler,
     Silo,
     SiloStats
 } from '../types';

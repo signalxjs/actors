@@ -263,6 +263,48 @@ Precedence for a new activation: `defineActor({ placement })` →
 `clusterPlacement({ typePolicies })` → `clusterPlacement({ policy })` →
 uniform random.
 
+## Other runtimes
+
+`createFetchHandler(app)` is the portable entry — the public actor endpoint
+plus every plugin route as one `(Request) => Response`:
+
+```ts
+import { createFetchHandler } from '@sigx/actors/server';
+
+await app.start();
+Deno.serve(createFetchHandler(app));           // Deno
+export default { fetch: createFetchHandler(app) };  // Bun, Workers
+```
+
+`@sigx/actors/node`'s `createAppHandler` stays the Node mount — it keeps
+core's connect adapter for the public endpoint (backpressure-aware body
+pumping) rather than routing everything through the generic bridge.
+
+### The clock seam
+
+**Background** work — the idle sweeper, the reminder tick, `ctx.timer`,
+write-behind flushes — runs through an `ActorScheduler`. Those are the jobs
+that must keep running *between* requests, so they are the ones a runtime
+has to redirect. Call deadlines and the shutdown drain stay on host timers,
+since they are scoped to an in-flight request or stop:
+
+```ts
+defineActorApp({ actors, scheduler: timerScheduler() })   // the default
+```
+
+That matters for two things. Tests can drive time exactly:
+
+```ts
+const scheduler = manualScheduler();
+const silo = createSilo({ actors, scheduler, defaults: { idleAfterMs: 0 } });
+scheduler.advance(60_000);   // an hour of sweeps, instantly
+```
+
+And it is what makes a runtime with **no background execution** possible at
+all: a Cloudflare Worker only runs while handling a request, so an interval
+registered at startup never fires. That is an architectural difference, not
+something a polyfill can hide — hence a seam rather than a shim.
+
 ## Guards
 
 Actor methods are as security-sensitive as server functions, so the build

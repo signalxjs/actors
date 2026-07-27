@@ -9,7 +9,7 @@ import {
     type NodeRequestHandler,
     type ServerFnHandlerOptions
 } from '@sigx/server/node';
-import { createActorResolver } from '../server/index';
+import { createActorResolver } from '../server/actor-endpoint';
 import type { Silo } from '../types';
 
 export interface ActorHandlerOptions

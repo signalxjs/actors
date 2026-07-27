@@ -157,6 +157,31 @@ export interface PlacementBindings {
     stopReason?: Extract<DeactivationReason, 'shutdown' | 'migrated'>;
 }
 
+/**
+ * The clock seam for BACKGROUND work — the idle sweeper, the reminder tick,
+ * `ctx.timer`, and write-behind flushes. Those are the jobs that must keep
+ * running between requests, so they are the ones a runtime has to be able
+ * to redirect.
+ *
+ * Deliberately NOT everything that touches a timer: call deadlines and the
+ * shutdown drain (`local-host.ts`) stay on host timers, because they are
+ * scoped to a request or a stop that is already in flight and work as-is
+ * wherever that request runs.
+ *
+ * The default (`timerScheduler()`) uses the host timers. A runtime with no
+ * background execution replaces it: a Cloudflare Worker only runs while
+ * handling a request, so a `setInterval` registered at startup never fires
+ * and a Durable Object drives the same work from alarms instead.
+ *
+ * Both methods return a cancel function; cancelling twice is a no-op.
+ */
+export interface ActorScheduler {
+    /** Run `tick` every `intervalMs`. */
+    every(intervalMs: number, tick: () => void): () => void;
+    /** Run `run` once, after `delayMs`. */
+    after(delayMs: number, run: () => void): () => void;
+}
+
 // ---------------------------------------------------------------------------
 // Storage
 

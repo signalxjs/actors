@@ -53,6 +53,7 @@ export type {
     DeactivationReason,
     PlacementBindings,
     ReminderApi,
+    ActorScheduler,
     Silo,
     SiloStats,
     TimerHandle,

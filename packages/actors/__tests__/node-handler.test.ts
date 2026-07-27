@@ -23,6 +23,7 @@ import {
 } from '@sigx/actors/silo';
 import { cluster, memoryClusterHub, preferLocalPolicy } from '@sigx/actors/cluster';
 import { createAppHandler } from '@sigx/actors/node';
+import { createFetchHandler } from '@sigx/actors/server';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -346,5 +347,72 @@ describe('createAppHandler over real sockets', () => {
 
         const response = await fetch(`http://127.0.0.1:${nodes[0]!.port}/nothing/here`);
         expect(response.status).toBe(404);
+    });
+});
+
+describe('createFetchHandler (WinterCG)', () => {
+    it('serves the actor endpoint, plugin routes, and a 404 fallback', async () => {
+        const hub = memoryClusterHub();
+        const app = defineActorApp({
+            actors: [Counter],
+            storage: memoryStorage(),
+            defaults: quiet
+        })
+            .use(
+                cluster({
+                    providers: hub.providers(),
+                    advertise: 'http://fetch.test',
+                    secret: 's'
+                })
+            )
+            .use({
+                name: 'health',
+                setup: (r) =>
+                    r.route({
+                        name: 'health',
+                        match: (request) => new URL(request.url).pathname === '/healthz',
+                        handle: async () => new Response('ok')
+                    })
+            });
+        await app.start();
+        const handler = createFetchHandler(app, { origin: false });
+        try {
+            // public endpoint
+            const call = await handler(
+                new Request('http://fetch.test/_sigx/actor/Counter%23increment', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args: ['k', 3] })
+                })
+            );
+            await expect(call.json()).resolves.toEqual({ data: 3 });
+
+            // a plugin route
+            const health = await handler(new Request('http://fetch.test/healthz'));
+            expect(await health.text()).toBe('ok');
+
+            // the cluster's internal mount is a plugin route too — it exists,
+            // and refuses an unauthenticated call rather than 404ing.
+            const internal = await handler(
+                new Request('http://fetch.test/_sigx/silo/Counter%23increment', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args: ['k'] })
+                })
+            );
+            expect(internal.status).toBe(403);
+
+            // anything else
+            const missing = await handler(new Request('http://fetch.test/nope'));
+            expect(missing.status).toBe(404);
+        } finally {
+            await app.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    it('answers 503 before the app is started', async () => {
+        const app = defineActorApp({ actors: [Counter], storage: memoryStorage(), defaults: quiet });
+        const response = await createFetchHandler(app)(new Request('http://fetch.test/nope'));
+        expect(response.status).toBe(503);
     });
 });
