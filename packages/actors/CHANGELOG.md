@@ -4,6 +4,44 @@
 
 ### Added
 
+- **Invalidation: a write refreshes the reads it staled** (#66).
+  `useActorAction` now invalidates on success, so the manual
+  `await read.refresh()` after every mutation is gone:
+
+  ```ts
+  const messages = useActorState(RoomActor, room, 'recent', 20);
+  const post = useActorAction(RoomActor, room, 'post');
+  await post.run([text]);   // `messages` refreshes itself
+  ```
+
+  The default pattern is the WHOLE-ACTOR prefix `actorKey(def, key)`, not a
+  guess at which methods a write touched — `post()` changing what `recent()`
+  returns is the normal case, and under-invalidating leaves stale data on
+  screen, which is worse than one redundant refetch. Override with
+  `invalidates` (a pattern list, a function of the result and key, or
+  `false`).
+
+  Reads register a key GETTER, not a key, so a reactive key is matched at
+  its current value — a cell registered by value would silently stop
+  matching the moment its key changed, exactly where a stale row is most
+  visible. Invalidation also drops the page-payload entry, so a component
+  that unmounts and remounts cannot restore what SSR wrote before the write.
+
+  The registry is per app, like the rest of `actorsPlugin()`'s state: two
+  concurrent SSR renders must not share one.
+
+  `keyMatches` is reimplemented here (`@sigx/actors/app`) rather than
+  imported — core's lives at `@sigx/server/dist/server/key-match.ts`, is
+  exported from no subpath, and already carries a note that it is duplicated
+  from `@sigx/cache`. `key-match.test.ts` pins the semantics against the same
+  table so the three copies cannot drift silently.
+
+  Server-declared cross-actor invalidation (`invalidates:` on `defineActor`,
+  stamped as `__sigxInvalidates`) is deliberately NOT in this change: core
+  calls that hook with `rq._input`, which only the serverFn validation
+  pipeline sets and actors never runs, so it needs a decision about depending
+  on a core internal — worth making on its own rather than behind a feature.
+
 - **`actorKey()`, `useActorState()`, `useActorAction()`** (#57): actor reads
   and writes as component data.
 

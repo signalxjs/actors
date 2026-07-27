@@ -11,6 +11,7 @@
 import { createToken, getProvided, type InjectionToken } from 'sigx/internals';
 import { useAppContext } from 'sigx';
 import { currentTransport, type ActorTransport } from '../client';
+import { createCellRegistry, type ActorCellRegistry } from './cell-registry';
 
 /** What `actorsPlugin()` provides. Grows as later milestones land. */
 export interface ActorsContext {
@@ -20,6 +21,11 @@ export interface ActorsContext {
      * touches a transport at all.
      */
     readonly transport: ActorTransport | null;
+    /**
+     * Mounted actor reads, so a write can refresh the ones it staled.
+     * Per app: two concurrent SSR renders must not share one.
+     */
+    readonly cells: ActorCellRegistry;
 }
 
 /**
@@ -32,6 +38,15 @@ export const ACTORS_TOKEN: InjectionToken<ActorsContext> = createToken<ActorsCon
 );
 
 let warnedMissing = false;
+
+/**
+ * The registry the no-plugin fallback shares. A fresh one per call would
+ * mean every read registers into an object nobody else ever sees, so
+ * invalidation would silently do nothing — worse than not having it. One
+ * page-global registry is the honest degradation: it works, and it is
+ * exactly the per-app isolation the warning already says you are missing.
+ */
+let fallbackCells: ActorCellRegistry | null = null;
 
 /**
  * The actors context for the current app, or a working default.
@@ -48,13 +63,18 @@ export function useActorsContext(): ActorsContext {
     if (__DEV__ && !warnedMissing) {
         warnedMissing = true;
         console.warn(
-            '[sigx actors] no actorsPlugin() installed on this app — falling back to the ' +
-                'page-global transport. Calls still work; what you lose is per-app transport ' +
-                'isolation (an SSR render can pick up another request\'s config). Add ' +
-                '`app.use(actorsPlugin({ transport }))`.'
+            '[sigx actors] no actorsPlugin() installed on this app — falling back to ' +
+                'page-global state. Calls and invalidation still work; what you lose is ' +
+                'PER-APP ISOLATION, in two places. (1) The transport: a server that ' +
+                'configures one per request can pick up another request\'s config. ' +
+                '(2) The cell registry: with two apps mounted on one page they share it, ' +
+                'so a write in one can refresh reads in the other. (A server render is ' +
+                'unaffected by (2) — reads register on mount, which SSR never runs.) ' +
+                'Add `app.use(actorsPlugin())`.'
         );
     }
-    return { transport: isLiveClient() ? currentTransport() : null };
+    fallbackCells ??= createCellRegistry();
+    return { transport: isLiveClient() ? currentTransport() : null, cells: fallbackCells };
 }
 
 /**

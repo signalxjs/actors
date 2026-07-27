@@ -131,7 +131,8 @@ describe('actorsPlugin', () => {
         const app = fakeApp();
         install(app);
         const context = getProvided(app._context.provides, ACTORS_TOKEN);
-        expect(context).toEqual({ transport: null });
+        expect(context?.transport).toBeNull();
+        expect(context?.cells).toBeDefined();
         expect(app._context.disposables.size).toBe(0);
     });
 
@@ -144,6 +145,10 @@ describe('actorsPlugin', () => {
         const warnings = warn.mock.calls.filter((c) =>
             String(c[0]).includes('no actorsPlugin()')
         );
+        // It must name BOTH things the fallback shares, not just the
+        // transport — the cell registry is page-global here too.
+        expect(String(warnings[0]?.[0])).toMatch(/transport/i);
+        expect(String(warnings[0]?.[0])).toMatch(/registry/i);
         expect(warnings).toHaveLength(1);
     });
 });

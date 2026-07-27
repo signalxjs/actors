@@ -19,6 +19,7 @@
 import type { App, Plugin } from 'sigx';
 import { configureActors, fetchTransport, type ActorTransport, type ActorTransportConfig } from '../client';
 import { ACTORS_TOKEN, isLiveClient, type ActorsContext } from './context';
+import { createCellRegistry } from './cell-registry';
 import { setProvided } from 'sigx/internals';
 
 export interface ActorsPluginOptions {
@@ -70,7 +71,7 @@ export function actorsPlugin(options: ActorsPluginOptions = {}): Plugin {
                 });
             }
 
-            const context: ActorsContext = { transport };
+            const context: ActorsContext = { transport, cells: createCellRegistry() };
             setProvided(app._context.provides, ACTORS_TOKEN, context);
         }
     };

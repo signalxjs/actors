@@ -24,9 +24,10 @@
  * during the render, and core's state-serialization plugin writes the value
  * into the page under the same canonical key the client then reads.
  */
-import { useData, type AsyncState } from 'sigx';
+import { getCurrentInstance, onMounted, onUnmounted, useData, type AsyncState } from 'sigx';
 import { actor } from '../index';
-import { actorKey, type ActorKeyArgs } from '../actor-key';
+import { actorKey, type ActorKeyArg, type ActorKeyArgs } from '../actor-key';
+import { useActorsContext } from './context';
 import type { ActorArgs, ActorReadName, ActorResult, AnyActorDefinition } from '../types';
 
 /** Core's falsy-key vocabulary: a falsy key parks the read in `'idle'`. */
@@ -103,14 +104,16 @@ export function useActorState(
         ? (keyOrCall as () => readonly unknown[] | Falsy)
         : () => [keyOrCall, methodOrOptions as string, ...rest] as const;
 
-    return useData(
-        () => {
-            const next = call();
-            if (!next) return null;
-            const [key, method, ...args] = next as [string, string, ...unknown[]];
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            return actorKey(def, key, method as any, ...(args as any));
-        },
+    const keyOf = (): readonly ActorKeyArg[] | null => {
+        const next = call();
+        if (!next) return null;
+        const [key, method, ...args] = next as [string, string, ...unknown[]];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return actorKey(def, key, method as any, ...(args as any));
+    };
+
+    const state = useData(
+        keyOf,
         // Arguments are read back OUT OF THE KEY rather than closed over, so
         // a stale closure can never serve a fresher key's result. `actor()`
         // is isomorphic, so this one expression is the wire call in the
@@ -136,4 +139,33 @@ export function useActorState(
         },
         options
     ) as AsyncState<unknown>;
+
+    // Register with the app's cell registry so a write to this actor
+    // refreshes this read. The key is passed as a GETTER, evaluated at
+    // invalidation time: a reactive key registered by value would stop
+    // matching the moment it changed, which is exactly the case (a list
+    // whose selection moves) where a stale row is most visible.
+    //
+    // Outside a component there is no unmount to unregister on, so skip —
+    // `useActorState` is a component hook, but `getCurrentInstance()` is
+    // what makes that a graceful no-op rather than a leak.
+    if (getCurrentInstance()) {
+        const registry = useActorsContext().cells;
+        let release: (() => void) | null = null;
+        onMounted(() => {
+            release = registry.add(
+                () => {
+                    const key = keyOf();
+                    return key ? JSON.stringify(key) : null;
+                },
+                () => void state.refresh()
+            );
+        });
+        onUnmounted(() => {
+            release?.();
+            release = null;
+        });
+    }
+
+    return state;
 }

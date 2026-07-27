@@ -16,8 +16,10 @@ export {
     type ActorCall,
     type UseActorStateOptions
 } from './use-actor-state';
-export { useActorAction } from './use-actor-action';
+export { useActorAction, type UseActorActionOptions } from './use-actor-action';
 export { ACTORS_TOKEN, useActorsContext, type ActorsContext } from './context';
+export { keyMatches } from './key-match';
+export type { ActorCellRegistry, InvalidationPattern } from './cell-registry';
 export type {
     ActorCallInit,
     ActorLiveChannel,

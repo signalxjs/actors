@@ -438,6 +438,23 @@ rename surfaces at every call site. Pass a getter for a reactive key —
 `useActorState(CartActor, () => [selectedId(), 'total'])` — and a falsy
 return parks the read in `'idle'`.
 
+A write **refreshes the reads it staled** — no manual `refresh()`:
+
+```ts
+await add.run(['apple']);   // every read of this cart re-runs
+```
+
+The default is the whole-actor prefix `actorKey(def, key)`, because a write
+changing what a *different* method returns is the normal case and
+under-invalidating leaves stale data on screen. Narrow or widen it with
+`invalidates` — a pattern list, a function of `(result, key)`, or `false`:
+
+```ts
+useActorAction(CartActor, id, 'add', {
+    invalidates: [actorKey(CartActor, id, 'total'), ['@actor', 'Order']]
+});
+```
+
 These are built on core's `useData`/`useAction`, which is where the
 behaviour comes from: an `AsyncState` with `match()`/`refresh()` that
 `errorScope` and `all()` already understand, and **in-flight dedupe by
