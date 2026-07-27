@@ -15,6 +15,8 @@ import {
     encodeEnvelope,
     memoryClusterHub,
     preferLocalPolicy,
+    signAuth,
+    verifyAuth,
     SILO_CALL_HEADER,
     type ClusterMembership,
     type SiloDescriptor
@@ -127,12 +129,13 @@ describe('cluster: activation & routing', () => {
         // Owner: silo 2 (selfPolicy pins new activations locally).
         await cluster.silos[2]!.actor(def, 'k').increment(5);
 
-        // Misdirect: hit silo 1's INTERNAL endpoint for silo 2's actor.
+        // Misdirect: hit silo 1's INTERNAL endpoint for silo 2's actor,
+        // with a correctly signed per-request HMAC.
         const misdirected = await cluster.fetch('http://silo1.test/_sigx/silo/Counter%23get', {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                'x-sigx-cluster-auth': 'test-secret',
+                'x-sigx-cluster-auth': await signAuth('test-secret', 'Counter#get', 'c.t'),
                 [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.test')
             },
             body: JSON.stringify({ args: ['k'] })
@@ -709,5 +712,71 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         // migrate() on a non-owner is a harmless no-op.
         await cluster.placements[0]!.migrate(ref);
         await expect(cluster.silos[1]!.actor(def, 'mover').get()).resolves.toBe(6);
+    });
+});
+
+describe('cluster: milestone 5 — per-request HMAC auth', () => {
+    it('accepts a correctly signed request; rejects tampered and wrong-call signatures', async () => {
+        const cluster = await createCluster(1, { actors: [counterActor()] });
+        running = cluster;
+        const send = (auth: string) =>
+            cluster.fetch('http://silo0.test/_sigx/silo/Counter%23get', {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-sigx-cluster-auth': auth,
+                    [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.x')
+                },
+                body: JSON.stringify({ args: ['k'] })
+            });
+
+        const good = await signAuth('test-secret', 'Counter#get', 'c.t');
+        expect((await send(good)).status).toBe(200);
+
+        const flipped = good.endsWith('0') ? `${good.slice(0, -1)}1` : `${good.slice(0, -1)}0`;
+        expect((await send(flipped)).status).toBe(403);
+
+        // A signature captured from a DIFFERENT call must not authorize this one.
+        const otherSymbol = await signAuth('test-secret', 'Counter#increment', 'c.t');
+        expect((await send(otherSymbol)).status).toBe(403);
+        const otherCallId = await signAuth('test-secret', 'Counter#get', 'c.other');
+        expect((await send(otherCallId)).status).toBe(403);
+        expect((await send('test-secret')).status).toBe(403); // old bearer format is dead
+    });
+
+    it('rejects malformed header shapes and undecodable request paths without crashing', async () => {
+        const good = await signAuth('s3cret', 'Cart#add', 'c.1');
+        // Trailing junk, non-hex signatures, and wrong part counts all fail.
+        await expect(verifyAuth('s3cret', `${good}.junk`, 'Cart#add', 'c.1')).resolves.toBe(false);
+        await expect(
+            verifyAuth('s3cret', 'v1.123.not-hex-at-all', 'Cart#add', 'c.1')
+        ).resolves.toBe(false);
+        await expect(verifyAuth('s3cret', 'v1.123', 'Cart#add', 'c.1')).resolves.toBe(false);
+
+        // Malformed percent-encoding in the path: 403, never a crash.
+        const cluster = await createCluster(1, { actors: [counterActor()] });
+        running = cluster;
+        const res = await cluster.fetch('http://silo0.test/_sigx/silo/%E0%A4%A', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-sigx-cluster-auth': good,
+                [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.1' }, 's.x')
+            },
+            body: JSON.stringify({ args: ['k'] })
+        });
+        expect(res.status).toBe(403);
+    });
+
+    it('signatures expire: outside the freshness window verification fails', async () => {
+        const header = await signAuth('s3cret', 'Cart#add', 'c.1');
+        await expect(verifyAuth('s3cret', header, 'Cart#add', 'c.1')).resolves.toBe(true);
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(Date.now() + 6 * 60_000); // past the 5-minute window
+            await expect(verifyAuth('s3cret', header, 'Cart#add', 'c.1')).resolves.toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

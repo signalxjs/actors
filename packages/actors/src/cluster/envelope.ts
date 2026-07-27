@@ -97,16 +97,88 @@ export function decodeEnvelope(header: string): DecodedEnvelope {
     };
 }
 
-/**
- * Constant-time-ish string comparison for the shared secret. Length is
- * checked against the expected secret's own length, so timing reveals
- * nothing an attacker doesn't already know.
- */
-export function secretMatches(presented: string | null, expected: string): boolean {
-    const a = presented ?? '';
-    let mismatch = a.length ^ expected.length;
-    for (let i = 0; i < expected.length; i++) {
-        mismatch |= (a.charCodeAt(i) || 0) ^ expected.charCodeAt(i);
+// ---------------------------------------------------------------------------
+// Per-request HMAC auth
+//
+// `x-sigx-cluster-auth: v1.<timestamp>.<hex hmac>` — HMAC-SHA-256 over
+// `proto\nsymbol\ncallId\ntimestamp`, keyed by the shared secret. Binding
+// the signature to the symbol and callId means a captured header cannot
+// authorize a DIFFERENT call; the freshness window bounds how long any
+// capture stays usable. Replaying the identical request inside the window
+// is out of scope without a nonce store — run mTLS/VPC between silos for
+// transport privacy (documented posture).
+//
+// Cost: ~9µs per sign/verify with the key cached (import is ~2ms, paid
+// once per secret per process) vs ≥200µs for even a loopback hop.
+
+/** Accept signatures this far from the receiver's clock, either way. A
+ *  generous window so HMAC does not reintroduce clock-skew sensitivity. */
+const AUTH_WINDOW_MS = 5 * 60_000;
+
+const encoder = new TextEncoder();
+const keyCache = new Map<string, Promise<CryptoKey>>();
+
+function keyFor(secret: string): Promise<CryptoKey> {
+    let key = keyCache.get(secret);
+    if (!key) {
+        key = crypto.subtle.importKey(
+            'raw',
+            encoder.encode(secret),
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+        keyCache.set(secret, key);
+    }
+    return key;
+}
+
+function toHex(bytes: ArrayBuffer): string {
+    return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacHex(
+    secret: string,
+    symbol: string,
+    callId: string,
+    timestamp: number
+): Promise<string> {
+    const message = `${SILO_PROTO}\n${symbol}\n${callId}\n${timestamp}`;
+    return toHex(await crypto.subtle.sign('HMAC', await keyFor(secret), encoder.encode(message)));
+}
+
+/** Constant-time string comparison (hex signatures). */
+function timingSafeEquals(a: string, b: string): boolean {
+    let mismatch = a.length ^ b.length;
+    for (let i = 0; i < b.length; i++) {
+        mismatch |= (a.charCodeAt(i) || 0) ^ b.charCodeAt(i);
     }
     return mismatch === 0;
+}
+
+/** Produce the auth header value for one outbound silo call. */
+export async function signAuth(secret: string, symbol: string, callId: string): Promise<string> {
+    const timestamp = Date.now();
+    return `v1.${timestamp}.${await hmacHex(secret, symbol, callId, timestamp)}`;
+}
+
+/** Verify an inbound auth header against the call it claims to authorize. */
+export async function verifyAuth(
+    secret: string,
+    header: string | null,
+    symbol: string,
+    callId: string
+): Promise<boolean> {
+    if (!header) return false;
+    const parts = header.split('.');
+    if (parts.length !== 3) return false;
+    const [version, timestampRaw, signature] = parts as [string, string, string];
+    // Exactly `v1.<decimal ms>.<64 lowercase hex>` — anything looser is a no.
+    if (version !== 'v1' || !/^\d{1,15}$/.test(timestampRaw)) return false;
+    if (!/^[0-9a-f]{64}$/.test(signature)) return false;
+    const timestamp = Number(timestampRaw);
+    if (!Number.isSafeInteger(timestamp)) return false;
+    if (Math.abs(Date.now() - timestamp) > AUTH_WINDOW_MS) return false;
+    const expected = await hmacHex(secret, symbol, callId, timestamp);
+    return timingSafeEquals(signature, expected);
 }

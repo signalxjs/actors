@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Clustering milestone 5 — per-request HMAC auth** (#20): the internal
+  silo-to-silo mount now authenticates each request with an HMAC-SHA-256
+  signature (WebCrypto, key cached per secret — ~9µs per operation) over
+  the protocol version, symbol, call id, and a timestamp, replacing the
+  static bearer header outright. A captured header cannot authorize a
+  different call, and signatures expire after a 5-minute freshness
+  window. Identical-request replay within the window is out of scope
+  without a nonce store — mTLS/VPC between silos remains the documented
+  transport posture. `signAuth`/`verifyAuth` are exported for hand-rolled
+  mounts.
+
 - **Clustering milestone 4 — rebalancing & graceful handoff** (#20):
   `silo.stop()` on a cluster silo is now a HANDOFF — it announces
   `leaving` before draining (peers immediately stop placing new actors

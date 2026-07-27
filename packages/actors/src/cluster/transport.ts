@@ -14,7 +14,7 @@ import {
 } from '../errors';
 import type { ActorCallContext, ActorDispatcher, ActorRef } from '../types';
 import { encodeWire, readNdjson, reviveWire, reviver, wireFail, type WireError } from '../wire-shared';
-import { encodeEnvelope, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
+import { encodeEnvelope, signAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type { SiloDescriptor } from './types';
 
 export interface SiloTransportOptions {
@@ -86,7 +86,10 @@ export function createSiloTransport(options: SiloTransportOptions): SiloTranspor
             'content-type': 'application/json',
             [SILO_CALL_HEADER]: encodeEnvelope(call, options.siloId)
         };
-        if (options.secret !== undefined) headers[SILO_AUTH_HEADER] = options.secret;
+        if (options.secret !== undefined) {
+            // Per-request HMAC bound to this symbol + callId (see envelope.ts).
+            headers[SILO_AUTH_HEADER] = await signAuth(options.secret, symbol, call.callId);
+        }
         try {
             return await doFetch(url, {
                 method: 'POST',

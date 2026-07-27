@@ -21,7 +21,7 @@ import {
 } from '@sigx/server/server';
 import { isActorError, type ActorWrongHostError } from '../errors';
 import type { ActorCallContext, AnyActorDefinition, Silo } from '../types';
-import { decodeEnvelope, secretMatches, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
+import { decodeEnvelope, verifyAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type { ClusterPlacement } from './placement';
 
 export interface SiloRequestOptions
@@ -42,16 +42,55 @@ export function handleSiloRequest(
     options: SiloRequestOptions
 ): Promise<Response> {
     const { silo, placement, secret, ...rest } = options;
+    // Malformed percent-encoding would throw inside the core endpoint's
+    // own decode (before any guard) — reject it here so an invalid path
+    // can never crash the mount.
+    try {
+        decodeURIComponent(new URL(request.url).pathname);
+    } catch {
+        return Promise.resolve(
+            new Response(
+                JSON.stringify({
+                    error: { message: '[sigx actors] cluster authentication failed', status: 403 }
+                }),
+                { status: 403, headers: { 'content-type': 'application/json' } }
+            )
+        );
+    }
     return handleServerFnRequest(request, {
         ...rest,
-        // Server-to-server traffic sends no Origin header; the secret is
-        // the authentication, checked before anything dispatches.
+        // Server-to-server traffic sends no Origin header; the per-request
+        // HMAC (bound to symbol + callId, freshness-windowed) is the
+        // authentication, checked before anything dispatches.
         origin: false,
-        guard: (rq) => {
-            if (
-                secret !== undefined &&
-                !secretMatches(rq.request.headers.get(SILO_AUTH_HEADER), secret)
-            ) {
+        guard: async (rq) => {
+            if (secret === undefined) return;
+            let symbol: string;
+            try {
+                symbol = decodeURIComponent(
+                    rq.url.pathname.slice(rq.url.pathname.lastIndexOf('/') + 1)
+                );
+            } catch {
+                // Malformed percent-encoding can't crash the endpoint —
+                // an undecodable path is an unauthenticated request.
+                throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
+            }
+            const callHeader = rq.request.headers.get(SILO_CALL_HEADER);
+            let callId = '';
+            try {
+                callId = callHeader ? decodeEnvelope(callHeader).call.callId : '';
+            } catch {
+                callId = '';
+            }
+            const ok =
+                callId !== '' &&
+                (await verifyAuth(
+                    secret,
+                    rq.request.headers.get(SILO_AUTH_HEADER),
+                    symbol,
+                    callId
+                ));
+            if (!ok) {
                 throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
             }
         },

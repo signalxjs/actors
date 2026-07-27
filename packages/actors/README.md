@@ -244,8 +244,10 @@ the storage etag CAS remains the integrity floor — a briefly-stale route
 costs a rejected save and a fault-and-reload, never corrupted state.
 
 Guards still run once, at the public edge — silo-to-silo hops are
-intra-system, authenticated by the shared `secret` (run mTLS/VPC between
-hosts; transport encryption is deliberately out of scope). Streams cross
+intra-system, authenticated per request with an HMAC signature derived
+from the shared `secret` (bound to the call, freshness-windowed; run
+mTLS/VPC between hosts — transport encryption is deliberately out of
+scope). Streams cross
 hops with cancellation and keep-alive release intact. Placement is
 pluggable per cluster and per type (`policy`, `typePolicies`:
 `consistentHashPolicy()`, `preferLocalPolicy()`, uniform random by

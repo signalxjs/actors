@@ -4,6 +4,11 @@
 
 ### Added
 
+- Membership changes push over a `{ns}:membership` pub/sub channel (via a
+  duplicated subscriber connection): views converge in sub-second time
+  instead of waiting out the poll interval; the poll remains the safety
+  net for missed messages.
+
 - `redisDirectory` implements `evictSilo(siloId)` — a cursor `SCAN` over
   the directory prefix with a per-key owner-checked Lua delete (assumes a
   single logical Redis; on Redis Cluster run per node).

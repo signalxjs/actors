@@ -43,6 +43,7 @@ safely shared).
 {ns}:silos            SET of siloIds              lazily pruned
 {ns}:mver             INCR'd version counter      cheap view-poll compare
 {ns}:dir:{actorId}    "siloId\nactivationId"      no TTL (validity = owner liveness)
+{ns}:membership       pub/sub channel             change push (poll = fallback)
 ```
 
 A silo that cannot heartbeat past `ttlMs` self-fences (stops claiming

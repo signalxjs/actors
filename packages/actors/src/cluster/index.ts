@@ -27,7 +27,9 @@ export {
     SILO_CALL_HEADER,
     SILO_PROTO,
     decodeEnvelope,
-    encodeEnvelope
+    encodeEnvelope,
+    signAuth,
+    verifyAuth
 } from './envelope';
 export type {
     ActorDirectory,

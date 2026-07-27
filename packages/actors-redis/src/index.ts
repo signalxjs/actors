@@ -11,6 +11,8 @@
  *   {ns}:mver             INCR'd version counter      cheap poll compare
  *   {ns}:dir:{actorId}    "siloId\nactivationId"      no TTL — validity is the
  *                                                     owner's liveness
+ *   {ns}:membership       pub/sub channel             membership-change push
+ *                                                     (poll is the fallback)
  *
  * Directory entries carry no TTL by design: one heartbeat per silo, not per
  * activation. The storage etag CAS in the actor runtime remains the
@@ -100,12 +102,14 @@ export function redisMembership(
     };
     const setKey = `${ns}:silos`;
     const mverKey = `${ns}:mver`;
+    const channel = `${ns}:membership`;
     const siloKey = (id: string): string => `${ns}:silo:${id}`;
 
     let self: SiloDescriptor | null = null;
     let cached: MembershipView = { version: 0, silos: [] };
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
+    let subscriber: RedisClient | null = null;
     let lastOkMs = 0;
     let suspected = false;
     const changeCbs = new Set<(view: MembershipView) => void>();
@@ -122,7 +126,13 @@ export function redisMembership(
         suspected = false;
     };
 
-    const bumpVersion = (): Promise<unknown> => client.incr(mverKey);
+    // Bump the version counter, then push: subscribers refresh immediately
+    // instead of waiting out a poll interval. The poll stays as the safety
+    // net for missed messages.
+    const bumpVersion = async (): Promise<void> => {
+        const version = await client.incr(mverKey);
+        await client.publish(channel, String(version)).catch(noop);
+    };
 
     const refresh = async (): Promise<MembershipView> => {
         const [verRaw, ids] = await Promise.all([client.get(mverKey), client.smembers(setKey)]);
@@ -172,6 +182,11 @@ export function redisMembership(
             (beat as { unref?: () => void }).unref?.();
             poll = setInterval(() => void refresh().catch(noop), pollMs);
             (poll as { unref?: () => void }).unref?.();
+            // Push: a dedicated subscriber connection (ioredis subscriber
+            // mode can't run other commands) triggers refresh on publish.
+            subscriber = client.duplicate();
+            subscriber.on('message', () => void refresh().catch(noop));
+            await subscriber.subscribe(channel).catch(noop);
         },
         async setStatus(status: SiloStatus) {
             if (!self) return;
@@ -183,10 +198,23 @@ export function redisMembership(
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
+            if (subscriber) {
+                await subscriber.quit().catch(noop);
+                subscriber = null;
+            }
             if (!self) return;
             const id = self.siloId;
             self = null;
-            await client.multi().del(siloKey(id)).srem(setKey, id).incr(mverKey).exec();
+            // Removal and version bump commit atomically; the push is
+            // best-effort on top (the poll covers a lost publish).
+            const results = await client
+                .multi()
+                .del(siloKey(id))
+                .srem(setKey, id)
+                .incr(mverKey)
+                .exec();
+            const version = results?.[2]?.[1];
+            await client.publish(channel, String(version ?? '')).catch(noop);
         },
         view: () => cached,
         refresh,
