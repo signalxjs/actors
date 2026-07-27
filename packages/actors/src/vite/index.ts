@@ -17,6 +17,8 @@
  *     deactivate types through storage on actor-file edits.
  */
 import type { Plugin, ViteDevServer } from 'vite';
+import type { ActorApp } from '../silo/app';
+import type { Silo } from '../types';
 import { createFilter, normalizePath } from 'vite';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -28,7 +30,13 @@ import {
     type ActorExtraction
 } from './extract';
 
-export { extractActors, type ActorExtraction, type ExtractedActor } from './extract';
+export {
+    extractActors,
+    mayDefineActors,
+    type ActorExtraction,
+    type ExtractedActor,
+    type ExtractOptions
+} from './extract';
 
 export interface SigxActorsOptions {
     /** Which modules are actor modules. Default `**` + `/*.actor.{ts,tsx}`. */
@@ -46,13 +54,17 @@ export interface SigxActorsOptions {
      * downgrade.
      */
     requireGuards?: boolean | 'warn';
-    /** Dev: root-relative module whose `storage` export feeds `createSilo`
-     *  (e.g. '/src/actor-storage.ts'). Omit = in-memory (state resets on
-     *  actor-file edits — a one-time dev log says so). */
-    storage?: string;
-    /** Dev: root-relative module whose `guard` export is the wire-level
-     *  endpoint backstop (same posture as sigxServer's `guard`). */
-    guard?: string;
+    /**
+     * Root-relative module exporting the `defineActorApp` app (as `app` or
+     * default) — e.g. `'/src/actors.app.ts'`. THE source of truth: dev
+     * loads the very module your production entry imports, so storage,
+     * placement, codec handlers, defaults and every plugin are identical
+     * across the two. Omit and dev runs a bare in-memory silo.
+     *
+     * It also makes the app-bound `defineActor` extractable, so actor
+     * modules may import it from here instead of `@sigx/actors`.
+     */
+    app?: string;
     /** Origin policy forwarded to the dev endpoint. Default 'same-origin'. */
     origin?: 'same-origin' | 'verify-when-present' | string[] | false;
     /** Body cap forwarded to the dev endpoint. */
@@ -70,11 +82,15 @@ const DEFAULT_BASE = '/_sigx/actor';
 interface SiloModule {
     createSilo(options: unknown): DevSilo;
 }
-interface DevSilo {
-    start(): Promise<void>;
-    stop(opts?: { timeoutMs?: number }): Promise<void>;
-    deactivateType(type: string): Promise<void>;
-}
+
+/**
+ * The real runtime contracts, not local look-alikes. These are TYPE-only
+ * imports so nothing from the runtime is bundled into the plugin, and
+ * aliasing them means a change to either contract (say `createAppHandler`
+ * needing `app.silo`) breaks here loudly instead of hiding behind a cast.
+ */
+type DevApp = ActorApp;
+type DevSilo = Silo;
 
 export function sigxActors(options: SigxActorsOptions = {}): Plugin {
     const filter = createFilter(
@@ -90,6 +106,41 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
     let bundledServerBuild = false;
     /** Latest extraction per absolute module path. */
     const extractions = new Map<string, ActorExtraction & { warnings: string[] }>();
+
+    /** Absolute, normalized path of the app module, once root is known. */
+    const appModulePath = (): string | null =>
+        options.app ? normalizePath(path.resolve(root, options.app.replace(/^\//, ''))) : null;
+
+    const stripExt = (file: string): string => file.replace(/\.[cm]?[jt]sx?$/, '');
+
+    /**
+     * Does `source`, imported from `fromFile`, resolve to the app module?
+     *
+     * Both spellings Vite accepts count. Missing one is not cosmetic: an
+     * unrecognized `defineActor` import means the module is never extracted,
+     * never client-swapped, and its implementation reaches the browser.
+     */
+    function isAppImport(source: string, fromFile: string): boolean {
+        const target = appModulePath();
+        if (!target) return false;
+        let resolved: string;
+        if (source.startsWith('/')) {
+            // Root-relative, the same spelling `sigxActors({ app })` uses.
+            resolved = normalizePath(path.resolve(root, source.slice(1)));
+        } else if (source.startsWith('.')) {
+            resolved = normalizePath(path.resolve(path.dirname(normalizePath(fromFile)), source));
+        } else {
+            return false;
+        }
+        return stripExt(resolved) === stripExt(target);
+    }
+
+    /** Substrings implying an app-module import, for the cheap pre-filter. */
+    function appHints(): string[] {
+        const target = appModulePath();
+        if (!target) return [];
+        return [stripExt(target.slice(target.lastIndexOf('/') + 1))];
+    }
 
     const inRoot = (file: string): boolean => normalizePath(file).startsWith(root + '/');
     const relPath = (file: string): string =>
@@ -108,7 +159,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
         try {
             const extraction = extractActors(code, relPath(file), {
                 endpoint,
-                requireGuards
+                requireGuards,
+                isDefineSource: (source) => isAppImport(source, file)
             });
             extractions.set(file, extraction);
             return extraction;
@@ -233,7 +285,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                 // AND leaks its implementation to the browser — warn early.
                 if (
                     isClientOut(this) &&
-                    mayDefineActors(code) &&
+                    mayDefineActors(code, appHints()) &&
                     !isGeneratedClientModule(code)
                 ) {
                     this.warn(
@@ -299,6 +351,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
             // A Vite restart re-runs this with a fresh plugin instance; a
             // silo from the previous server may still be stamped. Stop it so
             // mailboxes and timers don't leak across restarts.
+            let devApp: DevApp | null = null;
             const stale = peekDevSilo();
             if (stale) void stale.stop({ timeoutMs: 5_000 }).catch(() => {});
 
@@ -315,7 +368,13 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
             });
 
             server.httpServer?.once('close', () => {
-                void siloReady.then((silo) => silo?.stop({ timeoutMs: 5_000 }).catch(() => {}));
+                void siloReady.then(async (silo) => {
+                    // Stop the APP when there is one: stopping only its silo
+                    // leaves `app.silo` set and the start promise cached, so
+                    // the app would still look running to `createAppHandler`.
+                    if (devApp) return devApp.stop({ timeoutMs: 5_000 }).catch(() => {});
+                    return silo?.stop({ timeoutMs: 5_000 }).catch(() => {});
+                });
             });
 
             const prefix = base.endsWith('/') ? base : base + '/';
@@ -329,25 +388,40 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
             });
 
             async function createDevSilo(devServer: ViteDevServer): Promise<DevSilo | null> {
+                if (options.app) {
+                    // THE unification: dev runs the very app module the
+                    // production entry imports, so storage, placement, codec
+                    // handlers, defaults and plugins are the same in both.
+                    // Loaded through the SSR runner for module-graph identity
+                    // with the render (the #304 bug class).
+                    const appModule = (await devServer.ssrLoadModule(options.app)) as {
+                        app?: DevApp;
+                        default?: DevApp;
+                    };
+                    const app = appModule.app ?? appModule.default;
+                    if (!app || typeof app.start !== 'function') {
+                        throw new Error(
+                            `${options.app} has no \`app\` (or default) export from ` +
+                                'defineActorApp() for sigxActors({ app })'
+                        );
+                    }
+                    devApp = app;
+                    // Registration still comes from `virtual:sigx-actors`,
+                    // which this plugin serves in dev as lazy `import()`s
+                    // through the runner — so HMR keeps working, and the
+                    // app-module/actor-module cycle stays broken.
+                    return await app.start();
+                }
+
                 const siloModule = (await devServer.ssrLoadModule(
                     '@sigx/actors/silo'
                 )) as unknown as SiloModule;
-                let storage: unknown;
-                if (options.storage) {
-                    const storageModule = await devServer.ssrLoadModule(options.storage);
-                    storage = storageModule.storage;
-                    if (!storage) {
-                        throw new Error(
-                            `${options.storage} has no \`storage\` export for sigxActors({ storage })`
-                        );
-                    }
-                } else {
-                    devServer.config.logger.info(
-                        '[sigx:actors] dev silo uses in-memory storage — actor state resets ' +
-                            'when an actor file is edited. Pass sigxActors({ storage }) to keep it.',
-                        { timestamp: true }
-                    );
-                }
+                devServer.config.logger.info(
+                    '[sigx:actors] dev silo uses in-memory storage — actor state resets ' +
+                        'when an actor file is edited. Pass sigxActors({ app }) to run your ' +
+                        'real app config in dev.',
+                    { timestamp: true }
+                );
                 // Lazy per-type loaders through the module runner: edits are
                 // picked up because deactivateType also drops the silo's
                 // resolved-definition cache.
@@ -370,7 +444,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                         })
                     }
                 );
-                const silo = siloModule.createSilo({ actors, storage });
+                const silo = siloModule.createSilo({ actors });
                 await silo.start();
                 return silo;
             }
@@ -387,15 +461,23 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                 const nodeEntry = (await devServer.ssrLoadModule(
                     '@sigx/actors/node'
                 )) as unknown as typeof import('../node/index');
-                const guardModule = options.guard
-                    ? await devServer.ssrLoadModule(options.guard)
-                    : undefined;
+                if (devApp) {
+                    // One handler for the public endpoint AND every
+                    // plugin-contributed route, so a cluster's internal mount
+                    // answers in dev exactly as it does in prod.
+                    const handler = nodeEntry.createAppHandler(devApp, {
+                        base,
+                        origin: options.origin,
+                        maxBodyBytes: options.maxBodyBytes
+                    });
+                    await handler(req, res, next);
+                    return;
+                }
                 const handler = nodeEntry.createActorHandler({
-                    silo: silo as never,
+                    silo,
                     base,
                     origin: options.origin,
-                    maxBodyBytes: options.maxBodyBytes,
-                    guard: guardModule?.guard as never
+                    maxBodyBytes: options.maxBodyBytes
                 });
                 await handler(req, res, next);
             }

@@ -3,9 +3,7 @@ import { sigxActors } from '@sigx/actors/vite';
 
 export default defineConfig({
     plugins: [
-        sigxActors({
-            // Keep dev state across actor-file edits and restarts:
-            storage: '/src/storage.ts'
-        })
+        // Dev runs the real app config — storage, defaults, plugins and all.
+        sigxActors({ app: '/src/actors.app.ts' })
     ]
 });

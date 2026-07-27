@@ -3,7 +3,7 @@
  * requireGuards gate, mid-edit refusal, and the prod registry.
  */
 import { describe, expect, it } from 'vitest';
-import { extractActors, sigxActors } from '@sigx/actors/vite';
+import { extractActors, mayDefineActors, sigxActors } from '@sigx/actors/vite';
 
 const CART = `
 import { defineActor } from '@sigx/actors';
@@ -199,5 +199,99 @@ export const Open = defineActor({ type: 'Open', state: () => ({}), methods: () =
         const registry = plugin.load!.call(makeCtx('ssr'), '\0virtual:sigx-actors');
         expect(registry).toContain(`"Cart": () => import(`);
         expect(registry).toContain(`m["CartActor"]`);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The app-bound `defineActor` (sigxActors({ app })).
+//
+// This is the security-critical half of M3: an actor module that is NOT
+// extracted is never client-swapped, so its implementation — guards, secrets,
+// storage calls — would be bundled into the browser build. "Not extracted"
+// fails silently, so it is asserted explicitly here.
+
+const APP_BOUND = `
+import { defineActor } from '../actors.app';
+
+export const Session = defineActor({
+    type: 'Session',
+    unguarded: true,
+    state: () => ({ hits: 0 }),
+    methods: (ctx) => ({
+        async touch() { return ++ctx.state.hits; }
+    })
+});
+`;
+
+/** Mirrors the plugin: does the specifier resolve to the app module? */
+function appSource(fromDir: string, appPath: string) {
+    return (source: string): boolean => {
+        if (!source.startsWith('.')) return false;
+        const parts = `${fromDir}/${source}`.split('/');
+        const out: string[] = [];
+        for (const part of parts) {
+            if (part === '.' || part === '') continue;
+            if (part === '..') out.pop();
+            else out.push(part);
+        }
+        return out.join('/').replace(/\.[cm]?[jt]sx?$/, '') === appPath.replace(/\.[cm]?[jt]sx?$/, '');
+    };
+}
+
+describe('app-bound defineActor extraction', () => {
+    it('extracts an actor whose defineActor comes from the app module', () => {
+        const result = extractActors(APP_BOUND, 'src/actors/session.actor.ts', {
+            ...opts(),
+            isDefineSource: appSource('src/actors', 'src/actors.app.ts')
+        });
+        expect(result.errors).toEqual([]);
+        expect(result.actors.map((a) => a.type)).toEqual(['Session']);
+        // ...and it is still swapped for the browser.
+        expect(result.clientModule).toContain('__actorRef');
+        expect(result.clientModule).not.toContain('ctx.state.hits');
+    });
+
+    it('does NOT treat an unrelated relative import as a defineActor source', () => {
+        const result = extractActors(APP_BOUND, 'src/actors/session.actor.ts', {
+            ...opts(),
+            isDefineSource: appSource('src/actors', 'src/somewhere-else.ts')
+        });
+        // Nothing extracted — the local `defineActor` is some other function.
+        expect(result.actors).toEqual([]);
+    });
+
+    it('still enforces the guard gate on app-bound actors', () => {
+        const unguarded = APP_BOUND.replace('unguarded: true,', '');
+        const result = extractActors(unguarded, 'src/actors/session.actor.ts', {
+            ...opts(true),
+            isDefineSource: appSource('src/actors', 'src/actors.app.ts')
+        });
+        expect(result.errors.map((e) => e.message).join(' ')).toMatch(/guard|use|unguarded/i);
+    });
+
+    it('pre-filters app-module importers only when hinted', () => {
+        // The module never mentions '@sigx/actors', so without the hint the
+        // cheap filter would skip it and it would never be swapped.
+        expect(mayDefineActors(APP_BOUND)).toBe(false);
+        expect(mayDefineActors(APP_BOUND, ['actors.app'])).toBe(true);
+    });
+});
+
+describe('app-module import spellings', () => {
+    // Both spellings Vite accepts must be recognized. A miss here is silent
+    // and severe: the module is not extracted, so it is never client-swapped
+    // and its implementation reaches the browser.
+    const ROOT_RELATIVE = APP_BOUND.replace("'../actors.app'", "'/src/actors.app.ts'");
+
+    it('recognizes a root-relative app import', () => {
+        const result = extractActors(ROOT_RELATIVE, 'src/actors/session.actor.ts', {
+            ...opts(),
+            // The plugin's predicate resolves '/x' against the Vite root.
+            isDefineSource: (source) =>
+                source.replace(/^\//, '').replace(/\.[cm]?[jt]sx?$/, '') === 'src/actors.app'
+        });
+        expect(result.errors).toEqual([]);
+        expect(result.actors.map((a) => a.type)).toEqual(['Session']);
+        expect(result.clientModule).toContain('__actorRef');
     });
 });

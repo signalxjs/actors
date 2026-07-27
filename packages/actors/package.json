@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors",
     "version": "0.1.0",
-    "description": "Orleans-style virtual actors for SignalX — addressable, single-threaded, persistent server state",
+    "description": "Orleans-style virtual actors for SignalX \u2014 addressable, single-threaded, persistent server state",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -45,6 +45,9 @@
         "./vite": {
             "types": "./dist/vite/index.d.ts",
             "import": "./dist/vite.js"
+        },
+        "./vite-client": {
+            "types": "./dist/vite/virtual.d.ts"
         }
     },
     "files": [
@@ -52,7 +55,7 @@
     ],
     "sideEffects": false,
     "scripts": {
-        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly",
+        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly && node -e \"require('fs').copyFileSync('src/vite/virtual.d.ts','dist/vite/virtual.d.ts')\"",
         "dev": "vite build --watch"
     },
     "keywords": [

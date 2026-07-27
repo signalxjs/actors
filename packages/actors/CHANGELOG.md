@@ -4,6 +4,37 @@
 
 ### Added
 
+- **Vite unification — `sigxActors({ app })`** (#46): dev and prod used to
+  configure the same silo twice in different languages. The plugin took
+  `storage` as a root-relative PATH STRING whose module needed a magic
+  named export, while the entry took real values — and the dev silo was
+  built as `createSilo({ actors, storage })`, so **dev could not receive
+  `placement`, `types`, `defaults`, or any plugin at all**: clustering,
+  metrics and ctx extensions simply did not exist in dev.
+
+  `sigxActors({ app: '/src/actors.app.ts' })` loads the very app module the
+  production entry imports and starts it, so every setting and plugin is
+  identical across the two. Plugin-contributed routes are mounted in dev as
+  well, so a cluster's internal mount answers there exactly as it does under
+  `createAppHandler`.
+
+  The extractor now accepts `defineActor` imported from the app module, not
+  only from `@sigx/actors` — required for M1's app-bound `defineActor`, and
+  load-bearing for safety: an unextracted actor module is never
+  client-swapped, so its implementation would ship to the browser.
+  `mayDefineActors` takes hints for the same reason.
+
+  New `@sigx/actors/vite-client` export carries ambient types for
+  `virtual:sigx-actors` (reference it from your `env.d.ts`, as with
+  `vite/client`).
+
+### Removed
+
+- **`sigxActors({ storage })` and `sigxActors({ guard })`** (#46): the
+  path-string options are replaced by `app`, which supplies both (and
+  everything else) as real values. Nothing is published, so there is no
+  shim.
+
 - **`cluster()` as an app plugin, and a Node adapter for every mount**
   (#44): a clustered silo used to repeat itself — `secret` went to both
   `clusterPlacement` and `handleSiloRequest`, `internalBase` had to agree

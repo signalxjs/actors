@@ -1,4 +1,5 @@
-import { defineActor } from '@sigx/actors';
+// The app-bound defineActor: `ctx` carries whatever the app's plugins add.
+import { defineActor } from './actors.app';
 
 /**
  * A virtual actor: addressable by key, activated lazily on first call,

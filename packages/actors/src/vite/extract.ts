@@ -42,9 +42,31 @@ export function isGeneratedClientModule(code: string): boolean {
     return code.startsWith(CLIENT_HEADER);
 }
 
-/** Cheap pre-filter: can this module define actors at all? */
-export function mayDefineActors(code: string): boolean {
-    return code.includes('defineActor') && code.includes('@sigx/actors');
+/**
+ * Cheap pre-filter: can this module define actors at all?
+ *
+ * `hints` carries extra substrings that imply a `defineActor` import —
+ * with `sigxActors({ app })` an actor module imports the APP module
+ * (`../actors.app`) and so never mentions `@sigx/actors` at all. Missing
+ * one here is not a soft failure: an unextracted actor module is never
+ * client-swapped, so its implementation would ship to the browser.
+ */
+export function mayDefineActors(code: string, hints: readonly string[] = []): boolean {
+    if (!code.includes('defineActor')) return false;
+    return code.includes('@sigx/actors') || hints.some((hint) => code.includes(hint));
+}
+
+export interface ExtractOptions {
+    /** Fetch target baked into the emitted client refs. */
+    endpoint: string;
+    /** The guard build gate. */
+    requireGuards: boolean | 'warn';
+    /**
+     * Does this import specifier also export `defineActor`? Used for the
+     * app module under `sigxActors({ app })`; relative specifiers are
+     * resolved by the caller, which knows the importer's directory.
+     */
+    isDefineSource?: (source: string) => boolean;
 }
 
 const LANG_BY_EXT: Record<string, 'ts' | 'tsx' | 'js' | 'jsx'> = {
@@ -57,7 +79,7 @@ const LANG_BY_EXT: Record<string, 'ts' | 'tsx' | 'js' | 'jsx'> = {
 export function extractActors(
     code: string,
     file: string,
-    options: { endpoint: string; requireGuards: boolean | 'warn' }
+    options: ExtractOptions
 ): ActorExtraction & { warnings: string[] } {
     const ext = file.slice(file.lastIndexOf('.'));
     const program = parseAst(code, { lang: LANG_BY_EXT[ext] ?? 'tsx' }, file) as unknown as Node;
@@ -69,7 +91,13 @@ export function extractActors(
     /** Local names `defineActor` is imported under. */
     const defineNames = new Set<string>();
     for (const node of program.body as Node[]) {
-        if (node.type !== 'ImportDeclaration' || node.source?.value !== '@sigx/actors') continue;
+        if (node.type !== 'ImportDeclaration') continue;
+        const source = node.source?.value as string | undefined;
+        if (source === undefined) continue;
+        // `@sigx/actors` itself, or the app module re-exporting a bound
+        // `defineActor`. The caller supplies that predicate because only it
+        // can resolve a relative specifier against the importing file.
+        if (source !== '@sigx/actors' && !options.isDefineSource?.(source)) continue;
         if (node.importKind === 'type') continue;
         for (const spec of (node.specifiers ?? []) as Node[]) {
             if (

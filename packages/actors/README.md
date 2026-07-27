@@ -65,12 +65,29 @@ endpoint at `/_sigx/actor`:
 ```ts
 // vite.config.ts
 import { sigxActors } from '@sigx/actors/vite';
-export default { plugins: [sigxActors({ storage: '/src/storage.ts' })] };
+export default { plugins: [sigxActors({ app: '/src/actors.app.ts' })] };
 ```
 
 Actors live in **`*.actor.ts`** modules. The build swaps them wholesale for
 typed client stubs — implementations never reach the browser (values are
 swapped, types are not, so the client proxy is fully typed).
+
+`sigxActors({ app })` points dev at the same app module your production
+entry imports, so storage, placement, codec handlers, defaults and every
+plugin are identical in both. The app module gets its registry from
+`virtual:sigx-actors`; add its types once, next to your other Vite types:
+
+```ts
+// src/env.d.ts
+/// <reference types="@sigx/actors/vite-client" />
+```
+
+`virtual:sigx-actors` resolves under Vite, so an app module that imports it
+is shared by dev and a **Vite-built** server. If your production entry runs
+outside Vite (plain Node, type-stripping the sources), have the app module
+take its registry instead — `export const createApp = (actors) =>
+defineActorApp({ actors, ... })` — and pass `virtual:sigx-actors` in dev,
+the emitted `dist/server/sigx-actors.js` in prod.
 
 **Production server entry** — explicit composition, the sigx idiom:
 
@@ -341,9 +358,10 @@ const summary = useData(['cart', id], () => actor(CartActor, id).getSummary());
 
 The vite plugin's dev silo lives in the SSR module runner's graph and is
 reachable through the `__SIGX_ACTOR_SILO__` seam. Editing a `*.actor.ts`
-file deactivates that type through storage — **state survives edits iff you
-configured `sigxActors({ storage })`**; with the in-memory default it resets
-(the dev log says so once). Mid-edit syntax errors never reach the browser:
+file deactivates that type through storage — **state survives edits iff your
+app configures persistent storage** (`sigxActors({ app })` runs your real
+config, so it does); with the bare in-memory default it resets (the dev log
+says so once). Mid-edit syntax errors never reach the browser:
 the last good client stub is served, or a loud refusal.
 
 ## Wire protocol
@@ -442,7 +460,8 @@ store.
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors` — the build-swap target |
 | `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
-| `@sigx/actors/vite` | `sigxActors()` |
+| `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
+| `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |
 
 ## Design notes & deliberate limits (v1)
 

@@ -9,7 +9,10 @@ build/
 docs/dist/
 *.d.ts
 *.d.ts.map
-!packages/*/src/*.d.ts
+# Hand-written ambient declarations are SOURCE, at any depth
+# (e.g. src/vite/virtual.d.ts declaring `virtual:sigx-actors`).
+!packages/*/src/**/*.d.ts
+!examples/*/src/**/*.d.ts
 *.js
 *.js.map
 
