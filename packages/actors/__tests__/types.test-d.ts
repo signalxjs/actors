@@ -4,7 +4,13 @@
  */
 import { describe, expectTypeOf, it } from 'vitest';
 import { actor, defineActor } from '@sigx/actors';
-import type { ActorContext } from '@sigx/actors';
+import type {
+    ActorContext,
+    ActorContextBase,
+    ActorPlacementStrategy,
+    AnyActorDefinition
+} from '@sigx/actors';
+import { defineActorApp, type ActorPlugin } from '@sigx/actors/silo';
 
 const Cart = defineActor({
     type: 'Cart',
@@ -66,5 +72,141 @@ describe('ActorClient inference', () => {
                 }
             })
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin context extension: `.use()` accumulates each plugin's `Ext`, and the
+// app-bound `defineActor` types it inside every actor — no global
+// declaration merging, so the additions stay per-app.
+
+interface Logger {
+    info(message: string): void;
+}
+
+const loggerPlugin: ActorPlugin<{ log: Logger }> = {
+    name: 'logger',
+    setup(registry) {
+        registry.extendContext(() => ({ log: { info: () => {} } }));
+    }
+};
+
+const tracingPlugin: ActorPlugin<{ traceId: string }> = {
+    name: 'tracing',
+    setup(registry) {
+        registry.extendContext(() => ({ traceId: 'trace' }));
+    }
+};
+
+describe('public type surface', () => {
+    it('exports the types the docs name from the root entry', () => {
+        // Regression guard: these are reachable from `@sigx/actors` itself,
+        // not just from `../types`. Ordinary .test.ts files are transpiled
+        // without type checking and `pnpm typecheck` covers src only, so a
+        // missing barrel export is invisible anywhere but here.
+        const strategy: ActorPlacementStrategy = { name: 'prefer-local' };
+        expectTypeOf(strategy.name).toEqualTypeOf<string | undefined>();
+        // `ActorContext` is the base plus the app's plugin additions.
+        expectTypeOf<ActorContext<{ n: number }>>().toMatchTypeOf<
+            ActorContextBase<{ n: number }>
+        >();
+    });
+
+    it('accepts a declared placement on an actor', () => {
+        void defineActor({
+            type: 'Placed',
+            unguarded: true,
+            placement: { name: 'prefer-local' },
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                bump() {
+                    return ++ctx.state.n;
+                }
+            })
+        });
+    });
+});
+
+describe('plugin ctx extension inference', () => {
+    it('types a single plugin addition inside the actor', () => {
+        const app = defineActorApp({ actors: [] }).use(loggerPlugin);
+        void app.defineActor({
+            type: 'Logged',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                bump() {
+                    expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
+                    ctx.log.info('bump');
+                    // built-ins are still there alongside the addition
+                    expectTypeOf(ctx.key).toEqualTypeOf<string>();
+                    return ++ctx.state.n;
+                }
+            })
+        });
+    });
+
+    it('accumulates across several .use() calls', () => {
+        const app = defineActorApp({ actors: [] }).use(loggerPlugin).use(tracingPlugin);
+        void app.defineActor({
+            type: 'Both',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                bump() {
+                    expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
+                    expectTypeOf(ctx.traceId).toEqualTypeOf<string>();
+                    return ++ctx.state.n;
+                }
+            })
+        });
+    });
+
+    it('survives destructuring — the documented `export const { defineActor }` shape', () => {
+        const { defineActor: bound } = defineActorApp({ actors: [] }).use(loggerPlugin);
+        void bound({
+            type: 'Destructured',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                bump() {
+                    expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
+                    return ++ctx.state.n;
+                }
+            })
+        });
+    });
+
+    it('does NOT leak a plugin member into an app that never used it', () => {
+        const app = defineActorApp({ actors: [] });
+        void app.defineActor({
+            type: 'Bare',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                bump() {
+                    // @ts-expect-error no plugin contributed `log`
+                    void ctx.log;
+                    return ++ctx.state.n;
+                }
+            })
+        });
+    });
+
+    it('still produces a plain ActorDefinition the silo accepts', () => {
+        const app = defineActorApp({ actors: [] }).use(loggerPlugin);
+        const Logged = app.defineActor({
+            type: 'Plain',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                bump() {
+                    return ++ctx.state.n;
+                }
+            })
+        });
+        expectTypeOf(Logged).toMatchTypeOf<AnyActorDefinition>();
+        // and the client inference is unchanged by the extension
+        expectTypeOf(actor(Logged, 'k').bump).returns.toEqualTypeOf<Promise<number>>();
     });
 });

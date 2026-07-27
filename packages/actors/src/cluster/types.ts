@@ -6,7 +6,7 @@
  * `./memory`; Redis providers ship as `@sigx/actors-redis`; a Kubernetes
  * or gossip provider is a pure addition behind the same interfaces.
  */
-import type { ActorRef } from '../types';
+import type { ActorPlacementStrategy, ActorRef } from '../types';
 
 /** Minted once per silo START and never reused — a restart is a new silo. */
 export interface SiloIdentity {
@@ -102,8 +102,17 @@ export interface ClusterProviders {
     directory: ActorDirectory;
 }
 
-/** Picks the silo to host a NEW activation. */
-export interface PlacementPolicy {
+/**
+ * Picks the silo to host a NEW activation — Orleans's `IPlacementDirector`.
+ * Custom strategies implement this and are applied either centrally
+ * (`clusterPlacement({ policy, typePolicies })`) or per actor
+ * (`defineActor({ placement })`), which is the attribute-style form and
+ * takes precedence.
+ *
+ * `choose` is SYNC on purpose: it sits under `dispatcherFor` on the hot
+ * path, which is also why `membership.view()` is sync.
+ */
+export interface PlacementPolicy extends ActorPlacementStrategy {
     choose(
         ref: ActorRef,
         view: MembershipView,

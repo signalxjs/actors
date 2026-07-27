@@ -4,6 +4,15 @@
  * the root entry never imports it.
  */
 export { createSilo, type CreateSiloOptions, type SiloDefaults } from './silo';
+export {
+    defineActorApp,
+    type ActorApp,
+    type ActorAppOptions,
+    type ActorPlugin,
+    type ActorRoute,
+    type DispatchMiddleware,
+    type PluginRegistry
+} from './app';
 export { memoryStorage } from './storage-memory';
 export { Mailbox } from './mailbox';
 export { REMINDER_METHOD } from './activation';

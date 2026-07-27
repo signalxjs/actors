@@ -688,6 +688,60 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         expect(cluster.silos[0]!.stats().activations).toBe(0);
     });
 
+    it('defineActor({ placement }) routes the type and beats typePolicies', async () => {
+        // Orleans's placement attribute: the strategy rides the actor.
+        const pinned = defineActor({
+            type: 'Pinned',
+            unguarded: true,
+            placement: preferLocalPolicy(),
+            state: () => ({}),
+            methods: () => ({
+                async ping() {
+                    return 'pong';
+                }
+            })
+        });
+        const cluster = await createCluster(2, {
+            actors: [pinned],
+            // Both of these would send it to silo 0; the declaration wins.
+            policy: { name: 'pin-zero', choose: (_r, view) => view.silos[0]! },
+            typePolicies: { Pinned: { name: 'pin-zero', choose: (_r, view) => view.silos[0]! } }
+        });
+        running = cluster;
+
+        // Called through silo 1 — prefer-local keeps it there.
+        await cluster.silos[1]!.actor(pinned, 'a').ping();
+        expect(cluster.silos[1]!.stats().perType['Pinned']).toBe(1);
+        expect(cluster.silos[0]!.stats().activations).toBe(0);
+    });
+
+    it('ignores a declared strategy that is not a cluster policy', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        // A marker for some other backend (no choose()) must not break
+        // routing — it falls back to the configured policy.
+        const odd = defineActor({
+            type: 'Odd',
+            unguarded: true,
+            placement: { name: 'durable-object' },
+            state: () => ({}),
+            methods: () => ({
+                async ping() {
+                    return 'pong';
+                }
+            })
+        });
+        const cluster = await createCluster(2, { actors: [odd], policy: selfPolicy });
+        running = cluster;
+        try {
+            await expect(cluster.silos[1]!.actor(odd, 'a').ping()).resolves.toBe('pong');
+            expect(warn).toHaveBeenCalledWith(
+                expect.stringContaining('not a cluster PlacementPolicy')
+            );
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
     it('migrate() releases the claim and the next call re-places with state intact', async () => {
         const events: string[] = [];
         const cluster = await createCluster(2, {

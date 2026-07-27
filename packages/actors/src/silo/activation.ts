@@ -32,6 +32,9 @@ export const REMINDER_METHOD = '$sigx:reminder';
 /** Change-feed buffer bound — drop-oldest beyond this. */
 const CHANGE_BUFFER = 16;
 
+/** Keys a context extension may never set — they reach the prototype. */
+const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /** What the silo provides to every activation. */
 export interface ActivationHost {
     readonly idleAfterMs: number;
@@ -51,6 +54,13 @@ export interface ActivationHost {
     onFault(activation: Activation): void;
     /** `ctx.deactivate()` was requested and the queue just emptied. */
     onIdleRequest(activation: Activation): void;
+    /**
+     * Plugin-contributed `ctx` members, merged onto the context of every
+     * activation (`defineActorApp` folds every plugin's `extendContext`
+     * into one call). Built-in members are never overwritten — a collision
+     * is a plugin bug and is dev-warned, not silently honoured.
+     */
+    extendContext?(ref: ActorRef): object | undefined;
 }
 
 interface ChangeSub {
@@ -482,6 +492,46 @@ export class Activation {
     }
 
     #buildContext(): ActorContext<object> {
+        const base = this.#buildBaseContext();
+        const extension = this.#host.extendContext?.(this.ref);
+        if (!extension) return base;
+        for (const key of Object.keys(extension)) {
+            // Prototype-mutating keys are refused OUTRIGHT, ahead of the
+            // built-in check. `__proto__` and `constructor` would already be
+            // caught by the `in` test below (both live on Object.prototype),
+            // but only implicitly — naming them here keeps the guard from
+            // silently lapsing if that test ever narrows to `hasOwn`, and a
+            // plugin that forwards a `JSON.parse`d object can carry an OWN
+            // `__proto__` key.
+            if (UNSAFE_CONTEXT_KEYS.has(key)) {
+                if (__DEV__) {
+                    console.warn(
+                        `[sigx actors] a plugin's extendContext() returned the unsafe key ` +
+                            `"${key}" for ${actorLabel(this.ref)} — ignored (it would mutate the ` +
+                            `context prototype).`
+                    );
+                }
+                continue;
+            }
+            // `in` also catches the accessor members (`state`), so a plugin
+            // can never shadow a built-in with a plain data property.
+            if (key in base) {
+                if (__DEV__) {
+                    console.warn(
+                        `[sigx actors] a plugin's extendContext() tried to overwrite the built-in ` +
+                            `ctx.${key} on ${actorLabel(this.ref)} — ignored. Rename the addition.`
+                    );
+                }
+                continue;
+            }
+            (base as unknown as Record<string, unknown>)[key] = (
+                extension as Record<string, unknown>
+            )[key];
+        }
+        return base;
+    }
+
+    #buildBaseContext(): ActorContext<object> {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         const opts = this.def.__sigxActor;

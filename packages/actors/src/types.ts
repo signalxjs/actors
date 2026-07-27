@@ -70,6 +70,25 @@ export interface ActorDispatcher {
 }
 
 /**
+ * A per-actor-type placement strategy — Orleans's `[PlacementStrategy]`
+ * attribute, declared ON the actor rather than in a central map.
+ *
+ * Deliberately opaque here: choosing a host needs a membership view, which
+ * is a cluster concept, and core must not depend on `./cluster`. Cluster
+ * narrows this to `PlacementPolicy` (adding `choose()`); the single-node
+ * host has one silo and ignores it. That keeps the declaration next to the
+ * actor while the algorithm stays in the layer that can implement it.
+ */
+export interface ActorPlacementStrategy {
+    /**
+     * Diagnostic name, e.g. `'prefer-local'` — surfaced in placement
+     * warnings. Optional on purpose: a custom strategy should not have to
+     * carry boilerplate that only exists for logging.
+     */
+    readonly name?: string;
+}
+
+/**
  * Placement: given a ref, WHO dispatches it. The single-node provider
  * always answers "the local host"; a Durable Objects provider answers with
  * a stub whose dispatch() is a fetch to the DO. Sync-or-promise so the
@@ -199,11 +218,15 @@ export type DeactivationReason =
     | 'migrated';
 
 /**
- * The per-activation context — created once per activation and closed over
- * by the `methods`/`streams` factories. Activation-scoped (not call-scoped),
- * which is why it is a closure and not a first parameter.
+ * The built-in half of the per-activation context — created once per
+ * activation and closed over by the `methods`/`streams` factories.
+ * Activation-scoped (not call-scoped), which is why it is a closure and not
+ * a first parameter.
+ *
+ * Actors see `ActorContext` (below), which is this plus whatever the app's
+ * plugins contribute.
  */
-export interface ActorContext<S extends object> {
+export interface ActorContextBase<S extends object> {
     readonly ref: ActorRef;
     readonly key: string;
     /**
@@ -240,6 +263,21 @@ export interface ActorContext<S extends object> {
     changes(): AsyncIterable<S>;
 }
 
+/**
+ * What a `methods`/`streams` factory receives: the built-in members plus
+ * `Ext`, the members this app's plugins contribute
+ * (`PluginRegistry.extendContext`).
+ *
+ * `Ext` is threaded from `ActorApp` through the app-bound `defineActor`
+ * (`defineActorApp(...).defineActor`), so a plugin's additions are typed
+ * inside every actor that imports it — no global declaration merging, and
+ * the types stay per-app rather than per-process.
+ */
+export type ActorContext<
+    S extends object,
+    Ext extends object = Record<never, never>
+> = ActorContextBase<S> & Ext;
+
 export type ActorMethod = (...args: never[]) => unknown;
 export type ActorMethodTable = Record<string, ActorMethod>;
 export type ActorStreamMethod = (...args: never[]) => AsyncIterable<unknown>;
@@ -248,7 +286,8 @@ export type ActorStreamTable = Record<string, ActorStreamMethod>;
 export interface ActorOptions<
     S extends object,
     M extends ActorMethodTable,
-    St extends ActorStreamTable
+    St extends ActorStreamTable,
+    Ext extends object = Record<never, never>
 > {
     /**
      * Stable type id — the actor's wire, directory, and storage name.
@@ -280,18 +319,25 @@ export interface ActorOptions<
     reentrant?: boolean;
     /** Idle collection age for this type; overrides the silo default. */
     idleAfterMs?: number;
+    /**
+     * Where NEW activations of this type go — Orleans's placement attribute
+     * (`consistentHashPolicy()`, `preferLocalPolicy()`, or your own). Read by
+     * a cluster placement when it resolves a target, and it WINS over the
+     * central `typePolicies` map; ignored single-node.
+     */
+    placement?: ActorPlacementStrategy;
     /** Runs before the first message; throwing fails all queued callers. */
-    onActivate?(ctx: ActorContext<S>): void | Promise<void>;
+    onActivate?(ctx: ActorContext<S, Ext>): void | Promise<void>;
     /** Runs after the queue drains, before state teardown. */
-    onDeactivate?(ctx: ActorContext<S>, reason: DeactivationReason): void | Promise<void>;
+    onDeactivate?(ctx: ActorContext<S, Ext>, reason: DeactivationReason): void | Promise<void>;
     /** Durable-reminder callback. */
-    onReminder?(ctx: ActorContext<S>, name: string): void | Promise<void>;
+    onReminder?(ctx: ActorContext<S, Ext>, name: string): void | Promise<void>;
     /**
      * The method-table factory — called once per ACTIVATION, closing over
      * ctx. Free to create `computed`/`watch` at construction; they die with
      * the activation.
      */
-    methods: (ctx: ActorContext<S>) => M;
+    methods: (ctx: ActorContext<S, Ext>) => M;
     /**
      * Stream-method factory. Each entry runs its body as ONE mailbox turn
      * and must return an async iterable that does NOT touch live state —
@@ -299,7 +345,7 @@ export interface ActorOptions<
      * factory must not touch ctx during construction: its keys are
      * enumerated at definition time (for wire routing) with an inert probe.
      */
-    streams?: (ctx: ActorContext<S>) => St;
+    streams?: (ctx: ActorContext<S, Ext>) => St;
 }
 
 export interface ActorDefinition<
@@ -310,8 +356,14 @@ export interface ActorDefinition<
     readonly type: string;
     /** Stream-method names, enumerated at definition time. */
     readonly streamNames: readonly string[];
-    /** @internal the raw options — the silo's activation hook. */
-    readonly __sigxActor: ActorOptions<S, M, St>;
+    /**
+     * @internal the raw options — the silo's activation hook. The context
+     * extension is erased to `any` here: a definition built against an app's
+     * `Ext` must still be a plain `ActorDefinition`, and the silo only ever
+     * *calls* these factories with the context it built.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    readonly __sigxActor: ActorOptions<S, M, St, any>;
 }
 
 // `any` variants: `never[]`-typed parameters make the table types invariant

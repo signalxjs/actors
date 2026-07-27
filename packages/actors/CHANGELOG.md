@@ -4,6 +4,46 @@
 
 ### Added
 
+- **`defineActorApp` — the composition root and typed plugin model**
+  (#41): `createSilo` takes exactly one `placement` and one `storage`, and
+  `ActorPlacement.bind()` → `PlacementBindings` was the only lifecycle-hook
+  shape in the package — so two things that both wanted `beforeActivate`
+  (a cluster directory and an audit log) could not coexist.
+  `defineActorApp({ actors, storage, types, defaults }).use(plugin)` folds
+  every plugin's contributions into the single placement, storage and
+  context `createSilo` already understands, so the layer is purely additive
+  and `createSilo` stays the documented primitive.
+
+  A plugin's `setup(registry)` may `addTypeHandlers`, `decorateStorage`
+  (chained, last registered outermost), `setPlacement` (**exclusive** — a
+  second claim throws naming both plugins; takes a FACTORY run once the
+  silo exists, so a custom placement backend can resolve the per-type
+  strategies actors declared), `onBeforeActivate` (in order;
+  throwing still refuses the activation), `onAfterDeactivate` (reverse
+  order; errors caught per hook), `useDispatch` (outside-in middleware over
+  the resolved dispatcher), `onStart`/`onStop` (`onStop` runs *after* the
+  drain, in reverse), `route` (collected on `app.routes` for adapters), and
+  `extendContext`. A placement's own hooks **bracket** the plugins' — its
+  claim runs first and its release last.
+
+  `ActorPlugin<Ext>` carries the shape a plugin adds to `ctx`; `.use()`
+  accumulates it, and the app-bound `defineActor`
+  (`export const { defineActor } = app`) types those additions inside every
+  actor — no global declaration merging, so they stay per-app. `ActorContext`
+  gains an optional second type parameter (`ActorContext<S, Ext>`,
+  defaulting to no additions, built on the new `ActorContextBase<S>`) and
+  `createSilo` gains an `extendContext` option for hand-rolled silos.
+
+- **Per-actor placement strategies** (#41): `defineActor({ placement })`
+  declares where new activations of a type go, the way Orleans puts a
+  placement attribute on the grain instead of configuring it centrally. The
+  new core marker `ActorPlacementStrategy` carries the declaration (core
+  cannot name `PlacementPolicy`, which needs a membership view); cluster's
+  `PlacementPolicy` now extends it and the built-in policies carry a `name`
+  (`'random'`, `'consistent-hash'`, `'prefer-local'`). Precedence for a new
+  activation: the actor's own `placement` → `typePolicies` → `policy` →
+  uniform random. The single-node host has one silo and ignores it.
+
 - **Clustering milestone 5 — per-request HMAC auth** (#20): the internal
   silo-to-silo mount now authenticates each request with an HMAC-SHA-256
   signature (WebCrypto, key cached per secret — ~9µs per operation) over

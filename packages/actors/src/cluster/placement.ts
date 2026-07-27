@@ -23,6 +23,7 @@ import {
     type ActorDispatcher,
     type ActorPlacement,
     type ActorRef,
+    type AnyActorDefinition,
     type PlacementBindings,
     type Silo
 } from '../types';
@@ -110,6 +111,7 @@ function randBase36(length: number): string {
 
 /** Uniform random over active silos — the Orleans default posture. */
 const randomPolicy: PlacementPolicy = {
+    name: 'random',
     choose(_ref, view, self) {
         const active = view.silos.filter((s) => s.status === 'active');
         if (active.length === 0) return self;
@@ -132,6 +134,7 @@ export function randomPlacementPolicy(): PlacementPolicy {
  */
 export function consistentHashPolicy(): PlacementPolicy {
     return {
+        name: 'consistent-hash',
         choose(ref, view, self) {
             const active = view.silos.filter((s) => s.status === 'active');
             if (active.length === 0) return self;
@@ -157,6 +160,7 @@ export function consistentHashPolicy(): PlacementPolicy {
  *  session-shaped types. */
 export function preferLocalPolicy(): PlacementPolicy {
     return {
+        name: 'prefer-local',
         choose: (_ref, _view, self) => self
     };
 }
@@ -176,6 +180,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #transport: SiloTransport;
     #local: ActorDispatcher | null = null;
     #silo: Silo | null = null;
+    /** type → its `defineActor({ placement })` policy, or null if none. */
+    #declaredPolicies = new Map<string, PlacementPolicy | null>();
     /** Our live directory claims: actorId → the entry we wrote. */
     #claimed = new Map<string, DirectoryEntry>();
     /** actorId → siloId hint. Insertion-ordered Map as a cheap LRU. */
@@ -462,12 +468,55 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
         const view = this.#options.membership.view();
         if (view.silos.length === 0) return 'local'; // not started / solo
-        const policy = this.#options.typePolicies?.[ref.type] ?? this.#policy;
+        const policy =
+            (await this.#declaredPolicy(ref.type)) ??
+            this.#options.typePolicies?.[ref.type] ??
+            this.#policy;
         const chosen = policy.choose(ref, view, this.descriptor());
         // Sticky: concurrent activations of one key must agree on a target
         // so racing dispatches join one claim instead of splitting.
         this.#cacheRoute(id, chosen.siloId);
         return chosen.siloId === this.identity.siloId ? 'local' : chosen;
+    }
+
+    /**
+     * The strategy an actor declared with `defineActor({ placement })` —
+     * Orleans's placement attribute, and the highest-precedence answer.
+     *
+     * Resolved lazily and memoized per TYPE: a `virtual:sigx-actors`
+     * registry only loads a type's module on demand, so this cannot be
+     * gathered up front. Types with no declaration memoize `null`, making
+     * this one map lookup per dispatch after the first.
+     */
+    async #declaredPolicy(type: string): Promise<PlacementPolicy | undefined> {
+        const memo = this.#declaredPolicies.get(type);
+        if (memo !== undefined) return memo ?? undefined;
+
+        const silo = this.#silo;
+        if (!silo) return undefined;
+        let def: AnyActorDefinition | null;
+        try {
+            def = (await silo.definition(type)) ?? null;
+        } catch {
+            // A failed module load is the dispatch path's problem to report,
+            // not the placement's — fall through to the configured policy.
+            return undefined;
+        }
+        const declared = def?.__sigxActor.placement;
+        const policy =
+            declared && typeof (declared as PlacementPolicy).choose === 'function'
+                ? (declared as PlacementPolicy)
+                : null;
+        if (__DEV__ && declared && !policy) {
+            console.warn(
+                `[sigx actors] actor "${type}" declares placement ` +
+                    `"${declared.name ?? 'unnamed'}", which is ` +
+                    `not a cluster PlacementPolicy (no choose()) — ignored. It is probably a ` +
+                    `strategy for a different placement backend.`
+            );
+        }
+        this.#declaredPolicies.set(type, policy);
+        return policy ?? undefined;
     }
 
     /**

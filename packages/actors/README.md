@@ -94,6 +94,158 @@ export default {
 Node servers use `createActorHandler` / `attachSignalHandlers` from
 `@sigx/actors/node` (see `examples/counter/server.mjs`).
 
+## The app: one config, many runtimes
+
+`createSilo` stays the low-level primitive, but it takes exactly ONE
+`placement` and ONE `storage`, and `ActorPlacement.bind()` is its only
+lifecycle-hook shape — so two things that both want `beforeActivate` cannot
+coexist. `defineActorApp` is the composition root that fixes that: it folds
+every plugin's contributions into the single placement, storage and context
+`createSilo` already understands.
+
+```ts
+// src/actors.app.ts — one typed source of truth
+import { defineActorApp } from '@sigx/actors/silo';
+import { fileStorage } from '@sigx/actors/node';
+
+export const app = defineActorApp({
+    actors,
+    storage: fileStorage({ dir: '.actors' }),
+    defaults: { idleAfterMs: 60_000 }
+}).use(metrics());
+
+/** Bound to this app's plugin set — import it from your actor modules. */
+export const { defineActor } = app;
+```
+
+```ts
+const silo = await app.start();   // builds the silo, starts it, runs onStart
+await app.stop();                 // drains the silo, then onStop in reverse
+```
+
+The app is an inert **description** until `start()`, which is what lets the
+same module be started by a Node entry, the Vite dev server, or a Worker.
+
+A started app is **single-use**: `start()` is idempotent while running, but
+after `stop()` it refuses to restart (a plugin placement mints its identity
+per run — a cluster silo id is gone once its membership entry is), so build a
+new app instead. A start that *fails* is the exception: the rejection is not
+cached, so fixing the cause and calling `start()` again really retries.
+
+### Writing a plugin
+
+`setup()` receives a registry. Everything composes across plugins except
+`setPlacement`, which is exclusive by nature — a second claim throws, naming
+both plugins.
+
+```ts
+import type { ActorPlugin } from '@sigx/actors/silo';
+
+interface Logger { info(message: string): void }
+
+export function logging(logger: Logger): ActorPlugin<{ log: Logger }> {
+    return {
+        name: 'logging',
+        setup(registry) {
+            registry.extendContext(() => ({ log: logger }));
+            registry.onBeforeActivate((ref) => logger.info(`activating ${ref.type}/${ref.key}`));
+            registry.useDispatch((next) => ({
+                dispatch: async (ref, method, args, call) => {
+                    logger.info(`${ref.type}#${method}`);
+                    return next.dispatch(ref, method, args, call);
+                },
+                // Forward streaming — `dispatchStream` is optional, so a
+                // middleware that omits it silently breaks every
+                // `streams:` method. Dev-warns if you forget.
+                ...(next.dispatchStream && {
+                    dispatchStream: (ref, method, args, call) =>
+                        next.dispatchStream!(ref, method, args, call)
+                })
+            }));
+        }
+    };
+}
+```
+
+The `ActorPlugin<{ log: Logger }>` type argument is what makes `ctx.log`
+**typed inside every actor** that imports the app-bound `defineActor` — no
+global declaration merging, so the additions stay per-app:
+
+```ts
+// src/counter.actor.ts
+import { defineActor } from './actors.app';
+
+export const Counter = defineActor({
+    type: 'Counter',
+    unguarded: true,
+    state: () => ({ count: 0 }),
+    methods: (ctx) => ({
+        increment(by: number) {
+            ctx.log.info('increment');   // typed, contributed by .use(logging(...))
+            return (ctx.state.count += by);
+        }
+    })
+});
+```
+
+| Registry hook | Composes? | Notes |
+|---|---|---|
+| `addTypeHandlers` | concatenated | codec handlers for state persistence |
+| `decorateStorage` | chained | last registered is **outermost** |
+| `setPlacement` | **exclusive** | a factory, run once the silo exists; a second claim throws, naming both plugins |
+| `onBeforeActivate` | in order | throwing **refuses** the activation |
+| `onAfterDeactivate` | reverse order | errors caught per hook and dev-logged |
+| `useDispatch` | outside-in | first registered is **outermost**; must forward `dispatchStream` |
+| `onStart` / `onStop` | in order / reverse | `onStop` runs *after* the drain |
+| `route` | collected | exposed as `app.routes` for adapters |
+| `extendContext` | merged | never overwrites a built-in `ctx` member |
+
+A placement's own hooks **bracket** the plugins': its `beforeActivate` (a
+cluster's directory claim) runs first and its `afterDeactivate` (the release)
+runs last, so plugin hooks always observe an activation the placement already
+owns.
+
+### Custom placement
+
+Two independent axes, the same split Orleans draws:
+
+- **The backend** — *who hosts an actor at all*: the local host, a cluster,
+  Durable Objects. One per app, claimed with `setPlacement`.
+- **The strategy** — *which silo a new activation goes to*, Orleans's
+  `IPlacementDirector`. That is `PlacementPolicy` from `@sigx/actors/cluster`;
+  ship your own `choose(ref, view, self)` alongside the built-in
+  `randomPlacementPolicy()`, `consistentHashPolicy()` and
+  `preferLocalPolicy()`.
+
+A strategy can be declared **on the actor**, which is Orleans's placement
+attribute and beats the central `typePolicies` map:
+
+```ts
+export const Session = defineActor({
+    type: 'Session',
+    placement: preferLocalPolicy(),   // pin hot session-shaped types local
+    // ...
+});
+```
+
+`setPlacement` takes a **factory**, not an instance, precisely so a backend
+can read those declarations — it runs once the silo exists, so the context
+can resolve definitions:
+
+```ts
+registry.setPlacement((ctx) => clusterPlacement({
+    ...providers,
+    // per-type strategies resolve lazily, since a `virtual:sigx-actors`
+    // registry only loads a type's module on demand
+    definition: ctx.definition,
+    secret,
+}));
+```
+
+Precedence for a new activation: `defineActor({ placement })` →
+`clusterPlacement({ typePolicies })` → `clusterPlacement({ policy })` →
+uniform random.
+
 ## Guards
 
 Actor methods are as security-sensitive as server functions, so the build
@@ -263,7 +415,7 @@ store.
 | Entry | Contents |
 |---|---|
 | `@sigx/actors` | `defineActor`, `actor`, `useActor`, errors, types — isomorphic, light |
-| `@sigx/actors/silo` | `createSilo`, `memoryStorage`, storage/placement seams — server-only |
+| `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors` — the build-swap target |

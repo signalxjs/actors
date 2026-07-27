@@ -61,6 +61,13 @@ export interface CreateSiloOptions {
     placement?: ActorPlacement;
     /** Extra codec handlers for state persistence and dev checks. */
     types?: readonly TypeHandler[];
+    /**
+     * Extra members merged onto every activation's `ctx`. Built-in members
+     * are never overwritten. `defineActorApp` folds every plugin's
+     * `extendContext` into this one function; hand-rolled silos can pass it
+     * directly.
+     */
+    extendContext?: (ref: ActorRef) => object | undefined;
     defaults?: SiloDefaults;
 }
 
@@ -156,7 +163,8 @@ class SiloImpl implements Silo {
             },
             onIdleRequest: (activation: Activation) => {
                 void this.#local.deactivate(activation.ref, 'explicit');
-            }
+            },
+            ...(options.extendContext ? { extendContext: options.extendContext } : {})
         };
         this.#local = new LocalHost(
             host,
