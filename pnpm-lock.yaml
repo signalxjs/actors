@@ -69,9 +69,21 @@ importers:
         specifier: workspace:*
         version: link:../packages/actors
     devDependencies:
+      '@sigx/actors-tcp':
+        specifier: workspace:*
+        version: link:../packages/actors-tcp
+      '@sigx/actors-ws':
+        specifier: workspace:*
+        version: link:../packages/actors-ws
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       undici:
         specifier: ^7.29.0
         version: 7.29.0
+      ws:
+        specifier: ^8.21.1
+        version: 8.21.1
 
   examples/chat:
     dependencies:

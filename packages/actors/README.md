@@ -1045,6 +1045,34 @@ differently, so re-check on yours before tuning aggressively.
 > falls back. Multiplexing would need a `node:http2` server first, which is a
 > larger change than the pool cap for the same socket reduction.
 
+#### Which transport should you use?
+
+Measured, not argued — the full table and the gate are in
+`benchmarks/BASELINES.md`:
+
+| | portable? | connections per peer | relative throughput |
+|---|---|---:|---:|
+| `httpTransport()` **(default)**, unbounded pool | **everywhere, incl. Workers** | 2 × concurrency | 0.9× |
+| `httpTransport()` with a bounded pool (above) | **everywhere, incl. Workers** | concurrency | 1.0× (baseline) |
+| `tcpTransport()` (`@sigx/actors-tcp`) | Node only | **1** | 4.9× |
+| `wsTransport()` (`@sigx/actors-ws`) | Node server, any WinterCG client | **1** | 4.4× |
+
+Throughput is relative to **bounded** HTTP, since that is the fair baseline —
+the shipped default is the first row, and bounding it is a free improvement.
+
+- **On Node, prefer TCP** — or WebSocket when one port, proxy traversal or a
+  WinterCG client matters. Both clear every criterion the decision gate set out
+  in advance.
+- **HTTP stays the default, and must.** This entry is zero-dep and
+  WinterCG-clean so Cloudflare Workers keep working, and HTTP is the only
+  transport that runs everywhere. With a bounded pool (above) it is a
+  perfectly reasonable choice.
+
+Two caveats worth carrying: the throughput ratio is a **loopback software**
+number that a real LAN round trip largely absorbs (the connection-count win is
+not absorbed), and a chain like `[tcpTransport(), httpTransport()]` is what
+makes adopting one safe mid-deploy.
+
 **Writing one?** There is a conformance suite — `transportConformance` in
 `packages/actors/src/cluster/testing.ts` — holding the cases a transport must
 pass, and so the definition of correct behaviour. Supply a harness that builds

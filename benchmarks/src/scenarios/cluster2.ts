@@ -57,6 +57,10 @@ interface Measured {
     bytes: number;
     storeOps: number;
     rssBytes: number;
+    /** libuv TCP handles on the receiver: listeners + live connections.
+     *  The only socket measure that spans transports — the accept counter
+     *  watches the HTTP listener, which a TCP transport never touches. */
+    tcpHandles: number;
     p50?: number;
     p99?: number;
 }
@@ -95,6 +99,7 @@ async function measure(
         // the run measured the cluster store, not the transport.
         storeOps: driverStats.storeOps,
         rssBytes: sum((s) => s.rssBytes),
+        tcpHandles: sum((s) => s.tcpHandles),
         ...(percentiles?.p50 !== undefined ? { p50: percentiles.p50 } : {}),
         ...(percentiles?.p99 !== undefined ? { p99: percentiles.p99 } : {})
     };
@@ -358,4 +363,97 @@ const dispatcherMatrix: Scenario = {
     }
 };
 
-export const tier2Scenarios: Scenario[] = [socketScaling, transportMatrix, dispatcherMatrix];
+/**
+ * THE DECISION SCENARIO (#105).
+ *
+ * All three transports on one rig, back to back, against the *tuned* HTTP
+ * baseline from #98 rather than the shipped default — comparing a new
+ * transport to an untuned incumbent would flatter it.
+ *
+ * The gate was written down in #95 before any of these existed, which is the
+ * only reason it means anything now. Replace HTTP as the default only if a
+ * transport clears ALL of: throughput ratio >= 1.30, p99 ratio <= 0.80,
+ * bytes/call <= 0.70, and sockets <= 1.2x peers.
+ */
+const transportDecision: Scenario = {
+    name: 'cluster2/transport-decision',
+    description:
+        'TIER 2 (real sockets) — tuned HTTP vs TCP vs WebSocket. Sockets and bytes gate; timings informational',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        const concurrency = 64;
+        const arms = [
+            // The BASELINE is tuned HTTP: pool bounded to the concurrency,
+            // which #98 measured as both fewer sockets and slightly faster.
+            ['http-tuned', 'bounded' as const, concurrency],
+            ['tcp', 'tcp' as const, 0],
+            ['ws', 'ws' as const, 0]
+        ] as const;
+        for (const [label, kind, connections] of arms) {
+            const rig = await startRig({
+                silos: 2,
+                secret: 'decision-secret',
+                dispatcher: kind,
+                connections
+            });
+            try {
+                await warmOn(rig, 1);
+                const thr = await measure(rig, 0, [1], concurrency, ctx.durationMs, false);
+                guardStoreOps(label, thr);
+                const lat = await measure(rig, 0, [1], concurrency, ctx.durationMs, true);
+                metrics.push(
+                    {
+                        // THE cross-transport socket measure. `sockets_peak`
+                        // counts accepts on the HTTP listener, which a TCP
+                        // transport never touches — it would read 0 and look
+                        // like a perfect score for the wrong reason.
+                        name: `${label}/tcp_handles`,
+                        value: thr.tcpHandles,
+                        unit: 'count',
+                        direction: 'lower'
+                    },
+                    {
+                        name: `${label}/ops_per_sec`,
+                        value: thr.opsPerSec,
+                        unit: 'ops/sec',
+                        direction: 'higher',
+                        informational: true
+                    },
+                    {
+                        name: `${label}/p99_ms`,
+                        value: lat.p99 ?? 0,
+                        unit: 'ms',
+                        direction: 'lower',
+                        informational: true
+                    },
+                    // Bytes come from the HTTP listener's sockets, so they are
+                    // real for the HTTP and WebSocket arms (WS upgrades on that
+                    // same socket) and NOT OBSERVABLE for TCP, which owns a
+                    // separate listener. The metric is OMITTED for TCP rather
+                    // than reported as 0, which would read as a perfect score
+                    // for entirely the wrong reason.
+                    ...(kind === 'tcp'
+                        ? []
+                        : [
+                              {
+                                  name: `${label}/bytes_per_call`,
+                                  value: thr.ops === 0 ? 0 : thr.bytes / thr.ops,
+                                  unit: 'bytes',
+                                  direction: 'lower' as const
+                              }
+                          ])
+                );
+            } finally {
+                await rig.stop();
+            }
+        }
+        return metrics;
+    }
+};
+
+export const tier2Scenarios: Scenario[] = [
+    socketScaling,
+    transportMatrix,
+    dispatcherMatrix,
+    transportDecision
+];

@@ -44,10 +44,22 @@ place in the cases TCP cannot reach:
 The trade is a small framing tax over raw TCP, and a `ws` peer dependency for
 the Node server half.
 
-Both transports collapse the connection count the same way: **one connection
-per peer** rather than HTTP's `concurrency × peers`. That is the reason to use
-either — see `benchmarks/BASELINES.md`, which is blunt that this is about
-socket count and not latency.
+Both transports collapse the connection count the same way — **one connection
+per peer** rather than HTTP's `concurrency × peers` — and both are far faster
+than HTTP on loopback. Measured at concurrency 64 against a *tuned* HTTP
+baseline (`benchmarks/BASELINES.md`):
+
+| | connections per peer | ops/s | p99 | bytes/call |
+|---|---:|---:|---:|---:|
+| tuned HTTP | 64 | 14 287 | 9.6 ms | 640 |
+| **WebSocket** | **1** | **63 495** | **1.58 ms** | **236** |
+
+Read the two wins differently: the socket count holds at any RTT, while the
+4.4× throughput is a *software* ratio that a real network largely absorbs
+(~70 µs versus ~16 µs per call, against a LAN round trip of 200–1000 µs).
+
+**HTTP remains the default** and must — `@sigx/actors/cluster` stays zero-dep
+and WinterCG-clean so Workers keep working.
 
 ## Mounting: why `attachSiloUpgrade` exists
 

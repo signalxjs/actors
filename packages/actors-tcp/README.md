@@ -24,20 +24,38 @@ cluster({
 
 ## Why you would use it
 
-**Not for latency.** The measurements in `benchmarks/BASELINES.md` are blunt
-about this: per-call HMAC is worth 1.19× over a real socket (not the 3.35× the
-in-process figures suggested), and cross-silo throughput plateaus at Node's
-HTTP stack rather than at the runtime.
+**On Node, this is the recommended transport.** Measured against a *tuned*
+HTTP baseline (pool bounded to the concurrency) at concurrency 64 —
+`benchmarks/BASELINES.md`:
 
-**For socket count.** HTTP's connection pool sizes to `concurrency × peers` —
-measured at *two* connections per in-flight request, so ~12 600 sockets per
-silo at concurrency 64 across 99 peers. That is file descriptors, kernel
-buffers, conntrack entries, and a connection burst every time a peer restarts.
-This transport holds **one connection per peer**, whatever the concurrency.
+| | connections per peer | ops/s | p99 |
+|---|---:|---:|---:|
+| tuned HTTP | 64 | 14 287 | 9.6 ms |
+| **TCP** | **1** | **69 768** | **1.58 ms** |
 
-If your cluster is small or your concurrency is low, bounding the HTTP pool
-(see the recipe in the main README) is simpler and gets you most of the way.
-Reach for this when the connection count is the thing that hurts.
+Two separate wins, and they are worth different amounts:
+
+**Socket count — real at any network.** HTTP's pool sizes to
+`concurrency × peers` (measured at *two* connections per in-flight request, so
+~12 600 per silo at c=64 across 99 peers). That is file descriptors, kernel
+buffers, conntrack entries and a connection burst on every peer restart. One
+connection per peer does not change with RTT.
+
+**Throughput — real, but mostly a loopback effect.** The 4.9× is a *software*
+ratio: ~70 µs per call versus ~14 µs. On a LAN with a 200–1000 µs round trip
+that difference is worth roughly 1.1×, not 4.9×. Take the socket property as
+the reason to choose this; treat the throughput as a bonus that shrinks the
+further apart your silos are.
+
+> An earlier version of this README said this transport was "not about
+> latency". That was wrong. Per-call HMAC really is worth only 1.19× over a
+> socket — but Node's HTTP *stack* is a separate and much larger cost, and a
+> framed protocol on a persistent socket skips it. The Tier-2 rig caught it.
+
+**HTTP remains the default**, and must: `@sigx/actors/cluster` stays zero-dep
+and WinterCG-clean so Cloudflare Workers keep working, and HTTP is the only
+transport that runs everywhere. With a bounded pool it is a perfectly
+reasonable choice.
 
 ## Deploying it
 

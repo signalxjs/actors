@@ -11,6 +11,10 @@
         "@sigx/actors": "workspace:*"
     },
     "devDependencies": {
-        "undici": "^7.29.0"
+        "@sigx/actors-tcp": "workspace:*",
+        "@sigx/actors-ws": "workspace:*",
+        "@types/ws": "^8.18.1",
+        "undici": "^7.29.0",
+        "ws": "^8.21.1"
     }
 }

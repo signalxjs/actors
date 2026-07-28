@@ -361,6 +361,71 @@ rather than deferred. Revisit only if a profile shows signing dominating on a
 deployment where the network is not the cost — which is the opposite of what
 the numbers above show.
 
+### The transport decision [#105]
+
+All three on one rig, back to back, against the **tuned** HTTP baseline from
+#98 (pool bounded to the concurrency) rather than the shipped default —
+comparing a new transport to an untuned incumbent would flatter it. Two silos,
+concurrency 64.
+
+| | TCP handles | ops/s | p99 | bytes/call |
+|---|---:|---:|---:|---:|
+| tuned HTTP | 65 (1 listener + 64 conns) | 14 287 | 9.6 ms | 640 |
+| **TCP** | **3** (2 listeners + 1 conn) | **69 768** | **1.58 ms** | not observable |
+| **WebSocket** | **2** (1 listener + 1 conn) | **63 495** | **1.58 ms** | **236** |
+
+Against the gate written down in #95 *before any of these transports existed*:
+
+| criterion | threshold | TCP | WS |
+|---|---|---|---|
+| throughput ratio | ≥ 1.30 | **4.88×** ✅ | **4.44×** ✅ |
+| p99 ratio | ≤ 0.80 | **0.17** ✅ | **0.16** ✅ |
+| bytes/call ratio | ≤ 0.70 | not measured | **0.37** ✅ |
+| sockets vs peers | ≤ 1.2× | **1.0×** ✅ | **1.0×** ✅ |
+| tie-break | ≥ 2.0 | **4.88×** ✅ | — |
+
+Bytes are read off the HTTP listener's sockets, so they are real for HTTP and
+for WebSocket (which upgrades on that same socket) and **not observable for
+TCP**, which owns a separate listener. Recorded as not-measured rather than
+scored; TCP's framing is strictly leaner than WebSocket's — no HTTP upgrade —
+so it would clear it, but that is an inference and is labelled as one.
+
+#### The result contradicts what the transports' own READMEs claimed
+
+Both packages were written saying this was "not about latency, only socket
+count", on the strength of the HMAC measurement in #96. **That was wrong, and
+this rig is what caught it.** Per-call HMAC really is worth only 1.19× — but
+Node's HTTP *stack* is a separate and much larger cost, and a framed protocol
+on a persistent socket skips it entirely. Corrected in both READMEs.
+
+#### But the ratio is software-only, and a real network absorbs most of it
+
+Per call: tuned HTTP ≈ 70 µs, TCP ≈ 14 µs — a **56 µs** difference. On a LAN
+with a 200–1000 µs round trip that is 570 µs vs 514 µs, or about **1.1×**. The
+4.88× is a loopback number and belongs in the same bucket as everything else in
+this tier: it measures software, and this rig systematically overstates
+software's share of latency.
+
+**The socket-count win is not absorbed that way.** 64 connections per peer
+versus 1 stays true at any RTT, and that is the property to choose on.
+
+#### The verdict: HTTP stays the default anyway
+
+The gate is cleared, and the default does not change — because the gate was
+missing a constraint that no measurement can express. **`@sigx/actors/cluster`
+must stay zero-dep and WinterCG-clean**, which is the whole reason RFC #20 put
+the silo wire on HTTP: a default requiring `node:net` would break Cloudflare
+Workers outright, and HTTP is the only transport that runs everywhere.
+
+So the recommendation is stronger than "reach for TCP when file descriptors
+hurt", which is what the packages currently say:
+
+- **On Node, prefer `@sigx/actors-tcp`** (or `@sigx/actors-ws` when one port,
+  proxy traversal or a WinterCG client matters). It clears every measured
+  criterion, most of them by a wide margin.
+- **HTTP remains the default and the only portable option**, and with a bounded
+  pool (#98) it is a perfectly reasonable one.
+
 ### What this rig cannot honestly measure
 
 Stated so it is never quoted as though it could:

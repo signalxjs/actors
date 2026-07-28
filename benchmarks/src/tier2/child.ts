@@ -21,6 +21,10 @@ import { defineActor } from '@sigx/actors';
 import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/silo';
 import { createAppHandler } from '@sigx/actors/node';
 import { cluster, httpTransport, type ClusterPlugin } from '@sigx/actors/cluster';
+import type { SiloTransportFactory } from '@sigx/actors/cluster';
+import { tcpTransport } from '@sigx/actors-tcp';
+import { wsTransport, type MinimalWebSocket, type WebSocketServerLike } from '@sigx/actors-ws';
+import { WebSocketServer, WebSocket as NodeWebSocket } from 'ws';
 import type {
     ActorDirectory,
     ClusterMembership,
@@ -265,15 +269,43 @@ async function main(): Promise<void> {
                 // Bind FIRST so the port exists, then advertise it.
                 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
                 const port = (server.address() as { port: number }).port;
-                const tuned = await dispatcherFetch(message.dispatcher, message.connections);
+
+                // `tcp` and `ws` REPLACE the transport; the others tune the
+                // fetch behind the default one.
+                let transport: SiloTransportFactory | undefined;
+                let attachWs: (() => Promise<unknown>) | undefined;
+                if (message.dispatcher === 'tcp') {
+                    transport = tcpTransport({ host: '127.0.0.1', keepAliveMs: 0 });
+                } else if (message.dispatcher === 'ws') {
+                    const handle = wsTransport({
+                        keepAliveMs: 0,
+                        advertiseUrl: () => `ws://127.0.0.1:${port}/_sigx/silo-ws`,
+                        // Cast to the CONTRACT rather than `never`: `ws`'s
+                        // addEventListener is contravariantly incompatible with
+                        // the minimal shape, but naming the target type means a
+                        // real drift in the contract still surfaces here.
+                        connect: (url) => new NodeWebSocket(url) as unknown as MinimalWebSocket
+                    });
+                    transport = handle;
+                    attachWs = () =>
+                        handle.attach(server, {
+                            wss: new WebSocketServer({
+                                noServer: true
+                            }) as unknown as WebSocketServerLike
+                        });
+                } else {
+                    const tuned = await dispatcherFetch(message.dispatcher, message.connections);
+                    if (tuned) transport = httpTransport({ fetch: tuned });
+                }
+
                 plugin = cluster({
                     providers: { membership, directory },
                     advertise: `http://127.0.0.1:${port}`,
                     policy: selfPolicy,
-                    // The `fetch` seam is the whole escape hatch #89 names.
-                    // Passing a tuned dispatcher through it is what this
-                    // measures — no runtime change required.
-                    ...(tuned ? { transport: httpTransport({ fetch: tuned }) } : {}),
+                    // The `fetch` seam is the escape hatch #89 names; the
+                    // `transport` option is the seam #92 added. Both are
+                    // exercised here without any runtime change.
+                    ...(transport ? { transport } : {}),
                     ...(message.secret === null ? {} : { secret: message.secret })
                 });
                 app = defineActorApp({
@@ -288,6 +320,10 @@ async function main(): Promise<void> {
                     }
                 }).use(plugin);
                 handler = createAppHandler(app) as unknown as typeof handler;
+                // The WebSocket upgrade cannot be a contributed route, so it
+                // is attached to the raw server — before `start()`, like the
+                // listener itself.
+                if (attachWs) await attachWs();
                 send({ t: 'ready', index: message.index, port });
                 return;
             }
