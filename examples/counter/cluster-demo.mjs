@@ -17,9 +17,9 @@
  * hand-written Node bridge.
  */
 import { createServer } from 'node:http';
-import { defineActorApp, memoryStorage } from '@sigx/actors/silo';
+import { defineActorApp, health, memoryStorage } from '@sigx/actors/silo';
 import { createAppHandler } from '@sigx/actors/node';
-import { cluster, memoryClusterHub } from '@sigx/actors/cluster';
+import { cluster, clusterStats, memoryClusterHub } from '@sigx/actors/cluster';
 import { Counter } from './src/counter.actor.ts';
 
 const SEP = String.fromCharCode(0); // actorId separator: `${type}${SEP}${key}`
@@ -40,7 +40,11 @@ for (const port of PORTS) {
         advertise: `http://127.0.0.1:${port}`,
         secret
     });
-    const app = defineActorApp({ actors: [Counter], storage }).use(plugin);
+    // `health()` needs no cluster wiring: `cluster()` contributes its own
+    // readiness check, so /ready reports `leaving` and `fenced` by itself.
+    const app = defineActorApp({ actors: [Counter], storage })
+        .use(plugin)
+        .use(health());
 
     // ONE handler for both mounts: the public endpoint and the internal
     // silo-to-silo route the plugin contributed.
@@ -112,7 +116,62 @@ log(`directory re-claimed by: ${newEntry.siloId}`);
 if (recovered.count !== 116) throw new Error('state lost in failover!');
 log('(state came back from shared storage — nothing was lost)');
 
-step('5. Graceful shutdown of the survivors');
+step('5. Ops surface — clusterStats() and the health probes');
+const survivors = members.filter((m) => m !== owner);
+const stats = await clusterStats(survivors[0].placement, { timeoutMs: 500 });
+log(`view v${stats.view.version}: ${stats.view.size} members, ${stats.view.active} active`);
+log('  silo          status  activations  queued  claimed  shards');
+for (const s of stats.silos) {
+    log(
+        `  ${s.siloId}  ${s.status.padEnd(6)}  ${String(s.stats.activations).padStart(11)}  ` +
+            `${String(s.stats.queued).padStart(6)}  ${String(s.counters.claimed).padStart(7)}  ` +
+            `${String(s.reminderShards.length).padStart(6)}`
+    );
+}
+log(`totals: ${stats.totals.activations} activations`, stats.totals.perType);
+
+// The crashed owner is LISTED, not thrown — a report you can't get during
+// an incident is worthless.
+log(`partial: ${stats.partial} — unreachable:`, stats.unreachable.map((u) => `${u.siloId} (${u.reason})`));
+
+// Reminder shard coverage: 16 shards, rendezvous-hashed over the LIVE view.
+// This is the number that shows only N silos ever do reminder work.
+const owners = Object.values(stats.reminderShards);
+const orphaned = Object.entries(stats.reminderShards).filter(([, o]) => o.length === 0);
+log(
+    `reminder shards: 16 shards over ${new Set(owners.flat()).size} silo(s), ` +
+        `${orphaned.length} orphaned (re-formed after the crash)`
+);
+
+// Routing counters, after the cross-silo traffic of steps 1-4.
+const c = stats.silos.find((s) => s.siloId === survivors[0].placement.identity.siloId).counters;
+log(
+    `counters(${survivors[0].placement.identity.siloId}): ` +
+        `local=${c.routedLocal} out=${c.remoteDispatches} in=${c.inboundDispatches} ` +
+        `cacheHit=${c.routeCacheHits}/miss=${c.routeCacheMisses} ` +
+        `dirLookups=${c.directoryLookups} wrongHost=${c.wrongHostRedirects} ` +
+        `sweeps=${c.siloSweeps} authFailures=${c.authFailures}`
+);
+log('(out and in are never summed — the same call, counted on each side)');
+
+// The probes a load balancer actually calls. Unauthenticated by necessity:
+// a kubelet cannot sign the cluster HMAC.
+const probe = async (port, path) => {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`);
+    return `${res.status} ${JSON.stringify(await res.json())}`;
+};
+log(`GET /_sigx/health      -> ${await probe(survivors[0].port, '/_sigx/health')}`);
+log(`GET /_sigx/health/ready -> ${await probe(survivors[0].port, '/_sigx/health/ready')}`);
+
+// Drain: `beginStop` announces `leaving` BEFORE activations hand off, so the
+// balancer stops sending while the silo is still alive and serving.
+await survivors[1].placement.beginStop();
+log(`draining silo ${survivors[1].placement.identity.siloId}:`);
+log(`  GET /_sigx/health      -> ${await probe(survivors[1].port, '/_sigx/health')}`);
+log(`  GET /_sigx/health/ready -> ${await probe(survivors[1].port, '/_sigx/health/ready')}`);
+log('(live 200 but ready 503 — drain it, do NOT restart it)');
+
+step('6. Graceful shutdown of the survivors');
 await Promise.all(
     members.filter((m) => m !== owner).map((m) => m.app.stop({ timeoutMs: 2000 }))
 );

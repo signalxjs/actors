@@ -4,6 +4,92 @@
 
 ### Added
 
+- **`health()` — liveness and readiness endpoints** (#38). `GET
+  /_sigx/health` and `GET /_sigx/health/ready`, contributed as ordinary
+  plugin routes so every mount picks them up.
+
+  The point is that the two answers are allowed to **disagree**. A graceful
+  `silo.stop()` announces `leaving` before activations hand off, so for the
+  whole handoff window the silo is `200 live` and `503 not-ready`: drain it,
+  do not restart it. Restarting is what turns a rolling deploy into an
+  outage, and until now nothing exposed that window to a load balancer.
+
+  The check that would otherwise be invisible is **`fenced`**. A silo that
+  loses its membership heartbeat self-fences and refuses every activation,
+  but `#fence()` deliberately leaves the *published* status at `active` — so
+  a balancer would keep feeding a black hole. Readiness reads the fenced
+  state, not the descriptor.
+
+  Before `start()` the whole mount answers 503, including liveness: a route
+  only runs on a started silo, so serving at all is the liveness signal. The
+  README carries the Kubernetes manifest (`startupProbe` covers a slow boot
+  and suppresses liveness until it passes). The routes cannot be
+  authenticated — a kubelet cannot sign the cluster HMAC — so they are
+  documented as internal-only. The body never includes a `perType` breakdown
+  or anything key-shaped, so it cannot name your actor types;
+  `health({ detail: false })` drops the `checks` map and the gauges too,
+  leaving the status code and a bare `{ status, uptimeMs }`.
+
+- **`PluginRegistry.reportHealth(name, check)` / `registry.health()`** (#38)
+  — the readiness seam. Every contributed check must pass; all of them are
+  evaluated, so a failing probe names every reason rather than the first,
+  and a check that throws is reported not-ready with its message rather than
+  500ing the endpoint meant to diagnose it. `cluster()` registers its own,
+  which is why `health()` needs no cluster wiring and works single-node
+  unchanged. `registry.health()` reads the aggregate at call time, so
+  `.use()` order does not matter.
+
+- **`clusterStats()` — one read of the whole cluster** (#38). Fans out
+  across the membership view and returns per-silo activations, queue depths,
+  per-type counts, the reminder-shard ownership map and the counters below,
+  plus cluster-wide totals.
+
+  It travels as a reserved symbol (`$sigx:silo#stats`) on the **existing**
+  internal mount rather than as a new route, which is the security-relevant
+  choice: it inherits the per-request HMAC, the envelope, the codec and the
+  body cap, so there is no second and eventually-unauthenticated way to read
+  your topology. Answered before any definition lookup, so a user actor
+  cannot shadow it.
+
+  It **never throws because a peer is sick** — a silo that times out,
+  refuses the secret or predates this build lands in `unreachable` with a
+  classified `reason`, and `partial: true` marks the totals as a lower
+  bound. Peers are queried with bounded concurrency (default 16) so a
+  100-silo fan-out is waves, not 100 simultaneous connections, and the
+  collector answers for itself in process rather than looping back through
+  an address it may not be able to reach.
+
+  `reminderShards` maps each shard to the silos *claiming* it, built from
+  the reports rather than recomputed centrally — two claimants means views
+  diverged, an empty list means nothing is ticking that shard, and the
+  distinct silo count is how many silos do reminder work at all.
+
+- **`ClusterPlacement.counters()`, `view()`, `report()`** (#38) — pull-based
+  routing, directory, membership and auth counters. Always on: these are
+  integer increments on paths already doing network and directory work, and
+  the local fast path (`dispatcherFor` for a claimed actor) is not
+  instrumented at all, so it stays byte for byte what it was.
+
+  The rule that makes them safe to aggregate: every counter moves on the one
+  silo where its event happened, and the two sides of a cross-silo call get
+  **different names** — `remoteDispatches` on the caller, `inboundDispatches`
+  on the owner. They are reported side by side and never summed; the gap
+  between them is itself the signal. `authFailures` is the one with no prior
+  visibility at all: a 403 on the internal mount was completely silent, and
+  during a secret rotation it is the only sign that half the cluster has not
+  rotated yet.
+
+- **`metrics()` in a cluster is split, not doubled** (#38) — documented, and
+  now pinned by a test. It had been assumed that a cross-silo call was
+  counted once on the caller and again on the owner. It is not, and the
+  reason is structural: `compositePlacement.bind()` hands the placement the
+  **raw** local dispatcher and `dispatchInbound` calls it directly, so an
+  inbound hop never passes through `useDispatch`. A cross-silo call is
+  counted once, on the silo that originated it, while `queueMs`/`turnMs` are
+  recorded on the silo that executed it — so summing `calls.total` across
+  silos gives the true cluster-wide number. The test exists so a refactor
+  cannot quietly turn the split into a real double count.
+
 - **`metrics()` — pull-based observability** (#79). A plugin that counts
   calls, failures, activation churn, storage operations and etag conflicts,
   and reports latency distributions, read via `snapshot()`. No exporter, no

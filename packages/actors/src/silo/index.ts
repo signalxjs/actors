@@ -11,8 +11,16 @@ export {
     type ActorPlugin,
     type ActorRoute,
     type DispatchMiddleware,
+    type HealthCheck,
+    type HealthReport,
     type PluginRegistry
 } from './app';
+export {
+    health,
+    type HealthOptions,
+    type HealthPlugin,
+    type HealthStatus
+} from './health';
 export {
     metrics,
     type ActorMetricsSnapshot,

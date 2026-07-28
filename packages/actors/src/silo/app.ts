@@ -66,6 +66,27 @@ export interface PlacementSetupContext {
     definition(type: string): AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
 }
 
+/**
+ * One plugin's answer to "should this silo be receiving traffic?".
+ *
+ * SYNC on purpose: a readiness probe must never wait on a store round-trip,
+ * which is the same reason `ClusterMembership.view()` is sync.
+ */
+export interface HealthCheck {
+    /** False = take this silo out of rotation. */
+    ready: boolean;
+    /** Short state word for the probe body, e.g. `'active'`, `'leaving'`. */
+    detail?: string;
+}
+
+/** The aggregate of every contributed check. */
+export interface HealthReport {
+    /** True iff every check passed. An app with no checks is ready. */
+    ready: boolean;
+    /** By contributor name, in registration order. */
+    checks: Record<string, HealthCheck>;
+}
+
 /** An HTTP route a plugin contributes to the app's mounts. */
 export interface ActorRoute {
     /** Diagnostic label, e.g. `'cluster:internal'`. */
@@ -145,6 +166,29 @@ export interface PluginRegistry {
      */
     onStop(hook: (silo: Silo) => void | Promise<void>): void;
     route(route: ActorRoute): void;
+    /**
+     * Contribute a readiness check — the seam a health endpoint aggregates.
+     * Composes: EVERY contributed check must pass for the silo to report
+     * ready, so any plugin can take its silo out of rotation without the
+     * endpoint knowing that plugin exists.
+     *
+     * `check` is SYNC and must stay cheap: it runs per probe, and a probe
+     * that blocks is worse than one that fails. Throwing is caught and
+     * reported as not-ready carrying the reason — a broken check must
+     * never 500 the endpoint.
+     *
+     * `name` keys the report, so it must be non-empty and unique across
+     * plugins; a clash throws at setup naming both, because a silently
+     * overwritten entry could hide a FAILING check behind a passing one.
+     */
+    reportHealth(name: string, check: () => HealthCheck): void;
+    /**
+     * The aggregate of every contributed check — LIVE, including checks
+     * registered after this call. That is what makes `.use(health())` work
+     * regardless of where it sits relative to the plugins it reports on, so
+     * hold this and call it per request rather than at setup time.
+     */
+    health(): HealthReport;
     /**
      * Extra members merged onto every activation's `ctx`. Pair it with an
      * `ActorPlugin<Ext>` type argument so they are typed inside actors.
@@ -255,7 +299,33 @@ interface Contributions {
     onStart: ((silo: Silo) => void | Promise<void>)[];
     onStop: ((silo: Silo) => void | Promise<void>)[];
     routes: ActorRoute[];
+    health: { name: string; check: () => HealthCheck; plugin: string }[];
     contextFactories: ((ref: ActorRef) => object | undefined)[];
+}
+
+/**
+ * Fold the contributed checks into one report. A throwing check is
+ * not-ready rather than an exception: an endpoint that 500s when a check is
+ * broken tells an operator nothing about the silo.
+ */
+function healthReport(c: Contributions): HealthReport {
+    const checks: Record<string, HealthCheck> = {};
+    let ready = true;
+    for (const { name, check } of c.health) {
+        let result: HealthCheck;
+        try {
+            result = check();
+        } catch (error) {
+            // `String(error)` rather than only `.message`: a check that
+            // throws a string or a number still has to say why, and the
+            // whole point of catching is that the reason survives.
+            const message = (error as Error)?.message ?? String(error);
+            result = { ready: false, detail: message || 'check failed' };
+        }
+        checks[name] = result;
+        if (!result.ready) ready = false;
+    }
+    return { ready, checks };
 }
 
 export function defineActorApp(options: ActorAppOptions): ActorApp {
@@ -332,6 +402,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             onStart: [],
             onStop: [],
             routes: [],
+            health: [],
             contextFactories: []
         };
         for (const plugin of this.#plugins) {
@@ -529,6 +600,31 @@ function registryFor(pluginName: string, c: Contributions): PluginRegistry {
         },
         route(route) {
             c.routes.push(route);
+        },
+        reportHealth(name, check) {
+            if (!name.trim()) {
+                throw new Error(
+                    `[sigx actors] ${pluginName} called reportHealth() with an empty name — ` +
+                        'a readiness check is identified by its name in the probe body.'
+                );
+            }
+            const clash = c.health.find((entry) => entry.name === name);
+            if (clash) {
+                // Names key the `checks` map, so a duplicate would overwrite
+                // — and could hide a FAILING check behind a passing one,
+                // which is the one thing a readiness report must never do.
+                throw new Error(
+                    `[sigx actors] two plugins both contributed a readiness check named ` +
+                        `"${name}" (${clash.plugin} and ${pluginName}) — names key the ` +
+                        'readiness report, so give one of them a distinct name.'
+                );
+            }
+            c.health.push({ name, check, plugin: pluginName });
+        },
+        health() {
+            // Reads `c` at CALL time, not registration time — that is what
+            // makes the aggregate independent of `.use()` order.
+            return healthReport(c);
         },
         extendContext(factory) {
             c.contextFactories.push(factory);

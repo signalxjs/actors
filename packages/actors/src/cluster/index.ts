@@ -21,6 +21,16 @@ export {
     createSiloResolver,
     type SiloRequestOptions
 } from './silo-endpoint';
+export {
+    clusterStats,
+    SILO_STATS_SYMBOL,
+    type ClusterStatsFailure,
+    type ClusterStatsFailureReason,
+    type ClusterStatsOptions,
+    type ClusterStatsReport,
+    type SiloReport
+} from './stats';
+export type { ClusterCounters, ClusterCounterTotals } from './counters';
 export { memoryClusterHub, type MemoryClusterHub } from './memory';
 export { createSiloTransport, type SiloTransport, type SiloTransportOptions } from './transport';
 export {

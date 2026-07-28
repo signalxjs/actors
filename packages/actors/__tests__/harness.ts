@@ -16,6 +16,7 @@ import {
     defineActorApp,
     memoryStorage,
     type ActorApp,
+    type ActorPlugin,
     type SiloDefaults
 } from '@sigx/actors/silo';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
@@ -69,10 +70,17 @@ export interface ClusterOptions {
     retryBackoffMs?: number;
     /** Spy hook: called with every URL crossing the pipe. */
     onRequest?: (url: string) => void;
+    /** Extra plugins for silo `i` — e.g. `health()`, `metrics()`. */
+    plugins?: (index: number) => readonly ActorPlugin[];
+    /** Wrap the shared pipe: stall a peer, rewrite a response, count
+     *  concurrency. Applied around `pipeFetch`, so it sees every hop. */
+    wrapFetch?: (inner: typeof globalThis.fetch) => typeof globalThis.fetch;
 }
 
 export interface ClusterHarness {
     silos: Silo[];
+    /** The apps behind the silos — for probing contributed routes. */
+    apps: ActorApp[];
     placements: ClusterPlacement[];
     hub: MemoryClusterHub;
     storage: ActorStorage;
@@ -95,7 +103,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const secret = options.secret ?? 'test-secret';
     const registry = new Map<string, { app: ActorApp; silo: Silo }>();
 
-    const pipeFetch: typeof globalThis.fetch = async (input, init) => {
+    const rawFetch: typeof globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
         const url = new URL(request.url);
         options.onRequest?.(request.url);
@@ -112,6 +120,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         expect(matchesSiloRequest(request) || matchesActorRequest(request)).toBe(true);
         return abortLinked(response, init?.signal ?? request.signal);
     };
+    const pipeFetch = options.wrapFetch ? options.wrapFetch(rawFetch) : rawFetch;
 
     const silos: Silo[] = [];
     const placements: ClusterPlacement[] = [];
@@ -129,11 +138,12 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
                 ? { retryBackoffMs: options.retryBackoffMs }
                 : {})
         });
-        const app = defineActorApp({
+        let app = defineActorApp({
             actors: options.actors,
             storage,
             defaults: { ...quiet, ...options.defaults }
         }).use(plugin);
+        for (const extra of options.plugins?.(i) ?? []) app = app.use(extra);
         const silo = await app.start();
         registry.set(`silo${i}.test`, { app, silo });
         silos.push(silo);
@@ -143,6 +153,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
 
     return {
         silos,
+        apps,
         placements,
         hub,
         storage,

@@ -94,6 +94,26 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
         placement,
         setup(registry: PluginRegistry): void {
             registry.setPlacement(() => placement);
+            // Readiness, so a `health()` endpoint drains this silo without
+            // knowing clustering exists. `'leaving'` is the M4 handoff
+            // window (announced BEFORE the drain, which is the whole point:
+            // the load balancer stops sending while activations hand off).
+            // `'fenced'` is the one that would otherwise be invisible —
+            // `#fence()` leaves the PUBLISHED status at 'active' while
+            // every activation is refused, so a fenced silo is a black hole
+            // the balancer would happily keep feeding.
+            registry.reportHealth('cluster', () => {
+                const { status } = placement.counters();
+                return {
+                    ready: status === 'active',
+                    detail:
+                        status === 'fenced'
+                            ? 'fenced — membership lost, activations refused'
+                            : status === 'leaving'
+                              ? 'leaving — draining, take out of rotation'
+                              : status
+                };
+            });
             registry.route({
                 name: 'cluster:silo',
                 match: (request) => matchesSiloRequest(request, internalBase),

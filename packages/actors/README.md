@@ -545,6 +545,145 @@ swallowed and dev-logged — it can never fail a turn.
 Registering no observer leaves the hot path exactly as it was: the
 timestamps are only taken when someone is listening.
 
+**In a cluster, `metrics()` is per-silo and the two halves of a cross-silo
+call land on different silos.** `calls.total` and `latencyMs` are counted on
+the silo that *originated* the call; `queueMs`/`turnMs` and the activation
+gauges on the silo that *executed* it. That is a split, not a double count —
+an inbound hop goes through the raw local dispatcher and never touches
+`useDispatch` — so summing `calls.total` across silos gives the true number
+of calls the cluster served, once each.
+
+## Health & readiness
+
+`health()` adds two endpoints. It knows nothing about clustering: it serves
+the aggregate of every plugin's `reportHealth()` contribution, and
+`cluster()` contributes its own. So this is the whole wiring, clustered or
+not:
+
+```ts
+import { defineActorApp, health } from '@sigx/actors/silo';
+
+export const app = defineActorApp({ actors, storage })
+    .use(cluster({ providers, advertise, secret }))   // optional
+    .use(health());
+```
+
+| route | question | on failure |
+|---|---|---|
+| `GET /_sigx/health` | **liveness** — is this process worth keeping? | restart it |
+| `GET /_sigx/health/ready` | **readiness** — should it be receiving traffic? | drain it |
+
+**They must be allowed to disagree, and the drain is why.** A graceful
+`silo.stop()` announces `leaving` *before* activations hand off, so for the
+whole handoff window the silo is `200 live` and `503 not-ready`: take it out
+of the load balancer, do **not** restart it — a restart would abort the
+handoff that makes rolling deploys drop zero calls.
+
+The cluster check fails for three states, each with a `detail` you can read
+off the probe body:
+
+- **`leaving`** — draining (post-`beginStop`).
+- **`fenced`** — this silo lost its membership heartbeat and now refuses
+  every activation. Its *published* status still reads `active`, so without
+  this check a balancer would happily keep feeding a black hole. This is the
+  single highest-value bit here.
+- **`joining`** — the membership join has not completed.
+
+Any plugin can gate readiness — a cache warmer, a migration check:
+
+```ts
+registry.reportHealth('warmup', () => ({ ready: cache.loaded, detail: 'cache cold' }));
+```
+
+Every contributed check must pass; all of them are evaluated, so a failing
+probe names *every* reason rather than the first. A check that throws is
+reported not-ready with its message — a broken check must never 500 the
+endpoint that is supposed to diagnose it.
+
+**Before `start()` the whole mount answers 503**, including `/_sigx/health` —
+routes only run on a started silo, so serving at all *is* the liveness
+signal. On Kubernetes that means a `startupProbe`, which exists for exactly
+this and also suppresses the liveness probe until the first success:
+
+```yaml
+startupProbe:                 # covers a slow boot (Redis join, storage warm-up)
+  httpGet: { path: /_sigx/health, port: 7311 }
+  failureThreshold: 30
+  periodSeconds: 2
+livenessProbe:
+  httpGet: { path: /_sigx/health, port: 7311 }
+readinessProbe:               # 503s for the whole drain window
+  httpGet: { path: /_sigx/health/ready, port: 7311 }
+lifecycle:
+  preStop: { exec: { command: ["sleep", "10"] } }   # let the LB notice first
+```
+
+These routes **cannot be authenticated** — a kubelet cannot sign the cluster
+HMAC — so do not expose `/_sigx/health` through a public ingress. By default
+the body carries the `checks` map and activation totals; it never includes a
+`perType` breakdown or anything key-shaped, so it cannot name your actor
+types. `health({ detail: false })` drops both, leaving the status code and a
+bare `{ status, uptimeMs }`.
+
+### Cluster-wide stats
+
+`clusterStats()` fans out across the membership view and returns one report:
+
+```ts
+import { clusterStats } from '@sigx/actors/cluster';
+
+const report = await clusterStats(plugin.placement, { timeoutMs: 2000 });
+// {
+//   view:    { version: 12, size: 3, active: 3 },
+//   silos:   [{ siloId, address, status, stats: { activations, queued, perType },
+//               counters, reminderShards: ['p3','p7',…], uptimeMs }],
+//   totals:  { silos, activations, queued, perType, counters },
+//   reminderShards: { p0: ['s.ab12'], p1: ['s.cd34'], … },
+//   unreachable: [{ siloId, address, reason: 'unreachable', message }],
+//   partial: false
+// }
+```
+
+It travels as a reserved symbol (`$sigx:silo#stats`) on the **existing**
+internal mount, so it inherits the per-request HMAC, the envelope, the codec
+and the body cap — there is no second, unauthenticated way to read your
+topology. It needs `secret` configured, like every other silo-to-silo call.
+
+**It never throws because a peer is sick.** A silo that times out, refuses
+the secret, or predates this build lands in `unreachable` with a `reason`,
+and `partial: true` marks the totals as a lower bound. A report you cannot
+get during an incident is worthless. Peers are queried with bounded
+concurrency (default 16), so a 100-silo fan-out is waves rather than 100
+simultaneous connections, and the collector answers for itself in process.
+
+`reminderShards` maps each of the 16 shards to the silos *claiming* it, built
+from the reports rather than recomputed centrally — so **two** claimants means
+views have diverged (safe: the per-shard etag CAS keeps reminders
+at-most-once) and an **empty** list means nothing is ticking that shard. The
+number of distinct silos across that map is also how many silos do reminder
+work at all, which is otherwise invisible.
+
+### Cluster counters
+
+`placement.counters()` is the per-silo, pull-based routing view — the same
+posture as `metrics()`, and always on (integer increments on paths already
+doing network and directory work; the local fast path is not instrumented at
+all).
+
+| counter | what it diagnoses |
+|---|---|
+| `routedLocal` / `remoteDispatches` / `inboundDispatches` | locality. `remoteDispatches` and `inboundDispatches` are the two sides of one hop — reported side by side, **never summed**; their gap is in-flight and retried attempts |
+| `retries`, `routingFailures` | convergence. Every `routingFailures` is a user-visible error after the last attempt |
+| `wrongHostRedirects` | the directory and the placement policy disagree — usually membership flapping |
+| `unreachableRetries` / `drainingRetries` | a peer flapping, versus a rolling deploy in progress (should be zero at rest) |
+| `routeCacheHits` / `routeCacheMisses` / `routeCacheSize` | directory load. A collapsing hit rate is what precedes a directory melt-down |
+| `directoryLookups`, `directoryClaims`, `claimConflicts`, `directoryReleases` | activation races, and claim leaks — a widening claims-vs-releases gap strands keys |
+| `directoryEvictions`, `siloSweeps`, `sweptEntries` | failover actually happening. Zero sweeps after a crash means dead entries are only being reclaimed lazily |
+| `membershipChanges`, `membershipVersion` | store load. One join notifies every member, so this is the counter that makes membership cost visible |
+| `selfFences` | this silo was a black hole. Anything above zero needs investigating |
+| `authFailures` | secret rotation gone wrong — a 403 on the internal mount is otherwise completely silent |
+| `claimed`, `status` | actors owned here, and `'fenced'` where the published status still says `active` |
+
 ## Reads and writes in components
 
 `useActorState` reads an actor method as component data; `useActorAction`
@@ -751,17 +890,21 @@ routing — rolling deploys drop zero calls), and
 `memoryClusterHub()` gives an N-silo in-process cluster with no external
 store.
 
+To see inside a running cluster — readiness that drains a `leaving` or
+fenced silo, `clusterStats()` across the view, and the routing/directory
+counters — see [Health & readiness](#health--readiness) above.
+
 ## Entry points
 
 | Entry | Contents |
 |---|---|
 | `@sigx/actors` | `defineActor`, `actor`, `useActor`, `actorKey`, errors, types — isomorphic, light |
-| `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, storage/placement/plugin seams — server-only |
+| `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, `metrics()`, `health()`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |
 | `@sigx/actors/app` | `actorsPlugin()`, `useActorState`, `useActorAction` — the sigx app integration (the only entry that imports `sigx`) |
-| `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
+| `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `clusterStats`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
 | `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |
 
@@ -777,4 +920,6 @@ store.
   `[Reentrant]` arbitrary interleaving is not offered — `reentrant: true`
   is call-chain re-entry only.
 - Reserved names: actor types starting with `$sigx:` and the method name
-  `$sigx:reminder`.
+  `$sigx:reminder`. `$sigx:silo#stats` is the cluster's ops channel and is
+  answered before any definition lookup, so an actor type named `$sigx:silo`
+  would simply be uncallable across silos.

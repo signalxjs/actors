@@ -27,7 +27,14 @@ import {
     type PlacementBindings,
     type Silo
 } from '../types';
-import { fnv1a } from '../silo/reminder-shards';
+import { mintCallId } from '../call-id';
+import { fnv1a, reminderShardKeys } from '../silo/reminder-shards';
+import {
+    createCounters,
+    type ClusterCounters,
+    type ClusterCounterTotals
+} from './counters';
+import { SILO_STATS_METHOD, SILO_STATS_TYPE, type SiloReport } from './stats';
 import { createSiloTransport, type SiloTransport } from './transport';
 import type {
     ClusterProviders,
@@ -93,6 +100,53 @@ export interface ClusterPlacement extends ActorPlacement {
         args: readonly unknown[],
         call: ActorCallContext
     ): AsyncIterable<unknown>;
+    /** The membership view this silo currently holds. */
+    view(): MembershipView;
+    /** Pull-based routing/directory counters for THIS silo. Fresh object. */
+    counters(): ClusterCounters;
+    /**
+     * This silo's operational snapshot — the local half of `clusterStats()`,
+     * and exactly what a peer's `$sigx:silo#stats` answers. Safe before
+     * `start()`: reports `'joining'` and zeroes.
+     */
+    report(): SiloReport;
+    /**
+     * Fetch a peer's report over the internal transport.
+     *
+     * @internal — the fan-out helper behind `clusterStats()`. It goes
+     * straight to the transport, never through the routing loop, so reading
+     * the counters cannot move them.
+     */
+    peerReport(
+        target: SiloDescriptor,
+        timeoutMs: number,
+        signal?: AbortSignal
+    ): Promise<SiloReport>;
+    /**
+     * @internal — the internal mount reports HMAC rejections here. Optional
+     * on the interface so a hand-rolled placement passed to
+     * `handleSiloRequest` need not implement it.
+     */
+    noteAuthFailure?(): void;
+}
+
+/**
+ * Highest-random-weight (rendezvous) selection: every silo independently
+ * picks the SAME member for a key, with a lexical tie-break so equal hashes
+ * cannot split the answer. Shared by new-activation placement and reminder
+ * shard ownership — two uses of one rule, not two rules that agree.
+ */
+function rendezvous(key: string, silos: readonly SiloDescriptor[]): SiloDescriptor | null {
+    let best: SiloDescriptor | null = null;
+    let bestScore = -1;
+    for (const silo of silos) {
+        const score = fnv1a(`${key}|${silo.siloId}`);
+        if (score > bestScore || (score === bestScore && best !== null && silo.siloId < best.siloId)) {
+            bestScore = score;
+            best = silo;
+        }
+    }
+    return best;
 }
 
 const ROUTE_CACHE_MAX = 10_000;
@@ -138,20 +192,7 @@ export function consistentHashPolicy(): PlacementPolicy {
         choose(ref, view, self) {
             const active = view.silos.filter((s) => s.status === 'active');
             if (active.length === 0) return self;
-            const id = actorId(ref);
-            let best = active[0]!;
-            let bestScore = -1;
-            for (const s of active) {
-                const score = fnv1a(`${id}|${s.siloId}`);
-                if (
-                    score > bestScore ||
-                    (score === bestScore && s.siloId < best.siloId)
-                ) {
-                    bestScore = score;
-                    best = s;
-                }
-            }
-            return best;
+            return rendezvous(actorId(ref), active) ?? self;
         }
     };
 }
@@ -190,6 +231,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #fenced = false;
     #status: SiloDescriptor['status'] = 'joining';
     #unsubscribe: (() => void)[] = [];
+    /** Mutable counters — never handed out; `counters()` copies. */
+    #counters: ClusterCounterTotals = createCounters();
+    /** `performance.now()` at `start()`; 0 before. */
+    #startedAt = 0;
 
     constructor(options: ClusterPlacementOptions) {
         this.identity = { siloId: `s.${randBase36(8)}`, epoch: Date.now() };
@@ -232,6 +277,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     siloId: this.identity.siloId,
                     activationId: `${this.identity.siloId}/${this.identity.epoch}/${++this.#seq}`
                 };
+                this.#counters.directoryClaims++;
                 let winner = await this.#options.directory.claim(id, mine);
                 if (
                     winner.activationId !== mine.activationId &&
@@ -241,10 +287,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     // A stale entry naming US without a live claim behind it
                     // (leftover from a lost release) — reclaim, don't bounce
                     // callers off our own ghost.
+                    this.#counters.directoryEvictions++;
                     await this.#options.directory.evict(id, winner);
+                    this.#counters.directoryClaims++;
                     winner = await this.#options.directory.claim(id, mine);
                 }
                 if (winner.activationId !== mine.activationId) {
+                    this.#counters.claimConflicts++;
                     throw new ActorWrongHostError(actorLabel(ref), {
                         siloId: winner.siloId,
                         ...(this.#address(winner.siloId) !== undefined
@@ -259,6 +308,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 const entry = this.#claimed.get(id);
                 if (!entry) return;
                 this.#claimed.delete(id);
+                this.#counters.directoryReleases++;
                 await this.#options.directory.release(id, entry);
             },
             strictChainPresence: true,
@@ -284,26 +334,19 @@ class ClusterPlacementImpl implements ClusterPlacement {
             .view()
             .silos.filter((s) => s.status === 'active');
         if (active.length === 0) return true; // solo / not started
-        let best: string | null = null;
-        let bestScore = -1;
-        for (const s of active) {
-            const score = fnv1a(`${shard}|${s.siloId}`);
-            if (score > bestScore || (score === bestScore && (best === null || s.siloId < best))) {
-                bestScore = score;
-                best = s.siloId;
-            }
-        }
-        return best === this.identity.siloId;
+        return rendezvous(shard, active)?.siloId === this.identity.siloId;
     }
 
     async start(): Promise<void> {
         this.#status = 'active';
         await this.#options.membership.join(this.descriptor());
+        this.#startedAt = performance.now();
         this.#seenSilos = new Set(
             this.#options.membership.view().silos.map((s) => s.siloId)
         );
         this.#unsubscribe.push(
             this.#options.membership.onChange((view) => {
+                this.#counters.membershipChanges++;
                 this.#pruneRoutes(view);
                 void this.#sweepDeparted(view);
             }),
@@ -346,6 +389,12 @@ class ClusterPlacementImpl implements ClusterPlacement {
         args: readonly unknown[],
         call: ActorCallContext
     ): Promise<unknown> {
+        // Counted separately from `remoteDispatches` and NEVER summed with
+        // it: this is the same logical call the caller already counted on
+        // its own side. Note that `#local` is the RAW local dispatcher, so
+        // an inbound call does not pass through `useDispatch` middleware —
+        // `metrics()` counts a cross-silo call once, on the caller.
+        this.#counters.inboundDispatches++;
         return this.#local!.dispatch(ref, method, args, call);
     }
 
@@ -355,7 +404,85 @@ class ClusterPlacementImpl implements ClusterPlacement {
         args: readonly unknown[],
         call: ActorCallContext
     ): AsyncIterable<unknown> {
+        this.#counters.inboundStreams++;
         return this.#local!.dispatchStream!(ref, method, args, call);
+    }
+
+    // -----------------------------------------------------------------------
+    // Ops
+
+    view(): MembershipView {
+        return this.#options.membership.view();
+    }
+
+    /** @internal — the internal mount reports HMAC rejections here. */
+    noteAuthFailure(): void {
+        this.#counters.authFailures++;
+    }
+
+    counters(): ClusterCounters {
+        return {
+            ...this.#counters,
+            // Gauges are read here rather than tracked, so they cannot drift.
+            claimed: this.#claimed.size,
+            routeCacheSize: this.#routeCache.size,
+            membershipVersion: this.#options.membership.view().version,
+            status: this.#fenced ? 'fenced' : this.#status
+        };
+    }
+
+    report(): SiloReport {
+        const shards = reminderShardKeys().filter((shard) => this.ownsReminderShard(shard));
+        return {
+            v: 1,
+            siloId: this.identity.siloId,
+            epoch: this.identity.epoch,
+            address: this.#options.advertise,
+            status: this.#fenced ? 'fenced' : this.#status,
+            stats: this.#silo?.stats() ?? { activations: 0, queued: 0, perType: {} },
+            counters: this.counters(),
+            reminderShards: shards,
+            uptimeMs: this.#startedAt === 0 ? 0 : Math.round(performance.now() - this.#startedAt),
+            ...(this.#options.meta ? { meta: this.#options.meta } : {})
+        };
+    }
+
+    /** @internal — straight to the transport, never through the routing loop,
+     *  so reading the counters cannot move them. */
+    async peerReport(
+        target: SiloDescriptor,
+        timeoutMs: number,
+        signal?: AbortSignal
+    ): Promise<SiloReport> {
+        const timeout = AbortSignal.timeout(timeoutMs);
+        const call: ActorCallContext = {
+            callChain: [],
+            callId: mintCallId(),
+            // Bounded from both ends: the abort stops a hung socket here,
+            // the deadline lets the peer give up on its own clock.
+            deadline: Date.now() + timeoutMs,
+            abortSignal: signal ? AbortSignal.any([timeout, signal]) : timeout
+        };
+        const report = (await this.#transport
+            .dispatcherFor(target)
+            .dispatch(
+                { type: SILO_STATS_TYPE, key: SILO_STATS_METHOD },
+                SILO_STATS_METHOD,
+                [],
+                call
+            )) as SiloReport | undefined;
+        if (!report || report.v !== 1) {
+            // A rolling deploy IS a mixed-version cluster, and the ops tool
+            // has to keep working during the deploy that broke things.
+            throw Object.assign(
+                new Error(
+                    `[sigx actors] ${target.siloId} answered an unsupported stats payload ` +
+                        `(v${String(report?.v)})`
+                ),
+                { status: 404 }
+            );
+        }
+        return report;
     }
 
     // -----------------------------------------------------------------------
@@ -415,7 +542,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
             // the list, so the next membership change tries again.
             try {
                 if (await this.#options.membership.isAlive(id)) continue;
-                await this.#options.directory.evictSilo(id);
+                this.#counters.siloSweeps++;
+                this.#counters.sweptEntries += await this.#options.directory.evictSilo(id);
                 this.#seenSilos.delete(id);
             } catch (error) {
                 if (__DEV__) {
@@ -429,6 +557,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
     async #fence(): Promise<void> {
         if (this.#fenced) return;
         this.#fenced = true;
+        this.#counters.selfFences++;
         const types = new Set<string>();
         for (const id of this.#claimed.keys()) {
             const nul = id.indexOf('\u0000');
@@ -446,12 +575,20 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
         const cached = this.#routeCache.get(id);
         if (cached !== undefined) {
-            if (cached === this.identity.siloId) return 'local';
+            if (cached === this.identity.siloId) {
+                this.#counters.routeCacheHits++;
+                return 'local';
+            }
             const member = this.#member(cached);
-            if (member) return member;
+            if (member) {
+                this.#counters.routeCacheHits++;
+                return member;
+            }
             this.#routeCache.delete(id);
         }
+        this.#counters.routeCacheMisses++;
 
+        this.#counters.directoryLookups++;
         const entry = await this.#options.directory.lookup(id);
         if (entry) {
             if (entry.siloId === this.identity.siloId) return 'local';
@@ -462,6 +599,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             }
             if (!(await this.#options.membership.isAlive(entry.siloId))) {
                 // Dead owner: reclaim lazily and place fresh below.
+                this.#counters.directoryEvictions++;
                 await this.#options.directory.evict(id, entry);
             }
         }
@@ -532,6 +670,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         remote: boolean
     ): Promise<'wrong-host' | 'unreachable' | 'draining' | null> {
         if (isActorError(error) && error.kind === 'wrong-host') {
+            this.#counters.wrongHostRedirects++;
             this.#routeCache.delete(id);
             const owner = (error as ActorWrongHostError).owner;
             if (owner?.siloId && owner.siloId !== this.identity.siloId) {
@@ -540,15 +679,19 @@ class ClusterPlacementImpl implements ClusterPlacement {
             return 'wrong-host';
         }
         if (isActorError(error) && error.kind === 'unreachable') {
+            this.#counters.unreachableRetries++;
             this.#routeCache.delete(id);
+            this.#counters.directoryLookups++;
             const entry = await this.#options.directory.lookup(id);
             if (entry && !(await this.#options.membership.isAlive(entry.siloId))) {
+                this.#counters.directoryEvictions++;
                 await this.#options.directory.evict(id, entry);
             }
             await this.#options.membership.refresh();
             return 'unreachable';
         }
         if (remote && isActorError(error) && error.kind === 'silo-shutdown') {
+            this.#counters.drainingRetries++;
             // The owner is handing off: its claim releases as the actor
             // drains — don't evict, just re-resolve after a backoff (the
             // refreshed view excludes the leaver from placement).
@@ -574,11 +717,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const id = actorId(ref);
         let lastError: unknown;
         for (let attempt = 0; attempt <= this.#retries; attempt++) {
+            if (attempt > 0) this.#counters.retries++;
             const target = await this.#resolveTarget(ref);
             try {
                 if (target === 'local') {
+                    this.#counters.routedLocal++;
                     return await this.#local!.dispatch(ref, method, args, call);
                 }
+                this.#counters.remoteDispatches++;
                 return await this.#transport
                     .dispatcherFor(target)
                     .dispatch(ref, method, args, call);
@@ -591,6 +737,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 lastError = error;
             }
         }
+        this.#counters.routingFailures++;
         throw new ActorActivationError(actorLabel(ref), {
             cause:
                 lastError ??
@@ -615,19 +762,27 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const local = this.#local!;
         const transport = this.#transport;
         const retries = this.#retries;
+        // Captured like `local`/`transport`: `run()` is a free generator, so
+        // `this` must not leak into it.
+        const counters = this.#counters;
         // Placement errors (wrong-host, unreachable) surface on the FIRST
         // pull — the endpoint pump pulls the first chunk before responding,
         // so buffering one chunk here matches established stream semantics.
         async function* run(): AsyncGenerator<unknown> {
             let lastError: unknown;
             for (let attempt = 0; attempt <= retries; attempt++) {
+                if (attempt > 0) counters.retries++;
                 const target = await resolveTarget();
-                const iterable =
-                    target === 'local'
-                        ? local.dispatchStream!(ref, method, args, call)
-                        : transport
-                              .dispatcherFor(target)
-                              .dispatchStream!(ref, method, args, call);
+                let iterable: AsyncIterable<unknown>;
+                if (target === 'local') {
+                    counters.routedLocal++;
+                    iterable = local.dispatchStream!(ref, method, args, call);
+                } else {
+                    counters.remoteStreams++;
+                    iterable = transport
+                        .dispatcherFor(target)
+                        .dispatchStream!(ref, method, args, call);
+                }
                 const iterator = iterable[Symbol.asyncIterator]();
                 let first: IteratorResult<unknown>;
                 try {
@@ -658,6 +813,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     if (!finished && iterator.return) await iterator.return(undefined);
                 }
             }
+            counters.routingFailures++;
             throw new ActorActivationError(actorLabel(ref), {
                 cause:
                     lastError ??

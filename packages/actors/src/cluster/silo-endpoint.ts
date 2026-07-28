@@ -23,6 +23,7 @@ import { isActorError, type ActorWrongHostError } from '../errors';
 import type { ActorCallContext, AnyActorDefinition, Silo } from '../types';
 import { decodeEnvelope, verifyAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type { ClusterPlacement } from './placement';
+import { SILO_STATS_METHOD, SILO_STATS_SYMBOL } from './stats';
 
 export interface SiloRequestOptions
     extends Omit<ServerFnRequestOptions, 'resolve' | 'renderBoundaries' | 'origin' | 'guard'> {
@@ -48,6 +49,7 @@ export function handleSiloRequest(
     try {
         decodeURIComponent(new URL(request.url).pathname);
     } catch {
+        placement.noteAuthFailure?.();
         return Promise.resolve(
             new Response(
                 JSON.stringify({
@@ -73,6 +75,7 @@ export function handleSiloRequest(
             } catch {
                 // Malformed percent-encoding can't crash the endpoint —
                 // an undecodable path is an unauthenticated request.
+                placement.noteAuthFailure?.();
                 throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
             }
             const callHeader = rq.request.headers.get(SILO_CALL_HEADER);
@@ -91,6 +94,10 @@ export function handleSiloRequest(
                     callId
                 ));
             if (!ok) {
+                // Counted, because a 403 here is otherwise completely
+                // silent — and during a secret rotation it is the only
+                // signal that half the cluster has not rotated yet.
+                placement.noteAuthFailure?.();
                 throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
             }
         },
@@ -118,7 +125,19 @@ export function createSiloResolver(
     placement: ClusterPlacement
 ): (symbol: string) => unknown | Promise<unknown> {
     const cache = new Map<string, unknown>();
+    // The ops channel. Synthesized once, and answered BEFORE any definition
+    // lookup so an actor type literally named `$sigx:silo` cannot shadow it
+    // — the safe direction: that actor becomes uncallable cross-silo, which
+    // is loud and testable, rather than silently taking over the mount.
+    const statsFn = {
+        __sigxName: SILO_STATS_METHOD,
+        // No `prepare()`: the guard already authenticated symbol + callId,
+        // and there is no ref to route, no deadline to re-anchor and no
+        // activation to dispatch to.
+        __sigxFn: () => placement.report()
+    };
     return (symbol: string) => {
+        if (symbol === SILO_STATS_SYMBOL) return statsFn;
         const hit = cache.get(symbol);
         if (hit !== undefined) return hit;
         const hash = symbol.lastIndexOf('#');
