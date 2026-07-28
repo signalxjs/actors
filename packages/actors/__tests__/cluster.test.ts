@@ -715,14 +715,18 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         expect(cluster.silos[0]!.stats().activations).toBe(0);
     });
 
-    it('ignores a declared strategy that is not a cluster policy', async () => {
+    it('ignores a strategy TAGGED for another backend, silently', async () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        // A marker for some other backend (no choose()) must not break
-        // routing — it falls back to the configured policy.
+        // A legitimately foreign strategy: it names its backend, so the
+        // cluster placement knows it is not being asked to use it and falls
+        // back to the configured policy. This is the case the opacity of
+        // `ActorPlacementStrategy` exists to allow, so it must be SILENT —
+        // warning about a correct declaration is noise the author cannot act
+        // on.
         const odd = defineActor({
             type: 'Odd',
             unguarded: true,
-            placement: { name: 'durable-object' },
+            placement: { name: 'durable-object', backend: 'durable-objects' },
             state: () => ({}),
             methods: () => ({
                 async ping() {
@@ -734,12 +738,69 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         running = cluster;
         try {
             await expect(cluster.silos[1]!.actor(odd, 'a').ping()).resolves.toBe('pong');
-            expect(warn).toHaveBeenCalledWith(
-                expect.stringContaining('not a cluster PlacementPolicy')
-            );
+            // Narrowed to placement warnings: the multi-silo harness emits
+            // its own unrelated "second silo started" notice.
+            const placementWarnings = warn.mock.calls
+                .map((c) => String(c[0]))
+                .filter((line) => line.includes('placement') || line.includes('backend'));
+            expect(placementWarnings).toEqual([]);
         } finally {
             warn.mockRestore();
         }
+    });
+
+    it('will not run a foreign strategy even if it HAS a choose()', async () => {
+        // The tag decides, not the shape. A strategy written against another
+        // backend's view of the world must not be executed here just because
+        // it happens to expose the right method name — that would be worse
+        // than ignoring it.
+        let called = false;
+        const foreign = defineActor({
+            type: 'Foreign',
+            unguarded: true,
+            placement: {
+                name: 'do-pin',
+                backend: 'durable-objects',
+                choose: (_r: unknown, _v: unknown, self: unknown) => {
+                    called = true;
+                    return self;
+                }
+            } as never,
+            state: () => ({}),
+            methods: () => ({
+                async ping() {
+                    return 'pong';
+                }
+            })
+        });
+        const cluster = await createCluster(2, { actors: [foreign], policy: selfPolicy });
+        running = cluster;
+        await expect(cluster.silos[1]!.actor(foreign, 'a').ping()).resolves.toBe('pong');
+        expect(called).toBe(false);
+    });
+
+    it('REFUSES an untagged strategy it cannot use, rather than misplacing the grain', async () => {
+        // The bug this replaces: with no backend tag and no choose(), the
+        // runtime could not tell "someone else's" from "broken", so it
+        // ignored both with a dev-only warning — and in production the grain
+        // was quietly placed somewhere other than where the author declared,
+        // with nothing pointing at the cause.
+        const broken = defineActor({
+            type: 'Broken',
+            unguarded: true,
+            placement: { name: 'my-strategy' }, // no choose(), no backend
+            state: () => ({}),
+            methods: () => ({
+                async ping() {
+                    return 'pong';
+                }
+            })
+        });
+        const cluster = await createCluster(2, { actors: [broken], policy: selfPolicy });
+        running = cluster;
+        await expect(cluster.silos[1]!.actor(broken, 'a').ping()).rejects.toThrow(
+            /not a usable cluster PlacementPolicy/
+        );
     });
 
     it('migrate() releases the claim and the next call re-places with state intact', async () => {

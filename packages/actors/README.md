@@ -280,6 +280,16 @@ Precedence for a new activation: `defineActor({ placement })` →
 `clusterPlacement({ typePolicies })` → `clusterPlacement({ policy })` →
 uniform random.
 
+A declared strategy the cluster **cannot use** — no `choose()` — is an error,
+not a fallback: silently placing a grain somewhere other than where its author
+declared is the kind of failure that leaves no signal pointing at its cause. A
+strategy intended for a *different* placement backend should say so, and is
+then ignored in silence:
+
+```ts
+placement: { name: 'my-do-strategy', backend: 'durable-objects' }
+```
+
 ## Other runtimes
 
 `createFetchHandler(app)` is the portable entry — the public actor endpoint

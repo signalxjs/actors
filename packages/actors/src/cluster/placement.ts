@@ -183,6 +183,13 @@ function rendezvous(key: string, silos: readonly SiloDescriptor[]): SiloDescript
 
 const ROUTE_CACHE_MAX = 10_000;
 
+/**
+ * The `backend` tag this placement answers to. A strategy carrying a
+ * DIFFERENT tag belongs to another backend and is ignored silently; one
+ * carrying this tag, or none at all, must be usable here or it is an error.
+ */
+export const CLUSTER_BACKEND = 'cluster';
+
 function randBase36(length: number): string {
     const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
     if (cryptoObj?.getRandomValues) {
@@ -198,6 +205,7 @@ function randBase36(length: number): string {
 /** Uniform random over active silos — the Orleans default posture. */
 const randomPolicy: PlacementPolicy = {
     name: 'random',
+    backend: CLUSTER_BACKEND,
     choose(_ref, view, self) {
         const active = view.silos.filter((s) => s.status === 'active');
         if (active.length === 0) return self;
@@ -221,6 +229,7 @@ export function randomPlacementPolicy(): PlacementPolicy {
 export function consistentHashPolicy(): PlacementPolicy {
     return {
         name: 'consistent-hash',
+        backend: CLUSTER_BACKEND,
         choose(ref, view, self) {
             const active = view.silos.filter((s) => s.status === 'active');
             if (active.length === 0) return self;
@@ -234,6 +243,7 @@ export function consistentHashPolicy(): PlacementPolicy {
 export function preferLocalPolicy(): PlacementPolicy {
     return {
         name: 'prefer-local',
+        backend: CLUSTER_BACKEND,
         choose: (_ref, _view, self) => self
     };
 }
@@ -827,18 +837,35 @@ class ClusterPlacementImpl implements ClusterPlacement {
             return undefined;
         }
         const declared = def?.__sigxActor.placement;
-        const policy =
-            declared && typeof (declared as PlacementPolicy).choose === 'function'
-                ? (declared as PlacementPolicy)
-                : null;
-        if (__DEV__ && declared && !policy) {
-            console.warn(
-                `[sigx actors] actor "${type}" declares placement ` +
-                    `"${declared.name ?? 'unnamed'}", which is ` +
-                    `not a cluster PlacementPolicy (no choose()) — ignored. It is probably a ` +
-                    `strategy for a different placement backend.`
-            );
+        // Three cases, not one. Before the `backend` tag existed the runtime
+        // could not tell them apart, so EVERY unusable declaration was
+        // ignored with a dev-only warning — and a typo'd strategy silently
+        // placed grains somewhere other than where its author said, in
+        // production, with nothing pointing at the cause.
+        if (declared) {
+            // TAGGED FOR SOMEONE ELSE — checked before shape, and on the tag
+            // alone. A foreign strategy that happens to expose a `choose()`
+            // must still not be used here: it was written against a different
+            // backend's view of the world, and running it would be worse than
+            // ignoring it. This is the case the opacity of
+            // `ActorPlacementStrategy` exists to allow, so it is silent.
+            if (declared.backend !== undefined && declared.backend !== CLUSTER_BACKEND) {
+                this.#declaredPolicies.set(type, null);
+                return undefined;
+            }
+            // OURS, OR UNTAGGED AND UNRECOGNISED. Either way it cannot do the
+            // job it was declared for, and failing loudly beats placing the
+            // grain somewhere the author did not ask for.
+            if (typeof (declared as PlacementPolicy).choose !== 'function') {
+                throw new Error(
+                    `[sigx actors] actor "${type}" declares placement ` +
+                        `"${declared.name ?? 'unnamed'}", which is not a usable cluster ` +
+                        `PlacementPolicy — it has no choose(). A strategy for a different ` +
+                        `backend must set \`backend\` so it can be told apart from a broken one.`
+                );
+            }
         }
+        const policy = (declared as PlacementPolicy | undefined) ?? null;
         this.#declaredPolicies.set(type, policy);
         return policy ?? undefined;
     }

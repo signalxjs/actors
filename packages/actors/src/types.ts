@@ -123,6 +123,23 @@ export interface ActorPlacementStrategy {
      * carry boilerplate that only exists for logging.
      */
     readonly name?: string;
+    /**
+     * Which placement backend understands this strategy, e.g. `'cluster'`.
+     *
+     * This exists because the type here is deliberately OPAQUE — choosing a
+     * host needs a membership view, which is a cluster concept, and core must
+     * not depend on `./cluster`. That opacity is load-bearing (it is what lets
+     * a Durable Objects backend define its own strategies) but it left a
+     * backend unable to tell two very different things apart: a strategy meant
+     * for someone ELSE, which must be ignored silently, and one meant for IT
+     * but malformed, which must fail.
+     *
+     * With the tag a backend distinguishes three cases instead of one, so a
+     * missing `choose()` stops being a dev-only warning and a silent
+     * misplacement in production. Set by each backend's own factories; a
+     * hand-written strategy may omit it, and is then judged on shape alone.
+     */
+    readonly backend?: string;
 }
 
 /**

@@ -14,6 +14,27 @@
   Exactly the unbounded growth the caps exist to prevent, and it looks like
   healthy behaviour right up until the heap goes. All three now go through
   `resolveLimit()`, which #108 added for the same bug in `silo.activations()`.
+- **A misdeclared `placement` is now refused instead of silently ignored**
+  (#86). `ActorOptions.placement` is typed `ActorPlacementStrategy`, which
+  requires only an optional `name` — so a strategy with no `choose()`
+  type-checked cleanly, was dropped with a `__DEV__`-only warning, and in
+  production placed grains somewhere other than where their author declared,
+  with nothing pointing at the cause.
+
+  The runtime genuinely could not do better: the type is deliberately opaque
+  (choosing a host needs a membership view, and core must not depend on
+  `./cluster`), so it could not tell a strategy meant for ANOTHER backend from
+  one meant for it but broken.
+
+  `ActorPlacementStrategy` gains an optional **`backend`** tag, which the
+  cluster's own factories set. That turns one case into three: mine and valid;
+  tagged for someone else (ignored **silently, on the tag alone** — a foreign strategy that happens to expose a `choose()` is still not run here, which is what the opacity exists
+  for); and mine, or untagged and unrecognised — now a **thrown error, in
+  production too**.
+
+  **Behaviour change:** an untagged strategy without `choose()` used to fall
+  back to the configured policy and now throws. A strategy for another backend
+  should set `backend` to keep being ignored.
 
 ### Documentation
 
