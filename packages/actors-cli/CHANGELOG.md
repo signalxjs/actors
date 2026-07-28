@@ -4,6 +4,40 @@
 
 ### Added
 
+- **Terminal building blocks** (#101) — `src/tui/`: `sparkline`, `meter`,
+  `trend`, `layoutTable`/`fit`/`scrollOffset`/`moveCursor`/`sortRows`,
+  `histogramRow`/`commonScale`, and `shardGrid`/`unclaimedShards`/
+  `splitShards`.
+
+  `@sigx/terminal` 0.9 ships `ProgressBar`, `Spinner`, `Card`, `Tabs`,
+  `StatusBar`, `KeyHints`, `LogView`, `Badge` and `Divider` — nothing
+  time-series, and a `Table` that is `columns: string[]` / `rows:
+  string[][]`: static, no scrolling, no sorting, no selection. These are
+  **intended to upstream to `@sigx/terminal-ui`**, and are written pure over
+  plain data so that port is mostly re-styling.
+
+  Three of the decisions are about not misleading:
+
+  - The sparkline scales from **zero**, not from the series minimum. A
+    min-anchored sparkline turns a flat line at 1000 req/s into a mountain
+    range of noise, which is the commonest way these lie.
+  - The lowest block is **reserved for exact zero**, so any non-zero value
+    gets at least the second. It costs one level of resolution and buys the
+    distinction that matters at a glance: 1 req/s against a scale of 1000
+    otherwise draws exactly like silence.
+  - A **gap is not a zero.** `null` renders as `·`, because a counter reset
+    and an unreachable poll are not the same fact as an idle period, and
+    drawing them at the baseline claims they are.
+
+  `sortRows` breaks ties on identity and `moveCursor` clamps rather than
+  wrapping, both for the same reason: a dashboard re-sorts every poll, and
+  rows that swap places or a cursor that silently returns to the top read as
+  activity when nothing has happened.
+
+  Histogram rows take a **shared** scale (`commonScale`, on p99 rather than
+  max so one outlier cannot flatten the panel), because the entire value of
+  stacking `latency`, `queue` and `turn` is reading them against one axis.
+
 - **`@sigx/actors-cli`** (#101) — a `@sigx/cli` plugin that observes actor
   silos, following the `@sigx/lynx-cli` precedent rather than shipping its
   own binary. `sigx` is already the command an app author runs, and the
