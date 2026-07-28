@@ -16,6 +16,7 @@ import type {
     ActorRef,
     ActorReminders,
     ActorStorage,
+    ActorTurnObserver,
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,
@@ -85,6 +86,14 @@ export interface CreateSiloOptions {
      * directly.
      */
     extendContext?: (ref: ActorRef) => object | undefined;
+    /**
+     * Observe every dispatched turn's queue wait and execution time.
+     * `defineActorApp` folds every plugin's `observeTurns` into this one
+     * function; hand-rolled silos can pass it directly. Omit it and the
+     * dispatch path is unchanged — the timestamps are only taken when an
+     * observer exists.
+     */
+    onTurn?: ActorTurnObserver;
     defaults?: SiloDefaults;
 }
 
@@ -115,6 +124,8 @@ class SiloImpl implements Silo {
     >();
     #resolved = new Map<string, AnyActorDefinition>();
     #scheduler: ActorScheduler;
+    #host!: ActivationHost;
+    #turnObservers = new Set<ActorTurnObserver>();
     #stopSweeper: (() => void) | null = null;
     #started = false;
     #startPromise: Promise<void> | null = null;
@@ -154,7 +165,7 @@ class SiloImpl implements Silo {
             }
         }
 
-        const host: ActivationHost = {
+        const host: ActivationHost = this.#host = {
             idleAfterMs: this.#defaults.idleAfterMs,
             slowTurnMs: this.#defaults.slowTurnMs,
             scheduler: this.#scheduler,
@@ -187,6 +198,7 @@ class SiloImpl implements Silo {
             },
             ...(options.extendContext ? { extendContext: options.extendContext } : {})
         };
+        if (options.onTurn) this.observeTurns(options.onTurn);
         this.#local = new LocalHost(
             host,
             (type) => this.definition(type),
@@ -477,6 +489,47 @@ class SiloImpl implements Silo {
         // the registry map.
         this.#resolved.delete(type);
         return this.#local.deactivateType(type);
+    }
+
+    observeTurns(observer: ActorTurnObserver): () => void {
+        this.#turnObservers.add(observer);
+        this.#refreshTurnObserver();
+        return () => {
+            if (this.#turnObservers.delete(observer)) this.#refreshTurnObserver();
+        };
+    }
+
+    /**
+     * Recompute the host's single observer slot.
+     *
+     * Setting it to `undefined` when nobody is listening is the whole point:
+     * the activation branches on its presence to decide whether to take the
+     * per-turn timestamps, so an empty subscriber set restores the original
+     * hot path exactly. That is what lets observation be switched off at
+     * runtime and actually cost nothing, rather than merely doing nothing.
+     */
+    #refreshTurnObserver(): void {
+        const observers = [...this.#turnObservers];
+        if (observers.length === 0) {
+            this.#host.onTurn = undefined;
+            return;
+        }
+        if (observers.length === 1) {
+            this.#host.onTurn = observers[0] as ActorTurnObserver;
+            return;
+        }
+        // Each isolated: one plugin's broken observer must not stop the rest
+        // from being told. (The activation guards the whole call too; this
+        // is about not losing observers two through N.)
+        this.#host.onTurn = (ref, method, queuedMs, elapsedMs, failed) => {
+            for (const observe of observers) {
+                try {
+                    observe(ref, method, queuedMs, elapsedMs, failed);
+                } catch (error) {
+                    if (__DEV__) console.error('[sigx actors] a turn observer threw:', error);
+                }
+            }
+        };
     }
 
     stats(): SiloStats {

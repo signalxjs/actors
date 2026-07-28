@@ -70,6 +70,43 @@ export interface ActorDispatcher {
 }
 
 /**
+ * Observes each completed turn, splitting the two things a dispatch
+ * middleware cannot tell apart: `queuedMs`, how long the message waited for
+ * the mailbox, and `elapsedMs`, how long it then HELD the mailbox. That
+ * split is the difference between "this grain is slow" (elapsed) and "this
+ * grain is hot" (queued), which are opposite problems with opposite fixes —
+ * and only the activation knows both, since a middleware sees just the sum.
+ *
+ * Positional parameters, not an options object: this runs on every turn, and
+ * an object literal per turn would be an allocation on the hot path.
+ *
+ * Fires for DISPATCHED turns only — the ones a caller waited for, including
+ * reminder delivery (as `$sigx:reminder`). Volatile `ctx.timer` ticks and
+ * write-behind flushes are excluded: they have no caller and no queue wait
+ * of their own, and their cost is already visible as queue wait on whatever
+ * was behind them. Reentrant (`ctx.actor` A→B→A) calls run inline against
+ * the caller's turn and are excluded too, since the outer turn already
+ * covers that time.
+ *
+ * Called from a `finally`. Throwing from here is swallowed (dev-logged) —
+ * an observer must never be able to fail a turn.
+ *
+ * `failed` means THE METHOD INVOCATION THREW, which is deliberately narrower
+ * than "the caller saw an error": the runtime's own post-turn bookkeeping
+ * (change fan-out, write-behind scheduling) runs after this and could in
+ * principle fail on its own, and such a turn is reported as succeeded. The
+ * narrow meaning is the one an actor author can act on; widening it is
+ * tracked separately rather than left ambiguous here.
+ */
+export type ActorTurnObserver = (
+    ref: ActorRef,
+    method: string,
+    queuedMs: number,
+    elapsedMs: number,
+    failed: boolean
+) => void;
+
+/**
  * A per-actor-type placement strategy — Orleans's `[PlacementStrategy]`
  * attribute, declared ON the actor rather than in a central map.
  *
@@ -537,4 +574,14 @@ export interface Silo extends ActorDispatcher {
     /** Deactivate every activation of one type (dev/HMR hook). */
     deactivateType(type: string): Promise<void>;
     stats(): SiloStats;
+    /**
+     * Observe every dispatched turn; returns an unsubscribe.
+     *
+     * When the LAST observer unsubscribes the runtime stops taking the
+     * per-turn timestamps altogether, so observation can be switched on for
+     * an investigation and off again without leaving a permanent cost
+     * behind. That is the difference between disabling the work and merely
+     * discarding its results.
+     */
+    observeTurns(observer: ActorTurnObserver): () => void;
 }

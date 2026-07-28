@@ -26,6 +26,7 @@ import type {
     ActorReminders,
     ActorScheduler,
     ActorStreamTable,
+    ActorTurnObserver,
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,
@@ -114,6 +115,22 @@ export interface PluginRegistry {
         hook: (ref: ActorRef, reason: DeactivationReason) => void | Promise<void>
     ): void;
     useDispatch(middleware: DispatchMiddleware): void;
+    /**
+     * Observe every dispatched turn's queue wait and execution time — the
+     * split `useDispatch` cannot see, because a middleware only measures
+     * enqueue-to-settle and cannot tell a slow turn from a long queue.
+     *
+     * Composes: every registered observer is called. Registering NONE
+     * leaves the dispatch path exactly as it was, so this costs nothing
+     * when unused.
+     *
+     * Returns an unsubscribe. Calling it removes the observer and, if it was
+     * the last one, switches the per-turn timestamps back off — so a plugin
+     * can offer runtime on/off rather than paying for observation forever.
+     * Safe to call before `start()`, in which case the subscription simply
+     * never happens.
+     */
+    observeTurns(observer: ActorTurnObserver): () => void;
     /**
      * After the silo is live (post `start()`), in registration order.
      * Throwing ROLLS THE START BACK: the silo is stopped again and the
@@ -213,6 +230,17 @@ export interface ActorApp<Ext extends object = Record<never, never>> {
     stop(opts?: { timeoutMs?: number }): Promise<void>;
 }
 
+/**
+ * A plugin's turn subscription, which outlives the silo's construction: it
+ * is declared during `setup()` but can only really be attached once the
+ * silo exists, and may be cancelled from either side of that boundary.
+ */
+interface TurnSubscription {
+    observer: ActorTurnObserver;
+    cancelled: boolean;
+    detach: (() => void) | null;
+}
+
 interface Contributions {
     typeHandlers: TypeHandler[];
     storageDecorators: ((inner: ActorStorage) => ActorStorage)[];
@@ -223,6 +251,7 @@ interface Contributions {
     beforeActivate: ((ref: ActorRef) => void | Promise<void>)[];
     afterDeactivate: ((ref: ActorRef, reason: DeactivationReason) => void | Promise<void>)[];
     dispatch: DispatchMiddleware[];
+    turnObservers: TurnSubscription[];
     onStart: ((silo: Silo) => void | Promise<void>)[];
     onStop: ((silo: Silo) => void | Promise<void>)[];
     routes: ActorRoute[];
@@ -299,6 +328,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             beforeActivate: [],
             afterDeactivate: [],
             dispatch: [],
+            turnObservers: [],
             onStart: [],
             onStop: [],
             routes: [],
@@ -371,9 +401,17 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             ...(c.contextFactories.length
                 ? { extendContext: contextExtender(c.contextFactories) }
                 : {}),
+
             ...(this.#options.defaults ? { defaults: this.#options.defaults } : {})
         });
         this.#silo = silo;
+        // Attach turn observers now the silo exists. Each keeps its own
+        // detach so a plugin can switch observation off later, and the last
+        // one leaving restores the untouched dispatch path.
+        for (const subscription of c.turnObservers) {
+            if (subscription.cancelled) continue;
+            subscription.detach = silo.observeTurns(subscription.observer);
+        }
         await silo.start();
         try {
             for (const hook of c.onStart) await hook(silo);
@@ -473,6 +511,15 @@ function registryFor(pluginName: string, c: Contributions): PluginRegistry {
         },
         useDispatch(middleware) {
             c.dispatch.push(middleware);
+        },
+        observeTurns(observer) {
+            const subscription: TurnSubscription = { observer, cancelled: false, detach: null };
+            c.turnObservers.push(subscription);
+            return () => {
+                subscription.cancelled = true;
+                subscription.detach?.();
+                subscription.detach = null;
+            };
         },
         onStart(hook) {
             c.onStart.push(hook);

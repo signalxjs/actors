@@ -436,6 +436,115 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
   the **caller** gets `ActorCallTimeoutError`; the turn itself always runs
   to completion.
 
+## Metrics
+
+`metrics()` is a plugin that counts what the silo is doing. Pull-based: no
+exporter, no push pipeline, no metrics-library dependency — you read
+`snapshot()` whenever you want, from a route, a health check, or a test.
+
+```ts
+import { defineActorApp, memoryStorage, metrics } from '@sigx/actors/silo';
+
+const m = metrics();
+const app = defineActorApp({ actors, storage: memoryStorage() }).use(m);
+const silo = await app.start();
+
+m.snapshot();
+// {
+//   windowMs: 60_000,
+//   calls:       { total: 12_400, failed: 3, streams: 2 },
+//   latencyMs:   { count, minMs, maxMs, meanMs, p50Ms, p90Ms, p99Ms },
+//   queueMs:     { ... },   // waiting for the mailbox
+//   turnMs:      { ... },   // holding the mailbox
+//   byType:      { Cart: { calls, failed, latencyMs, queueMs, turnMs } },
+//   activations: { created: 91, destroyed: 88, byReason: { idle: 88 } },
+//   storage:     { loads, saves, clears, conflicts, latencyMs },
+//   gauges:      { activations: 3, queued: 0, perType: { Cart: 3 } }
+// }
+```
+
+**Read `queueMs` against `turnMs` first.** They are the two halves of every
+call's latency and they mean opposite things:
+
+| | meaning | fix |
+|---|---|---|
+| high `turnMs` | the method itself is slow | move I/O out of the turn, split the method |
+| high `queueMs` | the grain is a hotspot — callers are waiting behind each other | shard the key, or reduce traffic to it |
+
+A dispatch middleware only ever sees the sum, which is why `queueMs` is the
+number people usually lack. `metrics()` gets it from `observeTurns`, the one
+seam this needed (see below).
+
+`conflicts` is worth an alert rather than a graph: each one is an etag
+mismatch that discarded an activation.
+
+### Turning it on and off
+
+Collection can be switched at runtime, and switching it off genuinely stops
+paying for it:
+
+```ts
+const m = metrics({ enabled: false });   // wired in, collecting nothing
+m.enable();                              // ...investigate...
+m.disable();                             // back to ~free; counters keep their values
+m.enabled;                               // boolean
+```
+
+`disable()` drops the turn subscription rather than returning early inside
+it. That distinction is the whole point: the runtime only takes the per-turn
+timestamps while an observer is attached, so an inert-but-attached observer
+would keep paying for the larger half of the cost. Counters freeze at their
+current values — use `reset()` to clear them.
+
+The intended shape is to leave `metrics({ enabled: false })` wired into
+production and switch it on when you need to look.
+
+### What it costs
+
+Measured on a `noop` dispatch — the cheapest call there is (~0.5µs) — with
+each configuration in its own process, median of 9 runs:
+
+| | throughput | vs no plugin |
+|---|---:|---|
+| no plugin | 2.05 M ops/s | — |
+| an inert plugin (the control) | 2.08 M ops/s | ~0 |
+| `metrics({ enabled: false })` | 2.05 M ops/s | **~0** |
+| `metrics({ histograms: false })` | 1.88 M ops/s | −8% |
+| `metrics()` | 1.48 M ops/s | −28% |
+
+Three things to read off that. **Disabled is indistinguishable from not
+having the plugin at all** — the residual branch in the dispatch wrapper is
+below measurement noise. **Not attaching it is free**: with no observer the
+dispatch path is unchanged, verified by comparing against a baseline of the
+previous commit with the benchmark suite (`benchmarks/`). And **plugins
+themselves cost nothing** — the inert control says so, which is what makes
+the other rows attributable to metrics rather than to the plugin machinery.
+
+Read the −28% in absolute terms before it alarms you: full metrics adds
+~190ns per call. It looks like a quarter of throughput only because the
+measured call does nothing at all — for an actor whose turn takes 100µs it
+is under 0.2%. Durations use `performance.now()` rather than the wall clock,
+which costs one extra read per observed turn and buys immunity to NTP or a
+VM host stepping the clock backwards mid-turn.
+
+### `observeTurns`
+
+The seam behind the split, available to any plugin:
+
+```ts
+registry.observeTurns((ref, method, queuedMs, elapsedMs, failed) => { ... });
+```
+
+Fires for dispatched turns only — the ones a caller waited for, including
+reminder delivery. Volatile `ctx.timer` ticks and write-behind flushes are
+excluded: they have no caller, and their cost is already visible as queue
+wait on whatever was behind them. Reentrant `ctx.actor` calls run inline
+against the caller's turn and are excluded too. Throwing from an observer is
+swallowed and dev-logged — it can never fail a turn.
+
+Registering no observer leaves the hot path exactly as it was: the
+timestamps are only taken when someone is listening.
+
 ## Reads and writes in components
 
 `useActorState` reads an actor method as component data; `useActorAction`

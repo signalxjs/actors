@@ -20,6 +20,7 @@ import {
     type ActorClient,
     type ActorContext,
     type ActorRef,
+    type ActorTurnObserver,
     type AnyActorDefinition,
     type DeactivationReason,
     type ReminderApi,
@@ -40,6 +41,18 @@ const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export interface ActivationHost {
     readonly idleAfterMs: number;
     readonly slowTurnMs: number;
+    /**
+     * Optional turn observer. Its PRESENCE is what turns on the extra
+     * timestamps — with none set the hot path is byte for byte what it was
+     * before this seam existed.
+     *
+     * MUTABLE on purpose: the silo clears it the moment the last observer
+     * unsubscribes, which is what makes switching observation off at runtime
+     * actually cheap. A boolean checked inside a still-registered observer
+     * would keep paying for the two clock reads below — the larger half of
+     * the cost — so "off" has to mean absent, not inert.
+     */
+    onTurn?: ActorTurnObserver;
     /** Clock for `ctx.timer` and write-behind flushes. */
     readonly scheduler: ActorScheduler;
     loadState(ref: ActorRef): Promise<{ state: object; etag: string } | null>;
@@ -192,7 +205,17 @@ export class Activation {
 
     /** Enqueue one turn. */
     enqueue(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
-        return this.mailbox.run(() => this.#turn(method, args, call));
+        // One clock read per queued turn, and only when an observer exists.
+        // Taken HERE rather than inside the turn because the whole point is
+        // the gap between the two.
+        //
+        // MONOTONIC, unlike `lastActivityMs`: durations must not be derived
+        // from a wall clock that NTP or a VM host can step backwards, which
+        // would hand observers negative queue waits. `performance.now()` is
+        // immune. The wall clock is still used for idle collection, which
+        // genuinely wants wall time.
+        const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
+        return this.mailbox.run(() => this.#turn(method, args, call, enqueuedAt));
     }
 
     /**
@@ -362,22 +385,56 @@ export class Activation {
     // -----------------------------------------------------------------------
     // Internals
 
-    async #turn(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
+    async #turn(
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        enqueuedAt = 0
+    ): Promise<unknown> {
         if (this.#faulted) throw this.#faulted;
         const started = Date.now();
+        // Read once: the observer may be detached mid-turn (metrics can be
+        // switched off at runtime), and start/end must agree about whether
+        // they are timing at all.
+        const observer = this.#host.onTurn;
+        const timing = __DEV__ || observer !== undefined;
+        const startedAt = timing ? performance.now() : 0;
         this.#currentCall = call;
+        let failed = true;
         try {
-            return await this.#invoke(method, args);
+            const result = await this.#invoke(method, args);
+            failed = false;
+            return result;
         } finally {
             this.#currentCall = null;
-            if (__DEV__) {
-                const elapsed = Date.now() - started;
-                if (elapsed > this.#host.slowTurnMs) {
-                    console.warn(
-                        `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
-                            `mailbox for ${elapsed}ms. Awaits inside a turn block every queued ` +
-                            `message — move slow I/O out of the actor or split the method.`
-                    );
+            // The dev slow-turn warning and the observer want the same
+            // number, so compute it once and only when someone reads it.
+            const elapsed = timing ? performance.now() - startedAt : 0;
+            if (__DEV__ && elapsed > this.#host.slowTurnMs) {
+                console.warn(
+                    `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
+                        `mailbox for ${elapsed}ms. Awaits inside a turn block every queued ` +
+                        `message — move slow I/O out of the actor or split the method.`
+                );
+            }
+            if (observer) {
+                try {
+                    // enqueuedAt is 0 when observation was switched ON
+                    // between this message being queued and its turn
+                    // running. `startedAt - 0` would report process uptime as
+                    // a queue wait, so the first such turn reports 0 instead.
+                    const queued = enqueuedAt === 0 ? 0 : startedAt - enqueuedAt;
+                    observer(this.ref, method, queued, elapsed, failed);
+                } catch (error) {
+                    // A metrics plugin must never be able to fail a turn, nor
+                    // mask the real error this `finally` may be unwinding.
+                    if (__DEV__) {
+                        console.error(
+                            `[sigx actors] a turn observer threw for ` +
+                                `${actorLabel(this.ref)}.${method}():`,
+                            error
+                        );
+                    }
                 }
             }
             this.#afterTurn(started);

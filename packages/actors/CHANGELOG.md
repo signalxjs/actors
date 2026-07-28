@@ -4,6 +4,52 @@
 
 ### Added
 
+- **`metrics()` — pull-based observability** (#79). A plugin that counts
+  calls, failures, activation churn, storage operations and etag conflicts,
+  and reports latency distributions, read via `snapshot()`. No exporter, no
+  push pipeline, no metrics-library dependency.
+
+  The number it exists for is the split between **`queueMs`** (waiting for
+  the mailbox) and **`turnMs`** (holding it). They are the two halves of a
+  call's latency and mean opposite things — a slow method versus a hot
+  grain — and a dispatch middleware, which only sees the sum, cannot tell
+  them apart.
+
+  Collection is switchable at runtime — `enable()`, `disable()`, `enabled`,
+  and `metrics({ enabled: false })` to attach without collecting. `disable()`
+  drops the turn subscription rather than returning early inside it, which
+  is what makes off actually cheap: the runtime only times turns while an
+  observer is attached. Counters freeze rather than clearing.
+
+  Costs, on a `noop` dispatch (the cheapest call there is), each config in
+  its own process against an inert-plugin control: `enabled: false` and the
+  inert control are both indistinguishable from no plugin,
+  `metrics({ histograms: false })` −8%, `metrics()` −28%. Not attaching it
+  at all is free — the dispatch path is unchanged with no observer, verified
+  against the benchmark suite. The −28% is ~190ns per call and looks large
+  only because the measured call does nothing: for an actor whose turn takes
+  100µs it is under 0.2%.
+
+  Durations come from `performance.now()`, not `Date.now()`: a wall clock
+  stepped backwards by NTP or a VM host would otherwise hand observers
+  negative queue waits.
+
+- **`PluginRegistry.observeTurns(observer)`** (#79) — the seam behind that
+  split, available to any plugin:
+  `(ref, method, queuedMs, elapsedMs, failed) => void`. Fires for
+  dispatched turns only, including reminder delivery; volatile `ctx.timer`
+  ticks, write-behind flushes and reentrant inline calls are excluded,
+  since none of them has a caller waiting. A throwing observer is swallowed
+  and dev-logged rather than failing the turn. `createSilo({ onTurn })`
+  exposes the same thing to hand-rolled silos.
+
+- **`Silo.observeTurns(observer)`** (#79) — subscribe imperatively; returns
+  an unsubscribe. When the last observer leaves, the runtime stops taking
+  per-turn timestamps entirely, so observation can be switched on for an
+  investigation and off again without leaving a cost behind.
+  `PluginRegistry.observeTurns` returns the same unsubscribe.
+
+
 - **The Vite plugin supplies the actor registry** (#61):
   `defineActorApp({ actors })` is now optional, and `sigxActors({ app })`
   hands over the registry it already builds. An app module therefore

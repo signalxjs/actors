@@ -13,6 +13,14 @@ export {
     type DispatchMiddleware,
     type PluginRegistry
 } from './app';
+export {
+    metrics,
+    type ActorMetricsSnapshot,
+    type MetricsOptions,
+    type MetricsPlugin,
+    type TypeMetrics
+} from './metrics';
+export type { HistogramSnapshot } from './histogram';
 export { memoryStorage } from './storage-memory';
 export { timerScheduler, manualScheduler, type ManualScheduler } from './scheduler';
 export { Mailbox } from './mailbox';
@@ -27,6 +35,7 @@ export type {
     ActorRemindersContext,
     ActorStorage,
     ActorStorageRecord,
+    ActorTurnObserver,
     PlacementBindings,
     ActorScheduler,
     Silo,
