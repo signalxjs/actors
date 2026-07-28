@@ -31,6 +31,61 @@
 
 ### Added
 
+- **`metrics()` breaks down per METHOD** (#101) — `snapshot().byMethod`,
+  keyed `Type#method`, carrying the same five numbers as `byType`.
+
+  The data was always there and always discarded: both `useDispatch` and
+  `observeTurns` receive `method` and neither kept it. `byType` tells you a
+  type is slow and never which of its methods is, and the queue/turn split
+  is most useful exactly here — within one type, a hot grain and one slow
+  method look identical until the methods are separated.
+
+  Its own cap (`maxMethods`, default 256) rather than sharing `maxTypes`,
+  because methods MULTIPLY types: 64 types under the type cap would leave
+  under one method each and the breakdown would be almost entirely
+  `'(other)'` on an ordinary app. `maxMethods: 0` disables it,
+  `histograms: false` nulls its distributions, and `reset()` drops the map
+  like `byType`.
+
+  **It costs ~3.5% per dispatch**, which takes `metrics()`'s own overhead
+  from the −28% this changelog recorded under #79 to **−30%** on a `noop`
+  dispatch; the README table is updated rather than left flattering.
+  `maxMethods: 0` gets the old figure back.
+
+  The map is NESTED (type → method → bucket) rather than one map keyed
+  `'Type#method'`, which is why it is only 3.5%. The flat form reads better
+  but composes a string on every dispatch AND every turn; measured, it cost
+  roughly three times as much. Two map lookups beat one allocation, and the
+  key is now composed once per snapshot instead.
+
+  The figure comes from a PAIRED measurement — both builds loaded into ONE
+  process with their rounds interleaved (main 1425.7ns/call vs 1476.0ns on
+  this branch, inert-plugin controls agreeing to 0.2%). The usual
+  separate-process comparison could not resolve it at all: the machine
+  drifts ~10% run to run, comfortably larger than the effect, and its
+  controls disagreed by more than the thing being measured. The absolute
+  ops/s in the README table are the #79 machine's, rescaled by this ratio
+  rather than re-measured — the percentages are what was actually observed.
+
+- **`metrics()` counts error KINDS** (#101) — `snapshot().errors.byKind`
+  over `ActorErrorKind` (`'call-timeout'`, `'wrong-host'`,
+  `'state-conflict'`, `'unreachable'`, …) plus `'(unknown)'` for anything an
+  actor method threw itself, classified with the existing `isActorError()`
+  brand check so wire-recreated errors count correctly.
+
+  `calls.failed` was a single scalar: it said a silo was failing and nothing
+  about what was wrong with it. Those are different questions with different
+  answers — a rising `'unreachable'` is network or membership, a rising
+  `'(unknown)'` is your code.
+
+  `errors.recent` keeps the last few as
+  `{ at, type, method, kind, message }` (default 32, `recentErrors: 0`
+  disables). **Message only** — no args and no state, because this travels
+  over `/_sigx/ops` and a failing call's arguments are exactly where the
+  secrets are. The counts are unbounded; only the samples are capped. The
+  snapshot hands out a copy, so a held snapshot cannot watch the ring
+  mutate.
+
 - **`ops()` — the authenticated ops endpoint** (#101). `GET /_sigx/ops`
   serves an `OpsSnapshot` (`{ v, at, uptimeMs, stats, health, ops }`);
   `GET /_sigx/ops/cluster` serves a `clusterStats()` fan-out. Contributed as

@@ -527,3 +527,240 @@ describe('observeTurns seam', () => {
         }
     });
 });
+
+describe('metrics(): per-method breakdown', () => {
+    it('splits a type into its methods — the view byType cannot give you', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            const client = silo.actor(Counter, 'a');
+            await client.noop();
+            await client.noop();
+            await client.increment(1);
+            await expect(client.boom()).rejects.toThrow();
+
+            const snap = m.snapshot();
+            // The type says "4 calls, 1 failed" and stops there.
+            expect(snap.byType['Counter']?.calls).toBe(4);
+            // The methods say WHICH one is failing.
+            expect(snap.byMethod['Counter#noop']?.calls).toBe(2);
+            expect(snap.byMethod['Counter#noop']?.failed).toBe(0);
+            expect(snap.byMethod['Counter#increment']?.calls).toBe(1);
+            expect(snap.byMethod['Counter#boom']?.calls).toBe(1);
+            expect(snap.byMethod['Counter#boom']?.failed).toBe(1);
+            // And the parts add up to the whole.
+            const total = Object.values(snap.byMethod).reduce((sum, b) => sum + b.calls, 0);
+            expect(total).toBe(snap.calls.total);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('records the queue/turn split per method', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            const client = silo.actor(Counter, 'a');
+            await Promise.all([client.slow(40), client.slow(40), client.noop()]);
+
+            const snap = m.snapshot();
+            // `slow` holds the mailbox; `noop` mostly waits for it. That is
+            // the whole point of carrying the split down to the method.
+            expect(snap.byMethod['Counter#slow']?.turnMs?.count).toBe(2);
+            expect(snap.byMethod['Counter#slow']?.turnMs?.maxMs).toBeGreaterThan(20);
+            expect(snap.byMethod['Counter#noop']?.turnMs?.count).toBe(1);
+            expect(snap.byMethod['Counter#noop']?.turnMs?.maxMs).toBeLessThan(20);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('folds past maxMethods into (other), under its own cap', async () => {
+        const m = metrics({ maxMethods: 2 });
+        const { app, silo } = await appWith(m);
+        try {
+            const client = silo.actor(Counter, 'a');
+            await client.noop();
+            await client.increment(1);
+            await client.persist();
+            await client.slow(1);
+
+            const snap = m.snapshot();
+            expect(Object.keys(snap.byMethod)).toHaveLength(3);
+            expect(snap.byMethod['(other)']?.calls).toBe(2);
+            // The per-TYPE cap is independent — one type, still broken out.
+            expect(Object.keys(snap.byType)).toEqual(['Counter']);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('maxMethods: 0 disables the breakdown without touching byType', async () => {
+        const m = metrics({ maxMethods: 0 });
+        const { app, silo } = await appWith(m);
+        try {
+            await silo.actor(Counter, 'a').noop();
+            const snap = m.snapshot();
+            expect(snap.byMethod).toEqual({});
+            expect(snap.byType['Counter']?.calls).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('carries null histograms under histograms: false, like byType', async () => {
+        const m = metrics({ histograms: false });
+        const { app, silo } = await appWith(m);
+        try {
+            await silo.actor(Counter, 'a').noop();
+            const snap = m.snapshot();
+            expect(snap.byMethod['Counter#noop']?.calls).toBe(1);
+            expect(snap.byMethod['Counter#noop']?.latencyMs).toBeNull();
+            expect(snap.byMethod['Counter#noop']?.turnMs).toBeNull();
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('drops the map on reset, so a method that went quiet leaves the report', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            await silo.actor(Counter, 'a').noop();
+            expect(Object.keys(m.snapshot().byMethod)).toContain('Counter#noop');
+            m.reset();
+            expect(m.snapshot().byMethod).toEqual({});
+            await silo.actor(Counter, 'a').increment(1);
+            expect(Object.keys(m.snapshot().byMethod)).toEqual(['Counter#increment']);
+        } finally {
+            await app.stop();
+        }
+    });
+});
+
+describe('metrics(): error kinds', () => {
+    it('counts an error an actor threw as (unknown) — it is not an ActorError', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            const snap = m.snapshot();
+            expect(snap.errors.byKind).toEqual({ '(unknown)': 1 });
+            expect(snap.calls.failed).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('classifies an ActorError by its kind', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            // method-not-found is the one kind reachable without contriving
+            // a cluster or a storage race.
+            await expect(
+                silo.dispatch({ type: 'Counter', key: 'a' }, 'nope', [], {
+                    callChain: [],
+                    callId: 'test'
+                })
+            ).rejects.toThrow();
+            expect(m.snapshot().errors.byKind['method-not-found']).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('remembers recent failures — message only, never args', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            await expect(silo.actor(Counter, 'secret-key').boom()).rejects.toThrow();
+            const [entry] = m.snapshot().errors.recent;
+            expect(entry).toMatchObject({
+                type: 'Counter',
+                method: 'boom',
+                kind: '(unknown)',
+                message: 'nope'
+            });
+            expect(entry!.at).toBeGreaterThan(0);
+            // The ring carries no args and no state: it is read over an HTTP
+            // endpoint, and a failing call's arguments are exactly where the
+            // secrets are.
+            expect(Object.keys(entry!).sort()).toEqual(['at', 'kind', 'message', 'method', 'type']);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('bounds the ring and evicts oldest-first', async () => {
+        const m = metrics({ recentErrors: 3 });
+        const { app, silo } = await appWith(m);
+        try {
+            for (let i = 0; i < 5; i++) {
+                await expect(silo.actor(Counter, `k${i}`).boom()).rejects.toThrow();
+            }
+            const snap = m.snapshot();
+            // Counts are unbounded; the SAMPLES are what is capped.
+            expect(snap.errors.byKind['(unknown)']).toBe(5);
+            expect(snap.errors.recent).toHaveLength(3);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('recentErrors: 0 keeps the counts and drops the ring', async () => {
+        const m = metrics({ recentErrors: 0 });
+        const { app, silo } = await appWith(m);
+        try {
+            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            const snap = m.snapshot();
+            expect(snap.errors.byKind['(unknown)']).toBe(1);
+            expect(snap.errors.recent).toEqual([]);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('hands out a copy, so a held snapshot cannot watch the ring mutate', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            const held = m.snapshot();
+            await expect(silo.actor(Counter, 'b').boom()).rejects.toThrow();
+            expect(held.errors.recent).toHaveLength(1);
+            expect(m.snapshot().errors.recent).toHaveLength(2);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('clears both on reset', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            m.reset();
+            const snap = m.snapshot();
+            expect(snap.errors.byKind).toEqual({});
+            expect(snap.errors.recent).toEqual([]);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('counts nothing while disabled', async () => {
+        const m = metrics();
+        const { app, silo } = await appWith(m);
+        try {
+            m.disable();
+            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            expect(m.snapshot().errors.byKind).toEqual({});
+            m.enable();
+            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            expect(m.snapshot().errors.byKind['(unknown)']).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+});

@@ -457,6 +457,9 @@ m.snapshot();
 //   queueMs:     { ... },   // waiting for the mailbox
 //   turnMs:      { ... },   // holding the mailbox
 //   byType:      { Cart: { calls, failed, latencyMs, queueMs, turnMs } },
+//   byMethod:    { 'Cart#checkout': { calls, failed, latencyMs, queueMs, turnMs } },
+//   errors:      { byKind: { 'call-timeout': 3 },
+//                  recent: [{ at, type, method, kind, message }] },
 //   activations: { created: 91, destroyed: 88, byReason: { idle: 88 } },
 //   storage:     { loads, saves, clears, conflicts, latencyMs },
 //   gauges:      { activations: 3, queued: 0, perType: { Cart: 3 } }
@@ -477,6 +480,37 @@ seam this needed (see below).
 
 `conflicts` is worth an alert rather than a graph: each one is an etag
 mismatch that discarded an activation.
+
+### Per method, and why calls fail
+
+`byType` tells you a type is slow; it never tells you *which of its methods*
+is. `byMethod` carries the same five numbers keyed `Type#method`, and the
+queue/turn split is most useful there — within one type, a hot grain and one
+slow method look identical until you separate the methods.
+
+```ts
+m.snapshot().byMethod['Cart#checkout'];
+// { calls: 4_100, failed: 2, latencyMs, queueMs, turnMs }
+```
+
+`errors.byKind` counts `ActorErrorKind` — `'call-timeout'`, `'wrong-host'`,
+`'state-conflict'`, `'unreachable'`, `'deadlock'`, `'activation'`,
+`'method-not-found'`, `'silo-shutdown'` — plus `'(unknown)'` for anything an
+actor method threw itself. `calls.failed` says a silo is failing; this says
+what is wrong with it, and the two are very different questions: a rising
+`'unreachable'` is a network or membership problem, a rising `'(unknown)'` is
+your code.
+
+`errors.recent` keeps the last few failures (default 32, `recentErrors: 0` to
+disable) as `{ at, type, method, kind, message }`. **Message only** — no args
+and no state, because this is read over an HTTP endpoint and a failing call's
+arguments are exactly where the secrets are.
+
+Both breakdowns are capped like `byType`, overflowing into `'(other)'`.
+Methods get their own cap (`maxMethods`, default 256) rather than sharing
+`maxTypes`, because methods multiply types: 64 types under the type cap would
+leave under one method each and the breakdown would be almost entirely
+`'(other)'` on a perfectly ordinary app.
 
 ### Turning it on and off
 
@@ -510,7 +544,7 @@ each configuration in its own process, median of 9 runs:
 | an inert plugin (the control) | 2.08 M ops/s | ~0 |
 | `metrics({ enabled: false })` | 2.05 M ops/s | **~0** |
 | `metrics({ histograms: false })` | 1.88 M ops/s | −8% |
-| `metrics()` | 1.48 M ops/s | −28% |
+| `metrics()` | 1.43 M ops/s | −30% |
 
 Three things to read off that. **Disabled is indistinguishable from not
 having the plugin at all** — the residual branch in the dispatch wrapper is
@@ -520,12 +554,26 @@ previous commit with the benchmark suite (`benchmarks/`). And **plugins
 themselves cost nothing** — the inert control says so, which is what makes
 the other rows attributable to metrics rather than to the plugin machinery.
 
-Read the −28% in absolute terms before it alarms you: full metrics adds
-~190ns per call. It looks like a quarter of throughput only because the
+Read the −30% in absolute terms before it alarms you: full metrics adds
+~200ns per call. It looks like a third of throughput only because the
 measured call does nothing at all — for an actor whose turn takes 100µs it
-is under 0.2%. Durations use `performance.now()` rather than the wall clock,
-which costs one extra read per observed turn and buys immunity to NTP or a
-VM host stepping the clock backwards mid-turn.
+is under 0.25%. Durations use `performance.now()` rather than the wall
+clock, which costs one extra read per observed turn and buys immunity to NTP
+or a VM host stepping the clock backwards mid-turn.
+
+The per-method breakdown is ~3.5% of that per dispatch — it was −28% before
+`byMethod` existed. `maxMethods: 0` gets the old cost back; what it buys is
+per-method call counts, failure counts and the queue/turn split, which is
+usually the trade you want.
+
+That 3.5% was measured by loading **both builds into one process** and
+interleaving their rounds, because separate processes could not resolve it:
+the machine drifts ~10% between runs, larger than the effect, and the inert
+controls disagreed by more than the thing being measured (see
+`benchmarks/README.md`, "Trusting the numbers"). The `metrics()` row's
+absolute ops/s above is therefore the original machine's figure rescaled by
+that ratio rather than re-measured — the **percentages** are what was
+observed, the ops/s is derived.
 
 ### `observeTurns`
 

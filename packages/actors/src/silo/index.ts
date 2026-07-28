@@ -27,8 +27,10 @@ export { ops, type OpsOptions, type OpsPlugin, type OpsSnapshot } from './ops';
 export {
     metrics,
     type ActorMetricsSnapshot,
+    type MetricsErrorKind,
     type MetricsOptions,
     type MetricsPlugin,
+    type RecentActorError,
     type TypeMetrics
 } from './metrics';
 export type { HistogramSnapshot } from './histogram';
