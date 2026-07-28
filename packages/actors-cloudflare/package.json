@@ -1,7 +1,7 @@
 {
-    "name": "@sigx/actors-redis",
+    "name": "@sigx/actors-cloudflare",
     "version": "0.1.0",
-    "description": "Redis cluster providers for @sigx/actors \u2014 silo membership and the distributed actor directory",
+    "description": "Cloudflare Durable Objects backend for @sigx/actors \u2014 one DO per actor",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -25,26 +25,25 @@
         "sigx",
         "actors",
         "virtual-actors",
-        "cluster",
-        "redis",
-        "orleans"
+        "cloudflare",
+        "durable-objects",
+        "workers"
     ],
     "author": "Andreas Ekdahl",
     "license": "MIT",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/signalxjs/actors.git",
-        "directory": "packages/actors-redis"
+        "directory": "packages/actors-cloudflare"
     },
     "homepage": "https://sigx.dev/actors/",
     "bugs": {
         "url": "https://github.com/signalxjs/actors/issues"
     },
     "devDependencies": {
+        "@cloudflare/workers-types": "^4.20240925.0",
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
-        "@types/node": "^25.9.1",
-        "ioredis": "^5.4.1",
         "typescript": "^6.0.3",
         "vite": "^8.0.3"
     },
@@ -52,7 +51,6 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.1.0",
-        "ioredis": ">=5"
+        "@sigx/actors": "^0.1.0"
     }
 }

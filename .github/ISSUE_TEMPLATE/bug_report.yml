@@ -25,6 +25,7 @@ body:
       options:
         - "@sigx/actors"
         - "@sigx/actors-redis"
+        - "@sigx/actors-cloudflare"
         - Not sure / multiple
     validations:
       required: true

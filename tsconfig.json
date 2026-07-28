@@ -19,7 +19,8 @@
       "@sigx/actors/app": ["./packages/actors/src/app/index.ts"],
       "@sigx/actors/cluster": ["./packages/actors/src/cluster/index.ts"],
       "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"],
-      "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"]
+      "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"],
+      "@sigx/actors-cloudflare": ["./packages/actors-cloudflare/src/index.ts"]
     }
   },
   "include": [
