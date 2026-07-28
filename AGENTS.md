@@ -171,8 +171,9 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `examples/chat` — actors in a REAL sigx app, and the composition proof:
   `sigx()` + `sigxServer()` + `sigxActors()` in one Vite build, SSR-seeded
   `useActorState`, a guard running on both transports, a serverFn calling
-  an actor in-process, and hydration with no refetch. Dev and prod start
-  the same app module. Not published.
+  an actor in-process, hydration with no refetch, and a `ctx.changes()`
+  stream driving `cells.invalidate()` so every open tab stays live. Dev and
+  prod start the same app module. Not published.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev silo, client swap, streams, file persistence, and a runnable 3-silo
   cluster demo (`pnpm --filter counter-example cluster`). Not published.

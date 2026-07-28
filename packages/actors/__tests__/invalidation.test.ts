@@ -7,10 +7,15 @@
  * internals.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { component, defineApp, signal, type App } from 'sigx';
-import { defineActor, type Silo } from '@sigx/actors';
+import { component, defineApp, onUnmounted, signal, type App } from 'sigx';
+import { actor, actorKey, defineActor, type Silo } from '@sigx/actors';
 import { createSilo } from '@sigx/actors/silo';
-import { actorsPlugin, useActorAction, useActorState } from '@sigx/actors/app';
+import {
+    actorsPlugin,
+    useActorAction,
+    useActorsContext,
+    useActorState
+} from '@sigx/actors/app';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -33,6 +38,16 @@ const CartActor = defineActor({
             ctx.state.items.push(item);
             await ctx.save();
             return ctx.state.items.length;
+        }
+    }),
+    streams: (ctx) => ({
+        /** The push side — see the last describe in this file. */
+        async *watch() {
+            yield* ctx.changes({ initial: true });
+        },
+        /** The same feed WITHOUT the seed, to show what that seed buys. */
+        async *watchFromNow() {
+            yield* ctx.changes();
         }
     })
 });
@@ -325,5 +340,111 @@ describe('invalidation on write', () => {
 
         expect(reads).toBe(before);
         expect(gone.value).toBe(0);
+    });
+});
+
+/**
+ * The registry is per-app, so everything above only ever refreshes the page
+ * that wrote. A SECOND page (another browser tab) writing the same actor is
+ * invisible to it — there is no push in a request/response call.
+ *
+ * The bridge is a `streams:` change feed: subscribe to it and hand each
+ * value to the same `cells.invalidate()` a local write would have called.
+ * `examples/chat` wires exactly this, which is what makes messages typed in
+ * one tab appear in the others.
+ */
+describe('a write from another client', () => {
+    /** Mount a read, plus optionally a change feed driving invalidation. */
+    function mountReader(key: string, options: { live: false | 'watch' | 'watchFromNow' }) {
+        return mount(() => {
+            const total = useActorState(CartActor, key, 'total');
+            if (!options.live) return { total };
+            const { cells } = useActorsContext();
+            const feed = actor(CartActor, key)[options.live]()[Symbol.asyncIterator]();
+            // Closed on unmount, exactly as the example's AbortController is
+            // — otherwise the activation's keep-alive ref outlives the test.
+            onUnmounted(() => void feed.return?.(undefined));
+            void (async () => {
+                for (;;) {
+                    if ((await feed.next()).done) return;
+                    cells.invalidate([actorKey(CartActor, key)]);
+                }
+            })();
+            return { total };
+        });
+    }
+
+    it('does not reach a read that only listens to its own app', async () => {
+        const silo = await startSilo();
+        const view = mountReader('c13', { live: false });
+        await settle();
+        expect(view.total.value).toBe(0);
+
+        // The "other tab": a write this app had no part in.
+        await silo.actor(CartActor, 'c13').add('apple');
+        await settle();
+
+        expect(view.total.value).toBe(0); // stale, and nothing said so
+    });
+
+    it('reaches it once a ctx.changes() feed drives the invalidation', async () => {
+        const silo = await startSilo();
+        const view = mountReader('c14', { live: 'watch' });
+        await settle();
+        expect(view.total.value).toBe(0);
+
+        await silo.actor(CartActor, 'c14').add('apple');
+        await settle();
+
+        expect(view.total.value).toBe(1);
+
+        // And it keeps up — the feed is not a one-shot.
+        await silo.actor(CartActor, 'c14').add('pear');
+        await settle();
+        expect(view.total.value).toBe(2);
+    });
+
+    /**
+     * The window a live page cannot see from inside: SSR reads the actor
+     * during the render, the browser subscribes only after the bundle has
+     * loaded and hydrated, and a write landing in between belongs to
+     * neither. `{ initial: true }` is what covers it — without the seed the
+     * page waits for the NEXT write, which in a quiet room never comes.
+     *
+     * Staged with the page payload, because that is what makes the mounted
+     * read hold the SSR value rather than fetch the current one.
+     */
+    function seedPage(key: string, value: number): void {
+        (globalThis as { __SIGX_ASYNC__?: Record<string, unknown> }).__SIGX_ASYNC__ =
+            Object.assign(Object.create(null) as Record<string, unknown>, {
+                [`["@actor","Cart","${key}","total"]`]: value
+            });
+    }
+
+    it('catches up on a write that landed between the SSR read and the subscription', async () => {
+        const silo = await startSilo();
+        seedPage('c15', 0); // what the server rendered
+        await silo.actor(CartActor, 'c15').add('apple'); // …then someone else posted
+
+        const view = mountReader('c15', { live: 'watch' });
+        await settle();
+
+        expect(view.total.value).toBe(1); // the seed's first value closed it
+    });
+
+    it('…and without the seed the page sits on the stale value', async () => {
+        const silo = await startSilo();
+        seedPage('c16', 0);
+        await silo.actor(CartActor, 'c16').add('apple');
+
+        const view = mountReader('c16', { live: 'watchFromNow' });
+        await settle();
+
+        expect(view.total.value).toBe(0); // subscribed too late, told nothing
+
+        // Only an unrelated later write shakes it loose.
+        await silo.actor(CartActor, 'c16').add('pear');
+        await settle();
+        expect(view.total.value).toBe(2);
     });
 });

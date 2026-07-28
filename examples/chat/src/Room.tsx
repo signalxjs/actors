@@ -3,9 +3,9 @@
  * renders on the server, ships inside the document, and hydrates in the
  * browser without a second request.
  */
-import { component, errorScope, signal, useAction, useData } from 'sigx';
+import { component, errorScope, onMounted, onUnmounted, signal, useAction, useData } from 'sigx';
 import { useActorAction, useActorState, useActorsContext } from '@sigx/actors/app';
-import { actorKey } from '@sigx/actors';
+import { actor, actorKey } from '@sigx/actors';
 import { RoomActor } from './room.actor';
 import { me, postMessage } from './chat.server';
 import type { Message } from './room.actor';
@@ -41,6 +41,47 @@ export const Room = component(() => {
     // A plain serverFn read beside the actor reads: `me` carries core's
     // `__sigxKey`, so useData keys and SSR-serializes it the same way.
     const session = useData(me);
+
+    // The OTHER tabs. Everything above refreshes only the tab that wrote:
+    // `useActorAction` and the `cells.invalidate()` in `post` are local
+    // bookkeeping, and nothing in a request/response call ever tells a
+    // second browser that something happened. `watch` is the actor's push
+    // side — one long-lived NDJSON response per tab, yielding after every
+    // turn that mutated the room, whoever caused it.
+    //
+    // What arrives is a state snapshot, and it is deliberately ignored: the
+    // cells above stay the single definition of what this page reads (a
+    // `recent(20)` slice, a topic), so the stream only has to say "stale"
+    // and let them re-read. That is the same `invalidate` call `post`
+    // already makes — the difference is what triggers it.
+    //
+    // The feed opens with `{ initial: true }`, so the first value lands as
+    // soon as the subscription does and costs one catch-up read. That is
+    // NOT the hydration refetch this example avoids — the first paint still
+    // comes from the document alone. It is the price of the window between
+    // the SSR read and this subscription, which no amount of seeding can
+    // observe from here.
+    //
+    // Client-only, so `onMounted`: during SSR there is no tab to update.
+    const live = new AbortController();
+    onMounted(() => {
+        void (async () => {
+            try {
+                const watching = actor(RoomActor, room).with({ signal: live.signal }).watch();
+                for await (const _ of watching) {
+                    cells.invalidate([actorKey(RoomActor, room)]);
+                }
+            } catch (error) {
+                // An aborted stream is this component unmounting, not a
+                // failure. Anything else (a guard rejection, a dropped
+                // connection) leaves the page usable but no longer live.
+                if (!live.signal.aborted) console.warn('[chat] live updates stopped:', error);
+            }
+        })();
+    });
+    // Breaking the iteration aborts the underlying fetch, so the server
+    // sees the disconnect and drops its `ctx.changes()` subscription.
+    onUnmounted(() => live.abort());
 
     const send = async (): Promise<void> => {
         const text = draft.text;

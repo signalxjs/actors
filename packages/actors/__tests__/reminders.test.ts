@@ -214,6 +214,54 @@ describe('reminders', () => {
         }
     });
 
+    it('a tick that changes nothing writes nothing', async () => {
+        // The tick loop visits every owned shard on every tick, whether or
+        // not that shard holds anything. Persisting a table it did not
+        // change is pure write amplification: an idle silo would rewrite all
+        // 16 shard records every `reminderTickMs`, forever. With
+        // `fileStorage` that also means 16 temp-file+rename pairs inside the
+        // project tree every tick, which is what trips Vite's HMR reader.
+        const base = memoryStorage();
+        let saves = 0;
+        const storage: ActorStorage = {
+            load: (type, key) => base.load(type, key),
+            save: (type, key, state, expectedEtag) => {
+                if (type === REMINDER_TYPE) saves++;
+                return base.save(type, key, state, expectedEtag);
+            },
+            clear: (type, key, expectedEtag) => base.clear(type, key, expectedEtag)
+        };
+        const fired: string[] = [];
+        const service = new ReminderService();
+        service.bind({
+            storage,
+            scheduler: timerScheduler(),
+            tickMs: 10,
+            ownsShard: () => true,
+            deliver: async (_ref, name) => void fired.push(name)
+        });
+
+        // One reminder, far from due — so every shard is either empty or
+        // holds nothing the tick may advance.
+        await service.apiFor({ type: 'Waking', key: 'idle' }).set('wake', { due: 120_000 });
+        expect(saves).toBe(1); // the set() itself
+
+        service.start();
+        try {
+            await new Promise((r) => setTimeout(r, 120)); // ~12 ticks × 16 shards
+            expect(saves).toBe(1);
+            expect(fired).toEqual([]);
+        } finally {
+            service.stop();
+        }
+        // ...and the untouched shards were never brought into existence.
+        const written: string[] = [];
+        for (const shard of ['p0', 'p1', 'p2', 'p3']) {
+            if (await storage.load(REMINDER_TYPE, shard)) written.push(shard);
+        }
+        expect(written.length).toBeLessThanOrEqual(1);
+    });
+
     it('reminder mutations retry on a storage etag conflict (reload + reapply)', async () => {
         const events: string[] = [];
         const def = wakingActor(events);

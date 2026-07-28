@@ -21,6 +21,15 @@ export default defineConfig({
     // oxc, so this is where the import source is declared (tsconfig's
     // `jsxImportSource` only informs the type checker).
     oxc: { jsx: { runtime: 'automatic', importSource: 'sigx' } },
+    server: {
+        // `fileStorage` writes actor state under `.actors/` — inside the
+        // Vite root, so the dev watcher sees every save. Two reasons that
+        // has to be excluded: a save is a temp-file + rename, and the HMR
+        // path that reads a newly-seen file loses the race with the rename
+        // (`ENOENT … .actors/…/general.json.<pid>.tmp` in the overlay); and
+        // chat state changing is not a source edit — nothing should reload.
+        watch: { ignored: ['**/.actors/**'] }
+    },
     plugins: [
         sigxPlugin({ ssr: { entry: 'src/entry-server.tsx' } }),
         sigxServer(),

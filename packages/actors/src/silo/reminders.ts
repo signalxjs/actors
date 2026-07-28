@@ -145,7 +145,15 @@ export class ReminderService implements ActorReminders {
         // on a fresh load is safe.
         for (let attempt = 1; ; attempt++) {
             const { table, etag } = await this.#load(shard);
+            const before = JSON.stringify(table);
             edit(table);
+            // A no-op edit must not write. The tick loop reaches every owned
+            // shard on every tick and most of them have nothing due, so
+            // saving unconditionally would rewrite all 16 shard records
+            // every `reminderTickMs` on a silo with no reminders at all —
+            // and bump an etag no reader can distinguish from a real change.
+            // (Serializing costs no more than the `save` it replaces.)
+            if (JSON.stringify(table) === before) return;
             try {
                 await this.#storage.save(REMINDER_TYPE, shard, table, etag);
                 return;

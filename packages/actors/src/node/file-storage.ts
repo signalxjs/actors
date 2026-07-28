@@ -7,6 +7,12 @@
  * single silo doesn't need (saves are serialized per actor by the mailbox;
  * an in-process chain serializes same-file access here). Production storage
  * belongs in real providers implementing the same three methods.
+ *
+ * UNDER VITE: if `dir` is inside the project root, add it to
+ * `server.watch.ignored` (both examples in this repo do). A save is a temp
+ * file plus a rename, and Vite's HMR path reads a file it has just seen
+ * appear — it loses that race, surfacing as an `ENOENT … .tmp` error
+ * overlay. Actor state is not source: it should not reload the page either.
  */
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';

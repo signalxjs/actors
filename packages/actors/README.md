@@ -366,6 +366,16 @@ wire-only backstop, exactly like the serverFn endpoint's.
 - Providers: `memoryStorage()` (tests/dev), `fileStorage({ dir })`
   (dev; one cat-able JSON file per actor). Implement `ActorStorage`
   (load/save/clear with etags) for real databases.
+- Under Vite, a `fileStorage` `dir` inside the project root belongs in
+  `server.watch.ignored` — actor state is not source, and a save is a temp
+  file plus a rename, which the HMR file reader races and reports as
+  `ENOENT … .tmp`:
+
+  ```ts
+  export default defineConfig({
+      server: { watch: { ignored: ['**/.actors/**'] } }
+  });
+  ```
 
 ## Timers & reminders
 

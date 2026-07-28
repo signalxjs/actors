@@ -385,6 +385,21 @@
 
 ### Fixed
 
+- **The reminder tick no longer rewrites shards it did not change** (#74).
+  `#tickShard` runs for every owned shard on every tick, and the mutation
+  path saved unconditionally — so a silo with **no reminders at all** wrote
+  all 16 shard records every `reminderTickMs` (30s by default), forever,
+  bumping etags no reader could distinguish from a real change. A no-op
+  edit now skips the save, and an idle app never creates the
+  `$sigx:reminders` records in the first place.
+
+  Under `fileStorage` that write amplification was visible as well as
+  wasteful: each save is a temp file plus a rename inside the project tree,
+  which Vite's dev watcher raced — the `ENOENT … p4.json.<pid>.tmp` error
+  overlay that reported it. A storage `dir` inside a Vite root also belongs
+  in `server.watch.ignored` (now documented, and set in both examples):
+  actor state is not source and should reload nothing.
+
 - **`createAppHandler` no longer 500s on an unparseable request target**
   (#60). `req.url` is the RAW target — Node neither normalizes nor
   validates it — so `GET //` or an absolute form like `GET http://[` made
