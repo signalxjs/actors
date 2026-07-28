@@ -127,4 +127,9 @@ export class Series {
     latest(): Rate {
         return this.#values.length === 0 ? null : this.#values[this.#values.length - 1]!;
     }
+
+    /** Drop the history — for a "start watching from now" reset. */
+    clear(): void {
+        this.#values = [];
+    }
 }

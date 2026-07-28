@@ -13,12 +13,14 @@
  * documented in one place rather than inferred from two builder literals
  * that have to stay in sync.
  */
-import type { Logger } from '@sigx/cli/plugin';
+import type { Logger, SigxPlugin } from '@sigx/cli/plugin';
 
 /** Every flag `sigx actors` accepts, after parsing. */
 export interface ActorsArgs {
-    /** The sub-verb: `stats`, `health`, … */
+    /** The sub-verb: `top`, `stats`, `health`, … */
     verb?: string;
+    /** Dashboard poll interval, ms. `top` only. */
+    interval?: number;
     /** Origin of a running silo. Its presence selects HTTP mode. */
     url?: string;
     secret?: string;
@@ -34,4 +36,12 @@ export interface ActorsCommandContext {
     cwd: string;
     args: ActorsArgs;
     logger: Logger;
+    /**
+     * Every plugin the CLI discovered. Forwarded to `runShell({ plugins })`
+     * so their `tui:` contributions merge into our dashboard — the reason
+     * this is a CLI plugin rather than a binary of its own.
+     */
+    plugins?: SigxPlugin[];
+    /** Shown in the dashboard's title bar. */
+    cliVersion?: string;
 }

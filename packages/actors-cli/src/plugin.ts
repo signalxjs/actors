@@ -16,9 +16,10 @@ import { join } from 'node:path';
 import type { ActorsCommandContext } from './commands/context';
 import { runHealth } from './commands/health';
 import { runStats } from './commands/stats';
+import { runTop } from './commands/top';
 
 /** Sub-verbs of `sigx actors`. */
-const VERBS = ['stats', 'health'] as const;
+const VERBS = ['top', 'stats', 'health'] as const;
 type Verb = (typeof VERBS)[number];
 
 /**
@@ -34,7 +35,8 @@ const actorsArgs = {
     base: a.string().describe('ops() path prefix (default /_sigx/ops)'),
     app: a.string().describe('Actor app module to load in-process'),
     timeout: a.number().describe('Per-request budget in ms (default 5000)'),
-    json: a.boolean().describe('Emit the raw snapshot as JSON')
+    json: a.boolean().describe('Emit the raw snapshot as JSON'),
+    interval: a.number().describe('Dashboard poll interval in ms (default 1000)')
 };
 
 /**
@@ -64,7 +66,9 @@ export function detect(cwd: string): boolean {
 }
 
 async function runActors(ctx: ActorsCommandContext): Promise<void> {
-    const verb = (ctx.args.verb ?? 'stats') as Verb;
+    // `top` is the default: bare `sigx actors` should open the dashboard,
+    // which is the thing this command exists for.
+    const verb = (ctx.args.verb ?? 'top') as Verb;
     if (!VERBS.includes(verb)) {
         ctx.logger.error(
             `[sigx actors] unknown subcommand "${verb}" — expected ${VERBS.join(', ')}.`
@@ -75,7 +79,8 @@ async function runActors(ctx: ActorsCommandContext): Promise<void> {
         return;
     }
     if (verb === 'health') return runHealth(ctx);
-    return runStats(ctx);
+    if (verb === 'stats') return runStats(ctx);
+    return runTop(ctx);
 }
 
 export default definePlugin({
@@ -83,12 +88,41 @@ export default definePlugin({
     detect,
     commands: {
         actors: {
-            description: 'Observe actor silos, grains and clusters',
+            description: 'Observe actor silos, grains and clusters (top | stats | health)',
             args: actorsArgs,
             // The cast bridges the parser's inferred shape to the stated
             // one. They agree by construction — `ActorsArgs` mirrors the
             // builders above — and it is the only place the two meet.
             run: (ctx) => runActors(ctx as unknown as ActorsCommandContext)
         }
+    },
+    /**
+     * What we contribute to ANOTHER plugin's shell — a `sigx dev` running a
+     * sigx app, say.
+     *
+     * Deliberately a chip and a pointer, not a live panel. Rendering one
+     * would mean opening a source, and the only zero-config source starts a
+     * silo: it joins membership, claims actors and ticks reminders. Doing
+     * that as a side effect of somebody else's dev server is a genuinely
+     * bad surprise, and "the monitor quietly became a cluster member" is
+     * not a sentence anyone should have to debug.
+     *
+     * So this says actors are here and how to look at them, and `top` — an
+     * explicit command — is what opens a source.
+     */
+    tui: {
+        status: () => [{ label: 'actors', value: 'ready', tone: 'dim' }],
+        commands: [
+            {
+                name: '/actors',
+                description: 'how to open the actors dashboard',
+                run: (shell) => {
+                    shell.say('sigx actors top                    — dashboard (loads this project)');
+                    shell.say('sigx actors top --url http://…     — dashboard against a running silo');
+                    shell.say('sigx actors stats --json           — one snapshot, for piping');
+                    shell.say('sigx actors health                 — probe; exit code is the answer');
+                }
+            }
+        ]
     }
 });

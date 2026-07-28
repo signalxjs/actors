@@ -4,6 +4,65 @@
 
 ### Added
 
+- **`sigx actors top` — the dashboard** (#101). Five tabs (Overview, Silos,
+  Grains, Cluster, Health) hosted by `runShell` from `@sigx/cli/shell`,
+  which exists for exactly this: a long-running plugin command that owns the
+  screen. Using it rather than mounting our own app is what makes the tabs,
+  status line, palette and teardown match every other sigx tool — and what
+  lets other plugins' `tui:` contributions merge in alongside ours. It is
+  the default verb, so bare `sigx actors` opens it.
+
+  What each screen puts FIRST is the design work. A dashboard's job is not
+  to show everything, it is to make the wrong thing impossible to miss, so
+  every screen leads with a banner for whatever is currently wrong: a failed
+  poll, a `partial` fan-out, an **unclaimed reminder shard** (nothing is
+  ticking it, and nothing else surfaces that), a **fenced** silo (refusing
+  activations while still published as `active`), or a non-zero
+  `authFailures` (a secret rotation that has not reached every silo).
+
+  **A failed poll does not blank the screen.** The last good snapshot stays
+  up, labelled as stale, with `poll FAILING` and an age in the status bar. A
+  dashboard that goes blank the moment a silo hiccups destroys exactly the
+  context you need to understand the hiccup. The status bar also flags data
+  older than three intervals, because stale numbers that still look live are
+  the failure mode the whole line exists to prevent.
+
+  Polling has back-pressure: an in-flight request is abandoned rather than
+  queued behind, so a 5s silo on a 1s interval does not accumulate requests
+  until something gives, and a late reply from an abandoned poll cannot
+  clobber a newer answer. The timer is `unref`'d so Ctrl+C exits now rather
+  than after the next interval.
+
+  Piped or in CI it degrades rather than hanging: one poll, one line, exit.
+
+- **`tui:` contributions** (#101) — an `actors` status chip and an
+  `/actors` palette command, merged into any other plugin's shell.
+
+  Deliberately a pointer rather than a live panel. Rendering one would mean
+  opening a source, and the only zero-config source **starts a silo** — it
+  joins membership, claims actors and ticks reminders. Doing that as a side
+  effect of somebody else's dev server is a genuinely bad surprise, and "the
+  monitor quietly became a cluster member" is not a sentence anyone should
+  have to debug. `top` is an explicit command; that is where a source opens.
+
+### Changed
+
+- **The package has its own tsconfig, and the repo-root program excludes
+  it** (#101). `@sigx/runtime-terminal` and `sigx` both augment the GLOBAL
+  `JSX.IntrinsicElements` and both declare `text` — terminal's takes
+  `color`, the DOM's is `SVGAttributes<SVGTextElement>` — so in one program
+  containing both, `<text color="cyan">` cannot mean the terminal one. A
+  per-file `@jsxImportSource` pragma does not help: the collision is in the
+  namespace, not the factory.
+
+  There are two configs rather than one, because CI runs `typecheck` before
+  `build`: `tsconfig.json` emits declarations against the *published* shape
+  of `@sigx/actors`, while `tsconfig.typecheck.json` resolves it from source
+  (as the root config does for every other package) so a clean checkout
+  typechecks. The root `typecheck` script now chains the package's own, so
+  excluding it from the root program does not quietly drop it — and the
+  typecheck config covers `__tests__` for the same reason.
+
 - **Terminal building blocks** (#101) — `src/tui/`: `sparkline`, `meter`,
   `trend`, `layoutTable`/`fit`/`scrollOffset`/`moveCursor`/`sortRows`,
   `histogramRow`/`commonScale`, and `shardGrid`/`unclaimedShards`/

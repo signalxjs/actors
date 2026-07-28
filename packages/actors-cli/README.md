@@ -12,9 +12,9 @@ dependencies, so the commands appear as soon as the package is there and
 your project depends on `@sigx/actors`.
 
 ```sh
-sigx actors stats                                  # a snapshot, printed
-sigx actors stats --url http://silo:3000           # …of a running silo
-sigx actors stats --json | jq '.cluster.totals'    # …for something else to read
+sigx actors                                        # the dashboard
+sigx actors top --url http://silo:3000             # …against a running silo
+sigx actors stats --json | jq '.cluster.totals'    # a snapshot, for piping
 sigx actors health --url http://silo:3000          # exit code by readiness
 ```
 
@@ -75,8 +75,34 @@ neighbours are tried.
 
 | | |
 |---|---|
+| `sigx actors top` | The dashboard. The default, so bare `sigx actors` opens it. |
 | `sigx actors stats` | One snapshot: cluster totals, per-silo state, latency, error kinds, slowest methods, hottest grains. `--json` for the raw shape. |
 | `sigx actors health` | Liveness and readiness, **with the exit code as the answer**. |
+
+### The dashboard
+
+Five tabs — Overview, Silos, Grains, Cluster, Health — hosted by `runShell`
+from `@sigx/cli/shell`, so the chrome, the palette and the teardown match
+every other sigx tool.
+
+| key | |
+|---|---|
+| `1`–`9` | switch tab |
+| `j` / `k` | move the cursor in a table |
+| `p` | pause polling |
+| `r` | refresh now |
+| `+` / `-` | slower / faster polling |
+| `/reset` | clear the sparkline history |
+| `Ctrl+C` | quit |
+
+`--interval <ms>` sets the poll rate (default 1000, clamped to 200…60000).
+
+Piped or in CI it degrades rather than hanging: one poll, one line, exit.
+
+**A failed poll does not blank the screen.** The last good snapshot stays
+up, labelled as such, with the status line showing `poll FAILING` and how
+stale the numbers are — a dashboard that goes blank the moment a silo
+hiccups destroys exactly the context you need to understand the hiccup.
 
 ### Exit codes for `health`
 

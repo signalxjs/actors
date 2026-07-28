@@ -40,6 +40,7 @@
   ],
   "exclude": [
     "node_modules",
+    "packages/actors-cli",
     "dist",
     "packages/*/dist"
   ]
