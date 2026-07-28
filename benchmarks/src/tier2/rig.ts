@@ -20,7 +20,14 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { memoryClusterHub } from '@sigx/actors/cluster';
 import type { MembershipView } from '@sigx/actors/cluster';
 import type { Percentiles } from '../histogram.ts';
-import type { ChildStats, DriveRequest, StoreOp, ToChild, ToParent } from './protocol.ts';
+import type {
+    ChildStats,
+    DispatcherKind,
+    DriveRequest,
+    StoreOp,
+    ToChild,
+    ToParent
+} from './protocol.ts';
 
 const CHILD_URL = new URL('./child.ts', import.meta.url);
 /** A child that has not answered in this long is wedged; kill the run. */
@@ -30,6 +37,11 @@ export interface RigOptions {
     silos: number;
     /** `null` runs the cluster unauthenticated — the HMAC-off arm. */
     secret: string | null;
+    /** Outbound HTTP client. Default `'default'` = the global fetch, i.e.
+     *  exactly what ships. */
+    dispatcher?: DispatcherKind;
+    /** Per-origin connection cap for the tuned arms. */
+    connections?: number;
 }
 
 export interface DriveOutcome {
@@ -140,9 +152,17 @@ export async function startRig(options: RigOptions): Promise<Rig> {
             if (!stopped) abort(`exited early (code ${code}, signal ${signal})`);
         });
 
-        const ready = (await request(member, { t: 'init', index, secret: options.secret }, 'ready')) as {
-            port: number;
-        };
+        const ready = (await request(
+            member,
+            {
+                t: 'init',
+                index,
+                secret: options.secret,
+                dispatcher: options.dispatcher ?? 'default',
+                connections: options.connections ?? 64
+            },
+            'ready'
+        )) as { port: number };
         member.port = ready.port;
         const started = (await request(member, { t: 'start' }, 'started')) as { siloId: string };
         member.siloId = started.siloId;

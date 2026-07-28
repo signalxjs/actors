@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- **Bounding the silo-to-silo connection pool** (#97, closes #89). Node's
+  global `fetch` uses an unbounded undici pool, measured at **two connections
+  per in-flight request** — ~12 600 sockets per silo at concurrency 64 across
+  99 peers. A four-line recipe through the existing `fetch` seam caps it.
+
+  **Size the cap to your per-peer concurrency.** At `connections: 64` under
+  concurrency 64 the socket count halves *and* throughput improves ~6%, which
+  shows the default's extra connection per in-flight request is waste rather
+  than headroom. Going lower trades throughput steeply — `connections: 8` at
+  the same concurrency costs about 3× — and is only worth it when file
+  descriptors are the real constraint.
+
+  No API and no dependency: `undici` stays out of this package, and the seam
+  that makes the recipe possible already shipped in #92.
+
+  **HTTP/2 does not help today** — `allowH2` measures identical to plain
+  keep-alive at every pool size, because `createAppHandler` serves over
+  `node:http`, which is HTTP/1.1 only. Multiplexing would need a `node:http2`
+  server first, for the same socket reduction the pool cap already delivers.
+
+  **Session tokens were measured and declined.** Replacing the per-call HMAC
+  looked worth 3.35× in-process; over a real socket it is 1.19×, and a session
+  token authorises any call for its window where the current signature is bound
+  to a specific symbol and callId. 19% does not buy that trade.
+
 ### Added
 
 - **A transport conformance suite** (#93), for contributors — **not a

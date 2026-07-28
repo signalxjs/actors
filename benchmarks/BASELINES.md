@@ -299,6 +299,68 @@ session tokens (#90 step D) and 103 bytes/call on the wire — but it is not the
 server reaches on this machine. The runtime is not the ceiling here; Node's
 HTTP stack is.
 
+### Bounding the pool fixes it; HTTP/2 does not [counted + contended]
+
+#89's three candidates, at concurrency 64 against one peer, all driven through
+the existing `fetch` seam so no runtime change was needed to test them:
+
+Measured with **undici 7.29**, which is the major Node currently bundles for
+the global `fetch` (`process.versions.undici` = 7.16 here). That choice
+matters — see the version note below.
+
+| dispatcher | peak sockets | sockets / concurrency | ops/s | vs default |
+|---|---:|---:|---:|---:|
+| default (global fetch) | 128 | 2.00 | 15 600 – 16 095 | — |
+| **`Agent({ connections: 64 })`** | **64** | **1.00** | **16 840 – 17 121** | **+6%** |
+| `Agent({ connections: 8 })` | 8 | 0.13 | 5 407 – 5 434 | −66% |
+| `Agent({ connections: 1 })` | 1 | 0.02 | 6 661 – 6 941 | −57% |
+| `Agent({ connections: 8, allowH2 })` | 8 | 0.13 | 5 239 – 5 385 | −66% |
+| `Agent({ connections: 1, allowH2 })` | 1 | 0.02 | 6 851 – 6 946 | −56% |
+
+**Candidate 2 wins, but only at the right size.** Capping the pool *at* the
+concurrency halves the socket count and is marginally **faster** than the
+unbounded default — which also answers the "why 2×?" left open above: it is
+the unbounded pool growing, and the cap removes the growth exactly. The extra
+connection per in-flight request is waste, not headroom.
+
+Going *below* the concurrency trades throughput steeply: `connections: 8` at
+concurrency 64 costs about **3×**. Worth it only when file descriptors are the
+actual constraint. (`connections: 8` being slower than `connections: 1` is
+consistent across runs and unexplained; both are far off the pace, so it does
+not change the recommendation.)
+
+Extrapolated the way #89 does it — c=64 across 99 peers — matching the cap to
+concurrency gives **~6 300 sockets per silo instead of ~12 600**, at no cost.
+Getting below that is a deliberate throughput trade.
+
+> ⚠️ **These numbers are undici-major-specific.** An earlier pass of this
+> table was recorded against undici 8.x and showed `connections: 8` costing
+> only ~2% — a conclusion that does not hold on the major Node actually
+> ships, and which would have shipped a bad default had it not been re-run.
+> Re-measure before tuning against a different major.
+
+**Candidate 1 is not reachable.** `allowH2: true` measures identical to plain
+keep-alive at every pool size (5 844 vs 5 862 at one connection; 13 254 vs
+13 548 at eight). `createAppHandler` serves over `node:http`, which is
+HTTP/1.1 only, so the client negotiates nothing and silently falls back.
+Multiplexing would require a `node:http2` server first — a much larger change
+that buys the same socket reduction the pool cap already gives.
+
+Candidate 3 — documenting the escape hatch — is therefore the whole shipped
+change, now with a measured recommendation attached. See the README.
+
+### Session tokens: measured, and declined
+
+The plan carried an idea to replace the per-call HMAC with a short-lived
+session token, on the strength of the Tier-1 3.35×. Over a real socket the
+gap is **1.19× at c=64**, and a session token authorises *any* call for its
+window where today's signature is bound to a specific symbol + callId.
+
+**A 19% gain does not justify weakening that binding**, so this is declined
+rather than deferred. Revisit only if a profile shows signing dominating on a
+deployment where the network is not the cost — which is the opposite of what
+the numbers above show.
+
 ### What this rig cannot honestly measure
 
 Stated so it is never quoted as though it could:

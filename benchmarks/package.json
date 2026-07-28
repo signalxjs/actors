@@ -9,5 +9,8 @@
     },
     "dependencies": {
         "@sigx/actors": "workspace:*"
+    },
+    "devDependencies": {
+        "undici": "^7.29.0"
     }
 }

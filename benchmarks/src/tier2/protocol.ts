@@ -60,8 +60,25 @@ export interface ChildStats {
 
 // --- parent → child --------------------------------------------------------
 
+/**
+ * Which outbound HTTP client the silo dispatches with.
+ *
+ * `default` is what ships today: the global `fetch`, whose undici agent has
+ * `connections: null` (unbounded) and `pipelining: 1`. The others exist to
+ * settle #89's candidates on the rig BEFORE any dependency is shipped —
+ * `undici` is a benchmarks-only devDependency for exactly this reason.
+ */
+export type DispatcherKind = 'default' | 'bounded' | 'h2';
+
 export type ToChild =
-    | { t: 'init'; index: number; secret: string | null }
+    | {
+          t: 'init';
+          index: number;
+          secret: string | null;
+          dispatcher: DispatcherKind;
+          /** Per-origin connection cap for `bounded` and `h2`. */
+          connections: number;
+      }
     | { t: 'start' }
     | { t: 'view'; view: MembershipView }
     | { t: 'selfSuspect' }

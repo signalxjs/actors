@@ -20,7 +20,7 @@ import type { Socket } from 'node:net';
 import { defineActor } from '@sigx/actors';
 import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/silo';
 import { createAppHandler } from '@sigx/actors/node';
-import { cluster, type ClusterPlugin } from '@sigx/actors/cluster';
+import { cluster, httpTransport, type ClusterPlugin } from '@sigx/actors/cluster';
 import type {
     ActorDirectory,
     ClusterMembership,
@@ -32,10 +32,36 @@ import type {
 } from '@sigx/actors/cluster';
 import type { Silo } from '@sigx/actors';
 import { closedLoop } from '../loop.ts';
-import type { ChildStats, StoreOp, ToChild, ToParent } from './protocol.ts';
+import type { ChildStats, DispatcherKind, StoreOp, ToChild, ToParent } from './protocol.ts';
 
 /** The internal mount's default prefix — matched by hand on the hot path. */
 const INTERNAL_BASE = '/_sigx/silo';
+
+/**
+ * Build the outbound client for this run's dispatcher arm.
+ *
+ * `undici` is imported dynamically and ONLY for the tuned arms, so the
+ * `default` arm measures exactly what ships — the global `fetch` — with no
+ * chance of the import itself perturbing it. It is a benchmarks-only
+ * devDependency: nothing in `@sigx/actors` may depend on it, since
+ * `./cluster` is zero-dep and WinterCG-clean so that Workers keep working.
+ */
+async function dispatcherFetch(
+    kind: DispatcherKind,
+    connections: number
+): Promise<typeof globalThis.fetch | null> {
+    if (kind === 'default') return null;
+    const { Agent, fetch: undiciFetch } = await import('undici');
+    const agent = new Agent({
+        connections,
+        ...(kind === 'h2' ? { allowH2: true } : {})
+    });
+    return ((input: RequestInfo | URL, init?: RequestInit) =>
+        undiciFetch(input as never, {
+            ...init,
+            dispatcher: agent
+        } as never)) as unknown as typeof globalThis.fetch;
+}
 
 const send = (message: ToParent): void => {
     process.send?.(message);
@@ -239,10 +265,15 @@ async function main(): Promise<void> {
                 // Bind FIRST so the port exists, then advertise it.
                 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
                 const port = (server.address() as { port: number }).port;
+                const tuned = await dispatcherFetch(message.dispatcher, message.connections);
                 plugin = cluster({
                     providers: { membership, directory },
                     advertise: `http://127.0.0.1:${port}`,
                     policy: selfPolicy,
+                    // The `fetch` seam is the whole escape hatch #89 names.
+                    // Passing a tuned dispatcher through it is what this
+                    // measures — no runtime change required.
+                    ...(tuned ? { transport: httpTransport({ fetch: tuned }) } : {}),
                     ...(message.secret === null ? {} : { secret: message.secret })
                 });
                 app = defineActorApp({

@@ -915,6 +915,59 @@ cluster configured with only socket transports has **no internal HTTP
 endpoint at all** — a smaller attack surface, and nothing to `curl`. The
 public actor wire is unaffected either way.
 
+#### Bound the connection pool on Node
+
+Node's global `fetch` is undici with an **unbounded** pool and
+`pipelining: 1`, which means one connection per in-flight request — measured
+at *two* per in-flight request against a silo (`benchmarks/BASELINES.md`,
+Tier 2). At concurrency 64 across 99 peers that projects to ~12 600 sockets
+per silo, which is file descriptors, kernel buffers and a connection burst
+every time a peer restarts.
+
+The fix is four lines through the `fetch` seam:
+
+```ts
+import { Agent, fetch as undiciFetch } from 'undici';
+import { cluster, httpTransport } from '@sigx/actors/cluster';
+
+// One pool per silo process, bounded per peer origin. Size it to your
+// per-peer concurrency — see the caveat below before going lower.
+const agent = new Agent({ connections: 64 });
+
+cluster({
+    providers, advertise, secret,
+    transport: httpTransport({
+        fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
+    })
+});
+```
+
+Measured at concurrency 64 against one peer (`benchmarks/BASELINES.md`):
+
+| `connections` | sockets | throughput |
+|---|---:|---|
+| unbounded (default) | 128 | baseline |
+| **64** (= concurrency) | **64** | **~+6%** |
+| 8 | 8 | **~3× slower** |
+| 1 | 1 | ~2.4× slower |
+
+**Match `connections` to your per-peer concurrency.** That halves the socket
+count for free — slightly better than free — because the unbounded default's
+*second* connection per in-flight request is pure waste. Going below your
+concurrency trades throughput for sockets steeply, and is only worth it if you
+are actually running out of file descriptors.
+
+`undici` is not a dependency of this package and is not required — this is a
+recipe, not an API. The numbers above are undici 7.x, which is what Node
+currently bundles for the global `fetch`; other majors have measured
+differently, so re-check on yours before tuning aggressively.
+
+> **HTTP/2 does not currently help.** `allowH2: true` measures identical to
+> plain keep-alive at every pool size, because `createAppHandler` serves over
+> `node:http`, which is HTTP/1.1 only — the client negotiates nothing and
+> falls back. Multiplexing would need a `node:http2` server first, which is a
+> larger change than the pool cap for the same socket reduction.
+
 **Writing one?** There is a conformance suite — `transportConformance` in
 `packages/actors/src/cluster/testing.ts` — holding the cases a transport must
 pass, and so the definition of correct behaviour. Supply a harness that builds

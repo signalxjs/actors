@@ -69,6 +69,13 @@ async function measure(
     durationMs: number,
     latency: boolean
 ): Promise<Measured> {
+    // Settle before measuring. `warmOn` activates the actors on their owner,
+    // but it is the DRIVER's route cache that decides whether the measured
+    // window touches the directory — and that only fills once this silo has
+    // actually dispatched to each target. Without this the fixed startup cost
+    // (one resolution per concurrent worker) lands inside the window and the
+    // guard below reads it as store traffic, which it is not.
+    await rig.drive(driver, { targets, concurrency, durationMs: 50, latency: false });
     await rig.resetStats();
     const outcome = await rig.drive(driver, { targets, concurrency, durationMs, latency });
     const stats = await Promise.all(receivers.map((i) => rig.stats(i)));
@@ -265,4 +272,90 @@ const transportMatrix: Scenario = {
     }
 };
 
-export const tier2Scenarios: Scenario[] = [socketScaling, transportMatrix];
+/**
+ * #89's candidates, settled on the rig rather than argued.
+ *
+ * `default` is the global `fetch` — what ships today, whose undici agent has
+ * `connections: null` and `pipelining: 1`. `bounded` caps the pool per origin.
+ *
+ * The `h2` arm sets `allowH2` on the client, and **measures identical to the
+ * matching `bounded` arm**: the rig's silos serve over `createAppHandler` →
+ * `node:http`, which is HTTP/1.1 only, so nothing negotiates and undici falls
+ * back. It is kept as a control that documents that fact rather than as a
+ * multiplexing test — real h2 would need a `node:http2` server first.
+ *
+ * All arms go through the EXISTING `fetch` seam, so nothing in the runtime
+ * changes to run this — which is itself the finding: the escape hatch is
+ * sufficient and only needed documenting.
+ *
+ * NOTE: results are undici-major-specific. `undici` is pinned to the major
+ * Node bundles for the global `fetch`, so the tuned arms differ from
+ * `default` only in Agent configuration and not in library version.
+ */
+const dispatcherMatrix: Scenario = {
+    name: 'cluster2/dispatcher-matrix',
+    description:
+        'TIER 2 (real sockets) — default vs bounded vs h2 undici dispatcher. Sockets gate; timings informational',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        const concurrency = 64;
+        const arms = ctx.quick
+            ? ([['default', 0], ['h2', 8]] as const)
+            : ([
+                  ['default', 0],
+                  ['bounded', 1],
+                  ['bounded', 8],
+                  ['bounded', 64],
+                  // h2 at ONE connection is the real question: if it
+                  // multiplexes, 64 concurrent calls ride a single socket.
+                  ['h2', 1],
+                  ['h2', 8]
+              ] as const);
+        for (const [kind, connections] of arms) {
+            const rig = await startRig({
+                silos: 2,
+                secret: null,
+                dispatcher: kind,
+                connections
+            });
+            try {
+                await warmOn(rig, 1);
+                const label = kind === 'default' ? 'default' : `${kind}-${connections}`;
+                const m = await measure(rig, 0, [1], concurrency, ctx.durationMs, false);
+                guardStoreOps(label, m);
+                metrics.push(
+                    {
+                        name: `${label}/sockets_peak`,
+                        value: m.peak,
+                        unit: 'count',
+                        direction: 'lower'
+                    },
+                    {
+                        name: `${label}/sockets_per_concurrency`,
+                        value: m.peak / concurrency,
+                        unit: 'ratio',
+                        direction: 'lower'
+                    },
+                    {
+                        name: `${label}/bytes_per_call`,
+                        value: m.ops === 0 ? 0 : m.bytes / m.ops,
+                        unit: 'bytes',
+                        direction: 'lower'
+                    },
+                    {
+                        name: `${label}/ops_per_sec`,
+                        value: m.opsPerSec,
+                        unit: 'ops/sec',
+                        direction: 'higher',
+                        informational: true
+                    }
+                );
+            } finally {
+                await rig.stop();
+            }
+        }
+        return metrics;
+    }
+};
+
+export const tier2Scenarios: Scenario[] = [socketScaling, transportMatrix, dispatcherMatrix];
