@@ -422,6 +422,51 @@ describe('defineActorApp — routes and app lifecycle', () => {
         await app.stop();
     });
 
+    it('accepts a registry supplied by a host', async () => {
+        // The point: an app module can omit its registry, so it imports
+        // nothing Vite-specific and loads under any runtime. The Vite
+        // plugin hands over the one it already builds; a plain-Node entry
+        // names its actors.
+        const app = defineActorApp({ defaults: quiet });
+        expect(app.hasActors).toBe(false);
+        app.withActors([Counter]);
+        expect(app.hasActors).toBe(true);
+
+        const silo = await app.start();
+        try {
+            await expect(silo.actor(Counter, 'k').increment(2)).resolves.toBe(2);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('refuses to replace a registry the author configured', () => {
+        const app = defineActorApp({ actors: [Counter], defaults: quiet });
+        expect(app.hasActors).toBe(true);
+        // A host must never silently override what the app declared.
+        expect(() => app.withActors([])).toThrow(/already has actors/);
+    });
+
+    it('says so clearly when nobody supplied a registry', async () => {
+        const app = defineActorApp({ defaults: quiet });
+        await expect(app.start()).rejects.toThrow(/no actors/);
+    });
+
+    it('refuses withActors once the app is sealed', async () => {
+        const app = defineActorApp({ defaults: quiet });
+        app.withActors([Counter]);
+        await app.start();
+        try {
+            // By now the registry is baked into a running silo.
+            expect(() => app.withActors([Counter])).toThrow(/already has actors/);
+            const fresh = defineActorApp({ defaults: quiet });
+            void fresh.routes; // seals it
+            expect(() => fresh.withActors([Counter])).toThrow(/after the app has been started/);
+        } finally {
+            await app.stop();
+        }
+    });
+
     it('clears the silo on stop and refuses a restart', async () => {
         const app = defineActorApp({ actors: [], defaults: quiet });
         await app.start();

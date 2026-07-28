@@ -17,7 +17,7 @@
  *     deactivate types through storage on actor-file edits.
  */
 import type { Plugin, ViteDevServer } from 'vite';
-import type { ActorApp } from '../silo/app';
+import type { ActorApp, ActorAppOptions } from '../silo/app';
 import type { Silo } from '../types';
 import { createFilter, normalizePath } from 'vite';
 import * as fs from 'node:fs';
@@ -90,6 +90,8 @@ interface SiloModule {
  * needing `app.silo`) breaks here loudly instead of hiding behind a cast.
  */
 type DevApp = ActorApp;
+/** Exactly what `withActors`/`createSilo` accept — not a stand-in. */
+type DevActorRegistry = NonNullable<ActorAppOptions['actors']>;
 type DevSilo = Silo;
 
 export function sigxActors(options: SigxActorsOptions = {}): Plugin {
@@ -425,10 +427,12 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                         );
                     }
                     devApp = app;
-                    // Registration still comes from `virtual:sigx-actors`,
-                    // which this plugin serves in dev as lazy `import()`s
-                    // through the runner — so HMR keeps working, and the
-                    // app-module/actor-module cycle stays broken.
+                    // Hand over the registry the plugin already has, so the
+                    // app module never needs `virtual:sigx-actors` and stays
+                    // loadable under plain Node. These loaders go through the
+                    // module runner, which is what keeps HMR working — better
+                    // than the virtual module for dev.
+                    if (!app.hasActors) app.withActors(devRegistry(devServer));
                     return await app.start();
                 }
 
@@ -441,10 +445,18 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                         'real app config in dev.',
                     { timestamp: true }
                 );
-                // Lazy per-type loaders through the module runner: edits are
-                // picked up because deactivateType also drops the silo's
-                // resolved-definition cache.
-                const actors = new Proxy(
+                const silo = siloModule.createSilo({ actors: devRegistry(devServer) });
+                await silo.start();
+                return silo;
+            }
+
+            /**
+             * Lazy per-type loaders through the module runner: edits are
+             * picked up because `deactivateType` also drops the silo's
+             * resolved-definition cache.
+             */
+            function devRegistry(devServer: ViteDevServer): DevActorRegistry {
+                return new Proxy(
                     {},
                     {
                         get: (_t, actorType: string | symbol) => {
@@ -462,10 +474,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                             configurable: true
                         })
                     }
-                );
-                const silo = siloModule.createSilo({ actors });
-                await silo.start();
-                return silo;
+                ) as DevActorRegistry;
             }
 
             async function handleDevRequest(

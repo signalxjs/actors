@@ -9,19 +9,14 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { defineActorApp } from '@sigx/actors/silo';
-import { createAppHandler, attachSignalHandlers, fileStorage } from '@sigx/actors/node';
+import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
+import { app } from './src/actors.app.ts';
 import { Counter } from './src/counter.actor.ts';
 
-// The app is the composition root: storage, defaults and every plugin in
-// one place. `src/actors.app.ts` is the Vite-side equivalent — it takes
-// its registry from `virtual:sigx-actors`, which only resolves under Vite,
-// so this entry (plain Node type-stripping) lists its actors instead.
-const app = defineActorApp({
-    actors: [Counter],
-    storage: fileStorage({ dir: '.actors' })
-});
-const silo = await app.start();
+// THE SAME app module the dev server runs: storage, defaults and every
+// plugin shared, declared once. Only the registry differs — Vite hands the
+// plugin's over, this entry names its actors.
+const silo = await app.withActors([Counter]).start();
 attachSignalHandlers(silo);
 
 // One handler for the public endpoint and any plugin-contributed route.

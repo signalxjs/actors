@@ -154,8 +154,16 @@ export interface ActorPlugin<Ext extends object = Record<never, never>> {
 // App
 
 export interface ActorAppOptions {
-    /** Same as `createSilo`: definitions, or the lazy `virtual:sigx-actors` map. */
-    actors: CreateSiloOptions['actors'];
+    /**
+     * Definitions, or the lazy `{ type: () => import() }` map.
+     *
+     * OPTIONAL, so an app module can stay runtime-neutral: the Vite plugin
+     * supplies the registry it already builds (`sigxActors({ app })`),
+     * which means your app module need not import `virtual:sigx-actors`
+     * and therefore loads under plain Node too. A non-Vite entry passes
+     * them here as before.
+     */
+    actors?: CreateSiloOptions['actors'];
     /** Base storage, before any plugin decorators. Omit = in-memory. */
     storage?: ActorStorage;
     types?: readonly TypeHandler[];
@@ -169,6 +177,19 @@ export interface ActorAppOptions {
 export interface ActorApp<Ext extends object = Record<never, never>> {
     /** Register a plugin. Mutates and returns THIS app, widened by `Ext`. */
     use<E extends object>(plugin: ActorPlugin<E>): ActorApp<Ext & E>;
+    /**
+     * Supply the actor registry when the app was built without one — what
+     * a HOST does: the Vite plugin hands over the registry it already
+     * builds, so the app module itself stays runtime-neutral.
+     *
+     * Throws if the app already has actors, so a host can never silently
+     * replace what the author configured — and, like `use()`, once the app
+     * has been started or its `routes` read: by then the registry is
+     * already baked into a running silo.
+     */
+    withActors(actors: NonNullable<ActorAppOptions['actors']>): ActorApp<Ext>;
+    /** Whether a registry has been supplied yet. */
+    readonly hasActors: boolean;
     /**
      * `defineActor` bound to this app's plugin set — the same function at
      * runtime, with `ctx` typed as the built-ins plus every plugin's
@@ -222,6 +243,27 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
 
     constructor(options: ActorAppOptions) {
         this.#options = options;
+    }
+
+    withActors(actors: NonNullable<ActorAppOptions['actors']>): ActorApp<Record<never, never>> {
+        if (this.#options.actors) {
+            throw new Error(
+                '[sigx actors] this app already has actors — withActors() is for supplying a ' +
+                    'registry to an app built without one, not for replacing it.'
+            );
+        }
+        if (this.#contributions) {
+            throw new Error(
+                '[sigx actors] cannot withActors() after the app has been started (or its ' +
+                    'routes read).'
+            );
+        }
+        this.#options = { ...this.#options, actors };
+        return this;
+    }
+
+    get hasActors(): boolean {
+        return this.#options.actors !== undefined;
     }
 
     use<E extends object>(plugin: ActorPlugin<E>): ActorApp<E> {
@@ -294,6 +336,12 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
     }
 
     async #start(): Promise<Silo> {
+        if (!this.#options.actors) {
+            throw new Error(
+                '[sigx actors] this app has no actors. Pass them to defineActorApp({ actors }), ' +
+                    'or let the Vite plugin supply them with sigxActors({ app }).'
+            );
+        }
         const c = this.#seal();
         // A decorator has to wrap something concrete, so materialize the
         // in-memory default here rather than leaving it to `createSilo` —
@@ -314,7 +362,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
         }
         const placement = compositePlacement(c);
         const silo = createSilo({
-            actors: this.#options.actors,
+            actors: this.#options.actors!,
             ...(storage ? { storage } : {}),
             ...(placement ? { placement } : {}),
             ...(c.typeHandlers.length ? { types: c.typeHandlers } : {}),

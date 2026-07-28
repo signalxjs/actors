@@ -82,17 +82,29 @@ plugin are identical in both. The app module gets its registry from
 /// <reference types="@sigx/actors/vite-client" />
 ```
 
-`virtual:sigx-actors` resolves **only under Vite**, so an app module that
-imports it is shared by dev and a Vite-built server. A production entry that
-runs outside Vite (plain Node, type-stripping the sources) cannot import
-that module — and neither can an actor module that imports its bound
-`defineActor` from it, which makes the actor Vite-only too.
+The app module leaves out its registry, so it imports nothing Vite-specific
+and loads under any runtime — which is what lets a plain-Node entry share
+it, and what makes it safe for actor modules to import the bound
+`defineActor` from it:
 
-Until [#61](https://github.com/andtii/actors/issues/61) moves the registry
-into the plugin, an off-Vite entry should build its own app with an explicit
-actor array, and its actor modules should import `defineActor` from
-`@sigx/actors`. `examples/counter` does exactly that — compare
-`src/actors.app.ts` (dev) with `server.mjs` and `cluster-demo.mjs`.
+```ts
+// src/actors.app.ts — no `actors`, no virtual import
+export const app = defineActorApp({ storage: fileStorage({ dir: '.actors' }) });
+export const { defineActor } = app;
+```
+
+Under Vite the plugin supplies the registry it already builds (its loaders
+go through the module runner, so HMR keeps working). Anywhere else, name the
+actors:
+
+```ts
+// server.mjs — the SAME app module
+const silo = await app.withActors([Counter]).start();
+```
+
+`withActors` throws if the app already declared `actors`, so a host can
+never silently replace what the author configured. `examples/counter` runs
+exactly this shape in dev and in production.
 
 **Production server entry** — explicit composition, the sigx idiom:
 

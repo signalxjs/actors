@@ -4,6 +4,20 @@
 
 ### Added
 
+- **The Vite plugin supplies the actor registry** (#61):
+  `defineActorApp({ actors })` is now optional, and `sigxActors({ app })`
+  hands over the registry it already builds. An app module therefore
+  imports nothing Vite-specific and loads under plain Node too — so a
+  production entry can share the very module the dev server runs
+  (`app.withActors([Counter]).start()`), and actor modules can safely
+  import the bound `defineActor` from it, which previously made them
+  Vite-only.
+
+  Dev uses its module-runner loaders rather than `virtual:sigx-actors`,
+  which is what keeps HMR working. `withActors` throws if the app already
+  declared `actors`, so a host cannot silently replace the author's
+  configuration, and `start()` without a registry says so plainly.
+
 - **`examples/chat` — actors in a real SignalX app** (#60). It runs the
   composition this repo had never actually run before: `sigx()` +
   `sigxServer()` + `sigxActors()` in one Vite build, a guarded actor read

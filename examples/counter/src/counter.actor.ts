@@ -1,4 +1,6 @@
-import { defineActor } from '@sigx/actors';
+// The app-bound defineActor: `ctx` carries whatever this app's plugins
+// add. Identical at runtime — the TYPE is what differs.
+import { defineActor } from './actors.app.ts';
 
 /**
  * A virtual actor: addressable by key, activated lazily on first call,

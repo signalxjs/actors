@@ -1,26 +1,20 @@
 /**
- * The app for the DEV server (`sigxActors({ app: '/src/actors.app.ts' })`):
- * storage, defaults and every plugin in one place, so dev runs the real
- * configuration rather than a stripped-down one.
+ * The app: ONE source of truth for storage, defaults and plugins, shared by
+ * the dev server (`sigxActors({ app })`), the production entry, and the
+ * actor modules.
  *
- * `virtual:sigx-actors` is the build-emitted registry of `*.actor.ts`
- * modules, served in dev as lazy `import()`s through Vite's module runner.
- * It only resolves UNDER VITE, which is why `server.mjs` and
- * `cluster-demo.mjs` — plain Node, via type stripping — build their own app
- * with an explicit actor array instead.
- *
- * For the same reason this module does not re-export a bound `defineActor`:
- * actor modules must load in both worlds, so they import `defineActor` from
- * `@sigx/actors` directly. With no plugins configured here the two are
- * identical anyway — the binding only earns its keep once a plugin adds
- * members to `ctx`.
+ * Note what is NOT here: the actor registry. Under Vite the plugin supplies
+ * the one it already builds, so this module imports nothing Vite-specific
+ * and loads under plain Node too — which is what lets `server.mjs` share it
+ * and why actor modules can safely import the bound `defineActor` below.
  */
 import { defineActorApp } from '@sigx/actors/silo';
 import { fileStorage } from '@sigx/actors/node';
-import { actors } from 'virtual:sigx-actors';
 
 export const app = defineActorApp({
-    actors,
-    // The same storage the production entry uses.
+    // Keeps dev state across actor-file edits and restarts.
     storage: fileStorage({ dir: '.actors' })
 });
+
+/** Bound to this app's plugin set — actor modules import this. */
+export const { defineActor } = app;
