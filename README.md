@@ -31,6 +31,7 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./silo`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
 | [`@sigx/actors-redis`](packages/actors-redis) | Redis cluster providers — membership and the actor directory |
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — one DO per actor (storage + alarm reminders) |
+| [`benchmarks`](benchmarks) | Local performance baselines — throughput, latency, heap footprint, leak detection (not published) |
 
 Full documentation lives in the [package README](packages/actors/README.md).
 Two runnable demos:

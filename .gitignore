@@ -58,6 +58,13 @@ coverage/
 # Runtime data (fileStorage of running examples/dev silos)
 .actors/
 
+# Benchmark output. Results and the local baseline are machine-specific —
+# only benchmarks/BASELINES.md (hand-curated, with its machine recorded) is
+# committed. Heap snapshots and .cpuprofile files are large and disposable.
+benchmarks/results/
+benchmarks/baselines/
+benchmarks/profiles/
+
 # Misc
 .cache/
 .temp/

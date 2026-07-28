@@ -1,0 +1,13 @@
+{
+    "name": "actors-benchmarks",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Performance baselines for @sigx/actors — closed-loop throughput, latency percentiles, and heap/GC accounting. Not published.",
+    "scripts": {
+        "bench": "node --conditions=production --expose-gc src/main.ts"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*"
+    }
+}

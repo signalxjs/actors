@@ -48,6 +48,8 @@ parallel checkouts.
 | Tests in watch mode | `pnpm test:watch` |
 | Typecheck | `pnpm typecheck` |
 | Lint | `pnpm lint` |
+| Benchmarks | `pnpm bench` (see `benchmarks/README.md`) |
+| Perf regression check | `pnpm bench:baseline` before your change, `pnpm bench:compare` after |
 
 ## Pre-push checklist
 

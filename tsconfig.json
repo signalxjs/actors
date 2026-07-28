@@ -9,6 +9,9 @@
     "jsxImportSource": "sigx",
     "esModuleInterop": true,
     "skipLibCheck": true,
+    // `benchmarks/` runs straight off Node's native type stripping, which
+    // needs the full `./x.ts` specifier on every relative import.
+    "allowImportingTsExtensions": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
       "@sigx/actors": ["./packages/actors/src/index.ts"],
@@ -26,7 +29,8 @@
   "include": [
     "packages/*/src/**/*.ts",
     "packages/*/__tests__/**/*.ts",
-    "packages/*/src/**/*.tsx"
+    "packages/*/src/**/*.tsx",
+    "benchmarks/src/**/*.ts"
   ],
   "exclude": [
     "node_modules",

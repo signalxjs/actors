@@ -142,7 +142,21 @@ pnpm typecheck   # tsgo (a fast TS compiler), config: tsconfig.json
 pnpm lint        # oxlint over the packages' src
 pnpm lint:fix
 pnpm size        # size-limit bundle-size check (.size-limit.json)
+
+pnpm bench       # build, then run every benchmark scenario
+pnpm bench:run <filter>   # skip the build; filter by scenario name substring
+pnpm bench:baseline       # record this machine's reference (gitignored)
+pnpm bench:compare        # run again and diff against that reference
+pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 ```
+
+Benchmarks measure the built `dist/*.prod.js` via `--conditions=production`,
+so `pnpm build` must be current — `pnpm bench` does it for you. They need
+Node >= 22.18 (native `.ts` type stripping) and are local-only: shared CI
+runners are too noisy to gate on. Before trusting a comparison, read the
+"Trusting the numbers" section of `benchmarks/README.md` — a contended
+machine produces false regressions, and the suite says so when it detects
+one.
 
 To run an example/app: `pnpm --filter <package-name> dev`.
 
@@ -177,10 +191,18 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev silo, client swap, streams, file persistence, and a runnable 3-silo
   cluster demo (`pnpm --filter counter-example cluster`). Not published.
+- `benchmarks` → `actors-benchmarks` — local performance baselines:
+  closed-loop throughput and latency percentiles against the BUILT prod
+  dist, per-grain heap footprint, leak detection, and the CPU/allocation
+  profiling recipes. Run by hand (`pnpm bench`), never in CI. See
+  `benchmarks/README.md`, and `benchmarks/BASELINES.md` for the reference
+  figures. Not published.
 
 Path aliases: `tsconfig.json` and `vitest.config.ts` map `@sigx/actors` and
 its subpaths to `packages/actors/src`, so tests and typecheck run against
-source, not dist. The example resolves `@sigx/actors` from the built `dist/`
+source, not dist. `benchmarks/src` is in the tsconfig `include` (so it IS
+typechecked and linted) but resolves `@sigx/actors` from `dist/` at runtime
+— deliberate: types come from source, measurements from the shipped build. The example resolves `@sigx/actors` from the built `dist/`
 via the workspace link — run `pnpm build` before `pnpm --filter
 counter-example dev`.
 
