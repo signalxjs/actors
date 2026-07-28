@@ -31,6 +31,60 @@
 
 ### Added
 
+- **`ops()` — the authenticated ops endpoint** (#101). `GET /_sigx/ops`
+  serves an `OpsSnapshot` (`{ v, at, uptimeMs, stats, health, ops }`);
+  `GET /_sigx/ops/cluster` serves a `clusterStats()` fan-out. Contributed as
+  ordinary plugin routes, so every mount picks them up.
+
+  It exists because everything M7 and `metrics()` collect was unreachable
+  from outside the process. `metrics()` contributes no route,
+  `clusterStats()` takes a placement OBJECT rather than a URL, and the one
+  remote surface that did exist — the `$sigx:silo#stats` symbol — is
+  cluster-only, carries no latency distributions, and disappears entirely in
+  a cluster of socket-only transports. A single-node silo was completely
+  unobservable from outside.
+
+  Why a new route rather than more of `/_sigx/health`: health is probed by a
+  load balancer that HAS no cluster secret, so it cannot be authenticated,
+  so it must not name your actor types. Ops is read by an operator who does,
+  so it can carry `perType`, the whole check map and the cluster topology.
+  Extending health would have meant either withholding the useful half or
+  publishing the deployment to anyone who can reach the port.
+
+  **The secret is mandatory** — `ops()` throws at construction without one
+  unless `__DEV__`, rather than defaulting to open, because an ops endpoint
+  that is unauthenticated by omission is worse than none: nothing in the
+  response tells you it is happening. `401` covers a missing and a wrong
+  token identically, and auth runs *before* the path split so an
+  unauthenticated caller cannot enumerate paths. Comparison is constant-time.
+  In dev, omitting the secret serves open and warns once.
+
+  The cluster fan-out is wired by the caller as a thunk
+  (`cluster: (signal) => clusterStats(placement, { signal })`) rather than
+  discovered: `ops()` lives in `@sigx/actors/silo` and `clusterStats` in
+  `@sigx/actors/cluster`, and a single-node silo must not pay for the cluster
+  bundle to have an ops endpoint. It also leaves `timeoutMs`/`concurrency`
+  where they already are. Unwired, `{base}/cluster` answers 404. A collector
+  that fails answers 503 carrying the reason rather than an empty report,
+  which would read as a healthy cluster of zero silos.
+
+- **`PluginRegistry.reportOps(name, provider)` / `registry.ops()`** (#101) —
+  the contribution seam, the counterpart to `reportHealth` / `health()` and
+  deliberately identical in shape: unique names (a clash throws at setup
+  naming both plugins), and a LIVE aggregate read at call time, so `.use()`
+  order does not matter.
+
+  Providers run per read and must stay sync — the endpoint you reach for when
+  a silo is already unwell must not be able to hang. A throwing provider is
+  caught and its section replaced with `{ error }` rather than failing the
+  snapshot; the section stays PRESENT, because an absent key would read as
+  "this plugin contributes nothing", which is the opposite of the truth.
+
+  `metrics()` contributes under `'metrics'` and `cluster()` contributes
+  `placement.report()` under `'cluster'`, so `.use(metrics()).use(ops(…))`
+  needs no wiring between them. Registration costs only a closure: an app
+  with no `ops()` never calls a provider.
+
 - **A transport conformance suite** (#93), for contributors — **not a
   published import**. `transportConformance` is the set of cases every
   `SiloTransport` must pass, plus the harness interface a transport supplies.

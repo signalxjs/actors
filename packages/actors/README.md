@@ -625,6 +625,83 @@ the body carries the `checks` map and activation totals; it never includes a
 types. `health({ detail: false })` drops both, leaving the status code and a
 bare `{ status, uptimeMs }`.
 
+## The ops endpoint
+
+`health()` answers *may I take traffic?* in a status code. `ops()` answers
+*what is going on in here?* in a body — and unlike health it **is**
+authenticated, which is the whole reason it is a separate route.
+
+```ts
+import { metrics, health, ops } from '@sigx/actors/silo';
+
+const collect = metrics();
+const app = defineActorApp({ actors })
+    .use(collect)
+    .use(health())
+    .use(ops({ secret: process.env.OPS_SECRET }));
+```
+
+| Route | Answers |
+| --- | --- |
+| `GET /_sigx/ops` | `OpsSnapshot` — `{ v, at, uptimeMs, stats, health, ops }` |
+| `GET /_sigx/ops/cluster` | a `clusterStats()` fan-out; 404 when unwired |
+
+Everything a monitoring tool needs was already being collected and none of it
+was reachable from outside the process: `metrics().snapshot()` contributes no
+route, `clusterStats()` takes a placement *object* rather than a URL, and the
+one remote surface that did exist — the `$sigx:silo#stats` symbol — is
+cluster-only, carries no latency distributions, and disappears entirely in a
+cluster of socket-only transports. A single-node silo was unobservable from
+outside.
+
+**The secret is mandatory.** `ops()` throws at construction without one unless
+`__DEV__`, so there is no configuration in which it ships open by accident.
+This endpoint reports your actor type names, per-method latencies and cluster
+topology, and an ops endpoint that is unauthenticated *by omission* is worse
+than none: nothing about the response tells you it is happening. `401` covers
+both a missing and a wrong token, and auth runs before the path split so paths
+cannot be enumerated. In dev, omitting the secret serves open and warns once.
+
+The `cluster` fan-out is wired by the caller rather than discovered:
+
+```ts
+import { cluster } from '@sigx/actors/cluster';
+import { clusterStats } from '@sigx/actors/cluster';
+
+const c = cluster({ providers, secret });
+app.use(c).use(ops({
+    secret: process.env.OPS_SECRET,
+    cluster: (signal) => clusterStats(c.placement, { signal, timeoutMs: 2000 })
+}));
+```
+
+`ops()` lives in `@sigx/actors/silo` and `clusterStats` in
+`@sigx/actors/cluster`, so a single-node silo must not pay for the cluster
+bundle to have an ops endpoint. Passing a thunk also leaves `timeoutMs` and
+`concurrency` where they already are, on `ClusterStatsOptions`.
+
+### Contributing a section
+
+`registry.reportOps(name, provider)` is the counterpart to `reportHealth` —
+any plugin can publish to the snapshot without knowing an endpoint exists.
+`metrics()` contributes under `'metrics'` and `cluster()` under `'cluster'`,
+which is why the example above needs no wiring between them.
+
+```ts
+registry.reportOps('cache', () => ({ entries: cache.size, hits, misses }));
+```
+
+Providers run **per read**, so return live numbers rather than a value
+captured at setup. They must stay sync, for the same reason a readiness check
+must: this is the endpoint you reach for when the silo is *already* unwell,
+and it must not be able to hang. A throwing provider is caught and its section
+replaced with `{ error }`, leaving every other section intact — the one tool
+that explains a broken silo must not be broken by it. Names must be unique; a
+clash throws at setup naming both plugins.
+
+`ops().snapshot()` gives the same answer in process, for a test or for a tool
+embedded in the silo rather than polling it.
+
 ### Cluster-wide stats
 
 `clusterStats()` fans out across the membership view and returns one report:
@@ -1019,7 +1096,7 @@ counters — see [Health & readiness](#health--readiness) above.
 | Entry | Contents |
 |---|---|
 | `@sigx/actors` | `defineActor`, `actor`, `useActor`, `actorKey`, errors, types — isomorphic, light |
-| `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, `metrics()`, `health()`, storage/placement/plugin seams — server-only |
+| `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, `metrics()`, `health()`, `ops()`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |

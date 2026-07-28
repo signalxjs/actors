@@ -10,6 +10,7 @@
  * to the receiver's clock — clock skew never inflates or deflates a call's
  * budget; each hop loses only genuine elapsed time.
  */
+import { timingSafeEquals } from '../timing-safe';
 import type { ActorCallContext } from '../types';
 
 export const SILO_CALL_HEADER = 'x-sigx-silo-call';
@@ -145,15 +146,6 @@ async function hmacHex(
 ): Promise<string> {
     const message = `${SILO_PROTO}\n${symbol}\n${callId}\n${timestamp}`;
     return toHex(await crypto.subtle.sign('HMAC', await keyFor(secret), encoder.encode(message)));
-}
-
-/** Constant-time string comparison (hex signatures). */
-function timingSafeEquals(a: string, b: string): boolean {
-    let mismatch = a.length ^ b.length;
-    for (let i = 0; i < b.length; i++) {
-        mismatch |= (a.charCodeAt(i) || 0) ^ b.charCodeAt(i);
-    }
-    return mismatch === 0;
 }
 
 /** Produce the auth header value for one outbound silo call. */

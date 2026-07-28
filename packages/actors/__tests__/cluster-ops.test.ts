@@ -19,8 +19,23 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { clusterStats, SILO_STATS_SYMBOL, signAuth, SILO_CALL_HEADER, encodeEnvelope } from '@sigx/actors/cluster';
-import { health, metrics, type MetricsPlugin } from '@sigx/actors/silo';
+import {
+    clusterStats,
+    SILO_STATS_SYMBOL,
+    signAuth,
+    SILO_CALL_HEADER,
+    encodeEnvelope,
+    type ClusterStatsReport,
+    type SiloReport
+} from '@sigx/actors/cluster';
+import {
+    health,
+    metrics,
+    ops,
+    type ActorPlugin,
+    type MetricsPlugin,
+    type OpsSnapshot
+} from '@sigx/actors/silo';
 import { reminderShardKeys } from '../src/silo/reminder-shards';
 import { createCluster, selfPolicy, type ClusterHarness } from './harness';
 
@@ -382,5 +397,93 @@ describe('cluster ops: the metrics split', () => {
         expect(plugins[1]!.snapshot().calls.total).toBe(ownerBefore);
         // But the turn really ran there, and `observeTurns` saw it.
         expect(plugins[1]!.snapshot().turnMs?.count ?? 0).toBe(ownerTurnsBefore + 1);
+    });
+});
+
+describe('cluster ops: the ops endpoint over a real cluster', () => {
+    /** `ops()` wired the way an app actually wires it: the fan-out thunk
+     *  closes over the placement `cluster()` built. Late-bound because the
+     *  placement does not exist until the harness has built the silo. */
+    const opsFor = (index: number, harness: () => ClusterHarness): ActorPlugin =>
+        ops({
+            secret: 'ops-secret',
+            cluster: (signal) => clusterStats(harness().placements[index]!, { signal })
+        });
+
+    const read = async (cluster: ClusterHarness, index: number, path: string) => {
+        const app = cluster.apps[index]!;
+        const request = new Request(`http://silo.test${path}`, {
+            headers: { authorization: 'Bearer ops-secret' }
+        });
+        const route = app.routes.find((candidate) => candidate.match(request))!;
+        return route.handle(request, cluster.silos[index]!);
+    };
+
+    it('serves the whole cluster over /_sigx/ops/cluster', async () => {
+        let harness: ClusterHarness | null = null;
+        const cluster = await createCluster(3, {
+            actors: [Counter],
+            policy: selfPolicy,
+            plugins: (i) => [metrics(), opsFor(i, () => harness!)]
+        });
+        harness = cluster;
+        running = cluster;
+        for (let i = 0; i < 3; i++) {
+            await cluster.silos[i]!.actor(Counter, `grain-${i}`).increment(1);
+        }
+
+        const response = await read(cluster, 0, '/_sigx/ops/cluster');
+        expect(response.status).toBe(200);
+        const report = (await response.json()) as ClusterStatsReport;
+        // The same answer `clusterStats()` gives in process — the route is a
+        // transport for it, not a second implementation.
+        expect(report.silos).toHaveLength(3);
+        expect(report.partial).toBe(false);
+        expect(report.totals.activations).toBe(3);
+        expect(report.from).toBe(cluster.placements[0]!.identity.siloId);
+    });
+
+    it('marks the report partial when a peer is down, rather than failing', async () => {
+        let harness: ClusterHarness | null = null;
+        const cluster = await createCluster(3, {
+            actors: [Counter],
+            policy: selfPolicy,
+            plugins: (i) => [opsFor(i, () => harness!)]
+        });
+        harness = cluster;
+        running = cluster;
+        // Address stops resolving but membership still lists it — the case
+        // where the fan-out MUST degrade rather than throw, since a
+        // dashboard that goes blank when one silo dies is worse than useless.
+        cluster.unbind(2);
+
+        const response = await read(cluster, 0, '/_sigx/ops/cluster');
+        expect(response.status).toBe(200);
+        const report = (await response.json()) as ClusterStatsReport;
+        expect(report.partial).toBe(true);
+        expect(report.unreachable).toHaveLength(1);
+        expect(report.unreachable[0]!.reason).toBe('unreachable');
+    });
+
+    it('carries the local cluster report in the per-silo snapshot', async () => {
+        let harness: ClusterHarness | null = null;
+        const cluster = await createCluster(2, {
+            actors: [Counter],
+            policy: selfPolicy,
+            plugins: (i) => [opsFor(i, () => harness!)]
+        });
+        harness = cluster;
+        running = cluster;
+        await cluster.silos[0]!.actor(Counter, 'local').increment(1);
+
+        const body = (await (await read(cluster, 0, '/_sigx/ops')).json()) as OpsSnapshot;
+        const section = body.ops.cluster as SiloReport;
+        expect(section.siloId).toBe(cluster.placements[0]!.identity.siloId);
+        expect(section.status).toBe('active');
+        // `counters` is what makes the routing panels possible at all.
+        expect(section.counters.membershipVersion).toBeGreaterThan(0);
+        // And cluster readiness reaches the ops snapshot through the same
+        // seam `health()` reads, with no wiring.
+        expect(body.health.checks.cluster).toEqual({ ready: true, detail: 'active' });
     });
 });

@@ -315,6 +315,11 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                 })
             );
 
+            // Publish to the ops endpoint if one is mounted. `reportOps` is
+            // just a registration — an app with no `ops()` never calls the
+            // provider, so this costs nothing but the closure.
+            registry.reportOps('metrics', () => plugin.snapshot());
+
             registry.onStart((live: Silo) => {
                 silo = live;
                 if (enabled) subscribeTurns?.();

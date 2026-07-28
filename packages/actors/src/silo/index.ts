@@ -13,6 +13,8 @@ export {
     type DispatchMiddleware,
     type HealthCheck,
     type HealthReport,
+    type OpsProviderError,
+    type OpsReport,
     type PluginRegistry
 } from './app';
 export {
@@ -21,6 +23,7 @@ export {
     type HealthPlugin,
     type HealthStatus
 } from './health';
+export { ops, type OpsOptions, type OpsPlugin, type OpsSnapshot } from './ops';
 export {
     metrics,
     type ActorMetricsSnapshot,

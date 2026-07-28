@@ -169,6 +169,12 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
                               : status
                 };
             });
+            // This silo's own report, for an `ops()` endpoint. Deliberately
+            // the LOCAL report and not a `clusterStats()` fan-out: a section
+            // provider is sync and must stay cheap, and the fan-out is an
+            // explicit second route precisely because it costs N peer
+            // round-trips.
+            registry.reportOps('cluster', () => placement.report());
             // The internal mount is no longer special-cased: it is whatever
             // the configured transports declare. A chain of socket
             // transports declares nothing, and this silo then has no

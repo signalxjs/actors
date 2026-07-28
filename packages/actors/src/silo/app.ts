@@ -87,6 +87,19 @@ export interface HealthReport {
     checks: Record<string, HealthCheck>;
 }
 
+/**
+ * What a failing ops provider reports in place of its section.
+ *
+ * The section is still PRESENT and still named — an absent key would read as
+ * "this plugin contributes nothing", which is the opposite of the truth.
+ */
+export interface OpsProviderError {
+    error: string;
+}
+
+/** The aggregate of every contributed ops section, by contributor name. */
+export type OpsReport = Record<string, unknown>;
+
 /** An HTTP route a plugin contributes to the app's mounts. */
 export interface ActorRoute {
     /** Diagnostic label, e.g. `'cluster:internal'`. */
@@ -189,6 +202,33 @@ export interface PluginRegistry {
      * hold this and call it per request rather than at setup time.
      */
     health(): HealthReport;
+    /**
+     * Contribute a named section to the ops snapshot — the seam `ops()`
+     * aggregates. The counterpart to `reportHealth`: readiness answers "may
+     * I take traffic?" in a status code, this answers "what is going on in
+     * here?" in a body.
+     *
+     * `provider` runs PER READ, so return live numbers rather than a value
+     * captured at setup. Unlike a readiness check it is allowed to be
+     * expensive-ish — an ops read is an operator polling at 1 Hz, not a load
+     * balancer probing every second — but it must stay SYNC, for the same
+     * reason: the endpoint is what you reach for when the silo is already
+     * unwell, and it must not be able to hang.
+     *
+     * A throwing provider is caught and its section replaced with
+     * `{ error }`, leaving every other section intact. The one tool that
+     * explains a broken silo must not be broken BY it.
+     *
+     * `name` keys the report, so it must be non-empty and unique across
+     * plugins; a clash throws at setup naming both.
+     */
+    reportOps(name: string, provider: () => unknown): void;
+    /**
+     * The aggregate of every contributed section — LIVE, including providers
+     * registered after this call, so `.use()` order does not matter. Hold
+     * this and call it per request rather than at setup time.
+     */
+    ops(): OpsReport;
     /**
      * Extra members merged onto every activation's `ctx`. Pair it with an
      * `ActorPlugin<Ext>` type argument so they are typed inside actors.
@@ -300,6 +340,7 @@ interface Contributions {
     onStop: ((silo: Silo) => void | Promise<void>)[];
     routes: ActorRoute[];
     health: { name: string; check: () => HealthCheck; plugin: string }[];
+    ops: { name: string; provider: () => unknown; plugin: string }[];
     contextFactories: ((ref: ActorRef) => object | undefined)[];
 }
 
@@ -326,6 +367,35 @@ function healthReport(c: Contributions): HealthReport {
         if (!result.ready) ready = false;
     }
     return { ready, checks };
+}
+
+/**
+ * Fold the contributed ops sections into one report.
+ *
+ * Same rule as `healthReport`, and for a sharper reason: this endpoint is
+ * what an operator opens when a silo is already misbehaving, so one plugin
+ * whose provider throws must cost its own section and nothing else. The
+ * section stays present, carrying the reason.
+ */
+function opsReport(c: Contributions): OpsReport {
+    const sections: OpsReport = {};
+    for (const { name, provider } of c.ops) {
+        try {
+            const value = provider();
+            // `undefined` is normalized to `null` because `JSON.stringify`
+            // DROPS an undefined-valued key — the section would vanish from
+            // the wire entirely, which is the one thing the catch below
+            // exists to prevent.
+            sections[name] = value === undefined ? null : value;
+        } catch (error) {
+            // `String(error)` as a fallback, like healthReport: a provider
+            // that throws a string still has to say why.
+            const message = (error as Error)?.message ?? String(error);
+            const failure: OpsProviderError = { error: message || 'ops provider failed' };
+            sections[name] = failure;
+        }
+    }
+    return sections;
 }
 
 export function defineActorApp(options: ActorAppOptions): ActorApp {
@@ -403,6 +473,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             onStop: [],
             routes: [],
             health: [],
+            ops: [],
             contextFactories: []
         };
         for (const plugin of this.#plugins) {
@@ -625,6 +696,30 @@ function registryFor(pluginName: string, c: Contributions): PluginRegistry {
             // Reads `c` at CALL time, not registration time — that is what
             // makes the aggregate independent of `.use()` order.
             return healthReport(c);
+        },
+        reportOps(name, provider) {
+            if (!name.trim()) {
+                throw new Error(
+                    `[sigx actors] ${pluginName} called reportOps() with an empty name — ` +
+                        'an ops section is identified by its name in the snapshot.'
+                );
+            }
+            const clash = c.ops.find((entry) => entry.name === name);
+            if (clash) {
+                // Names key the snapshot, so a duplicate would overwrite —
+                // and a consumer reading `ops.metrics` would silently get
+                // somebody else's numbers.
+                throw new Error(
+                    `[sigx actors] two plugins both contributed an ops section named ` +
+                        `"${name}" (${clash.plugin} and ${pluginName}) — names key the ` +
+                        'ops snapshot, so give one of them a distinct name.'
+                );
+            }
+            c.ops.push({ name, provider, plugin: pluginName });
+        },
+        ops() {
+            // Same call-time read as `health()`, for the same reason.
+            return opsReport(c);
         },
         extendContext(factory) {
             c.contextFactories.push(factory);
