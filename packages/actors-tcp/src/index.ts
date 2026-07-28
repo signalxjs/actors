@@ -42,14 +42,16 @@ import {
 } from '@sigx/actors/cluster';
 import { ActorUnreachableError } from '@sigx/actors';
 import type { ActorCallContext, ActorDispatcher, ActorRef } from '@sigx/actors';
-import { FrameType, encodeFrame } from '@sigx/actors/cluster/frames';
 import {
+    encodeFrame,
+    FrameType,
+    SiloConnection,
     DEFAULT_CREDIT,
-    DEFAULT_MAX_FRAME_BYTES,
-    SiloConnection
-} from './connection';
+    DEFAULT_MAX_FRAME_BYTES
+} from '@sigx/actors/cluster/frames';
+import { socketLink } from './link';
 
-export { DEFAULT_CREDIT, DEFAULT_MAX_FRAME_BYTES } from './connection';
+export { DEFAULT_CREDIT, DEFAULT_MAX_FRAME_BYTES } from '@sigx/actors/cluster/frames';
 
 /** This transport's key in `SiloDescriptor.addresses`. */
 export const TCP_TRANSPORT_NAME = 'tcp';
@@ -152,7 +154,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
         const adopt = (socket: Socket, dialer: boolean, expectedSiloId?: string): SiloConnection => {
             const connection: SiloConnection = new SiloConnection({
                 config,
-                socket,
+                link: socketLink(socket),
                 dialer,
                 maxFrameBytes,
                 credit,

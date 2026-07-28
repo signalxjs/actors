@@ -1,11 +1,17 @@
 /**
- * `@sigx/actors/cluster/frames` — the framing shared by every
- * connection-oriented silo transport.
+ * `@sigx/actors/cluster/frames` — the wire shared by every
+ * connection-oriented silo transport: the frame codec below, plus the
+ * `SiloConnection` state machine re-exported at the bottom.
  *
  * It lives in the core package rather than in one transport because both
  * `@sigx/actors-tcp` and `@sigx/actors-ws` speak it, and `wire-shared.ts` is
  * internal — an out-of-repo package cannot reach it. One implementation
  * beats a copy per transport that drifts.
+ *
+ * The two transports differ ONLY in their `FrameLink`: a `node:net` socket is
+ * a byte stream and needs the length prefix, a WebSocket already delivers
+ * whole messages and does not. Multiplexing, cancellation, credit and error
+ * mapping are the same code for both.
  *
  * ## The frame
  *
@@ -236,3 +242,14 @@ export class FrameReader {
         return this.#take(n);
     }
 }
+
+// The connection state machine rides this codec, and both the TCP and
+// WebSocket transports need it — re-exported here so a transport package
+// imports one entry rather than reaching into internals.
+export {
+    SiloConnection,
+    DEFAULT_CREDIT,
+    DEFAULT_MAX_FRAME_BYTES,
+    type ConnectionOptions,
+    type FrameLink
+} from './connection';

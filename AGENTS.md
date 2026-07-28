@@ -190,6 +190,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   connection per peer instead of HTTP's one per in-flight request. Node-only
   (`node:net`), zero runtime deps. Justified by socket count, not latency —
   see `benchmarks/BASELINES.md`. Runs the shared transport conformance suite.
+- `packages/actors-ws` → `@sigx/actors-ws` — the same frames over WebSocket:
+  `wsTransport()` plus `attachSiloUpgrade()`, riding the silo's existing HTTP
+  port. `ws` as a peer dependency. Picked over `actors-tcp` when one port,
+  proxy traversal or a WinterCG client matters.
 - `packages/actors-cloudflare` → `@sigx/actors-cloudflare` — Durable
   Objects as the backend, one DO per actor: `durableObjectStorage` and
   `durableObjectReminders` (alarms). Needs no membership, directory or

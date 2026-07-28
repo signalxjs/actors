@@ -13,21 +13,38 @@
  * backpressure at the generator rather than at the buffer, and failing
  * in-flight calls when the connection drops instead of retrying them.
  */
-import type { Socket } from 'node:net';
 import {
+    decodeFrameBody,
     encodeFrame,
+    encodeFrameBody,
     FLAG_STREAM,
     FrameReader,
     FrameType,
     type Frame
-} from '@sigx/actors/cluster/frames';
-import {
-    decodeEnvelope,
-    verifyAuth,
-    type SiloTransportConfig,
-    type SiloTransportRuntime
-} from '@sigx/actors/cluster';
-import type { ActorCallContext } from '@sigx/actors';
+} from './frames';
+import { decodeEnvelope, verifyAuth } from './envelope';
+import type { SiloTransportConfig, SiloTransportRuntime } from './seam';
+import type { ActorCallContext } from '../types';
+
+/**
+ * The byte-level link a `SiloConnection` runs over — the ONLY thing that
+ * differs between the TCP and WebSocket transports.
+ *
+ * `messageOriented` is the whole distinction: a WebSocket already delivers
+ * whole messages with their own length, so frames ride it without the u32
+ * prefix; a TCP stream needs the prefix and an incremental reader to find
+ * boundaries. Everything above this interface — multiplexing, cancellation,
+ * credit, the handshake, error mapping — is identical for both.
+ */
+export interface FrameLink {
+    readonly messageOriented: boolean;
+    /** Returns false when the peer is backpressured. */
+    send(bytes: Uint8Array): boolean;
+    close(): void;
+    onData(cb: (bytes: Uint8Array) => void): void;
+    onClose(cb: () => void): void;
+    onDrain(cb: () => void): void;
+}
 
 /** Default ceiling on a single frame. Checked before any payload is buffered. */
 export const DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -36,7 +53,7 @@ export const DEFAULT_CREDIT = 32;
 
 export interface ConnectionOptions {
     config: SiloTransportConfig;
-    socket: Socket;
+    link: FrameLink;
     /** True on the side that opened the socket — decides corrId parity. */
     dialer: boolean;
     maxFrameBytes: number;
@@ -89,12 +106,9 @@ export class SiloConnection {
         // without ever colliding: dialer even, acceptor odd.
         this.#nextCorr = options.dialer ? 2 : 3;
 
-        const socket = options.socket;
-        socket.setNoDelay(true);
-        socket.on('data', (chunk: Buffer) => this.#onData(chunk));
-        socket.on('error', () => this.close('socket error'));
-        socket.on('close', () => this.close('socket closed'));
-        socket.on('drain', () => {
+        options.link.onData((bytes) => this.#onData(bytes));
+        options.link.onClose(() => this.close('link closed'));
+        options.link.onDrain(() => {
             this.#writable = true;
             for (const wake of this.#drainWaiters) wake();
             this.#drainWaiters.clear();
@@ -208,7 +222,32 @@ export class SiloConnection {
             }
         });
 
-        const connection = this;
+        // Captured rather than aliasing `this`: `run()` is a free generator,
+        // so the instance must not leak into it.
+        const send = (frame: Frame): void => this.#send(frame);
+        const forget = (): boolean => this.#streams.delete(corrId);
+        const isClosed = (): boolean => this.#closed;
+        const window = this.#o.credit;
+
+        // An aborting CALLER must cancel the stream too, not just a consumer
+        // that stops pulling — otherwise a deadline blown on this side leaves
+        // the producer running on the other.
+        const onAbort = (): void => {
+            if (forget() && !isClosed()) {
+                send({
+                    type: FrameType.CANCEL,
+                    flags: 0,
+                    status: 0,
+                    corrId,
+                    payload: { r: 'caller-abort' }
+                });
+            }
+            failure ??= call.abortSignal?.reason ?? new Error('aborted');
+            done = true;
+            bump();
+        };
+        call.abortSignal?.addEventListener('abort', onAbort, { once: true });
+
         async function* run(): AsyncGenerator<unknown> {
             try {
                 for (;;) {
@@ -217,8 +256,8 @@ export class SiloConnection {
                         taken++;
                         // Top the producer back up once it has spent half
                         // its allowance, so the pipe never fully stalls.
-                        if (taken >= connection.#o.credit / 2) {
-                            connection.#send({
+                        if (taken >= window / 2) {
+                            send({
                                 type: FrameType.CREDIT,
                                 flags: 0,
                                 status: 0,
@@ -239,8 +278,9 @@ export class SiloConnection {
                 // THE case a multiplexed transport gets wrong. N streams
                 // share this socket, so closing it is not the cancel signal
                 // — the peer only learns the consumer gave up if we say so.
-                if (connection.#streams.delete(corrId) && !connection.#closed) {
-                    connection.#send({
+                call.abortSignal?.removeEventListener('abort', onAbort);
+                if (forget() && !isClosed()) {
+                    send({
                         type: FrameType.CANCEL,
                         flags: 0,
                         status: 0,
@@ -270,7 +310,10 @@ export class SiloConnection {
     #send(frame: Frame): void {
         if (this.#closed) return;
         try {
-            this.#writable = this.#o.socket.write(encodeFrame(frame));
+            const bytes = this.#o.link.messageOriented
+                ? encodeFrameBody(frame)
+                : encodeFrame(frame);
+            this.#writable = this.#o.link.send(bytes);
         } catch {
             this.close('write failed');
         }
@@ -283,11 +326,23 @@ export class SiloConnection {
         await new Promise<void>((resolve) => this.#drainWaiters.add(resolve));
     }
 
-    #onData(chunk: Buffer): void {
-        this.#reader.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+    #onData(bytes: Uint8Array): void {
         let frames: Frame[];
         try {
-            frames = [...this.#reader.drain()];
+            if (this.#o.link.messageOriented) {
+                // One message is exactly one frame; the transport already
+                // found the boundary, so there is nothing to reassemble.
+                if (bytes.length > this.#o.maxFrameBytes) {
+                    throw new Error(
+                        `[sigx actors] frame of ${bytes.length} bytes exceeds the ` +
+                            `${this.#o.maxFrameBytes}-byte cap`
+                    );
+                }
+                frames = [decodeFrameBody(bytes, this.#o.config.codec.reviver)];
+            } else {
+                this.#reader.push(bytes);
+                frames = [...this.#reader.drain()];
+            }
         } catch (error) {
             // Either way the stream is unrecoverable — there is no
             // resynchronising past a frame we could not parse — but the two
@@ -548,10 +603,13 @@ export class SiloConnection {
         this.#unary.clear();
         for (const stream of this.#streams.values()) stream.fail(error);
         this.#streams.clear();
-        for (const corrId of [...this.#inbound.keys()]) void this.#cancelInbound(corrId);
+        // Snapshot first: #cancelInbound deletes from #inbound, so iterating
+        // the live map would mutate it mid-iteration.
+        const inFlight = Array.from(this.#inbound.keys());
+        for (const corrId of inFlight) void this.#cancelInbound(corrId);
         for (const wake of this.#drainWaiters) wake();
         this.#drainWaiters.clear();
-        this.#o.socket.destroy();
+        this.#o.link.close();
         this.#o.onClose();
     }
 }
