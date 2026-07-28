@@ -13,7 +13,9 @@
  */
 import type { ActorPlugin, PluginRegistry } from '../silo/app';
 import { clusterPlacement, type ClusterPlacement } from './placement';
-import { handleSiloRequest, matchesSiloRequest, type SiloRequestOptions } from './silo-endpoint';
+import type { SiloTransportFactory } from './seam';
+import type { SiloEndpointOptions } from './silo-endpoint';
+import { httpTransport } from './transport';
 import type { ClusterProviders, PlacementPolicy } from './types';
 
 export interface ClusterPluginOptions {
@@ -33,7 +35,24 @@ export interface ClusterPluginOptions {
     secret?: string;
     /** Path prefix of the internal mount. Default `/_sigx/silo`. */
     internalBase?: string;
-    /** Fetch implementation (tests pipe it straight into peers' handlers). */
+    /**
+     * How this silo reaches its peers. Default `httpTransport()`.
+     *
+     * A LIST is a fallback chain, tried in order — the rolling-deploy
+     * story: `[tcpTransport(), httpTransport()]` upgrades link by link as
+     * peers gain a `tcp` address, with no window where half the cluster is
+     * unreachable. A SINGLE transport is strict: a peer publishing no
+     * address for it is unreachable, loudly. `httpTransport()` reaches
+     * every peer, so it is only ever valid as the LAST entry.
+     *
+     * Configuring only socket transports means there is NO internal HTTP
+     * mount — a smaller attack surface, and nothing to `curl`.
+     */
+    transport?: SiloTransportFactory | readonly SiloTransportFactory[];
+    /**
+     * Fetch implementation (tests pipe it straight into peers' handlers).
+     * Sugar for `transport: httpTransport({ fetch })`; passing both throws.
+     */
     fetch?: typeof globalThis.fetch;
     /** Placement policy for NEW activations. Default: uniform random.
      *  A `defineActor({ placement })` declaration beats this. */
@@ -46,8 +65,13 @@ export interface ClusterPluginOptions {
     retryBackoffMs?: number;
     /** Free-form placement hints published in the membership descriptor. */
     meta?: Record<string, string>;
-    /** Forwarded to the internal mount (body caps, `onError`, `timeoutMs`). */
-    endpoint?: Omit<SiloRequestOptions, 'silo' | 'placement' | 'secret'>;
+    /**
+     * Forwarded to the internal HTTP mount (body caps, `onError`,
+     * `timeoutMs`). Sugar for `transport: httpTransport({ endpoint })`;
+     * passing both throws, since it would otherwise silently apply to
+     * nothing when the chain contains no HTTP transport.
+     */
+    endpoint?: SiloEndpointOptions;
 }
 
 export interface ClusterPlugin extends ActorPlugin {
@@ -71,15 +95,46 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
                 `"${internalBase}".`
         );
     }
+    if (options.transport && (options.fetch || options.endpoint)) {
+        // Both only ever configure the HTTP transport, which an explicit
+        // chain may not even contain — silently applying to nothing is worse
+        // than a throw.
+        const names = [
+            ...(options.fetch ? ['fetch'] : []),
+            ...(options.endpoint ? ['endpoint'] : [])
+        ];
+        // Two renderings: one that is valid object-literal syntax to paste,
+        // and one that reads as prose. Joining with "and" would suggest
+        // `httpTransport({ fetch and endpoint })`, which is neither.
+        const literal = names.join(', ');
+        const prose = names.join(' and ');
+        throw new Error(
+            `[sigx actors] cluster({ transport }) and cluster({ ${literal} }) are mutually ` +
+                `exclusive — ${prose} only ever reach the HTTP transport, which an explicit ` +
+                `chain need not contain. Pass them to it instead: ` +
+                `transport: httpTransport({ ${literal} }).`
+        );
+    }
+    // `fetch`/`endpoint` are sugar for the default transport's two options,
+    // so the chain is built once, here, and the placement is only ever handed
+    // a transport.
+    const transport =
+        options.transport ??
+        httpTransport({
+            ...(options.fetch ? { fetch: options.fetch } : {}),
+            ...(options.endpoint ? { endpoint: options.endpoint } : {})
+        });
     // Built eagerly: a placement defers everything that needs the silo to
     // `bind()`, so there is nothing to wait for — and exposing it right away
-    // keeps `migrate()`/`identity` reachable without starting the app.
+    // keeps `migrate()`/`identity` reachable without starting the app. It is
+    // also why the transport is an option here rather than its own plugin:
+    // a later `.use()` could not reach this constructor.
     const placement = clusterPlacement({
         ...options.providers,
         advertise: options.advertise,
         internalBase,
+        transport,
         ...(options.secret !== undefined ? { secret: options.secret } : {}),
-        ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.policy ? { policy: options.policy } : {}),
         ...(options.typePolicies ? { typePolicies: options.typePolicies } : {}),
         ...(options.retries !== undefined ? { retries: options.retries } : {}),
@@ -114,17 +169,11 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
                               : status
                 };
             });
-            registry.route({
-                name: 'cluster:silo',
-                match: (request) => matchesSiloRequest(request, internalBase),
-                handle: (request, silo) =>
-                    handleSiloRequest(request, {
-                        ...options.endpoint,
-                        silo,
-                        placement,
-                        ...(options.secret !== undefined ? { secret: options.secret } : {})
-                    })
-            });
+            // The internal mount is no longer special-cased: it is whatever
+            // the configured transports declare. A chain of socket
+            // transports declares nothing, and this silo then has no
+            // internal HTTP surface at all.
+            for (const route of placement.routes()) registry.route(route);
         }
     };
 }

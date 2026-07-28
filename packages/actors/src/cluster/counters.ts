@@ -60,6 +60,13 @@ export interface ClusterCounterTotals {
     drainingRetries: number;
     /** Requests the internal mount refused as unauthenticated (403). */
     authFailures: number;
+    /**
+     * Peers reached by a LATER transport in the chain than the first —
+     * i.e. the preferred one published no address for them. Counted
+     * because a fallback is otherwise invisible: a half-rolled-out
+     * transport looks exactly like a working one until you read this.
+     */
+    transportFallbacks: number;
 
     // --- membership -------------------------------------------------------
     membershipChanges: number;
@@ -106,6 +113,7 @@ export function createCounters(): ClusterCounterTotals {
         unreachableRetries: 0,
         drainingRetries: 0,
         authFailures: 0,
+        transportFallbacks: 0,
         membershipChanges: 0,
         selfFences: 0,
         claimed: 0,

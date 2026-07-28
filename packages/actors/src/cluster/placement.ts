@@ -35,7 +35,16 @@ import {
     type ClusterCounterTotals
 } from './counters';
 import { SILO_STATS_METHOD, SILO_STATS_TYPE, type SiloReport } from './stats';
-import { createSiloTransport, type SiloTransport } from './transport';
+import { httpTransport } from './transport';
+import type { ActorRoute } from '../silo/app';
+import type {
+    SiloTransport,
+    SiloTransportConfig,
+    SiloTransportFactory,
+    SiloTransportRuntime
+} from './seam';
+import { resolveSiloSymbol } from './silo-endpoint';
+import { fromSiloWireError, siloWireCodec, toSiloWireError } from './wire-errors';
 import type {
     ClusterProviders,
     DirectoryEntry,
@@ -52,7 +61,21 @@ export interface ClusterPlacementOptions extends ClusterProviders {
     secret?: string;
     /** Path prefix of the internal mount. Default `/_sigx/silo`. */
     internalBase?: string;
-    /** Fetch implementation (tests pipe it straight into peers' handlers). */
+    /**
+     * How this silo reaches its peers. Default `httpTransport()`.
+     *
+     * A LIST is a fallback chain, tried in order — the rolling-deploy
+     * story: `[tcpTransport(), httpTransport()]` upgrades link by link as
+     * peers gain a `tcp` address, with no window where half the cluster is
+     * unreachable. A SINGLE transport is strict: a peer publishing no
+     * address for it is unreachable, loudly. `httpTransport()` reaches
+     * every peer, so it is only ever valid as the LAST entry.
+     */
+    transport?: SiloTransportFactory | readonly SiloTransportFactory[];
+    /**
+     * Fetch implementation (tests pipe it straight into peers' handlers).
+     * Sugar for `transport: httpTransport({ fetch })`; passing both throws.
+     */
     fetch?: typeof globalThis.fetch;
     /** Placement policy for NEW activations. Default: uniform random. */
     policy?: PlacementPolicy;
@@ -110,6 +133,14 @@ export interface ClusterPlacement extends ActorPlacement {
      * `start()`: reports `'joining'` and zeroes.
      */
     report(): SiloReport;
+    /**
+     * The HTTP mounts the configured transports need. `cluster()`
+     * contributes these through `PluginRegistry.route()`; a hand-rolled
+     * mount routes them itself. Stable from construction, so it is safe to
+     * read before `start()` — and EMPTY for a cluster configured with only
+     * socket transports, which then has no internal HTTP surface at all.
+     */
+    routes(): readonly ActorRoute[];
     /**
      * Fetch a peer's report over the internal transport.
      *
@@ -218,7 +249,19 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #retryBackoffMs: number;
     /** Silo ids seen in a membership view — the departure diff base. */
     #seenSilos = new Set<string>();
-    #transport: SiloTransport;
+    /** The configured chain, in order. First non-null dispatcher wins. */
+    #transports: readonly SiloTransport[];
+    /** siloId → the chain entry that reaches it. Dropped on a view change. */
+    #transportFor = new Map<string, SiloTransport>();
+    /** Peers already dev-warned about a fallback — warn once, not per call. */
+    #warnedFallback = new Set<string>();
+    /**
+     * Per-transport advertised addresses, filled at `start()` BEFORE the
+     * membership join. Undefined until then, so a descriptor read before
+     * start looks exactly like a pre-`addresses` build — which is the same
+     * thing it means.
+     */
+    #addresses: Record<string, string> | undefined;
     #local: ActorDispatcher | null = null;
     #silo: Silo | null = null;
     /** type → its `defineActor({ placement })` policy, or null if none. */
@@ -242,12 +285,36 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#policy = options.policy ?? randomPolicy;
         this.#retries = options.retries ?? 3;
         this.#retryBackoffMs = options.retryBackoffMs ?? 100;
-        this.#transport = createSiloTransport({
+        if (options.transport && options.fetch) {
+            // Both would silently disagree: `fetch` only reaches the HTTP
+            // transport, so a chain that does not end in one would ignore it.
+            throw new Error(
+                `[sigx actors] cluster({ transport }) and cluster({ fetch }) are mutually ` +
+                    `exclusive — pass the fetch to the transport instead: ` +
+                    `transport: httpTransport({ fetch }).`
+            );
+        }
+        const config: SiloTransportConfig = {
             siloId: this.identity.siloId,
+            epoch: this.identity.epoch,
             internalBase: options.internalBase ?? '/_sigx/silo',
-            ...(options.secret !== undefined ? { secret: options.secret } : {}),
-            ...(options.fetch ? { fetch: options.fetch } : {})
-        });
+            codec: siloWireCodec,
+            toWireError: toSiloWireError,
+            fromWireError: fromSiloWireError,
+            ...(options.secret !== undefined ? { secret: options.secret } : {})
+        };
+        const factories = options.transport
+            ? Array.isArray(options.transport)
+                ? options.transport
+                : [options.transport as SiloTransportFactory]
+            : [httpTransport(options.fetch ? { fetch: options.fetch } : {})];
+        if (factories.length === 0) {
+            throw new Error(
+                `[sigx actors] cluster({ transport: [] }) has no transports — this silo ` +
+                    `could not reach any peer.`
+            );
+        }
+        this.#transports = factories.map((factory) => factory(config));
     }
 
     descriptor(): SiloDescriptor {
@@ -255,8 +322,22 @@ class ClusterPlacementImpl implements ClusterPlacement {
             ...this.identity,
             address: this.#options.advertise,
             status: this.#status,
+            ...(this.#addresses ? { addresses: this.#addresses } : {}),
             ...(this.#options.meta ? { meta: this.#options.meta } : {})
         };
+    }
+
+    /**
+     * The HTTP mounts the configured transports need — `cluster()`
+     * contributes these through `PluginRegistry.route()`; a hand-rolled
+     * mount routes them itself. Stable from construction, so it is safe to
+     * read before `start()`.
+     *
+     * A cluster configured with only socket transports contributes NOTHING
+     * here, and therefore has no internal HTTP surface at all.
+     */
+    routes(): readonly ActorRoute[] {
+        return this.#transports.flatMap((t) => t.routes ?? []);
     }
 
     // -----------------------------------------------------------------------
@@ -339,19 +420,70 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
     async start(): Promise<void> {
         this.#status = 'active';
+        // Transports listen FIRST: a peer must never learn an address before
+        // something answers on it, and a transport binding an ephemeral port
+        // only learns its own address here. This is why the transport is an
+        // option on `cluster()` rather than a plugin — no registry hook runs
+        // before the join below.
+        const runtime = this.#runtime();
+        const addresses: Record<string, string> = {};
+        for (const transport of this.#transports) {
+            const address = await transport.start?.(runtime);
+            if (typeof address === 'string') addresses[transport.name] = address;
+        }
+        if (Object.keys(addresses).length > 0) this.#addresses = addresses;
+
         await this.#options.membership.join(this.descriptor());
         this.#startedAt = performance.now();
         this.#seenSilos = new Set(
             this.#options.membership.view().silos.map((s) => s.siloId)
         );
+        this.#notifyTransports(this.#options.membership.view());
         this.#unsubscribe.push(
             this.#options.membership.onChange((view) => {
                 this.#counters.membershipChanges++;
                 this.#pruneRoutes(view);
+                this.#notifyTransports(view);
                 void this.#sweepDeparted(view);
             }),
             this.#options.membership.onSelfSuspect(() => void this.#fence())
         );
+    }
+
+    /**
+     * The live-silo half of the seam, handed to transports at `start()`.
+     * Built here so a transport in another package never touches the
+     * placement's internals — the dependency arrow points one way.
+     */
+    #runtime(): SiloTransportRuntime {
+        return {
+            descriptor: () => this.descriptor(),
+            view: () => this.view(),
+            resolve: (symbol) => resolveSiloSymbol(this.#silo!, symbol),
+            dispatch: (ref, method, args, call) => {
+                // The ops channel answers before any activation lookup, and
+                // deliberately does NOT count as an inbound dispatch —
+                // reading the counters must not move them.
+                if (ref.type === SILO_STATS_TYPE) return Promise.resolve(this.report());
+                return this.dispatchInbound(ref, method, args, call);
+            },
+            dispatchStream: (ref, method, args, call) =>
+                this.dispatchInboundStream(ref, method, args, call),
+            noteAuthFailure: () => this.noteAuthFailure()
+        };
+    }
+
+    /**
+     * Silo ids are minted per START and never reused, so a departed id never
+     * returns and a connection-oriented transport can drop its link
+     * unconditionally.
+     */
+    #notifyTransports(view: MembershipView): void {
+        // A descriptor can in principle gain an address without a new
+        // siloId (a status rewrite republishes it), so the resolved chain
+        // entry is not durable across views.
+        this.#transportFor.clear();
+        for (const transport of this.#transports) transport.onMembership?.(view);
     }
 
     async beginStop(): Promise<void> {
@@ -372,6 +504,16 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#unsubscribe = [];
         this.#status = 'leaving';
         await this.#options.membership.leave();
+        // Transports close LAST: peers keep calling in throughout the drain,
+        // which is the whole point of announcing `'leaving'` first.
+        for (const transport of this.#transports) {
+            try {
+                await transport.stop?.();
+            } catch {
+                // One transport failing to close must not strand the others.
+            }
+        }
+        this.#transportFor.clear();
     }
 
     dispatcherFor(ref: ActorRef): ActorDispatcher {
@@ -443,6 +585,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             counters: this.counters(),
             reminderShards: shards,
             uptimeMs: this.#startedAt === 0 ? 0 : Math.round(performance.now() - this.#startedAt),
+            transports: this.#transports.map((t) => t.name),
             ...(this.#options.meta ? { meta: this.#options.meta } : {})
         };
     }
@@ -463,8 +606,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             deadline: Date.now() + timeoutMs,
             abortSignal: signal ? AbortSignal.any([timeout, signal]) : timeout
         };
-        const report = (await this.#transport
-            .dispatcherFor(target)
+        const report = (await this.#transportDispatcher(target)
             .dispatch(
                 { type: SILO_STATS_TYPE, key: SILO_STATS_METHOD },
                 SILO_STATS_METHOD,
@@ -487,6 +629,49 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
     // -----------------------------------------------------------------------
     // Routing
+
+    /**
+     * Walk the transport chain for a peer: the first that can reach it wins.
+     * `null` from `dispatcherFor` is a ROUTING answer ("I publish no address
+     * for that silo"), not a failure — it is what lets a mixed-transport
+     * cluster exist at all, and therefore what makes a rolling deploy of a
+     * new transport possible.
+     */
+    #transportDispatcher(target: SiloDescriptor): ActorDispatcher {
+        const cached = this.#transportFor.get(target.siloId);
+        if (cached) {
+            const hit = cached.dispatcherFor(target);
+            if (hit) return hit;
+            this.#transportFor.delete(target.siloId);
+        }
+        for (let i = 0; i < this.#transports.length; i++) {
+            const transport = this.#transports[i]!;
+            const dispatcher = transport.dispatcherFor(target);
+            if (!dispatcher) continue;
+            this.#transportFor.set(target.siloId, transport);
+            if (i > 0) {
+                this.#counters.transportFallbacks++;
+                if (__DEV__ && !this.#warnedFallback.has(target.siloId)) {
+                    this.#warnedFallback.add(target.siloId);
+                    console.warn(
+                        `[sigx actors] ${target.siloId} is not reachable over ` +
+                            `"${this.#transports[0]!.name}" — falling back to ` +
+                            `"${transport.name}". Expected mid-rollout; permanent means ` +
+                            `that silo never advertised the preferred transport.`
+                    );
+                }
+            }
+            return dispatcher;
+        }
+        // Strict by design: no silent HTTP fallback, because a silent one
+        // means you deploy a transport, benchmark it, and measure the old
+        // one without ever knowing.
+        throw new ActorUnreachableError(
+            `${target.siloId} — no configured transport reaches it (tried ` +
+                `${this.#transports.map((t) => t.name).join(', ')}; it advertises ` +
+                `${Object.keys(target.addresses ?? {}).join(', ') || 'none'})`
+        );
+    }
 
     /** One shared dispatcher that resolves + retries per call. */
     #routing: ActorDispatcher = {
@@ -725,9 +910,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     return await this.#local!.dispatch(ref, method, args, call);
                 }
                 this.#counters.remoteDispatches++;
-                return await this.#transport
-                    .dispatcherFor(target)
-                    .dispatch(ref, method, args, call);
+                return await this.#transportDispatcher(target).dispatch(ref, method, args, call);
             } catch (error) {
                 const failure = await this.#noteFailure(id, error, target !== 'local');
                 if (!failure) throw error;
@@ -760,10 +943,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
             this.#noteFailure(id, error, remote);
         const backoff = (attempt: number): Promise<void> => this.#backoff(attempt);
         const local = this.#local!;
-        const transport = this.#transport;
+        const remoteDispatcher = (target: SiloDescriptor): ActorDispatcher =>
+            this.#transportDispatcher(target);
         const retries = this.#retries;
-        // Captured like `local`/`transport`: `run()` is a free generator, so
-        // `this` must not leak into it.
+        // Captured like `local`/`remoteDispatcher`: `run()` is a free
+        // generator, so `this` must not leak into it.
         const counters = this.#counters;
         // Placement errors (wrong-host, unreachable) surface on the FIRST
         // pull — the endpoint pump pulls the first chunk before responding,
@@ -779,9 +963,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     iterable = local.dispatchStream!(ref, method, args, call);
                 } else {
                     counters.remoteStreams++;
-                    iterable = transport
-                        .dispatcherFor(target)
-                        .dispatchStream!(ref, method, args, call);
+                    iterable = remoteDispatcher(target).dispatchStream!(ref, method, args, call);
                 }
                 const iterator = iterable[Symbol.asyncIterator]();
                 let first: IteratorResult<unknown>;

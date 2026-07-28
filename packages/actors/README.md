@@ -798,6 +798,12 @@ serve in dev and prod alike. (One current limit: `ActorRoute.handle` returns
 a `Response`, which cannot express a Node WebSocket upgrade — that needs the
 raw socket. Workers can express it.)
 
+That limit applies to this **client-facing** transport. A *silo-to-silo*
+transport is not bound by it, because it is free to bring its own listener
+instead of a route — `httpTransport()`, the default, does contribute a route
+like any other plugin, but a socket transport does not have to. See
+[the silo-to-silo transport seam](#the-silo-to-silo-transport-is-pluggable).
+
 ### The app plugin
 
 ```ts
@@ -860,6 +866,54 @@ On other runtimes, route `app.routes` yourself — each is a
 `{ match(request), handle(request, silo) }` pair. The lower-level
 `clusterPlacement` / `handleSiloRequest` / `matchesSiloRequest` remain
 exported for hand-rolled mounts.
+
+#### The silo-to-silo transport is pluggable
+
+How silos reach *each other* is a seam. `httpTransport()` is the default and
+needs no configuration; it is also the only one that is WinterCG-clean,
+which is what makes clustering work on Workers-style runtimes:
+
+```ts
+import { cluster, httpTransport } from '@sigx/actors/cluster';
+
+cluster({
+    providers, advertise, secret,
+    // The default. Spelled out here only to show where the knobs live —
+    // `fetch` is where a tuned dispatcher goes.
+    transport: httpTransport({ fetch: myTunedFetch })
+});
+```
+
+`cluster({ fetch })` and `cluster({ endpoint })` remain as sugar for exactly
+those two options; passing them *alongside* an explicit `transport` throws,
+because they only ever reach the HTTP transport and a chain need not contain
+one.
+
+A transport declares its own peer-reachable address, published in the
+membership descriptor under `addresses[name]` — so a silo can speak more
+than one. A **list is a fallback chain**, tried in order:
+
+```ts
+transport: [tcpTransport({ port: 11111 }), httpTransport()]
+```
+
+That is the rolling-deploy story, and the reason `addresses` exists: while
+the deploy is half-done, silos that already advertise `tcp` talk over it and
+the rest are still reached over HTTP, with no window in which any peer is
+unreachable. A descriptor with no `addresses` at all — a silo from a build
+that predates the field — reads as HTTP-only, which is the safe direction.
+
+A **single** transport is strict: a peer that advertises no address for it is
+unreachable, loudly, rather than silently falling back. That is deliberate —
+a silent fallback means you deploy a transport, benchmark it, and measure the
+old one without ever knowing. Fallbacks that *do* happen are counted
+(`counters().transportFallbacks`), reported (`SiloReport.transports`), and
+dev-warned once per peer.
+
+Because the internal mount is now just a route a transport declares, a
+cluster configured with only socket transports has **no internal HTTP
+endpoint at all** — a smaller attack surface, and nothing to `curl`. The
+public actor wire is unaffected either way.
 
 How it works, in one paragraph: every activation writes a **claim** into a
 distributed directory (create-if-absent; released on deactivation), so a

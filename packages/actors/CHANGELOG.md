@@ -4,6 +4,62 @@
 
 ### Added
 
+- **The silo-to-silo transport is a seam** (#91). `cluster({ transport })`
+  takes a `SiloTransportFactory`, or a LIST of them as a fallback chain.
+  `httpTransport()` is the default and nothing about a default-configured
+  cluster changes.
+
+  A `SiloTransport` owns **both halves** of a link — the outbound dispatcher
+  for a peer, and the listener that answers peers dispatching at us. That is
+  why it is a lifecycle object rather than one method: a connection-oriented
+  transport has sockets to open, departed peers to forget, and a port to
+  advertise. It starts inside `placement.start()`, *before* the membership
+  join, so no peer can learn an address before something answers on it —
+  which is also why this is an option on `cluster()` rather than a plugin of
+  its own: no registry hook runs early enough.
+
+  `dispatcherFor(target)` may return **`null`**, meaning "I publish no
+  address for that peer". That is a routing answer, not a failure, and it is
+  what makes a mixed-transport cluster expressible — which is the only way a
+  new transport ever gets deployed. During the rolling deploy that
+  introduces one, half the cluster advertises it and the other half does
+  not, and both halves stay reachable.
+
+  A **single** transport is strict: a peer advertising no address for it is
+  unreachable, loudly. There is no implicit HTTP fallback, because a silent
+  one means you deploy a transport, benchmark it, and measure the old one
+  without ever knowing. Fallbacks that do happen are counted
+  (`transportFallbacks`), reported (`SiloReport.transports`) and dev-warned
+  once per peer.
+
+  Because the internal mount is now just a route a transport declares, a
+  cluster of only socket transports has **no internal HTTP endpoint at all**.
+  The public actor wire is unaffected.
+
+- **`SiloDescriptor.addresses`** (#91) — peer-reachable address per
+  transport, keyed by transport name. Optional, and absent reads as
+  "HTTP only", so a silo from a build predating the field stays reachable.
+  It round-trips through the existing providers untouched: both the Redis
+  and memory providers store the descriptor whole.
+
+- **`resolveSiloSymbol`, `siloRuntime`, `toSiloWireError`,
+  `fromSiloWireError`, `siloWireCodec`** (#91) — the compat-critical
+  plumbing a transport needs, exported so an out-of-package transport uses
+  the same codec and the same error mapping instead of re-deriving them. A
+  transport that `JSON.stringify`s raw values would silently drop every
+  registered codec handler and re-open `__proto__`; "the error is the same
+  error" is likewise a contract, not a nicety, since a caller must not be
+  able to tell a remote hop from a local dispatch.
+
+### Changed
+
+- **`createSiloTransport()` / `SiloTransportOptions` are removed** (#91),
+  replaced by `httpTransport()`. They were exported but documented nowhere
+  and had a single call site.
+- **`@sigx/actors/cluster` size limit raised 8 KB → 9 KB** (#91). The seam
+  costs ~0.9 KB: the chain walk, per-transport addressing, and the shared
+  error mapping. Recorded rather than shaved.
+
 - **`health()` — liveness and readiness endpoints** (#38). `GET
   /_sigx/health` and `GET /_sigx/health/ready`, contributed as ordinary
   plugin routes so every mount picks them up.

@@ -22,6 +22,22 @@ export interface SiloDescriptor extends SiloIdentity {
     /** Peer-reachable origin of this silo's internal endpoint. */
     readonly address: string;
     readonly status: SiloStatus;
+    /**
+     * Peer-reachable address PER TRANSPORT, keyed by `SiloTransport.name` —
+     * `{ http: 'http://10.0.4.7:7311', tcp: 'tcp://10.0.4.7:11111' }`.
+     *
+     * Published so a MIXED-transport cluster can exist, which is the only
+     * way a new transport ever gets deployed: during the rolling deploy
+     * that introduces it, half the cluster publishes no `tcp` key and the
+     * other half must still be able to reach them. Absent on a silo from a
+     * build predating the field, which reads as "HTTP only" — the safe
+     * direction.
+     *
+     * `address` remains the ops-facing origin (wrong-host hints,
+     * `SiloReport.address`, `clusterStats` failures) and is what a
+     * transport with no address of its own is published under.
+     */
+    readonly addresses?: Readonly<Record<string, string>>;
     /** Free-form placement hints (zone, appVersion, weight …). */
     readonly meta?: Readonly<Record<string, string>>;
 }

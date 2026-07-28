@@ -47,6 +47,13 @@ export interface SiloReport {
     reminderShards: string[];
     /** Since `placement.start()`, ms. 0 before start. */
     uptimeMs: number;
+    /**
+     * Transport names this silo is configured with, in chain order. Makes a
+     * half-rolled-out transport visible at a glance: during the deploy that
+     * introduces one, silos disagree here, and that disagreement is the
+     * whole story.
+     */
+    transports?: string[];
     meta?: Record<string, string>;
 }
 

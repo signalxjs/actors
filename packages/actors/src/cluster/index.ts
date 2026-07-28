@@ -17,9 +17,14 @@ export {
 } from './placement';
 export {
     handleSiloRequest,
+    handleSiloRequestForRuntime,
     matchesSiloRequest,
     createSiloResolver,
-    type SiloRequestOptions
+    resolveSiloSymbol,
+    siloRuntime,
+    type SiloEndpointOptions,
+    type SiloRequestOptions,
+    type SiloRuntimeRequestOptions
 } from './silo-endpoint';
 export {
     clusterStats,
@@ -32,7 +37,17 @@ export {
 } from './stats';
 export type { ClusterCounters, ClusterCounterTotals } from './counters';
 export { memoryClusterHub, type MemoryClusterHub } from './memory';
-export { createSiloTransport, type SiloTransport, type SiloTransportOptions } from './transport';
+export { httpTransport, HTTP_TRANSPORT_NAME, type HttpTransportOptions } from './transport';
+export type {
+    SiloCallTarget,
+    SiloTransport,
+    SiloTransportConfig,
+    SiloTransportFactory,
+    SiloTransportRuntime,
+    SiloWireCodec,
+    SiloWireError
+} from './seam';
+export { fromSiloWireError, siloWireCodec, toSiloWireError } from './wire-errors';
 export {
     SILO_AUTH_HEADER,
     SILO_CALL_HEADER,
