@@ -50,7 +50,12 @@ export default defineConfig({
             '@sigx/actors-cloudflare': resolve(
                 __dirname,
                 'packages/actors-cloudflare/src/index.ts'
-            )
+            ),
+            '@sigx/actors-cli/source': resolve(
+                __dirname,
+                'packages/actors-cli/src/source/index.ts'
+            ),
+            '@sigx/actors-cli': resolve(__dirname, 'packages/actors-cli/src/plugin.ts')
         }
     }
 });

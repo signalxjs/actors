@@ -33,6 +33,7 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Orleans-style framed TCP transport — one multiplexed connection per peer |
 | [`@sigx/actors-ws`](packages/actors-ws) | The same frames over WebSocket — one port, proxy-friendly |
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — one DO per actor (storage + alarm reminders) |
+| [`@sigx/actors-cli`](packages/actors-cli) | `sigx` CLI plugin — observe silos, grains and clusters from the terminal |
 | [`benchmarks`](benchmarks) | Local performance baselines — throughput, latency, heap footprint, leak detection (not published) |
 
 Full documentation lives in the [package README](packages/actors/README.md).

@@ -199,6 +199,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `durableObjectReminders` (alarms). Needs no membership, directory or
   internal mount — Cloudflare already guarantees single-instance. Tested
   with fakes; no Workers runtime required.
+- `packages/actors-cli` → `@sigx/actors-cli` — a `@sigx/cli` PLUGIN (the
+  `@sigx/lynx-cli` shape, not its own binary) that observes silos:
+  `sigx actors stats` and `sigx actors health`, over an embedded source
+  (loads the project's app module in-process) or an HTTP one (polls a
+  running silo's `ops()` endpoint). `@sigx/actors-cli/source` is the
+  renderer-free data layer, deliberately reusable by a future web
+  dashboard. `@sigx/cli` and `@sigx/terminal` are NOT core packages, so
+  they take literal version specs rather than `catalog:`.
 - `examples/chat` — actors in a REAL sigx app, and the composition proof:
   `sigx()` + `sigxServer()` + `sigxActors()` in one Vite build, SSR-seeded
   `useActorState`, a guard running on both transports, a serverFn calling
