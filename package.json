@@ -22,6 +22,7 @@
         "bench": "pnpm build && pnpm bench:run",
         "bench:run": "node --conditions=production --expose-gc benchmarks/src/main.ts",
         "bench:dev-dist": "node --expose-gc benchmarks/src/main.ts",
+        "bench:tier2": "BENCH_TIER2=1 node --conditions=production --expose-gc benchmarks/src/main.ts cluster2/ --no-gc-profile",
         "bench:baseline": "node --conditions=production --expose-gc benchmarks/src/main.ts --save-baseline",
         "bench:compare": "node --conditions=production --expose-gc benchmarks/src/main.ts --compare",
         "bench:profile": "node --conditions=production --expose-gc --enable-source-maps --cpu-prof --cpu-prof-dir=benchmarks/profiles benchmarks/src/main.ts --runs=1",

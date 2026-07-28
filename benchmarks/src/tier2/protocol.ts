@@ -1,0 +1,87 @@
+/**
+ * The parent↔child IPC protocol for the Tier-2 rig.
+ *
+ * Deliberately small and explicit: every message is a discriminated union
+ * member, so a child that receives something it does not understand fails
+ * loudly instead of hanging the parent on a reply that never comes.
+ *
+ * Two conversations share the channel. The parent DRIVES the child
+ * (init/start/drive/stats/stop), and the child calls BACK into the parent
+ * for membership and directory operations — the cluster store lives in the
+ * parent, so those are RPCs in the opposite direction.
+ */
+import type { MembershipView } from '@sigx/actors/cluster';
+
+/** Every cluster-store operation a silo can ask of the parent. */
+export type StoreOp =
+    | 'membership.join'
+    | 'membership.setStatus'
+    | 'membership.leave'
+    | 'membership.refresh'
+    | 'membership.isAlive'
+    | 'directory.lookup'
+    | 'directory.claim'
+    | 'directory.release'
+    | 'directory.evict'
+    | 'directory.evictSilo';
+
+export interface DriveRequest {
+    /** Actor refs to call, round-robined across the loop. */
+    targets: readonly { type: string; key: string }[];
+    concurrency: number;
+    durationMs: number;
+    /** Timestamp every op. Costs a `performance.now()` per call, so
+     *  throughput and latency are never measured in the same pass. */
+    latency: boolean;
+}
+
+export interface ChildStats {
+    siloId: string;
+    /** Connections this silo ACCEPTED. Every accept is a peer's open, which
+     *  is how outbound sockets get counted without hooking the transport. */
+    accepted: number;
+    /** Highest simultaneous accepted connections. */
+    concurrentPeak: number;
+    /** Still open right now. */
+    concurrentNow: number;
+    /** Bytes read/written across every accepted connection, headers included. */
+    bytesIn: number;
+    bytesOut: number;
+    /** Requests served on the internal silo mount. */
+    inboundRequests: number;
+    /** Store RPCs this child made — the "did we measure the store?" guard. */
+    storeOps: number;
+    /** Calls this child issued as a driver. */
+    callsIssued: number;
+    /** libuv TCP handles, from `process.report` — portable across darwin/linux. */
+    tcpHandles: number;
+    rssBytes: number;
+}
+
+// --- parent → child --------------------------------------------------------
+
+export type ToChild =
+    | { t: 'init'; index: number; secret: string | null }
+    | { t: 'start' }
+    | { t: 'view'; view: MembershipView }
+    | { t: 'selfSuspect' }
+    | { t: 'drive'; id: number; request: DriveRequest }
+    | { t: 'warm'; id: number; targets: readonly { type: string; key: string }[] }
+    | { t: 'stats'; id: number }
+    | { t: 'resetStats'; id: number }
+    | { t: 'stop'; id: number }
+    | { t: 'storeReply'; id: number; ok: true; value: unknown }
+    | { t: 'storeReply'; id: number; ok: false; error: string };
+
+// --- child → parent --------------------------------------------------------
+
+export type ToParent =
+    | { t: 'ready'; index: number; port: number }
+    | { t: 'started'; siloId: string }
+    | { t: 'store'; id: number; op: StoreOp; args: readonly unknown[] }
+    | { t: 'drove'; id: number; ops: number; opsPerSec: number; percentiles?: unknown }
+    | { t: 'warmed'; id: number }
+    | { t: 'stats'; id: number; stats: ChildStats }
+    | { t: 'reset'; id: number }
+    | { t: 'stopped'; id: number }
+    | { t: 'failed'; message: string };

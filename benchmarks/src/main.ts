@@ -26,7 +26,7 @@ import {
     saveResult
 } from './report.ts';
 import { runSuite } from './runner.ts';
-import { ALL_SCENARIOS, selectScenarios } from './scenarios/index.ts';
+import { ALL_SCENARIOS, selectScenarios, tier2Hint } from './scenarios/index.ts';
 import type { BenchResult } from './types.ts';
 
 interface Options {
@@ -88,9 +88,15 @@ async function main(): Promise<void> {
         return;
     }
     if (scenarios.length === 0) {
-        throw new Error(
-            `no scenarios match ${JSON.stringify(options.filters)}. Try --list.`
-        );
+        const hint = tier2Hint(options.filters);
+        if (hint) {
+            // Guidance, not a crash: a stack trace here buries the one line
+            // that tells you what to type.
+            console.log(hint);
+            process.exitCode = 1;
+            return;
+        }
+        throw new Error(`no scenarios match ${JSON.stringify(options.filters)}. Try --list.`);
     }
 
     const env = captureEnv();

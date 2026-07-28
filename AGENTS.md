@@ -148,6 +148,7 @@ pnpm bench:run <filter>   # skip the build; filter by scenario name substring
 pnpm bench:baseline       # record this machine's reference (gitignored)
 pnpm bench:compare        # run again and diff against that reference
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
+pnpm bench:tier2          # Tier 2: real sockets, one process per silo (opt-in)
 ```
 
 Benchmarks measure the built `dist/*.prod.js` via `--conditions=production`,
@@ -157,6 +158,13 @@ runners are too noisy to gate on. Before trusting a comparison, read the
 "Trusting the numbers" section of `benchmarks/README.md` — a contended
 machine produces false regressions, and the suite says so when it detects
 one.
+
+Most scenarios are **Tier 1**: one process, zero sockets, measuring
+algorithmic shape. **Tier 2** (`cluster2/*`, `pnpm bench:tier2`) forks a
+process per silo and uses real loopback TCP; it is opt-in via `BENCH_TIER2=1`
+and never runs as part of `pnpm bench`. Inside it, counts (sockets, bytes)
+gate while timings are `informational` — see `benchmarks/BASELINES.md`, whose
+tier legend exists so a modelled figure is never quoted as a measured one.
 
 To run an example/app: `pnpm --filter <package-name> dev`.
 

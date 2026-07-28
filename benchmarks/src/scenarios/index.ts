@@ -1,4 +1,5 @@
 import { clusterScenarios } from './cluster.ts';
+import { tier2Scenarios } from './cluster2.ts';
 import { dispatchScenarios } from './dispatch.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
@@ -7,8 +8,18 @@ import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
 
 /**
+ * Tier 2 forks a process per silo and binds real ports, so it is slow and
+ * touches the machine in ways the rest of the suite does not. Opt-in via
+ * `BENCH_TIER2=1` (or `pnpm bench:tier2`) rather than a flag, so `pnpm bench`
+ * stays exactly as fast and as side-effect-free as it was.
+ */
+export const TIER2_ENABLED = process.env.BENCH_TIER2 === '1';
+
+/**
  * Order matters for reading the output: the dispatch ladder first, since
- * every later number is interpreted as a delta from it.
+ * every later number is interpreted as a delta from it. Tier 2 comes last —
+ * it is a different KIND of measurement (counts over real sockets, not
+ * timings in one process) and must not be read as another rung of the ladder.
  */
 export const ALL_SCENARIOS: Scenario[] = [
     ...dispatchScenarios,
@@ -16,10 +27,28 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...wireScenarios,
     ...lifecycleScenarios,
     ...memoryScenarios,
-    ...clusterScenarios
+    ...clusterScenarios,
+    ...(TIER2_ENABLED ? tier2Scenarios : [])
 ];
+
+const TIER2_NAMES = tier2Scenarios.map((s) => s.name);
 
 export function selectScenarios(filters: readonly string[]): Scenario[] {
     if (filters.length === 0) return ALL_SCENARIOS;
     return ALL_SCENARIOS.filter((s) => filters.some((f) => s.name.includes(f)));
+}
+
+/**
+ * A filter matching only Tier-2 scenarios while Tier 2 is off would otherwise
+ * report "no scenarios match", which reads as a typo rather than as a missing
+ * opt-in. Returns the command to run, or null.
+ */
+export function tier2Hint(filters: readonly string[]): string | null {
+    if (TIER2_ENABLED || filters.length === 0) return null;
+    const wanted = filters.some((f) => TIER2_NAMES.some((name) => name.includes(f)));
+    if (!wanted) return null;
+    return (
+        `Tier-2 scenarios are opt-in — they fork a process per silo and bind real ports. Run:\n` +
+        `  BENCH_TIER2=1 pnpm bench:run ${filters.join(' ')}`
+    );
 }

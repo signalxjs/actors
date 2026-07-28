@@ -16,6 +16,8 @@ pnpm bench:run --list         # every scenario and what it isolates
 pnpm bench:baseline           # record this machine's reference (5 rounds)
 pnpm bench:compare            # run again and diff against that reference
 pnpm bench:profile dispatch   # same, under --cpu-prof
+
+pnpm bench:tier2              # real sockets, a process per silo (opt-in)
 ```
 
 Requires Node ≥ 22.18 (the sources are `.ts`, run through Node's native type
@@ -56,6 +58,51 @@ throughput should *not* collapse the same way.
 `±NN%` after a value is that metric's own spread across rounds. Anything past
 the comparison threshold means the metric cannot detect a regression of that
 size, so don't read anything into it.
+
+## Two tiers, and why the distinction is load-bearing
+
+Almost everything here is **Tier 1**: one process, zero sockets. Cross-silo
+scenarios route through a `pipeFetch` that calls straight into the peer's
+handlers. That is deliberate — it isolates the *software* cost and the
+algorithmic shape, which is what scales to 100 silos or does not — and it
+means the entire socket story is invisible to it.
+
+**Tier 2** (`cluster2/*`, `pnpm bench:tier2`) is the other half: N silos as
+real forked processes over real loopback TCP. It is opt-in because it forks a
+process per silo and binds ports, and it is slow.
+
+```sh
+pnpm bench:tier2                        # the Tier-2 scenarios
+BENCH_TIER2=1 pnpm bench:run cluster2/  # same thing, spelled out
+```
+
+Inside Tier 2 there is a second split, and **it is enforced in code rather
+than by this paragraph**: every timing metric is emitted `informational: true`
+so the comparer structurally cannot fail a run on it.
+
+- **Counted** — sockets, bytes per call, requests per connection. Counts of
+  events, invariant under CPU scheduling. These gate.
+- **Timed** — throughput, percentiles, RSS. N processes share the cores, so
+  these are context, not evidence.
+
+That split is not theoretical: the run recorded in `BASELINES.md` printed
+`THE MACHINE WAS BUSY` (the probe moved 15%) while the socket counts came back
+identical every single round.
+
+How the rig works, in one paragraph: `child_process.fork` per silo — fork
+inherits `execArgv`, so `--conditions=production` propagates and children
+measure the built prod dist, where a spawned `node` would silently benchmark
+the dev dist. Each child binds port 0, reads back the port, and only then
+constructs `cluster({ advertise })`, preserving the invariant that something
+answers before a peer can learn the address. Membership and the directory live
+in the *parent* over IPC, because the rig's job is isolating the transport and
+a real Redis would inject its own latency and sockets into every comparison
+(#87 owns that axis) — a guard metric fails the run if store traffic per call
+rises above 0.05, which would mean the route cache stopped working and the
+numbers describe the store instead. Sockets are counted by **accepts on the
+receiving side**: if a silo accepted K connections from a peer, that peer
+opened K, so no hook into undici is needed. The count is cross-checked against
+libuv's own TCP handle table.
 
 ## Trusting the numbers
 

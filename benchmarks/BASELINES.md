@@ -9,6 +9,27 @@ when the absolute figures do not.
 Update it deliberately, when a change moves something here, and always record
 the machine.
 
+## Tiers — read this before quoting a number
+
+Figures here come from two different kinds of measurement, and confusing them
+is how a modelled number ends up cited as a fact (which is what #87 is fixing
+for the Redis figures). The scenario name says which tier it is:
+
+| Tier | Scenarios | What it is |
+|---|---|---|
+| **Tier 1** | `dispatch/`, `state/`, `wire/`, `lifecycle/`, `memory/`, `cluster/` | One process, `pipeFetch`, **zero sockets**. Measures algorithmic shape and software cost. Anything about the network here is *modelled*, not measured. |
+| **Tier 2** | `cluster2/` | N silos as **real OS processes over real loopback sockets**. Measures what the wire actually does. Opt-in: `pnpm bench:tier2`. |
+
+Within Tier 2 there is a second split, and it is enforced in code rather than
+by this paragraph — every timing metric is emitted `informational: true`, so
+the comparer *cannot* gate on one:
+
+- **Counted, and trustworthy on a busy machine**: sockets, bytes per call,
+  requests per connection. These are counts of events; CPU contention does not
+  change how many connections a transport opens.
+- **Timed, and contended**: throughput, percentiles, RSS. N processes share
+  the cores. Recorded for context; never evidence on its own.
+
 ---
 
 ## 2026-07-28 · initial baseline
@@ -206,6 +227,95 @@ claims — worth correcting, though see below).
 Keep this in proportion: a real LAN round trip is 200-1000 µs, which
 dominates the ~50 µs of software. **HMAC and `choose()` are not what limits
 a real deployment** — membership churn and the reminder ceiling are.
+
+> ⚠️ **Tier 1 — no sockets.** These come from `createCluster` → `pipeFetch`,
+> which routes in-process. They are the *software* cost of a hop. The
+> `cluster2/` section below measures the same comparison over a real socket
+> and lands somewhere quite different; prefer it when reasoning about
+> deployment.
+
+---
+
+## 2026-07-28 · Tier 2 — real sockets, N processes
+
+| | |
+|---|---|
+| Machine | Apple M4, darwin/arm64 |
+| Node | v24.11.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Rig | `cluster2/*` — `child_process.fork` per silo, loopback TCP, store in the parent over IPC |
+| Settings | 5 rounds × 400 ms, interleaved |
+| Conditions | **Contended** — the probe varied 15%, so the suite printed `THE MACHINE WAS BUSY`. The *counts* below were nevertheless identical every round; that is the point of the tier split. |
+
+### The connection pool sizes to concurrency, at 2× [counted]
+
+Two silos, one driving, every call crossing to the owner:
+
+| concurrency | peak sockets | sockets / concurrency | requests / connection |
+|---:|---:|---:|---:|
+| 1 | 2 | **2.00** | 1 163 |
+| 8 | 16 | **2.00** | 531 |
+| 64 | 128 | **2.00** | 69 |
+
+Two things are true at once, and #89 called both:
+
+- **Keep-alive works.** 69–1 163 requests per connection; connections are
+  reused heavily rather than opened per request.
+- **The pool still sizes to concurrency**, at *twice* the rate #89 projected.
+  It predicted one connection per in-flight request; the measurement is a
+  flat **2.00** at every concurrency tested.
+
+Extrapolated the way #89 does it — c=64 against 99 peers — that is **~12 600
+sockets per silo**, not 6 300. The extrapolation is still a model (this rig
+has 2 silos, not 100), but the per-peer coefficient it rests on is now
+measured rather than assumed.
+
+*Why 2× and not 1× is not yet explained.* It reproduces exactly across
+concurrency and is confirmed independently by libuv's own TCP handle table on
+both ends, so it is a real property of the current client and not a counting
+artifact. Establishing the cause belongs with the `undici.Agent` work in #89.
+
+### HMAC costs far less over a real socket than in-process [timed, contended]
+
+| | c=1 ops/s | c=64 ops/s | bytes/call |
+|---|---:|---:|---:|
+| HMAC on | 4 223 | 15 111 | 637 |
+| HMAC off | 5 882 | 17 940 | 534 |
+| **ratio** | **1.39×** | **1.19×** | +103 B |
+
+**Tier 1 put this ratio at 3.35×** (68.0 k vs 20.3 k). Over a real socket it
+is 1.19× at c=64 — the socket latency hides most of the signing cost, exactly
+as the "keep this in proportion" note above predicted, and now measured
+instead of argued.
+
+The practical reading: **removing per-call HMAC is worth far less than the
+in-process figure suggests.** It remains worth doing — it is ~30 lines with
+session tokens (#90 step D) and 103 bytes/call on the wire — but it is not the
+3× headline, and it is not on its own an argument for a new transport.
+
+### Throughput plateaus at the wire, not at the runtime [timed, contended]
+
+18–19 k ops/s at c=8 and above, against the ~17 k/s a bare Node HTTP echo
+server reaches on this machine. The runtime is not the ceiling here; Node's
+HTTP stack is.
+
+### What this rig cannot honestly measure
+
+Stated so it is never quoted as though it could:
+
+- **Absolute throughput at N ≥ 10.** N processes share one CPU. Needs N
+  machines.
+- **Anything RTT-shaped.** Loopback is ~30–60 µs against a LAN's 200–1000 µs,
+  so this rig systematically *overstates* software's share of latency and
+  *understates* connection setup. There is no TLS handshake here either.
+- **Head-of-line blocking, congestion, loss, MTU.** Loopback has none — which
+  is precisely the main risk of HTTP/2 multiplexing, so an h2 transport can
+  look good here and behave worse on a real network.
+- **Cluster-wide socket pressure at N=100.** The per-peer coefficient is
+  measured; the 100-silo total remains *modelled*.
+
+The cheap thing that would fix most of this: **two machines at N=2**, giving a
+real NIC and a real RTT.
 
 ---
 
