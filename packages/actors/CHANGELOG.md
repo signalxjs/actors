@@ -4,6 +4,39 @@
 
 ### Added
 
+- **A transport conformance suite** (#93), for contributors — **not a
+  published import**. `transportConformance` is the set of cases every
+  `SiloTransport` must pass, plus the harness interface a transport supplies.
+  It lives at `packages/actors/src/cluster/testing.ts` and is reachable inside
+  this workspace as `@sigx/actors/cluster/testing` via a tsconfig/vitest
+  alias; the subpath is deliberately absent from `package.json` exports, so
+  it cannot be imported from outside the repo until it is promoted.
+  Sixteen cases covering the
+  codec round-trip, single activation, streams and their cancellation,
+  deadline propagation, wrong-host convergence, unreachable-vs-crash, error
+  re-branding, the ops channel, auth rejection, the cross-host call chain,
+  graceful handoff, and link hygiene.
+
+  It ships green against `httpTransport()` **before a second transport
+  exists**, which is the point: a suite written alongside a new transport
+  describes that transport's habits, while one the shipped default already
+  satisfies describes the contract.
+
+  The governing rule is **assert on `kind`, never on an HTTP status** — a
+  status is one encoding of a kind, which is what makes "what is 421 over
+  TCP?" answerable. The one number that still matters is the ops surface,
+  where `clusterStats` classifies peer failures by status code, and that has
+  its own case.
+
+  It imports no test framework: cases are descriptors whose `run()` throws,
+  so a transport package can drive them from any runner. Cases a transport
+  cannot express (link hygiene, for a connectionless one) report as
+  **skipped with a reason** rather than passing vacuously.
+
+  Being unpublished — no `package.json` export, no Vite entry — the shipped
+  surface and `pnpm size` are untouched. An out-of-repo transport package
+  cannot import it yet; promoting the subpath is a separate, deliberate step.
+
 - **The silo-to-silo transport is a seam** (#91). `cluster({ transport })`
   takes a `SiloTransportFactory`, or a LIST of them as a fallback chain.
   `httpTransport()` is the default and nothing about a default-configured

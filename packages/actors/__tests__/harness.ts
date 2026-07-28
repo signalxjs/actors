@@ -65,7 +65,8 @@ export interface ClusterOptions {
     defaults?: SiloDefaults;
     policy?: PlacementPolicy;
     typePolicies?: Record<string, PlacementPolicy>;
-    secret?: string;
+    /** `null` builds an UNAUTHENTICATED cluster; omitted uses the default. */
+    secret?: string | null;
     retries?: number;
     retryBackoffMs?: number;
     /** Spy hook: called with every URL crossing the pipe. */
@@ -100,7 +101,7 @@ export interface ClusterHarness {
 export async function createCluster(n: number, options: ClusterOptions): Promise<ClusterHarness> {
     const hub = memoryClusterHub();
     const storage = options.storage ?? memoryStorage();
-    const secret = options.secret ?? 'test-secret';
+    const secret = options.secret === null ? undefined : (options.secret ?? 'test-secret');
     const registry = new Map<string, { app: ActorApp; silo: Silo }>();
 
     const rawFetch: typeof globalThis.fetch = async (input, init) => {
@@ -129,7 +130,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         const plugin = cluster({
             providers: hub.providers(),
             advertise: `http://silo${i}.test`,
-            secret,
+            ...(secret !== undefined ? { secret } : {}),
             fetch: pipeFetch,
             ...(options.policy ? { policy: options.policy } : {}),
             ...(options.typePolicies ? { typePolicies: options.typePolicies } : {}),

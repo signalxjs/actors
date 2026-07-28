@@ -915,6 +915,19 @@ cluster configured with only socket transports has **no internal HTTP
 endpoint at all** — a smaller attack surface, and nothing to `curl`. The
 public actor wire is unaffected either way.
 
+**Writing one?** There is a conformance suite — `transportConformance` in
+`packages/actors/src/cluster/testing.ts` — holding the cases a transport must
+pass, and so the definition of correct behaviour. Supply a harness that builds
+an N-silo cluster over your wire and every case runs against it. The rule it
+enforces throughout is *assert on the error `kind`, never on an HTTP status*,
+which is what makes the contract expressible off HTTP at all.
+
+It is currently **contributor-facing only**: reachable inside this workspace
+as `@sigx/actors/cluster/testing` through a tsconfig/vitest alias, but not in
+the published `exports` map, so an out-of-repo package cannot import it yet.
+Promoting the subpath is a deliberate step for whenever a transport ships
+outside this repo.
+
 How it works, in one paragraph: every activation writes a **claim** into a
 distributed directory (create-if-absent; released on deactivation), so a
 key activates on exactly one silo; calls for actors placed elsewhere are

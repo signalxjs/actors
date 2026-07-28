@@ -31,6 +31,12 @@ export default defineConfig({
             '@sigx/actors/node': resolve(__dirname, 'packages/actors/src/node/index.ts'),
             '@sigx/actors/client': resolve(__dirname, 'packages/actors/src/client/index.ts'),
             '@sigx/actors/app': resolve(__dirname, 'packages/actors/src/app/index.ts'),
+            // MORE SPECIFIC FIRST: vitest matches aliases in order by prefix,
+            // so `/cluster` listed first would swallow `/cluster/testing`.
+            '@sigx/actors/cluster/testing': resolve(
+                __dirname,
+                'packages/actors/src/cluster/testing.ts'
+            ),
             '@sigx/actors/cluster': resolve(__dirname, 'packages/actors/src/cluster/index.ts'),
             '@sigx/actors/vite': resolve(__dirname, 'packages/actors/src/vite/index.ts'),
             '@sigx/actors': resolve(__dirname, 'packages/actors/src/index.ts'),
