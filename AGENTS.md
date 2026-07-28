@@ -216,6 +216,9 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev silo, client swap, streams, file persistence, and a runnable 3-silo
   cluster demo (`pnpm --filter counter-example cluster`). Not published.
+  `pnpm --filter counter-example cluster:serve` keeps that cluster UP
+  under steady traffic, with `metrics()` and `ops()` mounted — the
+  target `sigx actors top` is demonstrated against.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-grain heap footprint, leak detection, and the CPU/allocation

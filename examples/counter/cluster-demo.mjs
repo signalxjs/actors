@@ -7,6 +7,16 @@
  * non-owner silo, and crash failover with state recovered from storage.
  *
  * Run after `pnpm build`:   node examples/counter/cluster-demo.mjs
+ *
+ * `--serve` (or CLUSTER_DEMO_SERVE=1) skips the shutdown and keeps the
+ * cluster up under steady traffic, so there is something live to point a
+ * dashboard at:
+ *
+ *     # terminal 1
+ *     node examples/counter/cluster-demo.mjs --serve
+ *     # terminal 2
+ *     npx sigx actors top --url http://127.0.0.1:5391 --secret demo-ops-secret
+ *
  * Needs Node >= 22.18 (built-in type stripping for the .ts actor import).
  * Ports default to 5391-5393; override with
  * CLUSTER_DEMO_PORTS=7001,7002,7003.
@@ -17,7 +27,7 @@
  * hand-written Node bridge.
  */
 import { createServer } from 'node:http';
-import { defineActorApp, health, memoryStorage } from '@sigx/actors/silo';
+import { defineActorApp, health, memoryStorage, metrics, ops } from '@sigx/actors/silo';
 import { createAppHandler } from '@sigx/actors/node';
 import { cluster, clusterStats, memoryClusterHub } from '@sigx/actors/cluster';
 import { Counter } from './src/counter.actor.ts';
@@ -27,6 +37,11 @@ const PORTS = (process.env.CLUSTER_DEMO_PORTS ?? '5391,5392,5393')
     .split(',')
     .map((p) => Number(p.trim()));
 const secret = 'demo-secret';
+// The ops endpoint's bearer token. Separate from the cluster secret on
+// purpose: they authenticate different things to different people — one is
+// silo-to-silo, the other is an operator with a dashboard.
+const opsSecret = process.env.CLUSTER_DEMO_OPS_SECRET ?? 'demo-ops-secret';
+const serve = process.argv.includes('--serve') || process.env.CLUSTER_DEMO_SERVE === '1';
 const hub = memoryClusterHub();
 const storage = memoryStorage(); // one shared store = the cluster's database
 
@@ -42,9 +57,21 @@ for (const port of PORTS) {
     });
     // `health()` needs no cluster wiring: `cluster()` contributes its own
     // readiness check, so /ready reports `leaving` and `fenced` by itself.
+    // `metrics()` is what gives the dashboard latency, the queue/turn split
+    // and error kinds; `ops()` is what makes any of it readable from
+    // outside the process. The cluster fan-out is wired by hand because
+    // `ops()` lives in /silo and `clusterStats` in /cluster — a single-node
+    // silo must not pay for the cluster bundle to have an ops endpoint.
     const app = defineActorApp({ actors: [Counter], storage })
         .use(plugin)
-        .use(health());
+        .use(metrics())
+        .use(health())
+        .use(
+            ops({
+                secret: opsSecret,
+                cluster: (signal) => clusterStats(plugin.placement, { signal })
+            })
+        );
 
     // ONE handler for both mounts: the public endpoint and the internal
     // silo-to-silo route the plugin contributed.
@@ -171,7 +198,57 @@ log(`  GET /_sigx/health      -> ${await probe(survivors[1].port, '/_sigx/health
 log(`  GET /_sigx/health/ready -> ${await probe(survivors[1].port, '/_sigx/health/ready')}`);
 log('(live 200 but ready 503 — drain it, do NOT restart it)');
 
-step('6. Graceful shutdown of the survivors');
+if (serve) {
+    step('6. Serving — the cluster stays up');
+    log('Point the dashboard at any surviving silo:\n');
+    for (const m of members.filter((m) => m.server.listening)) {
+        log(`  npx sigx actors top --url http://127.0.0.1:${m.port} --secret ${opsSecret}`);
+    }
+    log('\nOr one snapshot:');
+    log(
+        `  npx sigx actors stats --url http://127.0.0.1:${survivors[0].port} ` +
+            `--secret ${opsSecret} --json | jq .cluster.totals`
+    );
+    log('\nDriving steady traffic. Ctrl+C to stop.');
+
+    // Enough shape to make the dashboard worth looking at: a hot grain that
+    // builds queue depth, a spread of cold ones, and a steady trickle of
+    // failures so the error panel is not empty.
+    let tick = 0;
+    const traffic = setInterval(() => {
+        tick++;
+        const from = survivors[tick % survivors.length].silo;
+        const work = [
+            from.actor(Counter, 'hot').increment(1),
+            from.actor(Counter, 'hot').increment(1),
+            from.actor(Counter, `cold-${tick % 25}`).increment(1)
+        ];
+        // One in seven calls asks for an actor type that does not exist, so
+        // `errors.byKind` shows a real `method-not-found` rather than zeroes.
+        if (tick % 7 === 0) {
+            work.push(
+                from
+                    .dispatch({ type: 'Counter', key: 'hot' }, 'nope', [], {
+                        callChain: [],
+                        callId: `demo-${tick}`
+                    })
+                    .catch(() => {})
+            );
+        }
+        Promise.allSettled(work);
+    }, 250);
+    traffic.unref?.();
+
+    await new Promise((resolve) => {
+        const stop = () => resolve();
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+    });
+    clearInterval(traffic);
+    log('\nstopping…');
+}
+
+step(serve ? '7. Graceful shutdown of the survivors' : '6. Graceful shutdown of the survivors');
 await Promise.all(
     members.filter((m) => m !== owner).map((m) => m.app.stop({ timeoutMs: 2000 }))
 );

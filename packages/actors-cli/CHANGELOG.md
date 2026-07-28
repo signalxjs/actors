@@ -4,6 +4,21 @@
 
 ### Added
 
+- **A cluster to point it at** (#101). `examples/counter`'s cluster demo
+  now mounts `metrics()` and `ops()` on all three silos, and
+  `pnpm --filter counter-example cluster:serve` keeps them up under steady
+  traffic instead of shutting down at the end.
+
+  The traffic is shaped rather than uniform, because a dashboard rendering
+  a screen of zeroes demonstrates nothing: a hot grain that builds queue
+  depth, a spread of cold ones, a silo left `leaving` by the drain step, and
+  one call in seven aimed at a method that does not exist — so the
+  queue/turn split, the shard map and `errors.byKind` are all populated.
+
+  The ops secret is separate from the cluster secret on purpose: they
+  authenticate different things to different people. One is silo-to-silo,
+  the other is an operator with a dashboard.
+
 - **`sigx actors top` — the dashboard** (#101). Five tabs (Overview, Silos,
   Grains, Cluster, Health) hosted by `runShell` from `@sigx/cli/shell`,
   which exists for exactly this: a long-running plugin command that owns the

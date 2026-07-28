@@ -58,6 +58,24 @@ pnpm --filter counter-example dev       # single-silo dev server
 pnpm --filter counter-example cluster   # 3-silo cluster demo over real HTTP
 ```
 
+### Watching it happen
+
+`cluster:serve` runs the same three silos but keeps them up under steady
+traffic, so there is something live to point the dashboard at:
+
+```sh
+pnpm build
+pnpm --filter counter-example cluster:serve        # terminal 1
+npx sigx actors top --url http://127.0.0.1:5391 \
+    --secret demo-ops-secret                       # terminal 2
+```
+
+The demo deliberately produces something worth looking at: a hot grain
+that builds queue depth, a spread of cold ones, a silo left `leaving`
+after the drain step, and one call in seven aimed at a method that does
+not exist — so the latency split, the shard map and the error panel are
+populated rather than a screen of zeroes.
+
 ## Development
 
 ```sh
