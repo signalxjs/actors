@@ -116,6 +116,13 @@ export class Activation {
     #warnedDroppedChanges = false;
     #warnedStreamState = false;
     lastActivityMs = Date.now();
+    /**
+     * When this activation was constructed, MONOTONIC — the age an operator
+     * reads is a duration, and `lastActivityMs` is wall-clock because idle
+     * collection genuinely wants wall time. One `performance.now()` per
+     * activation, not per turn.
+     */
+    readonly startedMs = performance.now();
 
     private constructor(
         ref: ActorRef,

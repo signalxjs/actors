@@ -555,6 +555,78 @@ export interface SiloStats {
     activations: number;
     queued: number;
     perType: Record<string, number>;
+    /**
+     * Slots mid-activation and mid-deactivation. NOT counted in
+     * `activations`, which only sees settled ones — so a silo in an
+     * activation storm reads as idle without these, which is precisely when
+     * you are looking at it.
+     */
+    transitional: { activating: number; deactivating: number };
+}
+
+/**
+ * Resolve a caller-supplied cap to a whole, non-negative, FINITE number.
+ *
+ * `Math.max(0, Math.floor(x))` is the obvious spelling and it has a hole:
+ * `Math.floor(NaN)` is `NaN`, `Math.max(0, NaN)` is `NaN`, and every
+ * subsequent comparison against `NaN` is false — so `limit === 0` misses,
+ * `rows.length > limit` misses, and a bound meant to protect a walk over
+ * millions of activations silently becomes no bound at all. A cap that
+ * fails OPEN is worse than no cap, because nothing looks wrong until the
+ * one call that matters.
+ *
+ * Non-finite input therefore falls back to the default rather than being
+ * honoured: `Infinity` reads as "no limit", which is a request this API
+ * deliberately does not offer.
+ */
+export function resolveLimit(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.floor(value));
+}
+
+/**
+ * What a silo that is not running reports. A FACTORY, not a shared frozen
+ * constant: this lands in an ops snapshot and a `SiloReport`, both of which
+ * a caller may reasonably transform in place.
+ */
+export const emptySiloStats = (): SiloStats => ({
+    activations: 0,
+    queued: 0,
+    perType: {},
+    transitional: { activating: 0, deactivating: 0 }
+});
+
+/** One live activation, as `Silo.activations()` reports it. */
+export interface ActivationInfo {
+    type: string;
+    key: string;
+    /** Mailbox depth: queued turns plus the one running. */
+    queued: number;
+    /** Since activation, ms. Monotonic. */
+    ageMs: number;
+    /** Since the last turn, ms. Wall clock — this is what idle collection reads. */
+    idleMs: number;
+    /** Held open by a stream or an explicit keep-alive, so idle sweeping skips it. */
+    keptAlive: boolean;
+}
+
+export interface ActivationsOptions {
+    /**
+     * How many to return. Default 100.
+     *
+     * Bounded on purpose, and low: a silo can hold millions of activations,
+     * and this walks them all to sort. It is a "top N" view, not an export.
+     */
+    limit?: number;
+    /**
+     * `'queued'` (deepest mailbox first) — the hot grains.
+     * `'age'` (oldest first) — the long-lived ones.
+     * `'idle'` (most idle first) — the next sweep's candidates.
+     * Default `'queued'`.
+     */
+    sortBy?: 'queued' | 'age' | 'idle';
+    /** Only this actor type. */
+    type?: string;
 }
 
 export interface Silo extends ActorDispatcher {
@@ -574,6 +646,20 @@ export interface Silo extends ActorDispatcher {
     /** Deactivate every activation of one type (dev/HMR hook). */
     deactivateType(type: string): Promise<void>;
     stats(): SiloStats;
+    /**
+     * The live activations themselves, bounded and sorted — what `stats()`
+     * collapses into counts.
+     *
+     * This is the "top grains" view: which keys are hot, which are old,
+     * which are about to be swept. Without it a dashboard can say a silo
+     * holds 12,000 activations with 400 queued turns and cannot say WHERE,
+     * which is the only question worth asking at that point.
+     *
+     * Walks the directory, so it costs O(activations) and allocates one
+     * record per candidate — hence the default limit of 100. Poll it at
+     * human rates, not per request.
+     */
+    activations(options?: ActivationsOptions): readonly ActivationInfo[];
     /**
      * Observe every dispatched turn; returns an unsubscribe.
      *

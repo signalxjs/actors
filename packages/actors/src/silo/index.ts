@@ -40,6 +40,8 @@ export { Mailbox } from './mailbox';
 export { REMINDER_METHOD } from './activation';
 export { REMINDER_TYPE, shardedReminders } from './reminders';
 export type {
+    ActivationInfo,
+    ActivationsOptions,
     ActorCallContext,
     ActorDispatcher,
     ActorPlacement,

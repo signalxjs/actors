@@ -436,6 +436,36 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
   the **caller** gets `ActorCallTimeoutError`; the turn itself always runs
   to completion.
 
+### Seeing which grains are live
+
+`silo.stats()` gives you the counts. `silo.activations()` gives you the
+grains themselves — bounded, sorted, and safe to poll:
+
+```ts
+silo.activations({ sortBy: 'queued', limit: 20 });
+// [{ type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004,
+//    idleMs: 0, keptAlive: false }, …]
+```
+
+`sortBy` picks which end you care about: `'queued'` (default) is the hot
+grains, `'age'` the long-lived ones, `'idle'` the next sweep's candidates.
+`type` filters. Ties break on the actor id so the order is **stable between
+polls** — a table that reshuffles equal rows at 1 Hz is unreadable.
+
+It walks the directory, so it costs O(activations) and allocates a record
+per candidate; `limit` defaults to 100 because this is a "top N" view and a
+silo can hold millions. Poll it at human rates, not per request.
+
+`ageMs` is monotonic and `idleMs` is wall-clock — deliberately different
+clocks. Age is a duration and must survive an NTP step; idle is compared
+against `idleAfterMs` by the sweeper, which genuinely wants wall time.
+
+`stats()` also reports `transitional: { activating, deactivating }`. Those
+slots have no activation to read yet, so they are not in `activations` and
+never were in the counts — which meant a silo in the middle of an
+activation storm read as **idle**, at exactly the moment you were looking
+at it.
+
 ## Metrics
 
 `metrics()` is a plugin that counts what the silo is doing. Pull-based: no
@@ -691,7 +721,7 @@ const app = defineActorApp({ actors })
 
 | Route | Answers |
 | --- | --- |
-| `GET /_sigx/ops` | `OpsSnapshot` — `{ v, at, uptimeMs, stats, health, ops }` |
+| `GET /_sigx/ops` | `OpsSnapshot` — `{ v, at, uptimeMs, stats, activations, health, ops }` |
 | `GET /_sigx/ops/cluster` | a `clusterStats()` fan-out; 404 when unwired |
 
 Everything a monitoring tool needs was already being collected and none of it

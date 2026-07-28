@@ -26,7 +26,13 @@
  * open by accident.
  */
 import { timingSafeEquals } from '../timing-safe';
-import type { Silo, SiloStats } from '../types';
+import {
+    emptySiloStats,
+    resolveLimit,
+    type ActivationInfo,
+    type Silo,
+    type SiloStats
+} from '../types';
 import type { ActorPlugin, OpsReport, PluginRegistry } from './app';
 import type { HealthStatus } from './health';
 
@@ -63,6 +69,17 @@ export interface OpsOptions {
      * silo has no cluster to report on".
      */
     cluster?: (signal: AbortSignal) => Promise<unknown>;
+    /**
+     * How many live activations to include, sorted by queue depth. Default
+     * 20; 0 omits the list.
+     *
+     * Small by default for two reasons. The walk is O(activations), and
+     * this endpoint gets polled. And the list carries grain KEYS — which on
+     * this endpoint is the point, but is also the one field here that can
+     * be personal data, so it is worth being able to turn off without
+     * giving up the rest of the snapshot.
+     */
+    activations?: number;
 }
 
 /** What `GET {base}` answers. */
@@ -77,6 +94,11 @@ export interface OpsSnapshot {
     uptimeMs: number;
     /** Live gauges, INCLUDING `perType` — this endpoint is authenticated. */
     stats: SiloStats;
+    /**
+     * The hottest live activations, deepest mailbox first. Bounded by
+     * `activations`, empty when it is 0 or the silo is not running.
+     */
+    activations: readonly ActivationInfo[];
     /** The same aggregate `/_sigx/health/ready` reports on, in full. */
     health: HealthStatus;
     /** Every `registry.reportOps()` section: `'metrics'`, `'cluster'`, … */
@@ -92,6 +114,8 @@ export interface OpsPlugin extends ActorPlugin {
 }
 
 const BEARER = /^Bearer (.+)$/;
+/** Enough to see the hot grains; small enough to poll. */
+const DEFAULT_OPS_ACTIVATIONS = 20;
 
 export function ops(options: OpsOptions = {}): OpsPlugin {
     const raw = options.base ?? '/_sigx/ops';
@@ -118,6 +142,7 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
         );
     }
     const collectCluster = options.cluster;
+    const activationLimit = resolveLimit(options.activations, DEFAULT_OPS_ACTIVATIONS);
 
     let silo: Silo | null = null;
     let startedAt = 0;
@@ -130,7 +155,11 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
         v: 1,
         at: Date.now(),
         uptimeMs: startedAt === 0 ? 0 : Math.round(performance.now() - startedAt),
-        stats: silo?.stats() ?? { activations: 0, queued: 0, perType: {} },
+        stats: silo?.stats() ?? emptySiloStats(),
+        activations:
+            activationLimit === 0 || !silo
+                ? []
+                : silo.activations({ limit: activationLimit, sortBy: 'queued' }),
         health: readHealth?.() ?? {
             live: silo !== null,
             ready: silo !== null,

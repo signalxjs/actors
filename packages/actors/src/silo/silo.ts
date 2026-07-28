@@ -10,6 +10,8 @@ import {
 import { isActorDefinition } from '../define';
 import { clearSilo, stampSilo } from '../seam';
 import type {
+    ActivationInfo,
+    ActivationsOptions,
     ActorCallContext,
     ActorClientWith,
     ActorPlacement,
@@ -534,6 +536,10 @@ class SiloImpl implements Silo {
 
     stats(): SiloStats {
         return this.#local.stats();
+    }
+
+    activations(options?: ActivationsOptions): readonly ActivationInfo[] {
+        return this.#local.activations(options);
     }
 }
 

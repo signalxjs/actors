@@ -14,6 +14,9 @@ import {
 import {
     actorId,
     actorLabel,
+    resolveLimit,
+    type ActivationInfo,
+    type ActivationsOptions,
     type ActorCallContext,
     type ActorDispatcher,
     type ActorRef,
@@ -24,6 +27,9 @@ import {
 } from '../types';
 import { Activation, type ActivationHost } from './activation';
 import { Mailbox } from './mailbox';
+
+/** Bounded low: this is a "top N" view, and the walk is O(activations). */
+const DEFAULT_ACTIVATIONS_LIMIT = 100;
 
 type Slot =
     | { phase: 'activating'; promise: Promise<Activation> }
@@ -314,14 +320,69 @@ export class LocalHost implements ActorDispatcher {
     stats(): SiloStats {
         let activations = 0;
         let queued = 0;
+        let activating = 0;
+        let deactivating = 0;
         const perType: Record<string, number> = {};
         for (const [, slot] of this.#directory) {
-            if (slot.phase !== 'active') continue;
+            // A slot mid-transition has no Activation to read, but it is
+            // very much work in progress — counted separately rather than
+            // skipped, so an activation storm does not read as an idle silo.
+            if (slot.phase === 'activating') {
+                activating++;
+                continue;
+            }
+            if (slot.phase === 'deactivating') {
+                deactivating++;
+                continue;
+            }
             activations++;
             queued += slot.activation.mailbox.depth;
             perType[slot.activation.ref.type] = (perType[slot.activation.ref.type] ?? 0) + 1;
         }
-        return { activations, queued, perType };
+        return { activations, queued, perType, transitional: { activating, deactivating } };
+    }
+
+    activations(options: ActivationsOptions = {}): readonly ActivationInfo[] {
+        const limit = resolveLimit(options.limit, DEFAULT_ACTIVATIONS_LIMIT);
+        if (limit === 0) return [];
+        const sortBy = options.sortBy ?? 'queued';
+        const wanted = options.type;
+        const now = Date.now();
+        const nowMonotonic = performance.now();
+
+        const rows: ActivationInfo[] = [];
+        for (const [, slot] of this.#directory) {
+            if (slot.phase !== 'active') continue;
+            const { activation } = slot;
+            if (wanted !== undefined && activation.ref.type !== wanted) continue;
+            rows.push({
+                type: activation.ref.type,
+                key: activation.ref.key,
+                queued: activation.mailbox.depth,
+                ageMs: Math.max(0, Math.round(nowMonotonic - activation.startedMs)),
+                // Clamped: `lastActivityMs` is wall-clock, so an NTP step
+                // backwards mid-activation would otherwise report a grain
+                // that was last used in the future.
+                idleMs: Math.max(0, now - activation.lastActivityMs),
+                keptAlive: activation.keptAlive
+            });
+        }
+
+        // Descending on the interesting end of each axis: the deepest
+        // mailbox, the oldest activation, the most idle. Ties break on the
+        // actor id so the order is stable between polls — a table that
+        // reshuffles rows with equal values is unreadable.
+        rows.sort((a, b) => {
+            const primary =
+                sortBy === 'queued'
+                    ? b.queued - a.queued
+                    : sortBy === 'age'
+                      ? b.ageMs - a.ageMs
+                      : b.idleMs - a.idleMs;
+            if (primary !== 0) return primary;
+            return a.type === b.type ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) : a.type < b.type ? -1 : 1;
+        });
+        return rows.length > limit ? rows.slice(0, limit) : rows;
     }
 }
 

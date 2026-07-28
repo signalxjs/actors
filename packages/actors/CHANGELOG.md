@@ -31,6 +31,42 @@
 
 ### Added
 
+- **`Silo.activations()` — the live grain list** (#101). Bounded and
+  sorted: `{ type, key, queued, ageMs, idleMs, keptAlive }`, with
+  `sortBy: 'queued' | 'age' | 'idle'`, a `type` filter and a `limit`
+  defaulting to 100.
+
+  `stats()` could report that a silo held 12,000 activations with 400
+  queued turns and could not say WHERE, which is the only question worth
+  asking at that point. The activation directory was private and nothing
+  else exposed a single grain key, so "top grains by queue depth" was not a
+  panel anyone could build.
+
+  Ties break on the actor id, so the order is **stable between polls** — a
+  table that reshuffles equal rows at 1 Hz is unreadable. The walk is
+  O(activations) and allocates per candidate, hence the low default limit:
+  this is a top-N view, not an export.
+
+  `ageMs` is monotonic while `idleMs` is wall-clock, and the difference is
+  deliberate: age is a duration and must survive an NTP step, whereas idle
+  is compared against `idleAfterMs` by the sweeper, which genuinely wants
+  wall time. Both clamp at 0, so a clock stepped backwards cannot report a
+  grain last used in the future.
+
+- **`SiloStats.transitional`** (#101) — `{ activating, deactivating }`.
+  Slots mid-transition carry no activation, so `stats()` skipped them
+  entirely; a silo in the middle of an activation storm therefore read as
+  **idle**, at precisely the moment an operator was looking at it. Counted
+  separately rather than folded into `activations`, which still means
+  "settled".
+
+- **`OpsSnapshot.activations`** (#101) — the hottest grains on the ops
+  endpoint, deepest mailbox first, bounded by `ops({ activations })`
+  (default 20, `0` omits the list). Small by default because the walk is
+  O(activations) and this endpoint gets polled — and because grain keys are
+  the one field in the snapshot that can be personal data, so it is worth
+  being able to drop them without giving up the rest.
+
 - **`metrics()` breaks down per METHOD** (#101) — `snapshot().byMethod`,
   keyed `Type#method`, carrying the same five numbers as `byType`.
 
@@ -87,7 +123,8 @@
   mutate.
 
 - **`ops()` — the authenticated ops endpoint** (#101). `GET /_sigx/ops`
-  serves an `OpsSnapshot` (`{ v, at, uptimeMs, stats, health, ops }`);
+  serves an `OpsSnapshot`
+  (`{ v, at, uptimeMs, stats, activations, health, ops }`);
   `GET /_sigx/ops/cluster` serves a `clusterStats()` fan-out. Contributed as
   ordinary plugin routes, so every mount picks them up.
 

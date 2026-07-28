@@ -122,6 +122,65 @@ describe('ops(): the snapshot endpoint', () => {
         }
     });
 
+    it('carries the hottest activations, bounded and deepest-mailbox first', async () => {
+        const app = appWith(ops({ secret: SECRET }));
+        const handler = createFetchHandler(app);
+        const silo = await app.start();
+        try {
+            for (const key of ['a', 'b']) await silo.actor(Counter, key).increment(1);
+            const body = (await (await get(handler, '/_sigx/ops')).json()) as OpsSnapshot;
+            expect(body.activations).toHaveLength(2);
+            expect(body.activations.map((a) => a.key).sort()).toEqual(['a', 'b']);
+            expect(body.stats.transitional).toEqual({ activating: 0, deactivating: 0 });
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('honours the activations cap, and 0 omits the list entirely', async () => {
+        const capped = appWith(ops({ secret: SECRET, activations: 1 }));
+        const cappedHandler = createFetchHandler(capped);
+        const siloA = await capped.start();
+        try {
+            for (const key of ['a', 'b', 'c']) await siloA.actor(Counter, key).increment(1);
+            const body = (await (await get(cappedHandler, '/_sigx/ops')).json()) as OpsSnapshot;
+            expect(body.activations).toHaveLength(1);
+            // The totals still see all three — only the LIST is bounded.
+            expect(body.stats.activations).toBe(3);
+        } finally {
+            await capped.stop();
+        }
+
+        const off = appWith(ops({ secret: SECRET, activations: 0 }));
+        const offHandler = createFetchHandler(off);
+        const siloB = await off.start();
+        try {
+            await siloB.actor(Counter, 'a').increment(1);
+            // Grain keys are the one field here that can be personal data,
+            // so turning the list off must not cost you the rest.
+            const body = (await (await get(offHandler, '/_sigx/ops')).json()) as OpsSnapshot;
+            expect(body.activations).toEqual([]);
+            expect(body.stats.activations).toBe(1);
+        } finally {
+            await off.stop();
+        }
+    });
+
+    it('falls back to the default on a non-finite activations cap', async () => {
+        // Same NaN hole as `silo.activations({ limit })`: it would defeat
+        // the `=== 0` check and pass NaN straight through to the walk.
+        const app = appWith(ops({ secret: SECRET, activations: Number.NaN }));
+        const handler = createFetchHandler(app);
+        const silo = await app.start();
+        try {
+            for (let i = 0; i < 25; i++) await silo.actor(Counter, `k${i}`).increment(1);
+            const body = (await (await get(handler, '/_sigx/ops')).json()) as OpsSnapshot;
+            expect(body.activations).toHaveLength(20);
+        } finally {
+            await app.stop();
+        }
+    });
+
     it('401s on a missing or wrong bearer, and advertises the scheme', async () => {
         const app = appWith(ops({ secret: SECRET }));
         const handler = createFetchHandler(app);

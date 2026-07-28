@@ -19,6 +19,7 @@ import {
 import {
     actorId,
     actorLabel,
+    emptySiloStats,
     type ActorCallContext,
     type ActorDispatcher,
     type ActorPlacement,
@@ -581,7 +582,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             epoch: this.identity.epoch,
             address: this.#options.advertise,
             status: this.#fenced ? 'fenced' : this.#status,
-            stats: this.#silo?.stats() ?? { activations: 0, queued: 0, perType: {} },
+            stats: this.#silo?.stats() ?? emptySiloStats(),
             counters: this.counters(),
             reminderShards: shards,
             uptimeMs: this.#startedAt === 0 ? 0 : Math.round(performance.now() - this.#startedAt),
