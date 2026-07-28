@@ -48,6 +48,12 @@
             "production": "./dist/cluster.prod.js",
             "import": "./dist/cluster.js"
         },
+        "./cluster/frames": {
+            "types": "./dist/cluster/frames.d.ts",
+            "development": "./dist/cluster-frames.js",
+            "production": "./dist/cluster-frames.prod.js",
+            "import": "./dist/cluster-frames.js"
+        },
         "./vite": {
             "types": "./dist/vite/index.d.ts",
             "import": "./dist/vite.js"

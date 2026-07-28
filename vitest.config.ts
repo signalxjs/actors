@@ -33,6 +33,10 @@ export default defineConfig({
             '@sigx/actors/app': resolve(__dirname, 'packages/actors/src/app/index.ts'),
             // MORE SPECIFIC FIRST: vitest matches aliases in order by prefix,
             // so `/cluster` listed first would swallow `/cluster/testing`.
+            '@sigx/actors/cluster/frames': resolve(
+                __dirname,
+                'packages/actors/src/cluster/frames.ts'
+            ),
             '@sigx/actors/cluster/testing': resolve(
                 __dirname,
                 'packages/actors/src/cluster/testing.ts'
@@ -40,6 +44,7 @@ export default defineConfig({
             '@sigx/actors/cluster': resolve(__dirname, 'packages/actors/src/cluster/index.ts'),
             '@sigx/actors/vite': resolve(__dirname, 'packages/actors/src/vite/index.ts'),
             '@sigx/actors': resolve(__dirname, 'packages/actors/src/index.ts'),
+            '@sigx/actors-tcp': resolve(__dirname, 'packages/actors-tcp/src/index.ts'),
             '@sigx/actors-redis': resolve(__dirname, 'packages/actors-redis/src/index.ts'),
             '@sigx/actors-cloudflare': resolve(
                 __dirname,

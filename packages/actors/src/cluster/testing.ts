@@ -50,6 +50,16 @@ export interface TransportConformanceHarness {
     /** Membership drops it AND the listener dies. No cleanup runs. */
     crash(index: number): void;
     /**
+     * Remove silo `index` from MEMBERSHIP ONLY, leaving every socket intact.
+     *
+     * Without this, the reaping case cannot test what it claims: a crashed
+     * peer's sockets close on their own, so link counts fall for reasons that
+     * have nothing to do with the membership view, and a transport that never
+     * reaps still passes. Optional, but a connection-oriented transport whose
+     * harness omits it gets a SKIP rather than a false pass.
+     */
+    dropMembership?(index: number): void;
+    /**
      * Speak this transport at a peer with the WRONG credentials. Optional
      * only because a transport may have no authenticated mode at all; one
      * that does must implement it, or the "a forged call is refused" case
@@ -638,11 +648,25 @@ const reapDeparted: ConformanceCase = {
             if (!harness.openLinks) {
                 return { skipped: 'connectionless transport — it holds no links to reap' };
             }
+            if (!harness.dropMembership) {
+                // Falling back to `crash` here would pass vacuously: the
+                // crashed peer's sockets close by themselves, so the link
+                // count falls whether or not anything reaps on membership.
+                return {
+                    skipped:
+                        'harness cannot drop membership without also closing sockets, so this ' +
+                        'case could only pass vacuously'
+                };
+            }
             const links = harness.openLinks;
             await harness.silos[0]!.dispatch({ type: ECHO, key: 'r' }, 'increment', [1], call());
             await harness.silos[1]!.dispatch({ type: ECHO, key: 'r' }, 'increment', [1], call());
-            harness.crash(1);
-            // No call is made — the membership change alone must do it.
+            await waitFor(() =>
+                assert(links(0) > 0, 'the driver must hold a link before this case means anything')
+            );
+            // Sockets stay UP. Only the view changes, so nothing but the
+            // membership subscription can cause the link to be dropped.
+            harness.dropMembership(1);
             await waitFor(() =>
                 assertEqual(links(0), 0, 'links to the departed silo must be dropped')
             );

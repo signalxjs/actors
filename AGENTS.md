@@ -185,6 +185,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   providers for `@sigx/actors/cluster`: `redisCluster` (membership and the
   actor directory). ioredis ≥5 as a peer dependency; provider tests are
   env-gated on `REDIS_URL`.
+- `packages/actors-tcp` → `@sigx/actors-tcp` — an Orleans-style framed TCP
+  transport for `@sigx/actors/cluster`: `tcpTransport()`, one multiplexed
+  connection per peer instead of HTTP's one per in-flight request. Node-only
+  (`node:net`), zero runtime deps. Justified by socket count, not latency —
+  see `benchmarks/BASELINES.md`. Runs the shared transport conformance suite.
 - `packages/actors-cloudflare` → `@sigx/actors-cloudflare` — Durable
   Objects as the backend, one DO per actor: `durableObjectStorage` and
   `durableObjectReminders` (alarms). Needs no membership, directory or
