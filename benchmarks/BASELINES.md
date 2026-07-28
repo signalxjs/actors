@@ -109,6 +109,106 @@ on activation): **626 B/grain** vs **3 B/grain** clean.
 
 ---
 
+## 2026-07-28 · cluster scaling, N = 1 … 100
+
+In-process (`benchmarks/src/cluster-harness.ts`), one CPU shared by every
+silo. **Absolute throughput here is meaningless** — 100 silos contending for
+one core. What is exact is the algorithmic shape: provider calls and
+per-decision cost as a function of N. Node v24.11.1, Apple M4, prod dist.
+
+| property | N=1 | N=100 | verdict |
+|---|---:|---:|---|
+| directory calls per cold activation | 2.00 | **2.00** | ✅ flat |
+| membership `view()` per activation | 1.00 | **1.00** | ✅ flat |
+| notifications per membership change | 1 | **100** | ❌ O(N) |
+| silos doing reminder work | 1 | **16** (84 idle) | ❌ hard ceiling |
+| locality, random policy | 1.00 | **0.01** | ⚠️ 1/N, structural |
+| locality, consistent-hash | 1.00 | 0.00 | ⚠️ same |
+| `choose()` random | 14.8 M/s | 3.7 M/s | ⚠️ 4× slower |
+| `choose()` consistent-hash | 3.9 M/s | **61.8 k/s** | ❌ 63× slower |
+
+### ✅ The most important result is a positive one
+
+**Activation cost does not grow with cluster size.** Two directory calls
+(one `lookup`, one `claim`) and one cached `view()` per cold activation,
+identical at N=1 and N=100. The directory is a shared service, but the
+runtime's demand on it per activation is O(1) — so adding silos adds
+capacity rather than adding load per unit of work. That is the property
+scaling depends on, and it holds.
+
+### ❌ Membership change is O(N²) against a remote provider
+
+One silo joining an N-silo cluster produces **exactly N notifications** —
+measured, not modelled. That much is inherent: every silo must learn.
+
+The cost is in what a notification *becomes*. The Redis provider answers
+each one with a `refresh()` — one `SMEMBERS`, then one `HGET` per id that
+came back (`packages/actors-redis/src/index.ts:137-141,188`), with no
+debounce. A join leaves `N + 1` silos in the set, so each refresh is `N + 2`
+round trips:
+
+| N | notifications | Redis ops for ONE join |
+|---:|---:|---:|
+| 10 | 10 | 120 |
+| 50 | 50 | 2 600 |
+| 100 | 100 | **10 200** |
+
+A rolling restart of 100 silos is ~200 membership changes — on the order of
+**2 M Redis operations**, in bursts. The `redis_ops_modelled` metric applies
+the provider's own refresh shape to the measured notification count; it is
+derived from the provider source, **not measured against Redis** (that needs
+a Redis instance — Tier 2).
+
+Cheapest fix is a debounce/coalesce on the subscriber path: N changes
+arriving together should cost one refresh, not N.
+
+### ❌ Reminders stop scaling at 16 silos
+
+`REMINDER_SHARD_COUNT = 16`, pinned as storage identity ("never change
+either"), with rendezvous ownership. Measured silos owning ≥1 shard:
+
+| N | 1 | 2 | 10 | 50 | 100 |
+|---|---:|---:|---:|---:|---:|
+| silos with reminder work | 1 | 2 | 9 | 13 | **16** |
+| idle silos | 0 | 0 | 1 | 37 | **84** |
+
+Note N=50 gives 13, not 16 — rendezvous collisions leave some shards
+doubled up before the ceiling is even reached. Reminder throughput is capped
+at 16 silos' worth regardless of cluster size, and the shard count cannot be
+raised without an explicit storage migration.
+
+### ⚠️ Locality is 1/N, by design
+
+Nothing routes a caller toward the owner of a grain, so a request landing on
+an arbitrary silo finds the owner ~1/N of the time — measured 1.00, 0.54,
+0.10, 0.02, 0.01 for N = 1, 2, 10, 50, 100. Neither shipped policy improves
+on that, because neither considers the caller; the small differences between
+them in the table are sampling noise around the same ~1/N curve.
+
+This is Orleans-normal and not a bug, but it fixes the performance model:
+**at any real cluster size essentially every call takes a network hop**, so
+cluster throughput is network-bound, and the shared state above is what
+decides whether it scales.
+
+### Per-call cluster costs (N=2, so the numbers mean something)
+
+| | ops/s | p99 |
+|---|---:|---:|
+| locally-owned dispatch | 1.40 M | 1.4 µs |
+| cross-silo, HMAC on | 20.3 k | 95.6 µs |
+| cross-silo, HMAC off | 68.0 k | 21.5 µs |
+
+Cross-silo costs ~69× a local call **in software alone** — no real network
+is involved. HMAC accounts for ~35 µs of that per call (~17 µs per
+sign/verify, against the ~9 µs the comment in `cluster/envelope.ts`
+claims — worth correcting, though see below).
+
+Keep this in proportion: a real LAN round trip is 200-1000 µs, which
+dominates the ~50 µs of software. **HMAC and `choose()` are not what limits
+a real deployment** — membership churn and the reminder ceiling are.
+
+---
+
 ## Things worth investigating
 
 Recorded here so the next person does not have to re-derive them. **None of
@@ -123,3 +223,10 @@ these are known problems** — they are measurements looking for a decision.
    codec walk — three copies of the state per save.
 4. **The mailbox allocates ~4 promises per turn.** It is not the dominant cost
    today (see the ladder), so this is lower priority than it looks.
+5. **Debounce the membership subscriber** — the single highest-value cluster
+   fix, and the only measured O(N²).
+6. **The 16-shard reminder ceiling** needs a decision, not a patch: raising
+   the count is a storage migration.
+7. **`consistentHashPolicy()` costs ~16 µs per decision at N=100** (63×
+   worse than at N=1) because it hashes `actorId|siloId` for every silo.
+   Only paid on a route-cache miss, and small next to a network hop.

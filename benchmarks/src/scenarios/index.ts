@@ -1,3 +1,4 @@
+import { clusterScenarios } from './cluster.ts';
 import { dispatchScenarios } from './dispatch.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
@@ -14,7 +15,8 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...stateScenarios,
     ...wireScenarios,
     ...lifecycleScenarios,
-    ...memoryScenarios
+    ...memoryScenarios,
+    ...clusterScenarios
 ];
 
 export function selectScenarios(filters: readonly string[]): Scenario[] {

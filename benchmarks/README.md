@@ -153,6 +153,41 @@ actor that retains its context on activation measured **626 B/grain retained**
 against **3 B/grain** clean — a 150× signal. If you change the memory scenarios,
 re-do that; a leak detector that has never caught a leak is not evidence.
 
+## Cluster scaling
+
+`cluster/*` answers a different question from the rest of the suite: not
+"how fast" but **"does it still work at 100 silos"**.
+
+```sh
+pnpm bench:run cluster/          # the whole sweep, N = 1, 2, 10, 50, 100
+pnpm bench:run cluster/ --quick  # N = 1, 2, 10
+```
+
+Every silo shares one CPU here, so **absolute throughput from an N=100 run is
+meaningless** — it is 100 silos contending for one core. What is exact, and
+what these measure, is the *algorithmic* shape: how many provider calls the
+runtime makes and how per-decision cost grows with N. An O(N²) shows up here
+on a laptop instead of on a bill.
+
+How to read it: a metric that stays **flat** from N=1 to N=100 scales. One
+that grows with N is a shared bottleneck. One that grows with N *per silo* is
+an O(N²).
+
+`benchmarks/src/cluster-harness.ts` wraps each silo's cluster providers in a
+counter, so `directory.claim`, `membership.refresh`, change notifications and
+the rest are all attributable per silo.
+
+**What this cannot tell you:** what those provider calls cost against real
+Redis. `memoryClusterHub` answers `refresh()` from a local map; the Redis
+provider answers it with one `SMEMBERS`, then one `HGET` per id that came
+back — so a refresh against a cluster of M silos is `M + 1` round trips. The
+`redis_ops_modelled` metric applies that shape to the measured notification
+count — it is *derived from the provider source, not measured*. Measuring it
+for real needs a Redis instance, and interpreting a real 100-silo run needs
+cluster-wide stats that do not exist yet (issue #38).
+
+See `BASELINES.md` for what the sweep found.
+
 ## Adding a scenario
 
 A scenario is `{ name, description, run(ctx) → Metric[] }`, registered in
