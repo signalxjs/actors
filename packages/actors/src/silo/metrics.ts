@@ -22,6 +22,7 @@
  * activation knows both halves.
  */
 import { isActorError, isStorageConflict, type ActorErrorKind } from '../errors';
+import { resolveLimit } from '../types';
 import type {
     ActorDispatcher,
     ActorRef,
@@ -194,16 +195,17 @@ interface TypeBucket {
 
 export function metrics(options: MetricsOptions = {}): MetricsPlugin {
     const useHistograms = options.histograms ?? true;
-    // Clamp rather than trust: a negative would make `types.size >= maxTypes`
-    // true from the first call and fold EVERY type into '(other)', which
-    // looks like a bug in the breakdown rather than a bad option. A
-    // fractional value would make the cap arbitrary.
-    const maxTypes = Math.max(0, Math.floor(options.maxTypes ?? DEFAULT_MAX_TYPES));
-    const maxMethods = Math.max(0, Math.floor(options.maxMethods ?? DEFAULT_MAX_METHODS));
-    const maxRecentErrors = Math.max(
-        0,
-        Math.floor(options.recentErrors ?? DEFAULT_RECENT_ERRORS)
-    );
+    // Resolve rather than trust. A negative would make `types.size >=
+    // maxTypes` true from the first call and fold EVERY type into '(other)',
+    // which reads as a bug in the breakdown rather than a bad option; a
+    // fractional value would make the cap arbitrary; and a non-finite one
+    // would fail the cap OPEN — every comparison against NaN is false, so
+    // the fold never fires and the map grows one bucket per type forever.
+    // `resolveLimit` handles all three, and a cap that fails open is worse
+    // than no cap because nothing looks wrong until the heap goes.
+    const maxTypes = resolveLimit(options.maxTypes, DEFAULT_MAX_TYPES);
+    const maxMethods = resolveLimit(options.maxMethods, DEFAULT_MAX_METHODS);
+    const maxRecentErrors = resolveLimit(options.recentErrors, DEFAULT_RECENT_ERRORS);
 
     let silo: Silo | null = null;
     // Monotonic: `windowMs` is a duration, and the wall clock can step.

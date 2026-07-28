@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`metrics()` caps no longer fail open on a non-finite value** (#109).
+  `Math.floor(NaN)` is `NaN` and every comparison against it is false, so
+  `maxTypes: NaN` meant the `'(other)'` fold never fired and the per-type map
+  grew one bucket per distinct type — three histograms each — for the life of
+  the process. `maxMethods` was the same and worse, since methods multiply
+  types, and `recentErrors: NaN` left the ring untrimmed.
+
+  Exactly the unbounded growth the caps exist to prevent, and it looks like
+  healthy behaviour right up until the heap goes. All three now go through
+  `resolveLimit()`, which #108 added for the same bug in `silo.activations()`.
+
 ### Documentation
 
 - **Bounding the silo-to-silo connection pool** (#97, closes #89). Node's

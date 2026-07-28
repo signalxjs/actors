@@ -258,6 +258,99 @@ describe('metrics()', () => {
         }
     });
 
+    it('an Infinity cap falls back to the default too', async () => {
+        // `Math.floor(Infinity)` is `Infinity`, so `types.size >= maxTypes` is
+        // false forever — the same fail-open as NaN, by a different route.
+        // `resolveLimit` treats "no limit" as a request this API does not
+        // offer, so it falls back to the default rather than honouring it.
+        const m = metrics({ maxTypes: Number.POSITIVE_INFINITY });
+        const types = Array.from({ length: 70 }, (_v, i) =>
+            defineActor({
+                type: `I${i}`,
+                unguarded: true,
+                state: () => ({}),
+                methods: () => ({ noop: () => 0 })
+            })
+        );
+        const { app, silo } = await appWith(m, types);
+        try {
+            for (const [i, t] of types.entries()) await silo.actor(t, `k${i}`).noop();
+            const snap = m.snapshot();
+            expect(Object.keys(snap.byType).length).toBeLessThanOrEqual(65);
+            expect(snap.byType['(other)']?.calls).toBeGreaterThan(0);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('a non-finite maxMethods falls back to the default rather than failing open', async () => {
+        // Methods MULTIPLY types, so this cap failing open is the worse of
+        // the two — and it had no regression test at all.
+        const m = metrics({ maxMethods: Number.NaN });
+        // 260 method buckets from 26 types x 10 methods, past the default 256.
+        const types = Array.from({ length: 26 }, (_v, i) =>
+            defineActor({
+                type: `M${i}`,
+                unguarded: true,
+                state: () => ({}),
+                methods: () =>
+                    Object.fromEntries(
+                        Array.from({ length: 10 }, (_w, j) => [`m${j}`, () => 0])
+                    ) as Record<string, () => number>
+            })
+        );
+        const { app, silo } = await appWith(m, types);
+        try {
+            for (const [i, t] of types.entries()) {
+                for (let j = 0; j < 10; j++) {
+                    await (silo.actor(t, `k${i}`) as unknown as Record<string, () => Promise<number>>)[
+                        `m${j}`
+                    ]!();
+                }
+            }
+            const snap = m.snapshot();
+            expect(snap.calls.total).toBe(260);
+            // The default cap of 256 must be in force: named buckets plus the
+            // overflow fold, NOT one bucket per method.
+            expect(Object.keys(snap.byMethod).length).toBeLessThanOrEqual(257);
+            expect(snap.byMethod['(other)']?.calls).toBeGreaterThan(0);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('a non-finite cap falls back to the default rather than failing open', async () => {
+        // `Math.floor(NaN)` is `NaN`, `Math.max(0, NaN)` is `NaN`, and every
+        // comparison against `NaN` is false — so `types.size >= maxTypes`
+        // never fires and the map grows one bucket per distinct type forever.
+        // That is the unbounded growth the cap exists to prevent, and it looks
+        // like healthy behaviour right up until the heap goes.
+        //
+        // Exceeding the DEFAULT cap of 64 is what makes the bug visible: with
+        // a handful of types, a broken cap and a working one are identical.
+        const m = metrics({ maxTypes: Number.NaN });
+        const types = Array.from({ length: 70 }, (_v, i) =>
+            defineActor({
+                type: `T${i}`,
+                unguarded: true,
+                state: () => ({}),
+                methods: () => ({ noop: () => 0 })
+            })
+        );
+        const { app, silo } = await appWith(m, types);
+        try {
+            for (const [i, t] of types.entries()) await silo.actor(t, `k${i}`).noop();
+            const snap = m.snapshot();
+            expect(snap.calls.total).toBe(70);
+            // The default cap must be in force: 64 named buckets plus the
+            // overflow fold, NOT one bucket per type.
+            expect(Object.keys(snap.byType).length).toBeLessThanOrEqual(65);
+            expect(snap.byType['(other)']?.calls).toBeGreaterThan(0);
+        } finally {
+            await app.stop();
+        }
+    });
+
     it('never reports a negative duration', async () => {
         // Durations come from performance.now(), not Date.now(): a wall
         // clock can be stepped backwards by NTP or a VM host, which would
@@ -703,6 +796,25 @@ describe('metrics(): error kinds', () => {
             // Counts are unbounded; the SAMPLES are what is capped.
             expect(snap.errors.byKind['(unknown)']).toBe(5);
             expect(snap.errors.recent).toHaveLength(3);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('a non-finite recentErrors cap still trims the ring', async () => {
+        // `recentErrors.length > NaN` is false forever, so the ring grows
+        // without bound — one retained entry per failed call, for the life of
+        // the process. Exceeding the DEFAULT of 32 is what makes it visible.
+        const m = metrics({ recentErrors: Number.NaN });
+        const { app, silo } = await appWith(m);
+        try {
+            for (let i = 0; i < 40; i++) {
+                await expect(silo.actor(Counter, `k${i}`).boom()).rejects.toThrow();
+            }
+            const snap = m.snapshot();
+            expect(snap.errors.byKind['(unknown)']).toBe(40);
+            // Bounded by the default, not unbounded.
+            expect(snap.errors.recent).toHaveLength(32);
         } finally {
             await app.stop();
         }
