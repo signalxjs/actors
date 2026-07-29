@@ -186,6 +186,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   providers for `@sigx/actors/cluster`: `redisCluster` (membership and the
   actor directory). ioredis ≥5 as a peer dependency; provider tests are
   env-gated on `REDIS_URL`.
+- `packages/actors-k8s` → `@sigx/actors-k8s` — Kubernetes membership
+  provider for `@sigx/actors/cluster`: `k8sMembership()`, silo liveness via
+  a coordination.k8s.io Lease per silo (renewed on the heartbeat cadence)
+  and a label-selected Lease watch feeding the membership view. Node-only
+  (`node:https`/`node:fs`), zero runtime deps — talks to the API server
+  with fetch, no client lib. The actor directory stays store-backed
+  (compose with `redisDirectory`). Tested against a fake API server;
+  real-cluster suite env-gated on `KUBECONFIG`.
 - `packages/actors-tcp` → `@sigx/actors-tcp` — an Orleans-style framed TCP
   transport for `@sigx/actors/cluster`: `tcpTransport()`, one multiplexed
   connection per peer instead of HTTP's one per in-flight request. Node-only

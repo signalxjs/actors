@@ -30,6 +30,7 @@ await actor(CartActor, cartId).addItem(item);
 |---|---|
 | [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./silo`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
 | [`@sigx/actors-redis`](packages/actors-redis) | Redis cluster providers — membership and the actor directory |
+| [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — silo liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Orleans-style framed TCP transport — one multiplexed connection per peer |
 | [`@sigx/actors-ws`](packages/actors-ws) | The same frames over WebSocket — one port, proxy-friendly |
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — one DO per actor (storage + alarm reminders) |

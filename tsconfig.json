@@ -25,6 +25,7 @@
       "@sigx/actors/cluster": ["./packages/actors/src/cluster/index.ts"],
       "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"],
       "@sigx/actors-ws": ["./packages/actors-ws/src/index.ts"],
+      "@sigx/actors-k8s": ["./packages/actors-k8s/src/index.ts"],
       "@sigx/actors-tcp": ["./packages/actors-tcp/src/index.ts"],
       "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"],
       "@sigx/actors-cloudflare": ["./packages/actors-cloudflare/src/index.ts"],

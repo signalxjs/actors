@@ -45,6 +45,7 @@ export default defineConfig({
             '@sigx/actors/vite': resolve(__dirname, 'packages/actors/src/vite/index.ts'),
             '@sigx/actors': resolve(__dirname, 'packages/actors/src/index.ts'),
             '@sigx/actors-ws': resolve(__dirname, 'packages/actors-ws/src/index.ts'),
+            '@sigx/actors-k8s': resolve(__dirname, 'packages/actors-k8s/src/index.ts'),
             '@sigx/actors-tcp': resolve(__dirname, 'packages/actors-tcp/src/index.ts'),
             '@sigx/actors-redis': resolve(__dirname, 'packages/actors-redis/src/index.ts'),
             '@sigx/actors-cloudflare': resolve(
