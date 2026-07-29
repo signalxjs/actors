@@ -81,6 +81,15 @@ export function createWorkerHandler<Env = unknown>(
         }
         app.use(
             durableObjects({
+                // The BINDING is captured once and reused. That is safe:
+                // what workerd refuses to carry across requests is a
+                // Durable Object STUB, which the placement therefore
+                // derives fresh on every dispatch and never caches. An
+                // earlier version of this read the binding from a
+                // per-isolate mutable slot instead, which was both
+                // unnecessary and racy — a Worker isolate serves several
+                // requests concurrently, so a second could overwrite the
+                // slot while the first was still dispatching.
                 namespace: options.namespace(env),
                 // No `isSelf`: the Worker hosts nothing, so every ref is
                 // somebody else's object.

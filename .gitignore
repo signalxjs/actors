@@ -69,3 +69,6 @@ benchmarks/profiles/
 .cache/
 .temp/
 .tmp/
+.wrangler/
+.dev.vars
+.mf/

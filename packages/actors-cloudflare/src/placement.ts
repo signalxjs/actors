@@ -46,7 +46,6 @@ import type { DurableObjectNamespaceLike, DurableObjectStubLike } from './types'
  */
 const SYNTHETIC_ORIGIN = 'https://sigx.invalid';
 const DEFAULT_BASE = '/_sigx/do';
-const DEFAULT_STUB_CACHE = 512;
 
 /** NUL separator, matching `actorId()` and this package's storage keys. */
 const SEP = '\u0000';
@@ -95,12 +94,6 @@ export interface DurableObjectPlacementOptions {
     base?: string;
     /** Identity stamped into the envelope's `from`. Default `cf`. */
     siloId?: string;
-    /**
-     * Cached `{ stub, dispatcher }` pairs. Default 512, cleared wholesale on
-     * overflow — a Worker isolate is short-lived and there is nothing here
-     * worth an LRU.
-     */
-    stubCacheSize?: number;
 }
 
 /**
@@ -130,7 +123,6 @@ export function durableObjectPlacement(
         );
     }
     const objectName = options.objectName ?? durableObjectName;
-    const cacheSize = options.stubCacheSize ?? DEFAULT_STUB_CACHE;
     const config: SiloTransportConfig = {
         siloId: options.siloId ?? 'cf',
         epoch: 0,
@@ -145,7 +137,6 @@ export function durableObjectPlacement(
     };
 
     let local: ActorDispatcher | null = null;
-    const cache = new Map<string, ActorDispatcher>();
 
     const namespaceFor = (ref: ActorRef): DurableObjectNamespaceLike => {
         const resolved =
@@ -238,15 +229,13 @@ export function durableObjectPlacement(
                 }
                 return local;
             }
-            const name = objectName(ref);
-            const hit = cache.get(name);
-            if (hit) return hit;
-            const dispatcher = remoteFor(ref, name);
-            // Wholesale clear rather than an eviction policy: the cost being
-            // avoided is one `idFromName` hash, not a connection.
-            if (cache.size >= cacheSize) cache.clear();
-            cache.set(name, dispatcher);
-            return dispatcher;
+            // Built fresh every time, and NOT cached. A stub is an I/O
+            // object bound to the request context that created it, and
+            // workerd refuses to use one from a different request — so a
+            // cache that outlives a request turns every call after the first
+            // into "unreachable". Rebuilding costs one `idFromName` hash and
+            // a closure; a cache costs correctness.
+            return remoteFor(ref, objectName(ref));
         }
     };
 }

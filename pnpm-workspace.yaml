@@ -5,6 +5,10 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
+  # workerd ships its platform binary through a postinstall. pnpm 10 skips
+  # postinstalls that are not listed here, and the failure is opaque: the
+  # binary is simply never linked and every workers test dies on spawn.
+  - workerd
 
 # Single source of truth for the sigx core version — a framework bump is a
 # localized edit to these entries here, instead of hunting specifiers across

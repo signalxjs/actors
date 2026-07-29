@@ -1,0 +1,18 @@
+{
+    // Test-only. `new_sqlite_classes` rather than `new_classes`: the latter
+    // is the legacy KV-backed form and CANNOT be migrated to SQLite in place,
+    // so it is a one-way door. It also has a far smaller per-value limit,
+    // which changes what the package can honestly promise about actor state.
+    //
+    // Deliberately NO `compatibility_flags: ["nodejs_compat"]`. The runtime is
+    // WinterCG-clean, and if something drags a `node:` builtin in we want to
+    // find out loudly here rather than paper over it and ship the startup cost
+    // to every user.
+    "name": "sigx-actors-test",
+    "main": "fixture-worker.ts",
+    "compatibility_date": "2026-07-01",
+    "durable_objects": {
+        "bindings": [{ "name": "ACTORS", "class_name": "TestSilo" }]
+    },
+    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestSilo"] }]
+}

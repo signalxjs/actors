@@ -74,11 +74,15 @@ Two things follow from what that gate actually is, and both are handled for
 you:
 
 - **It is never held across delivery.** `blockConcurrencyWhile` blocks the
-  whole object until its callback settles, and does not nest. Since
-  rescheduling from inside `onReminder` is a normal pattern — and takes the
-  gate itself — holding it while delivering would deadlock the object. So
-  `onAlarm()` runs in three phases: claim what is due and persist the
-  advance (gated), deliver (**un**gated), then re-read and re-arm (gated).
+  whole object until its callback settles, so holding it across an arbitrary
+  user callback stalls every other event on that object for as long as the
+  handler runs — and delivery is exactly the part whose duration you do not
+  control. So `onAlarm()` runs in three phases: claim what is due and persist
+  the advance (gated), deliver (**un**gated), then re-read and re-arm (gated).
+
+  (The gate does *permit* re-entry, so rescheduling from inside `onReminder`
+  would not deadlock. That is measured, not assumed — see
+  `__tests__/workers/gate.test.ts`.)
 - **Expected failures are raised outside it.** An exception escaping
   `blockConcurrencyWhile` *resets* the Durable Object, which would replace a
   diagnosable error with a generic one and kill every other in-flight call.

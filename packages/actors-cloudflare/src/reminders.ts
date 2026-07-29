@@ -204,17 +204,19 @@ export function durableObjectReminders(
          *
          * A handler is expected to call `ctx.reminders.set()` — rescheduling
          * from inside `onReminder` is the documented pattern — and that takes
-         * the gate. `blockConcurrencyWhile` blocks the whole object until its
-         * callback settles and does not nest, so holding it across delivery
-         * means the inner call waits for a lock its own caller holds: the
-         * object wedges, the alarm is never re-armed, and a periodic reminder
-         * is dead for good.
+         * the gate again.
          *
-         * Splitting the table writes from the delivery removes the
-         * re-entrancy rather than trying to detect it. (A "gate already
-         * held" flag cannot work: it can't tell a genuinely re-entrant call
-         * from a different concurrent one, and would let the latter skip the
-         * serialization the gate exists to provide.)
+         * MEASURED, not assumed (`__tests__/workers/gate.test.ts`): the real
+         * `blockConcurrencyWhile` PERMITS that re-entry. An earlier version
+         * of this comment claimed it deadlocked; it does not, and the fake
+         * that "proved" it was modelling a non-reentrant queue the platform
+         * does not implement.
+         *
+         * The split stays, for the reason that survives measurement: the gate
+         * blocks the whole OBJECT until its callback settles, so holding it
+         * across an arbitrary user callback stalls every other event on that
+         * object for as long as the handler runs. Delivery is exactly the
+         * part whose duration we do not control.
          */
         async onAlarm() {
             const bound = context;

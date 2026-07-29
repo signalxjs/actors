@@ -134,6 +134,7 @@ agents the issue-first flow below is required.)
 pnpm install
 pnpm build       # build all packages
 pnpm test        # vitest run (unit tests across packages)
+pnpm test:workers # the Cloudflare suite on REAL workerd (own config + CI job)
 pnpm test -- <path>                # single test file/dir (substring match)
 pnpm test -- -t "name of test"     # single test by name (vitest -t)
 pnpm test:watch
@@ -222,8 +223,12 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   state (break `isSelf` and the test suite OOMs — the object fetches itself
   forever). **Eviction is not deactivation**: the platform destroys the
   isolate, silo and activation together, so `onDeactivate` never runs and
-  `sweepIntervalMs` is 0. Tested with fakes; no Workers runtime required
-  (yet — a real workerd suite is the next milestone).
+  `sweepIntervalMs` is 0. **A DO stub is never cached** — it is an I/O object
+  bound to the request that made it, so reusing one across requests makes
+  every later call "unreachable". Two suites: fakes under `__tests__` (fast,
+  in `pnpm test`) and REAL workerd under `__tests__/workers` (`pnpm
+  test:workers`, its own config and CI job — wrangler needs Node >= 22 and
+  the main matrix includes 20).
 - `packages/actors-cli` → `@sigx/actors-cli` — a `@sigx/cli` PLUGIN (the
   `@sigx/lynx-cli` shape, not its own binary) that observes silos:
   `sigx actors stats` and `sigx actors health`, over an embedded source

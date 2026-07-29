@@ -281,7 +281,7 @@ describe('durableObjectPlacement', () => {
         }
     });
 
-    it('reuses one dispatcher per object name', async () => {
+    it('derives a fresh stub per dispatch, and never caches one', async () => {
         const ns = fakeNamespace();
         let ids = 0;
         const counting: DurableObjectNamespaceLike = {
@@ -296,7 +296,13 @@ describe('durableObjectPlacement', () => {
             await worker.actor(Counter, 'a').increment(1);
             await worker.actor(Counter, 'a').increment(1);
             await worker.actor(Counter, 'a').increment(1);
-            expect(ids).toBe(1);
+            // NOT 1. A Durable Object stub is an I/O object bound to the
+            // request context that created it, and workerd refuses to use one
+            // from a different request — so a cache that outlives a request
+            // turns every call after the first into "unreachable". Measured
+            // on workerd, not theorised: see __tests__/workers/. Rebuilding
+            // costs one idFromName hash and a closure.
+            expect(ids).toBe(3);
         } finally {
             await worker.stop({ timeoutMs: 1_000 });
             await ns.stop();

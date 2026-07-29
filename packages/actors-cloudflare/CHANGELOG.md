@@ -4,14 +4,28 @@
 
 ### Fixed
 
+- **A Durable Object stub is no longer cached between dispatches** (#149).
+  A stub is an I/O object owned by the request context that created it, and
+  workerd refuses to use one from another request — so the cache turned every
+  call after the first into `unreachable`. Found by running on real workerd;
+  no fake could have shown it. Rebuilding costs one `idFromName` hash.
+  `stubCacheSize` is gone.
+- **`createWorkerHandler` resolves its namespace binding per request** (#149),
+  for the same reason: the app is memoized across requests, but the binding
+  it was built with is not reusable from a later one.
+
 - **`onAlarm()` no longer holds `blockConcurrencyWhile` across delivery**
   (#139). It wrapped its whole body in the gate and then called
   `context.deliver()`, so a handler doing the documented thing —
-  `ctx.reminders.set()` from inside `onReminder` — took the gate again. The
-  real `blockConcurrencyWhile` blocks the object until its callback settles
-  and does not nest, so the inner call waited on a lock its own caller held:
-  the object wedged, the alarm was never re-armed, and a periodic reminder
-  was dead for good.
+  `ctx.reminders.set()` from inside `onReminder` — took the gate again.
+
+  **Correction (#149):** the original entry said the real gate deadlocks on
+  re-entry. Measured against workerd, it does not — it permits re-entry, and
+  the fake that "proved" the deadlock was modelling a non-reentrant queue the
+  platform does not implement. The split stays for the reason that survived
+  measurement: the gate blocks the whole *object* until its callback settles,
+  so holding it across an arbitrary user callback stalls every other event on
+  that object for the duration of the handler.
 
   Now three phases — claim and persist the advance (gated), deliver
   (ungated), re-read and re-arm (gated) — which removes the re-entrancy

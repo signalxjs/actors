@@ -15,6 +15,7 @@
         "build": "pnpm -r run build",
         "test": "vitest run",
         "test:watch": "vitest",
+        "test:workers": "pnpm --filter @sigx/actors-cloudflare test:workers",
         "test:coverage": "vitest run --coverage",
         "typecheck": "tsgo --noEmit && pnpm --filter @sigx/actors-cli typecheck",
         "lint": "oxlint packages/actors/src packages/actors-cli/src packages/actors-redis/src packages/actors-k8s/src packages/actors-cloudflare/src benchmarks/src examples/aks-cluster/src",

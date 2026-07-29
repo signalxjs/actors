@@ -16,7 +16,10 @@ export default defineConfig({
     test: {
         environment: 'happy-dom',
         include: ['packages/**/__tests__/**/*.test.{ts,tsx}'],
-        exclude: ['**/node_modules/**'],
+        // The workers pool has its own config, its own runtime and its own
+        // CI job (wrangler needs Node >= 22, this matrix includes 20). These
+        // files import `cloudflare:test`, which only resolves there.
+        exclude: ['**/node_modules/**', '**/__tests__/workers/**'],
         globals: true,
         typecheck: {
             // Enforce the *.test-d.ts typing-contract files on every test run.

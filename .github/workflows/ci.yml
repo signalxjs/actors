@@ -83,6 +83,28 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379
 
+  # Own job, like test-redis, and for the same kind of reason: wrangler
+  # declares engines.node >= 22 and the main matrix includes Node 20, so this
+  # suite cannot run there. Ubuntu only — workerd's semantics do not vary by
+  # host OS, and the Windows leg is already the slowest.
+  test-workers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test against workerd
+        run: pnpm test:workers
+
   verify-pack:
     runs-on: ubuntu-latest
     steps:
