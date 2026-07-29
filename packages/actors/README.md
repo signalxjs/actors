@@ -348,6 +348,53 @@ all: a Cloudflare Worker only runs while handling a request, so an interval
 registered at startup never fires. That is an architectural difference, not
 something a polyfill can hide — hence a seam rather than a shim.
 
+## Shipping actors in a package
+
+An app registers actors from anywhere — `withActors([Greeter, Presence])`.
+The build is the part that needs care: `sigxActors()` only transforms
+first-party source (`node_modules` is excluded), so a **package must do its
+own client swap**, through its exports map:
+
+```json
+{
+    "exports": {
+        ".": {
+            "types": "./dist/server.d.ts",
+            "browser": "./dist/client.js",
+            "import": "./dist/server.js"
+        }
+    }
+}
+```
+
+```ts
+// client.ts — the browser half
+import { __actorRef } from '@sigx/actors/client';
+import type { Greeter as GreeterDef } from './server';
+
+// Types come from the real definition; the value is a ref. The `import
+// type` is erased, so no implementation reaches the browser.
+export const Greeter = __actorRef('acme/greeter', '/_sigx/actor', ['watch']) as typeof GreeterDef;
+```
+
+That is the same swap the Vite plugin performs for `*.actor.ts`, done by
+static resolution instead — so it works with any bundler.
+
+Three things are on the package author, because the consuming app's build
+never sees the source:
+
+- **Guards.** `requireGuards` cannot inspect a package, so declare `use` or
+  `unguarded` yourself. The silo dev-warns for a registered actor that
+  declares neither.
+- **Stream names** in the ref must match the definition; they drive wire
+  routing.
+- **`type` is public API.** It is the wire, directory *and* storage key, so
+  renaming it breaks deployed state. Two different actors claiming one type
+  is refused at startup. Namespace it after the package (`acme/greeter`), but
+  **not** with the npm scope form — a `type` starting with `@` or `$` is
+  refused: those heads belong to the runtime's own data keys (`@actor`) and
+  mounts (`$live`).
+
 ## Guards
 
 Actor methods are as security-sensitive as server functions, so the build

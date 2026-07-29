@@ -158,6 +158,28 @@ class SiloImpl implements Silo {
                 if (!isActorDefinition(def)) {
                     throw new Error('[sigx actors] createSilo({ actors }) got a non-definition.');
                 }
+                const claimed = this.#registry.get(def.type);
+                if (claimed && claimed !== def) {
+                    // `type` is the wire, directory AND storage name, so two
+                    // definitions under one type is not a shadowing nuisance
+                    // — the loser's callers silently reach the winner's
+                    // state. Registering the SAME definition twice is fine.
+                    throw new Error(
+                        `[sigx actors] two different actors are registered as "${def.type}". ` +
+                            'The type is the wire and storage key, so one would silently serve ' +
+                            "the other's callers — rename one of them."
+                    );
+                }
+                if (__DEV__ && !def.__sigxActor.use?.length && !def.__sigxActor.unguarded) {
+                    // The build gate only sees first-party source, so an
+                    // actor from a package can arrive with no guard decision
+                    // at all. Say so where we CAN see it.
+                    console.warn(
+                        `[sigx actors] actor "${def.type}" declares neither a \`use\` guard ` +
+                            'chain nor `unguarded: true`. Every method is reachable from the ' +
+                            'public endpoint.'
+                    );
+                }
                 this.#registry.set(def.type, def);
                 this.#resolved.set(def.type, def);
             }

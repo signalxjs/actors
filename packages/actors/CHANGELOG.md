@@ -520,6 +520,21 @@
   investigation and off again without leaving a cost behind.
   `PluginRegistry.observeTurns` returns the same unsubscribe.
 
+- **Actors can ship from npm packages** (#73): the runtime already allowed
+  it, but the build did not — `sigxActors()` only transforms first-party
+  source, so a packaged actor was never client-swapped and its
+  implementation would have reached the browser. A package now performs
+  the swap itself through its exports map (`browser` → `__actorRef(...)`,
+  server conditions → the definition), which is the same swap the Vite
+  plugin does for `*.actor.ts`, by static resolution instead — so it works
+  with any bundler.
+
+  Two safety nets for what the consuming build cannot see: two different
+  actors claiming one `type` now throw at startup (it is the wire,
+  directory and storage key, so the loser's callers would silently reach
+  the winner's state), and a registered actor declaring neither `use` nor
+  `unguarded` dev-warns, since `requireGuards` cannot inspect a package.
+  Registering the same definition twice stays fine.
 
 - **The Vite plugin supplies the actor registry** (#61):
   `defineActorApp({ actors })` is now optional, and `sigxActors({ app })`
