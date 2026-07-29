@@ -95,7 +95,16 @@ const composed = app
 // No browser reaches this service (ClusterIP only), so the check buys
 // nothing here.
 const handler = createAppHandler(composed, { origin: false });
-const server = createServer(handler);
+// The `stopping` wrap is the drain mechanism for kept-alive client
+// connections: once shutdown begins, every response carries an explicit
+// `connection: close`, so pools (undici et al) retire the socket after the
+// in-flight response and re-dial through the Service to a live pod — no
+// resets. Header is set BEFORE the app handler writes anything.
+let stopping = false;
+const server = createServer((req, res) => {
+    if (stopping) res.setHeader('connection', 'close');
+    handler(req, res);
+});
 
 // Listen BEFORE starting — app.start() joins membership, and from that
 // moment peers may place actors here and call them.
@@ -106,23 +115,26 @@ const silo = await composed.start();
 // sleep + ready-503 dance only steers NEW connections away — established
 // keep-alive flows survive endpoint removal (conntrack) and ride into the
 // exiting pod, where they get RST at process exit. So on SIGTERM:
-//  1. server.close()            — stop accepting; Node marks kept-alive
-//                                 connections to close after their current
-//                                 response ('connection: close').
-//  2. closeIdleConnections()    — evict pooled idle sockets NOW, so client
-//                                 pools re-dial through the Service to a
-//                                 live pod instead of into this one.
-//  3. silo.stop()               — the actor drain (announces 'leaving',
+//  1. stopping = true           — every response now carries
+//                                 `connection: close` (the wrap above), so
+//                                 client pools drain themselves one
+//                                 response at a time, gracefully. NO
+//                                 server.close() yet: on Node >= 19 close()
+//                                 destroys idle sockets immediately, which
+//                                 races the client writing its next request
+//                                 onto one — a reset, the very thing being
+//                                 fixed.
+//  2. silo.stop()               — the actor drain (announces 'leaving',
 //                                 hands activations off; peers with pooled
-//                                 connections keep flowing, new peer dials
-//                                 are refused → unreachable → retryable).
-//  4. closeAllConnections()     — whatever straggled, then exit.
-let stopping = false;
+//                                 connections keep flowing throughout).
+//  3. close() + closeAll...()   — at the very end. Anything still open is
+//                                 either a socket that stayed idle through
+//                                 the whole drain (an idle-close is not an
+//                                 error to a client pool) or a genuine
+//                                 straggler.
 const shutdown = async () => {
     if (stopping) return;
     stopping = true;
-    server.close();
-    server.closeIdleConnections();
     let code = 0;
     try {
         await silo.stop({ timeoutMs: 30_000 });
@@ -132,6 +144,7 @@ const shutdown = async () => {
         console.error('[aks-cluster] drain failed:', error);
         code = 1;
     }
+    server.close();
     server.closeAllConnections();
     process.exit(code);
 };
