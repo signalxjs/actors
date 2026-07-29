@@ -260,6 +260,12 @@ recording: convergence latency vs Redis pub/sub, behavior in (h) — with
 `membership=k8s` a Redis outage no longer fences silos, it only stalls
 directory claims and saves.
 
+Switching back (`--set membership=redis`) deletes the Lease RBAC while
+the old k8s-membership pods are still draining: their renewals 403, they
+fence, and fencing is fatal — expect the outgoing pods to restart once
+or twice before the rollout replaces them. Noisy but harmless; the new
+pods never touch Leases.
+
 ## 5. Teardown between sessions
 
 ```sh

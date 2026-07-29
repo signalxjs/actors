@@ -12,7 +12,13 @@ metadata:
     {{- include "chart.labels" . | nindent 4 }}
     app.kubernetes.io/component: silo
 spec:
+  {{- if not .Values.hpa.enabled }}
+  # Omitted when the HPA is on: the HPA owns .spec.replicas via the scale
+  # subresource, and a second owner makes every later `helm upgrade` fail
+  # with a server-side-apply conflict — including the one turning the HPA
+  # off (#154).
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "chart.siloSelector" . | nindent 6 }}
@@ -29,9 +35,12 @@ spec:
         {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: silo
     spec:
-      {{- if eq .Values.membership "k8s" }}
-      serviceAccountName: {{ include "chart.fullname" . }}-silo
-      {{- end }}
+      # Always rendered, never omitted: under server-side apply an omitted
+      # field is RELINQUISHED, not removed, so switching membership k8s ->
+      # redis used to strand `serviceAccountName: <release>-silo` on the
+      # template while deleting the ServiceAccount itself — token mounts
+      # fail and the rollout wedges (#154).
+      serviceAccountName: {{ if eq .Values.membership "k8s" }}{{ include "chart.fullname" . }}-silo{{ else }}default{{ end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
