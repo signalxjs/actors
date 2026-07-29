@@ -49,7 +49,7 @@ const { source } = vi.hoisted(() => {
         cluster: null,
         metrics: null,
         activations: null,
-        health: { live: true, ready: true, uptimeMs: 65_000, checks: {}, silo: null },
+        health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, silo: null },
         partial: false
     };
     const source: MonitorSource = {

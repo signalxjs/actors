@@ -371,6 +371,39 @@ describe('cluster ops: readiness', () => {
         expect(response.status).toBe(503);
         expect((await response.json()).checks.cluster.detail).toMatch(/fenced/);
     });
+
+    it('a FENCED silo fails LIVENESS too — fenced is terminal, restart is the medicine', async () => {
+        // Leaving = draining = alive (restart would abort the handoff).
+        // Fenced = membership lost for THIS silo identity, every activation
+        // refused, and no way back — a fenced pod that stays "live" is a
+        // zombie no orchestrator will ever fix (#141: an outage of the
+        // membership store left the whole cluster dead until a human
+        // restarted the pods).
+        const cluster = await createCluster(2, {
+            actors: [Counter],
+            plugins: () => [health()]
+        });
+        running = cluster;
+
+        const probeLive = async (index: number) => {
+            const app = cluster.apps[index]!;
+            const request = new Request(`http://silo${index}.test/_sigx/health`);
+            const route = app.routes.find((r) => r.match(request))!;
+            return route.handle(request, app.silo!);
+        };
+
+        // Draining stays live: beginStop announces leaving, liveness 200.
+        await cluster.placements[1]!.beginStop?.();
+        expect((await probeLive(1)).status).toBe(200);
+
+        // Fenced fails liveness.
+        cluster.hub.kill(cluster.placements[0]!.identity.siloId);
+        await new Promise((r) => setTimeout(r, 20));
+        expect(cluster.placements[0]!.counters().status).toBe('fenced');
+        const live = await probeLive(0);
+        expect(live.status).toBe(503);
+        expect((await live.json()).status).toBe('fatal');
+    });
 });
 
 describe('cluster ops: the metrics split', () => {
@@ -484,6 +517,10 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
         expect(section.counters.membershipVersion).toBeGreaterThan(0);
         // And cluster readiness reaches the ops snapshot through the same
         // seam `health()` reads, with no wiring.
-        expect(body.health.checks.cluster).toEqual({ ready: true, detail: 'active' });
+        expect(body.health.checks.cluster).toEqual({
+            ready: true,
+            fatal: false,
+            detail: 'active'
+        });
     });
 });

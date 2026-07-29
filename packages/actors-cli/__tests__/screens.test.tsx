@@ -94,7 +94,7 @@ function snapshot(over: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
         activations: [
             { type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004, idleMs: 0, keptAlive: false }
         ],
-        health: { live: true, ready: true, uptimeMs: 65_000, checks: {}, silo: null },
+        health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, silo: null },
         partial: false,
         ...over
     };
@@ -266,6 +266,7 @@ describe('screens render', () => {
             health: {
                 live: true,
                 ready: false,
+                fatal: false,
                 uptimeMs: 1000,
                 checks: { cluster: { ready: false, detail: 'leaving — draining' } },
                 silo: null

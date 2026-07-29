@@ -75,6 +75,14 @@ export interface PlacementSetupContext {
 export interface HealthCheck {
     /** False = take this silo out of rotation. */
     ready: boolean;
+    /**
+     * This process cannot recover — fail LIVENESS, not just readiness, so
+     * the orchestrator restarts it. Reserve it for terminal states (a
+     * fenced silo, a poisoned runtime): `ready: false` alone means "drain
+     * me, I am still alive", and conflating the two turns every drain into
+     * a restart. Implies not-ready.
+     */
+    fatal?: boolean;
     /** Short state word for the probe body, e.g. `'active'`, `'leaving'`. */
     detail?: string;
 }
@@ -83,6 +91,8 @@ export interface HealthCheck {
 export interface HealthReport {
     /** True iff every check passed. An app with no checks is ready. */
     ready: boolean;
+    /** True if ANY check declared the process unrecoverable. */
+    fatal: boolean;
     /** By contributor name, in registration order. */
     checks: Record<string, HealthCheck>;
 }
@@ -352,6 +362,7 @@ interface Contributions {
 function healthReport(c: Contributions): HealthReport {
     const checks: Record<string, HealthCheck> = {};
     let ready = true;
+    let fatal = false;
     for (const { name, check } of c.health) {
         let result: HealthCheck;
         try {
@@ -363,10 +374,14 @@ function healthReport(c: Contributions): HealthReport {
             const message = (error as Error)?.message ?? String(error);
             result = { ready: false, detail: message || 'check failed' };
         }
+        // Fatal implies not-ready: a check that says "restart me" must
+        // never leave the silo in rotation on a disagreeing `ready`.
+        if (result.fatal) result = { ...result, ready: false };
         checks[name] = result;
         if (!result.ready) ready = false;
+        if (result.fatal) fatal = true;
     }
-    return { ready, checks };
+    return { ready, fatal, checks };
 }
 
 /**

@@ -288,3 +288,68 @@ describe('health: liveness and readiness', () => {
         expect((await live.json()).error.message).toMatch(/not running/);
     });
 });
+
+describe('health: fatal checks fail liveness', () => {
+    // The third state next to alive-and-ready and alive-but-draining:
+    // a check can declare the process UNRECOVERABLE (`fatal: true`), and
+    // then liveness — not just readiness — must fail, because a restart is
+    // the only medicine and the kubelet is the one holding it. Found on
+    // AKS (#141): a fenced silo sat live-200/ready-503 forever and the
+    // cluster stayed dead until a human restarted the pods.
+    it('ready:false alone keeps liveness 200 (drain, do not restart)', async () => {
+        const plugin = health();
+        const app = appWith(gate('draining', () => ({ ready: false, detail: 'leaving' })), plugin);
+        const handler = createFetchHandler(app);
+        await app.start();
+        try {
+            expect((await get(handler, '/_sigx/health')).status).toBe(200);
+            expect((await get(handler, '/_sigx/health/ready')).status).toBe(503);
+            expect(plugin.status().fatal).toBe(false);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('fatal:true fails liveness AND readiness, and names the check', async () => {
+        let broken = false;
+        const plugin = health();
+        const app = appWith(
+            gate('membership', () =>
+                broken
+                    ? { ready: false, fatal: true, detail: 'fenced' }
+                    : { ready: true, detail: 'active' }
+            ),
+            plugin
+        );
+        const handler = createFetchHandler(app);
+        await app.start();
+        try {
+            expect((await get(handler, '/_sigx/health')).status).toBe(200);
+
+            broken = true;
+            const live = await get(handler, '/_sigx/health');
+            expect(live.status).toBe(503);
+            expect((await live.json()).status).toBe('fatal');
+            expect((await get(handler, '/_sigx/health/ready')).status).toBe(503);
+            const status = plugin.status();
+            expect(status.fatal).toBe(true);
+            expect(status.checks.membership).toMatchObject({ fatal: true });
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('a HEAD liveness probe carries the fatal status code with no body', async () => {
+        const plugin = health();
+        const app = appWith(gate('membership', () => ({ ready: false, fatal: true })), plugin);
+        const handler = createFetchHandler(app);
+        await app.start();
+        try {
+            const live = await get(handler, '/_sigx/health', 'HEAD');
+            expect(live.status).toBe(503);
+            expect(await live.text()).toBe('');
+        } finally {
+            await app.stop();
+        }
+    });
+});

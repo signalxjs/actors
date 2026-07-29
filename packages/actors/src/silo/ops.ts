@@ -163,6 +163,7 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
         health: readHealth?.() ?? {
             live: silo !== null,
             ready: silo !== null,
+            fatal: false,
             uptimeMs: 0,
             checks: {},
             silo: null
@@ -212,6 +213,7 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
                 return {
                     live: silo !== null,
                     ready: silo !== null && report.ready,
+                    fatal: report.fatal,
                     uptimeMs: startedAt === 0 ? 0 : Math.round(performance.now() - startedAt),
                     checks: report.checks,
                     silo: stats ? { activations: stats.activations, queued: stats.queued } : null

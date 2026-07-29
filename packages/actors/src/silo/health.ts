@@ -53,6 +53,8 @@ export interface HealthStatus {
     live: boolean;
     /** Every contributed check passed. */
     ready: boolean;
+    /** A check declared the process unrecoverable — liveness fails too. */
+    fatal: boolean;
     /** Since `start()`, ms. */
     uptimeMs: number;
     checks: HealthReport['checks'];
@@ -88,11 +90,12 @@ export function health(options: HealthOptions = {}): HealthPlugin {
     let report: (() => HealthReport) | null = null;
 
     const status = (): HealthStatus => {
-        const health = report?.() ?? { ready: true, checks: {} };
+        const health = report?.() ?? { ready: true, fatal: false, checks: {} };
         const stats = silo?.stats();
         return {
             live: silo !== null,
             ready: silo !== null && health.ready,
+            fatal: health.fatal,
             uptimeMs: startedAt === 0 ? 0 : Math.round(performance.now() - startedAt),
             checks: health.checks,
             // Totals only — `perType` would publish your actor type names on
@@ -156,10 +159,24 @@ export function health(options: HealthOptions = {}): HealthPlugin {
                     }
                     const head = method === 'HEAD';
                     const current = status();
-                    // Liveness deliberately asks nothing of the checks: a
-                    // draining or fenced silo is NOT ready, but it is very
-                    // much alive and restarting it would abort the handoff.
+                    // Liveness asks only one thing of the checks: is any of
+                    // them FATAL? A draining silo is not ready but very much
+                    // alive (restarting it would abort the handoff) — while
+                    // a fatal state (a fenced silo) is unrecoverable for
+                    // this process, and a restart is exactly the medicine
+                    // the orchestrator holds. Without this, a fenced pod is
+                    // a zombie forever: live 200, ready 503, restarts 0.
                     if (new URL(request.url).pathname === livePath) {
+                        if (current.fatal) {
+                            const body = { status: 'fatal', uptimeMs: current.uptimeMs };
+                            return Promise.resolve(
+                                respond(
+                                    503,
+                                    detail ? { ...body, checks: current.checks } : body,
+                                    head
+                                )
+                            );
+                        }
                         return Promise.resolve(
                             respond(200, { status: 'live', uptimeMs: current.uptimeMs }, head)
                         );

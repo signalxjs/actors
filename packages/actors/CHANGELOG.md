@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **A fenced silo now fails LIVENESS, not just readiness** (#141).
+  `HealthCheck` gains `fatal?: boolean` (implies not-ready); `health()`
+  answers `503 { status: 'fatal' }` on the liveness route when any check
+  reports it, and `cluster()` marks the `fenced` state fatal. Fencing is
+  terminal for a silo identity, so before this a membership-store outage
+  longer than `ttlMs` left every pod `200 live / 503 not-ready` with zero
+  restarts — a dead cluster only a manual rollout restart could revive
+  (observed on AKS). `leaving` is unchanged: draining stays live.
+
 - **`mintCallId()` no longer draws its per-process seed at module scope**
   (#136). workerd forbids generating random values in global scope, so the
   seed was either refused or served from a deterministic startup seed — and

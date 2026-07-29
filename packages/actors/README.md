@@ -724,11 +724,16 @@ handoff that makes rolling deploys drop zero calls.
 The cluster check fails for three states, each with a `detail` you can read
 off the probe body:
 
-- **`leaving`** — draining (post-`beginStop`).
+- **`leaving`** — draining (post-`beginStop`). Not-ready, still live.
 - **`fenced`** — this silo lost its membership heartbeat and now refuses
   every activation. Its *published* status still reads `active`, so without
-  this check a balancer would happily keep feeding a black hole. This is the
-  single highest-value bit here.
+  this check a balancer would happily keep feeding a black hole. Fenced is
+  also **fatal** (below): the fence is permanent for this silo identity, so
+  liveness fails too and the orchestrator restarts the pod — the fresh
+  process mints a new identity and rejoins. Without that, an outage of the
+  membership store longer than `ttlMs` leaves every pod `200 live /
+  503 not-ready` forever and the cluster stays dead until a human restarts
+  it.
 - **`joining`** — the membership join has not completed.
 
 Any plugin can gate readiness — a cache warmer, a migration check:
@@ -736,6 +741,12 @@ Any plugin can gate readiness — a cache warmer, a migration check:
 ```ts
 registry.reportHealth('warmup', () => ({ ready: cache.loaded, detail: 'cache cold' }));
 ```
+
+A check can also declare the process **unrecoverable** with `fatal: true`
+(implies not-ready): liveness then answers `503 { status: 'fatal' }` and the
+orchestrator's restart is the medicine. Reserve it for terminal states —
+`ready: false` alone means "drain me, I am still alive", and conflating the
+two turns every drain into a restart.
 
 Every contributed check must pass; all of them are evaluated, so a failing
 probe names *every* reason rather than the first. A check that throws is

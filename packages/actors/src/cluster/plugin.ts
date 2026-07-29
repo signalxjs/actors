@@ -175,6 +175,13 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
                 const { status } = placement.counters();
                 return {
                     ready: status === 'active',
+                    // Fenced is TERMINAL for this silo identity (identities
+                    // are minted per start, there is no rejoin path), so it
+                    // must fail liveness — not just readiness — or the pod
+                    // sits live-200/ready-503 forever after a membership
+                    // store outage and only a human can revive the cluster.
+                    // `leaving` stays non-fatal: draining is alive.
+                    fatal: status === 'fenced',
                     detail:
                         status === 'fenced'
                             ? 'fenced — membership lost, activations refused'
