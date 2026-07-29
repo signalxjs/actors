@@ -15,6 +15,16 @@ TARGET_URL=http://127.0.0.1:8787 pnpm --filter cf-workers-example verify
 {"mode":"verify","checks":6,"failures":[]}
 ```
 
+Then open <http://127.0.0.1:8787> — the Worker serves a page as well as the
+actors, from `createFetchHandler`'s `fallback`. Type any key to get a different
+actor, increment it, and watch the number arrive over a `watch` stream rather
+than from the button. There is a reminder you can arm and come back to.
+
+It is one HTML string with an inline script (`src/page.ts`) — no build step and
+no client bundle, because its job is to make the model visible, not to be an
+app. For the real client story — `actor()` in the browser via the build-time
+swap, `useActorState`, SSR — see `examples/chat`, which runs on Node.
+
 ## The shape worth copying
 
 `examples/counter` builds its app **at module scope**, which is right for a
@@ -151,5 +161,6 @@ alarm testing and repeated deploys will want Workers Paid.
 | `src/ticker.actor.ts` | reminder-driven, reschedules from its own handler |
 | `src/worker.ts` | the Durable Object class and the edge entry |
 | `wrangler.jsonc` | binding, migration, `define`, `nodejs_compat`, `compatibility_date` |
+| `src/page.ts` | the page served at `/` — dependency-free |
 | `verify.mjs` | the six checks, plus `MODE=load` |
 | `DEPLOY.md` | the runbook, with the failures included |

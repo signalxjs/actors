@@ -14,6 +14,7 @@
 import { createSiloDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
 import { createApp } from './actors.app';
 import { Counter } from './counter.actor';
+import { servePage } from './page';
 import { Ticker } from './ticker.actor';
 
 /**
@@ -47,6 +48,9 @@ export default createWorkerHandler<Env>({
         // mount defaults to refusing a request with no Origin. Decide it
         // explicitly; a real app with a browser front-end should pass its
         // own origin list here instead.
-        origin: false
+        origin: false,
+        // Anything that is not an actor call falls through here, so one
+        // Worker serves the page and the actors.
+        fallback: servePage
     }
 });
