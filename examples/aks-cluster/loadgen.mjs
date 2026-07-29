@@ -51,7 +51,19 @@ const RUN_ID = process.env.RUN_ID ?? hostname();
 const log = (...args) => console.error('[loadgen]', ...args);
 
 /** One wire call. Returns null on success, an error-kind string on failure. */
-async function wireCall(type, method, args) {
+// RETRY_CONN_ERRORS=1: retry pre-response connection failures once, the
+// way production HTTP clients and meshes do. Off by default — a strict
+// client is a better failure detector — but the honest configuration for
+// the rolling-restart scenario: the ~0.004% residue there is the
+// irreducible race between a client writing onto a pooled socket and the
+// exiting server retiring it, and it is exactly what client retries exist
+// for. Only connection-level kinds are retried; an HTTP status or a
+// response that died mid-body is NOT (the call may have executed).
+const RETRY_CONN_ERRORS = process.env.RETRY_CONN_ERRORS === '1';
+const CONN_ERROR_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE']);
+let retriedConnErrors = 0;
+
+async function wireCall(type, method, args, attempt = 0) {
     const url = `${TARGET_URL}/_sigx/actor/${encodeURIComponent(`${type}#${method}`)}`;
     try {
         const res = await fetch(url, {
@@ -67,7 +79,12 @@ async function wireCall(type, method, args) {
         const body = await res.json();
         return body.error ? `app:${body.error.status ?? 'error'}` : null;
     } catch (error) {
-        return `fetch:${error?.cause?.code ?? error?.name ?? 'unknown'}`;
+        const code = error?.cause?.code ?? error?.name ?? 'unknown';
+        if (RETRY_CONN_ERRORS && attempt === 0 && CONN_ERROR_CODES.has(code)) {
+            retriedConnErrors++;
+            return wireCall(type, method, args, 1);
+        }
+        return `fetch:${code}`;
     }
 }
 
@@ -151,6 +168,7 @@ progress.unref();
 
 for (const concurrency of rungs) {
     errors.clear();
+    retriedConnErrors = 0;
     inFlightErrors = 0;
     acked.hot = 0;
     acked.cold = 0;
@@ -186,7 +204,8 @@ for (const concurrency of rungs) {
             errors: { total: errorTotal, byKind: Object.fromEntries(errors) },
             acked: MODE === 'crunch' ? undefined : { ...acked },
             keyCount: KEY_COUNT,
-            hotRatio: HOT_RATIO
+            hotRatio: HOT_RATIO,
+            ...(RETRY_CONN_ERRORS ? { retriedConnErrors } : {})
         })
     );
 }
