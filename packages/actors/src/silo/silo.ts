@@ -190,6 +190,8 @@ class SiloImpl implements Silo {
                 this.#storage.clear(ref.type, ref.key, expectedEtag),
             cloneState: <S,>(raw: S): S =>
                 reviveWithHandlers(encodeWithHandlers(raw, this.#types), this.#types) as S,
+            encodeArgs: (args: readonly unknown[]): unknown =>
+                encodeWithHandlers(args, this.#types),
             reminders: (ref) => this.#reminders.apiFor(ref),
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
             onFault: (activation: Activation) => {
@@ -260,6 +262,44 @@ class SiloImpl implements Silo {
                 );
             }
             return dispatcher.dispatchStream(ref, method, checked, call)[Symbol.asyncIterator]();
+        };
+        let inner: Promise<AsyncIterator<unknown>> | null = null;
+        return {
+            [Symbol.asyncIterator]: () => ({
+                next: async () => {
+                    inner ??= open();
+                    return (await inner).next();
+                },
+                return: async () => {
+                    if (inner) {
+                        const it = await inner;
+                        if (it.return) await it.return(undefined);
+                    }
+                    return { value: undefined, done: true as const };
+                }
+            })
+        };
+    }
+
+    dispatchWatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown> {
+        const open = async (): Promise<AsyncIterator<unknown>> => {
+            const checked = this.#devCheckArgs(ref, method, args);
+            const dispatcher = await this.#placement.dispatcherFor(ref);
+            if (!dispatcher.dispatchWatch) {
+                throw new Error(
+                    `[sigx actors] the placement for ${ref.type} cannot watch ` +
+                        `(no dispatchWatch on its dispatcher).`
+                );
+            }
+            return dispatcher
+                .dispatchWatch(ref, method, checked, call, options)
+                [Symbol.asyncIterator]();
         };
         let inner: Promise<AsyncIterator<unknown>> | null = null;
         return {

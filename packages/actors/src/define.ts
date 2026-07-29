@@ -47,6 +47,16 @@ export function defineActor<
             `[sigx actors] actor type "${options.type}" must not contain "#" or NUL.`
         );
     }
+    if (options.type.startsWith('$') || options.type.startsWith('@')) {
+        // Reserved namespaces, claimed while nothing has shipped: '$' for
+        // the runtime's own mounts on the actor endpoint (`$live#subscribe`),
+        // '@' for the data-key head `actorKey()` already emits ('@actor').
+        // Taking either later would break whoever got there first.
+        throw new Error(
+            `[sigx actors] actor type "${options.type}" must not start with "$" or "@" — ` +
+                `both are reserved for the runtime's own wire and data-key namespaces.`
+        );
+    }
     // The contradiction is a definition-time throw in every build (not just
     // __DEV__): shipping an actor that SAYS unguarded but CARRIES guards is a
     // security-posture bug, same rule as core's form-without-input.

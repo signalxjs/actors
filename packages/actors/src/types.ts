@@ -67,6 +67,23 @@ export interface ActorDispatcher {
         args: readonly unknown[],
         call: ActorCallContext
     ): AsyncIterable<unknown>;
+    /**
+     * A change-driven READ: the method's result now, and again after every
+     * turn that mutated state. Optional for the same reason as
+     * `dispatchStream` — a transport that cannot stream simply omits it.
+     *
+     * Distinct from `dispatchStream` because it is not a user-authored
+     * generator: the runtime re-invokes an ordinary read method, which is
+     * what lets a subscriber ask for `total()` rather than for state it
+     * would have to re-derive itself.
+     */
+    dispatchWatch?(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown>;
 }
 
 /**

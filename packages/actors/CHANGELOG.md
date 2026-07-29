@@ -65,6 +65,59 @@
 
 ### Added
 
+- **`dispatchWatch` and the `$live` mount — the server half of the live
+  layer** (#68, half of #10). A subscription asks for a METHOD RESULT
+  (`total()`, `recent(20)`), but `ctx.changes()` yields STATE, and only the
+  actor can derive one from the other. So a watch re-invokes the read after
+  every mutating turn rather than pushing state the client would have to
+  re-derive.
+
+  Two properties are the design, not optimisations. **One loop per
+  `(method, args)`**: fifty subscribers to the same read cost one
+  re-invocation per turn, not fifty — and since the mailbox is
+  single-threaded, the naive version would serialise those turns and turn a
+  popular actor into a self-inflicted load problem. **Keep-alive**: an open
+  watch counts as activity, so idle collection cannot deactivate an actor
+  out from under a live subscriber. Both are asserted on observed turn
+  counts.
+
+  Reads are trailing-throttled (default 50 ms) through the `ActorScheduler`
+  seam, so a burst of mutations coalesces into one read and a runtime
+  without background timers can still drive it.
+
+  `$live#subscribe` carries many subscriptions on one held-open NDJSON
+  response — a page with twelve live components holds one connection, not
+  twelve. It is a synthesized serverFn like any actor method, so it inherits
+  origin policy, the wire codec, `ServerFnError` masking, body caps and the
+  request scope. Failure is **per subscription**: a guard rejecting one
+  widget yields an error frame at that index and the rest keep streaming.
+  An error frame carries the status the same call would have got as a unary
+  request — an unknown method is a 404 either way, not a 500 on one path and
+  a 404 on the other. An otherwise-silent connection emits a `{"p":1}` ping
+  every 30 s, so the proxies and mobile NATs between a browser and the silo
+  do not reap it between mutations.
+
+  Guards run at subscribe time, the same chain a unary call runs, so a watch
+  exposes nothing a polling client could not already read — which is why
+  there is deliberately no per-actor `live:` opt-in to add.
+
+  A disconnect releases everything it held, on a quiet actor as much as a
+  busy one. That is not free: the frame loop parks on a promise, and an
+  async generator suspended at an `await` cannot see `return()` until it
+  next reaches a `yield`, so a subscription to an actor that never changes
+  would otherwise pin its activation for the life of the process — and tabs
+  close far more often than actors mutate.
+
+  `defineActor` now refuses types starting with `$` or `@`, reserving the
+  runtime's wire (`$live`) and data-key (`@actor`) namespaces while nothing
+  has shipped.
+
+  **Limit:** a watch of a REMOTELY placed actor is refused with a message
+  naming the placement (#69). The silo-to-silo endpoint decides
+  stream-vs-unary from `streamNames`, and a watch is neither — forwarding it
+  needs the intent carried on the wire, somewhere the per-call HMAC covers.
+  Loud rather than silently watching a second activation on the wrong host.
+
 - **`Silo.activations()` — the live grain list** (#101). Bounded and
   sorted: `{ type, key, queued, ageMs, idleMs, keptAlive }`, with
   `sortBy: 'queued' | 'age' | 'idle'`, a `type` filter and a `limit`

@@ -17,8 +17,9 @@ import {
     type ServerFnRequestOptions
 } from '@sigx/server/server';
 import { mintCallId } from '../call-id';
-import { isActorError } from '../errors';
 import { runGuards } from '../guards';
+import { toClientError } from './client-error';
+import { LIVE_SYMBOL, subscribeAll } from './live-endpoint';
 import type { ActorCallContext, AnyActorDefinition, Silo } from '../types';
 
 export interface ActorRequestOptions
@@ -72,6 +73,14 @@ export function createActorResolver(silo: Silo): (symbol: string) => unknown | P
     return (symbol: string) => {
         const hit = cache.get(symbol);
         if (hit !== undefined) return hit;
+        // The runtime's own mount, resolved BEFORE any definition lookup —
+        // `$live` is not an actor type, and `defineActor` refuses to let one
+        // be named that.
+        if (symbol === LIVE_SYMBOL) {
+            const live = synthesizeLive(silo);
+            cache.set(symbol, live);
+            return live;
+        }
         const hash = symbol.lastIndexOf('#');
         if (hash <= 0 || hash === symbol.length - 1) return notFound(symbol);
         const type = symbol.slice(0, hash);
@@ -89,6 +98,20 @@ export function createActorResolver(silo: Silo): (symbol: string) => unknown | P
         const wrapped = synthesize(silo, def, symbol, method);
         cache.set(symbol, wrapped);
         return wrapped;
+    };
+}
+
+/**
+ * The `$live` mount as a stream-flavoured serverFn. Its single wire
+ * argument is the subscription array; per-subscription guards run inside,
+ * so one rejection cannot fail the whole connection.
+ */
+function synthesizeLive(silo: Silo): unknown {
+    return {
+        __sigxName: 'subscribe',
+        __sigxStream: true,
+        __sigxFn: (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) =>
+            Promise.resolve(subscribeAll(silo, rq, args[0]))
     };
 }
 
@@ -174,7 +197,7 @@ function synthesize(
                     try {
                         yield* iterable;
                     } catch (error) {
-                        throw toWireError(error);
+                        throw toClientError(error);
                     }
                 })();
             }
@@ -188,36 +211,9 @@ function synthesize(
             try {
                 return await silo.dispatch({ type: def.type, key }, method, rest, call);
             } catch (error) {
-                throw toWireError(error);
+                throw toClientError(error);
             }
         }
     };
 }
 
-/**
- * Map branded actor errors onto client-visible `ServerFnError` statuses.
- * Anything else stays as-is and gets the endpoint's prod masking.
- */
-function toWireError(error: unknown): unknown {
-    if (!isActorError(error)) return error;
-    switch (error.kind) {
-        case 'method-not-found':
-            return new ServerFnError(404, error.message, { kind: error.kind });
-        case 'state-conflict':
-            return new ServerFnError(409, error.message, { kind: error.kind });
-        case 'silo-shutdown':
-            return new ServerFnError(503, error.message, { kind: error.kind });
-        case 'call-timeout':
-            return new ServerFnError(504, error.message, { kind: error.kind });
-        case 'wrong-host':
-        case 'unreachable':
-            // Cluster routing errors are resolved silo-to-silo and should
-            // never surface here; if one does, it's retryable — 503.
-            return new ServerFnError(503, error.message, { kind: error.kind });
-        case 'deadlock':
-        case 'activation':
-        default:
-            // Server-side bugs/config problems: mask in prod (plain 500).
-            return error;
-    }
-}

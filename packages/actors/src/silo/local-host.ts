@@ -75,12 +75,30 @@ export class LocalHost implements ActorDispatcher {
         call: ActorCallContext
     ): AsyncIterable<unknown> {
         // Must return synchronously; resolve the activation on first pull.
-        const open = async (): Promise<AsyncIterator<unknown>> => {
+        return this.#lazyIterable(async () => {
             this.#checkShutdown(call);
             await this.#checkReentrancy(ref, call);
             const activation = await this.#activationFor(ref);
             return activation.openStream(method, args, call)[Symbol.asyncIterator]();
-        };
+        });
+    }
+
+    dispatchWatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown> {
+        return this.#lazyIterable(async () => {
+            this.#checkShutdown(call);
+            await this.#checkReentrancy(ref, call);
+            const activation = await this.#activationFor(ref);
+            return activation.openWatch(method, args, call, options)[Symbol.asyncIterator]();
+        });
+    }
+
+    #lazyIterable(open: () => Promise<AsyncIterator<unknown>>): AsyncIterable<unknown> {
         let inner: Promise<AsyncIterator<unknown>> | null = null;
         return {
             [Symbol.asyncIterator]: () => ({
@@ -98,6 +116,7 @@ export class LocalHost implements ActorDispatcher {
             })
         };
     }
+
 
     async #dispatchInner(
         ref: ActorRef,

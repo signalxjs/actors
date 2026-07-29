@@ -4,6 +4,7 @@
  * outside this file touches activation memory.
  */
 import { effectScope, signal, toRaw, watch } from '@sigx/reactivity';
+import { createSharedWatch, watchKey, type SharedWatch } from './watch';
 import { mintCallId } from '../call-id';
 import type { Mailbox } from './mailbox';
 import {
@@ -34,6 +35,9 @@ export const REMINDER_METHOD = '$sigx:reminder';
 /** Change-feed buffer bound — drop-oldest beyond this. */
 const CHANGE_BUFFER = 16;
 
+/** Trailing-throttle window for a change-driven read (`openWatch`). */
+export const DEFAULT_WATCH_THROTTLE_MS = 50;
+
 /** Keys a context extension may never set — they reach the prototype. */
 const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -60,6 +64,13 @@ export interface ActivationHost {
     clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
     /** Deep, detached copy through the codec vocabulary. */
     cloneState<S>(raw: S): S;
+    /**
+     * Call arguments in their codec-encoded form — the shape that would go
+     * on the wire. `openWatch` keys shared loops off this rather than off
+     * the raw values, because the codec is what makes a `bigint`, a `Date`
+     * and an `undefined` representable and distinguishable at all.
+     */
+    encodeArgs(args: readonly unknown[]): unknown;
     reminders(ref: ActorRef): ReminderApi;
     actorClient<D extends AnyActorDefinition>(
         def: D,
@@ -115,6 +126,8 @@ export class Activation {
     #keepAlive = 0;
     #warnedDroppedChanges = false;
     #warnedStreamState = false;
+    /** Shared watch loops, keyed by `method` + encoded args — see `./watch`. */
+    #watches = new Map<string, SharedWatch>();
     lastActivityMs = Date.now();
     /**
      * When this activation was constructed, MONOTONIC — the age an operator
@@ -256,6 +269,63 @@ export class Activation {
      * keep-alive ref makes idle collection skip the activation until the
      * stream ends or the consumer disconnects.
      */
+    /**
+     * A change-driven READ: the method's result now, and again after every
+     * turn that mutated state.
+     *
+     * Subscriptions with the same `(method, args, throttleMs)` share one
+     * loop, so a popular actor costs one re-invocation per turn rather than
+     * one per viewer — which matters more here than anywhere else, because
+     * the mailbox is single-threaded and those turns would serialise.
+     *
+     * `throttleMs` is part of the identity because it is part of the
+     * behaviour: subscribers asking for different windows want different
+     * emission rates, and one loop cannot honour both. Two viewers of the
+     * same read share whenever they agree on it — which, since the option
+     * is rarely passed, is nearly always.
+     */
+    openWatch(
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown> {
+        const throttleMs = options?.throttleMs ?? DEFAULT_WATCH_THROTTLE_MS;
+        // Args are part of the identity: `recent(20)` and `recent(50)` are
+        // different reads. Keyed by VALUE through the codec, not by
+        // reference, so two callers passing equal-but-distinct arrays still
+        // share one loop — and `watchKey`'s length-prefixed grammar
+        // guarantees the converse, that two DIFFERENT arg lists never can.
+        const id = watchKey(method, throttleMs, this.#host.encodeArgs(args ?? []));
+        let shared = this.#watches.get(id);
+        if (!shared) {
+            shared = createSharedWatch(
+                {
+                    // A NORMAL mailbox turn, not a privileged read: the
+                    // watch gets exactly the isolation every other call has.
+                    invoke: () => this.enqueue(method, args, call),
+                    changes: () =>
+                        (this.#ctx as ActorContext<object>).changes() as AsyncIterable<unknown>,
+                    keepAlive: () => {
+                        this.#keepAlive++;
+                        let released = false;
+                        return () => {
+                            if (released) return;
+                            released = true;
+                            this.#keepAlive--;
+                            this.lastActivityMs = Date.now();
+                        };
+                    },
+                    scheduler: this.#host.scheduler,
+                    throttleMs
+                },
+                () => void this.#watches.delete(id)
+            );
+            this.#watches.set(id, shared);
+        }
+        return shared.subscribe();
+    }
+
     openStream(
         method: string,
         args: readonly unknown[],
@@ -776,6 +846,14 @@ export class Activation {
                             async return(): Promise<IteratorResult<object>> {
                                 sub.done = true;
                                 self.#subs.delete(sub);
+                                // Wake a parked next(). Marking `done` is not
+                                // enough: a consumer that disconnects while
+                                // the feed is quiet is sitting on the wake
+                                // promise, and nothing else will ever resolve
+                                // it — the actor may never mutate again. The
+                                // await inside `return()` then never settles
+                                // and teardown hangs.
+                                sub.wake?.();
                                 return { value: undefined, done: true };
                             }
                         };
