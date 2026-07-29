@@ -14,6 +14,7 @@ import { defineApp, type App } from 'sigx';
 import { serverPlugin } from '@sigx/server/plugin';
 import { actorsPlugin } from '@sigx/actors/app';
 import { Room } from './Room';
+import { roomFromPath } from './room-path';
 
 /**
  * Re-exported so the production server starts the SAME actor app the dev
@@ -23,14 +24,14 @@ import { Room } from './Room';
 export { app as actorApp } from './actors.app';
 
 export function createApp(
-    // The handlers pass all three; this app is a single route with no
-    // platform bindings, so it reads none of them. Named anyway so the
-    // signature matches the contract you would extend for routing.
-    _url?: string,
+    // `/r/<name>` picks the room; anything else renders #general. The
+    // request/platform arguments stay unread — a single-route app.
+    url?: string,
     _request?: Request,
     _platform?: unknown
 ): App<unknown> {
-    return defineApp(Room({}))
+    const room = roomFromPath(url ? new URL(url, 'http://localhost').pathname : '/');
+    return defineApp(Room({ room }))
         .use(serverPlugin())
         // No transport on the server: `actor()` dispatches in-process. The
         // plugin still provides the per-app context the hooks resolve, and

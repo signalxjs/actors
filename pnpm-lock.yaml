@@ -149,6 +149,9 @@ importers:
       '@sigx/actors':
         specifier: workspace:*
         version: link:../../packages/actors
+      '@sigx/actors-redis':
+        specifier: workspace:*
+        version: link:../../packages/actors-redis
       '@sigx/reactivity':
         specifier: 'catalog:'
         version: 0.13.0
@@ -161,9 +164,15 @@ importers:
       '@sigx/server-renderer':
         specifier: 'catalog:'
         version: 0.13.0
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
       sigx:
         specifier: 'catalog:'
         version: 0.13.0
+      undici:
+        specifier: ^7.16.0
+        version: 7.29.0
     devDependencies:
       '@sigx/vite':
         specifier: 'catalog:'

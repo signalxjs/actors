@@ -9,8 +9,9 @@ import { hydrate } from '@sigx/server-renderer/client';
 import { serverPlugin } from '@sigx/server/plugin';
 import { actorsPlugin } from '@sigx/actors/app';
 import { Room } from './Room';
+import { roomFromPath } from './room-path';
 
-defineApp(Room({}))
+defineApp(Room({ room: roomFromPath(location.pathname) }))
     .use(serverPlugin())
     // The transport is installed on live clients only; the endpoint the
     // build baked into each actor ref is the default target, so there is

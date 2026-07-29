@@ -7,12 +7,12 @@ import { component, errorScope, onMounted, onUnmounted, signal, useAction, useDa
 import { useActorAction, useActorState, useActorsContext } from '@sigx/actors/app';
 import { actor, actorKey } from '@sigx/actors';
 import { RoomActor } from './room.actor';
-import { me, postMessage } from './chat.server';
+import { me, postMessage, signIn, signOut } from './chat.server';
 import type { Message } from './room.actor';
 
-export const Room = component(() => {
-    const room = 'general';
-    const draft = signal({ text: '' });
+export const Room = component<{ room?: string }>((ctx) => {
+    const room = ctx.props.room ?? 'general';
+    const draft = signal({ text: '', name: '' });
     const { cells } = useActorsContext();
 
     errorScope({
@@ -63,19 +63,50 @@ export const Room = component(() => {
     // observe from here.
     //
     // Client-only, so `onMounted`: during SSR there is no tab to update.
+    //
+    // The loop RECONNECTS. A long-lived NDJSON response dies for reasons
+    // that are nobody's bug — a proxy idle timeout, a rolling restart, a
+    // laptop lid — and a page that goes permanently stale on the first
+    // drop is broken in production. Backoff doubles 1s → 30s with jitter
+    // and resets after any healthy stream; `{ initial: true }` inside
+    // `watch()` doubles as the catch-up read after every reconnect, so
+    // nothing that happened during the gap is missed.
     const live = new AbortController();
+    const wait = (ms: number): Promise<void> =>
+        new Promise((resolve) => {
+            // Listener BEFORE arming the timer, and short-circuit an
+            // already-aborted signal — otherwise an unmount racing this
+            // setup waits out the whole backoff.
+            if (live.signal.aborted) return resolve();
+            let t: ReturnType<typeof setTimeout> | undefined;
+            const done = (): void => {
+                if (t !== undefined) clearTimeout(t);
+                live.signal.removeEventListener('abort', done);
+                resolve();
+            };
+            live.signal.addEventListener('abort', done);
+            t = setTimeout(done, ms);
+        });
     onMounted(() => {
         void (async () => {
-            try {
-                const watching = actor(RoomActor, room).with({ signal: live.signal }).watch();
-                for await (const _ of watching) {
-                    cells.invalidate([actorKey(RoomActor, room)]);
+            let delay = 1_000;
+            while (!live.signal.aborted) {
+                try {
+                    const watching = actor(RoomActor, room).with({ signal: live.signal }).watch();
+                    for await (const _ of watching) {
+                        delay = 1_000; // a healthy stream resets the backoff
+                        cells.invalidate([actorKey(RoomActor, room)]);
+                    }
+                } catch (error) {
+                    // An aborted stream is this component unmounting, not
+                    // a failure — bail silently. Anything else gets logged
+                    // once per attempt and retried.
+                    if (live.signal.aborted) return;
+                    console.warn('[chat] live stream dropped, reconnecting:', error);
                 }
-            } catch (error) {
-                // An aborted stream is this component unmounting, not a
-                // failure. Anything else (a guard rejection, a dropped
-                // connection) leaves the page usable but no longer live.
-                if (!live.signal.aborted) console.warn('[chat] live updates stopped:', error);
+                if (live.signal.aborted) return;
+                await wait(delay + Math.random() * 250);
+                delay = Math.min(delay * 2, 30_000);
             }
         })();
     });
@@ -148,10 +179,49 @@ export const Room = component(() => {
             </form>
 
             <footer>
-                signed in as{' '}
                 {session.match({
-                    ready: (u) => u ?? 'nobody',
-                    pending: () => '…'
+                    pending: () => <span>…</span>,
+                    ready: (u) =>
+                        u === null ? (
+                            // No session: a real sign-in — the serverFn
+                            // mints an HMAC-signed HttpOnly cookie, then a
+                            // reload re-SSRs the page with it (honest and
+                            // tiny for an example; a router would refresh
+                            // in place).
+                            <form
+                                onSubmit={(e: Event) => (
+                                    e.preventDefault(),
+                                    void (async () => {
+                                        try {
+                                            await signIn({ name: draft.name });
+                                            location.reload();
+                                        } catch (error) {
+                                            console.warn('[chat] sign-in failed:', error);
+                                        }
+                                    })()
+                                )}
+                            >
+                                <input
+                                    value={draft.name}
+                                    onInput={(e: Event) =>
+                                        (draft.name = (e.target as HTMLInputElement).value)
+                                    }
+                                    placeholder="pick a name"
+                                />
+                                <button>sign in</button>
+                            </form>
+                        ) : (
+                            <span>
+                                signed in as <b>{u}</b>{' '}
+                                <button
+                                    onClick={() =>
+                                        void signOut().then(() => location.reload())
+                                    }
+                                >
+                                    sign out
+                                </button>
+                            </span>
+                        )
                 })}
             </footer>
         </main>

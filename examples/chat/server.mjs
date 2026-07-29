@@ -1,14 +1,29 @@
 /**
- * The production server — one mount graph, three handlers.
+ * The production server — TWO listeners with different trust levels.
  *
- *   /_sigx/actor/*  actor endpoint      (@sigx/actors/node)
- *   /_sigx/fn/*     serverFn endpoint   (@sigx/server/node)
+ * PUBLIC (PORT, default 3000 local / 8080 in the chart) — what the ingress
+ * routes to:
+ *
+ *   /_sigx/actor/*  actor endpoint      (default same-origin policy)
+ *   /_sigx/fn/*     serverFn endpoint
  *   /assets/*       built client assets
- *   everything else the document        (@sigx/server-renderer/node)
+ *   /_sigx/<else>   HARD 404 — health/ops/silo must not be publicly
+ *                   reachable, and must never fall through to the document
+ *                   handler (which would 200 them as HTML)
+ *   everything else the SSR document
  *
- * All connect-style, so composition is just `next()`. Importing
- * `@sigx/server` (transitively, through the fn handler and the SSR entry)
- * is what stamps the request-scope seam the renderer opens around each
+ * INTERNAL (INTERNAL_PORT, default 7311) — pod-network only: the full
+ * `createAppHandler` with every plugin route (health for kubelet probes,
+ * ops for `kubectl port-forward`, the cluster's silo-to-silo mount, and
+ * the actor endpoint peers proxy misplaced calls through). `origin: false`
+ * here — probes and peers are Node clients with no Origin header.
+ *
+ * With REDIS_URL set the app clusters: redisCluster membership/directory,
+ * redisStorage state (see src/actors.app.ts), advertise = this pod's
+ * internal listener. Without it: the same single-node dev server as ever.
+ *
+ * Importing `@sigx/server` (transitively, through the fn handler and the
+ * SSR entry) stamps the request-scope seam the renderer opens around each
  * render — which is what makes the actors' `requireUser` guard work during
  * SSR rather than throwing on a detached context.
  */
@@ -18,7 +33,14 @@ import { createReadStream } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { createServerFnHandler } from '@sigx/server/node';
 import { createRequestHandler } from '@sigx/server-renderer/node';
-import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
+import {
+    createActorHandler,
+    createAppHandler,
+    attachSignalHandlers
+} from '@sigx/actors/node';
+import { health, metrics, ops } from '@sigx/actors/silo';
+import { cluster, clusterStats } from '@sigx/actors/cluster';
+import { redisCluster } from '@sigx/actors-redis';
 
 const here = import.meta.dirname;
 const clientDir = join(here, 'dist/client');
@@ -28,17 +50,72 @@ const { createApp, actorApp } = await import('./dist/server/entry-server.js');
 // The emitted registry exports `serverFns`; the handler option is `functions`.
 const { serverFns } = await import('./dist/server/sigx-server-fns.js');
 
-const silo = await actorApp.start();
-attachSignalHandlers(silo);
+const PORT = Number(process.env.PORT ?? 3000);
+const INTERNAL_PORT = Number(process.env.INTERNAL_PORT ?? 7311);
+const REDIS_URL = process.env.REDIS_URL;
+
+const need = (name) => {
+    const value = process.env[name];
+    if (!value) {
+        console.error(`[chat] missing required env ${name} (required with REDIS_URL)`);
+        process.exit(1);
+    }
+    return value;
+};
+
+// health() needs no wiring; metrics() feeds ops(); cluster() only with a
+// Redis to cluster through.
+let composed = actorApp.use(metrics()).use(health());
+let plugin = null;
+if (REDIS_URL) {
+    const { Agent, fetch: undiciFetch } = await import('undici');
+    const agent = new Agent({ connections: Number(process.env.FETCH_CONNECTIONS ?? 64) });
+    plugin = cluster({
+        providers: redisCluster({
+            url: REDIS_URL,
+            namespace: process.env.SIGX_NAMESPACE ?? 'chat'
+        }),
+        advertise: `http://${process.env.POD_IP ?? '127.0.0.1'}:${INTERNAL_PORT}`,
+        secret: need('CLUSTER_SECRET'),
+        fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
+    });
+    composed = composed.use(plugin).use(
+        ops({
+            secret: need('OPS_SECRET'),
+            cluster: (signal) => clusterStats(plugin.placement, { signal })
+        })
+    );
+}
+
+// INTERNAL listener first — it is the advertise target, and it must be
+// accepting before start() joins membership (peers may dial immediately).
+let stopping = false;
+const internalHandler = createAppHandler(composed, { origin: false });
+const internal = createServer((req, res) => {
+    if (stopping) res.setHeader('connection', 'close');
+    internalHandler(req, res);
+});
+await new Promise((r) => internal.listen(INTERNAL_PORT, r));
+
+const silo = await composed.start();
 
 // Vite rewrote the built template's <script>/<link> tags to the hashed
 // asset names, so it needs no `document.assets` — that option is for
 // entries the HTML does not already reference.
 const template = await readFile(join(clientDir, 'index.html'), 'utf8');
 
-const actors = createAppHandler(actorApp);
+// PUBLIC surface: the bare actor endpoint (NOT the app handler — plugin
+// routes stay internal), with the DEFAULT same-origin policy. The ingress
+// forwards x-forwarded-proto/host, which @sigx/server honours, so the
+// browser's `Origin: https://chat...` compares like with like.
+const publicActor = createActorHandler({ silo });
 const fns = createServerFnHandler({ functions: serverFns });
 const document = createRequestHandler({ template, app: (url) => createApp(url) });
+
+// Everything under /_sigx (including the bare prefix) that is not the
+// actor or fn endpoint is 404 on the public side — no health, no ops, no
+// silo mount, and no SSR fallthrough.
+const RESERVED = /^\/_sigx(?:\/(?!actor(?:\/|$)|fn(?:\/|$))|$)/;
 
 const MIME = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' };
 
@@ -94,12 +171,53 @@ function serveAsset(req, res, next) {
     stream.once('error', () => notFound(res));
 }
 
-const port = Number(process.env.PORT ?? 3000);
-createServer((req, res) => {
-    actors(req, res, () =>
+const pub = createServer((req, res) => {
+    if (stopping) res.setHeader('connection', 'close');
+    let pathname = '/';
+    try {
+        ({ pathname } = new URL(req.url ?? '/', 'http://localhost'));
+    } catch {
+        // fall through — the document handler answers unparseable targets
+    }
+    if (RESERVED.test(pathname)) {
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        return res.end('not found');
+    }
+    publicActor(req, res, () =>
         fns(req, res, () => serveAsset(req, res, () => document(req, res)))
     );
-}).listen(port, () => {
-    console.log(`chat  http://localhost:${port}`);
-    console.log('sign in:  document.cookie = "user=ada"');
 });
+await new Promise((r) => pub.listen(PORT, r));
+
+// Drain BOTH edges on shutdown (the #142 pattern): once stopping, every
+// response carries connection: close so client pools retire sockets one
+// response at a time; listeners close and stragglers are cut only after
+// the actor drain hands everything off. A failed drain exits 1 — the exit
+// code is the pod's last diagnostic.
+const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    let code = 0;
+    try {
+        await silo.stop({ timeoutMs: 30_000 });
+    } catch (error) {
+        console.error('[chat] drain failed:', error);
+        code = 1;
+    }
+    pub.close();
+    internal.close();
+    pub.closeAllConnections();
+    internal.closeAllConnections();
+    process.exit(code);
+};
+process.once('SIGTERM', () => void shutdown());
+process.once('SIGINT', () => void shutdown());
+
+console.log(
+    `[chat] public :${PORT}  internal :${INTERNAL_PORT}  ` +
+        (plugin
+            ? `silo ${plugin.placement.identity.siloId} clustered via redis  `
+            : 'single-node (no REDIS_URL)  ') +
+        `NODE_ENV=${process.env.NODE_ENV ?? '(unset)'}`
+);
+console.log(`chat  http://localhost:${PORT}  — sign in from the page footer`);
