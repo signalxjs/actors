@@ -14,8 +14,10 @@
  *
  *     # terminal 1
  *     node examples/counter/cluster-demo.mjs --serve
- *     # terminal 2
- *     npx sigx actors top --url http://127.0.0.1:5391 --secret demo-ops-secret
+ *     # terminal 2 — from THIS package, since the sigx CLI discovers its
+ *     # plugins from the dependencies of the project it runs in
+ *     pnpm --filter counter-example exec sigx actors top \
+ *         --url http://127.0.0.1:5391 --secret demo-ops-secret
  *
  * Needs Node >= 22.18 (built-in type stripping for the .ts actor import).
  * Ports default to 5391-5393; override with
@@ -202,11 +204,15 @@ if (serve) {
     step('6. Serving — the cluster stays up');
     log('Point the dashboard at any surviving silo:\n');
     for (const m of members.filter((m) => m.server.listening)) {
-        log(`  npx sigx actors top --url http://127.0.0.1:${m.port} --secret ${opsSecret}`);
+        log(
+            `  pnpm --filter counter-example exec sigx actors top ` +
+                `--url http://127.0.0.1:${m.port} --secret ${opsSecret}`
+        );
     }
     log('\nOr one snapshot:');
     log(
-        `  npx sigx actors stats --url http://127.0.0.1:${survivors[0].port} ` +
+        `  pnpm --filter counter-example exec sigx actors stats ` +
+            `--url http://127.0.0.1:${survivors[0].port} ` +
             `--secret ${opsSecret} --json | jq .cluster.totals`
     );
     log('\nDriving steady traffic. Ctrl+C to stop.');

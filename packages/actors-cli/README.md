@@ -7,9 +7,28 @@ silos, grains, latency, errors and cluster topology, from the terminal.
 pnpm add -D @sigx/actors-cli
 ```
 
-That is the whole install. The `sigx` binary discovers plugins from your
-dependencies, so the commands appear as soon as the package is there and
-your project depends on `@sigx/actors`.
+The `sigx` binary discovers plugins from the **dependencies of the project
+you run it in** — it reads `./package.json`, looks for a `sigx-cli` field in
+each dependency's manifest, and calls the plugin's `detect(cwd)`. So two
+things have to be true in that directory:
+
+1. `@sigx/actors-cli` is in its `dependencies` or `devDependencies`;
+2. it depends on `@sigx/actors` — that is what `detect` looks for.
+
+If either is missing the commands simply are not there:
+
+```
+$ sigx actors top
+error: Unknown command 'actors'
+```
+
+That is not a broken install — it is the CLI correctly declining to offer
+actor commands in a project that has no actors. `sigx --help` lists what it
+did find. Run it from the package that owns the silo, or in a monorepo:
+
+```sh
+pnpm --filter my-app exec sigx actors top
+```
 
 ```sh
 sigx actors                                        # the dashboard

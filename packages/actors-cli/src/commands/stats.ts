@@ -7,6 +7,7 @@
  * dashboard is rendering the right numbers.
  */
 import type { ActorsCommandContext } from './context';
+import { out, outJson } from './out';
 import { resolveSource } from '../resolve';
 import { count, durationMs, percent, uptime } from '../model/format';
 import type { MonitorSnapshot } from '../source/types';
@@ -17,11 +18,12 @@ export async function runStats(ctx: ActorsCommandContext): Promise<void> {
         const snapshot = await source.snapshot();
         if (ctx.args.json) {
             // The whole normalized snapshot, not a summary: the point of
-            // --json is that something else does the summarising.
-            ctx.logger.log(JSON.stringify(snapshot, null, 2));
+            // --json is that something else does the summarising — so it
+            // goes to stdout unprefixed, or it is not parseable.
+            outJson(snapshot);
             return;
         }
-        for (const line of renderStats(snapshot, source.label)) ctx.logger.log(line);
+        for (const line of renderStats(snapshot, source.label)) out(line);
     } finally {
         await source.close();
     }

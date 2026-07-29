@@ -164,3 +164,29 @@
 
   `partial` is carried all the way to the output and printed FIRST, never as
   a footnote: the totals under it are lower bounds and still look plausible.
+
+### Fixed
+
+- **`--json` emitted invalid JSON** (#117). The commands wrote their payload
+  through `ctx.logger`, which prefixes every line with `[sigx] `, so
+  `sigx actors stats --json | jq …` — the pipeline the README documents —
+  received `[sigx] {` and could not parse it. The human tables carried the
+  same seven characters of noise in front of every row, undoing the column
+  alignment they work to produce.
+
+  Payload now goes to stdout unprefixed; diagnostics keep the logger, and so
+  keep going to stderr, which is what makes `2>/dev/null` do the useful
+  thing.
+
+  Nothing caught this because nothing observed what the *binary* prints: the
+  unit tests called `renderStats()` directly and the end-to-end checks called
+  `plugin.commands.actors.run()` with their own logger. There is now a test
+  that asserts on `process.stdout`.
+
+- **The example could not actually run the CLI** (#117). `examples/counter`
+  demonstrates the dashboard but declared neither `@sigx/actors-cli` nor
+  `@sigx/cli`, so plugin discovery found nothing and `sigx actors` was an
+  unknown command. Both are dev dependencies of the example now, and the
+  docs say which directory to run from — the CLI discovers plugins from the
+  dependencies of the project it runs in, so the repo root was never going
+  to work.

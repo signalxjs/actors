@@ -10,6 +10,7 @@
 import { runShell, type ShellHandle } from '@sigx/cli/shell';
 import { signal } from '@sigx/terminal';
 import type { ActorsCommandContext } from './context';
+import { out } from './out';
 import { resolveSource } from '../resolve';
 import { DashboardState } from '../dashboard/state';
 import {
@@ -140,7 +141,7 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
         const snapshot = view.snapshot;
         if (view.error) ctx.logger.error(view.error);
         else if (snapshot) {
-            ctx.logger.log(
+            out(
                 `${source.label}  ${snapshot.silos.length} silo(s), ` +
                     `${count(snapshot.silos.reduce((n, s) => n + s.stats.activations, 0))} activations`
             );

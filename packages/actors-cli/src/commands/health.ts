@@ -15,6 +15,7 @@
  * rolling deploy turns into an outage.
  */
 import type { ActorsCommandContext } from './context';
+import { out, outJson } from './out';
 import { resolveSource } from '../resolve';
 import { uptime } from '../model/format';
 
@@ -44,20 +45,20 @@ export async function runHealth(ctx: ActorsCommandContext): Promise<void> {
             return;
         }
         if (ctx.args.json) {
-            ctx.logger.log(JSON.stringify(health, null, 2));
+            outJson(health);
         } else {
-            ctx.logger.log(
+            out(
                 `${source.label}  ${health.live ? 'live' : 'not live'} / ` +
                     `${health.ready ? 'ready' : 'NOT READY'}  up ${uptime(health.uptimeMs)}`
             );
             for (const [name, check] of Object.entries(health.checks)) {
                 const detail = check.detail ? ` — ${check.detail}` : '';
-                ctx.logger.log(`  ${check.ready ? 'ok  ' : 'FAIL'} ${name}${detail}`);
+                out(`  ${check.ready ? 'ok  ' : 'FAIL'} ${name}${detail}`);
             }
             if (health.live && !health.ready) {
                 // The distinction the whole command exists for.
-                ctx.logger.log('');
-                ctx.logger.log('  This silo is ALIVE but out of rotation — drain it, do not restart it.');
+                out('');
+                out('  This silo is ALIVE but out of rotation — drain it, do not restart it.');
             }
         }
         process.exitCode = health.ready ? EXIT_READY : EXIT_NOT_READY;
