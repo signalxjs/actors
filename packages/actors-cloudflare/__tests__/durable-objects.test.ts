@@ -9,6 +9,7 @@ import { createSilo, manualScheduler } from '@sigx/actors/silo';
 import {
     durableObjectReminders,
     durableObjectStorage,
+    type BlockConcurrencyWhile,
     type DurableAlarms,
     type DurableStorage
 } from '@sigx/actors-cloudflare';
@@ -24,6 +25,33 @@ function fakeStorage(): DurableStorage & { readonly map: Map<string, unknown> } 
             map.has(key) ? (structuredClone(map.get(key)) as T) : undefined,
         put: async <T,>(key: string, value: T) => void map.set(key, structuredClone(value)),
         delete: async (key: string) => map.delete(key)
+    };
+}
+
+/**
+ * `blockConcurrencyWhile` as the platform implements it: it blocks the whole
+ * OBJECT until the callback settles, so callbacks run strictly one after
+ * another and a call made from INSIDE one waits on a lock its own caller is
+ * holding. The depth-counting fake further down cannot express that, which
+ * is why a re-entrant gate looked fine for as long as it did.
+ */
+function blockingGate(): BlockConcurrencyWhile {
+    let tail: Promise<unknown> = Promise.resolve();
+    let reset = false;
+    return <T,>(fn: () => Promise<T>): Promise<T> => {
+        if (reset) {
+            // "If the callback throws, the Durable Object is reset" — the
+            // isolate is gone, so nothing that came after it survives.
+            return Promise.reject(new Error('the Durable Object was reset'));
+        }
+        const run = tail.then(() => fn());
+        tail = run.then(
+            () => undefined,
+            () => {
+                reset = true;
+            }
+        );
+        return run;
     };
 }
 
@@ -283,6 +311,94 @@ describe('durableObjectReminders', () => {
         } finally {
             await silo.stop({ timeoutMs: 1000 });
         }
+    });
+
+    it('does not deadlock when a handler reschedules under a REAL gate', async () => {
+        // The gate fake used elsewhere in this file is a depth counter that
+        // never blocks, so it cannot show what the platform actually does:
+        // `blockConcurrencyWhile` blocks the OBJECT until its callback
+        // settles, and does not nest. Holding it across `deliver()` while
+        // the handler calls `ctx.reminders.set()` — the pattern this
+        // package's own README documents — is therefore a deadlock.
+        let clock = 0;
+        const storage = fakeStorage();
+        const alarms = fakeAlarms();
+        const Rescheduling = defineActor({
+            type: 'Rescheduling',
+            unguarded: true,
+            state: () => ({ fired: 0 }),
+            async onReminder(ctx) {
+                ctx.state.fired++;
+                if (ctx.state.fired === 1) await ctx.reminders.set('again', { due: 10 });
+            },
+            methods: (ctx) => ({
+                async arm() {
+                    await ctx.reminders.set('first', { due: 100 });
+                }
+            })
+        });
+        const reminders = durableObjectReminders({
+            storage,
+            alarms,
+            now: () => clock,
+            blockConcurrencyWhile: blockingGate()
+        });
+        const silo = createSilo({
+            actors: [Rescheduling],
+            storage: durableObjectStorage(storage),
+            reminders,
+            scheduler: manualScheduler(),
+            defaults: { sweepIntervalMs: 0, callTimeoutMs: 0 }
+        });
+        await silo.start();
+        try {
+            await silo.actor(Rescheduling, 'r').arm();
+            clock = 100;
+            alarms.at = null;
+
+            // A deadlock never rejects, it simply never settles — so race it
+            // rather than hanging the suite on a regression.
+            const outcome = await Promise.race([
+                reminders.onAlarm().then(() => 'settled' as const),
+                new Promise<'wedged'>((resolve) => setTimeout(() => resolve('wedged'), 100))
+            ]);
+            expect(outcome).toBe('settled');
+            // And the reschedule still took effect.
+            expect(alarms.at).toBe(110);
+        } finally {
+            await silo.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    it('reports a wrong-owner reminder without throwing through the gate', async () => {
+        // An exception escaping `blockConcurrencyWhile` RESETS the Durable
+        // Object on the real platform, so the caller loses this carefully
+        // worded message and any in-flight work on the object dies with it.
+        // The failure has to leave the gate before it is raised.
+        const storage = fakeStorage();
+        const alarms = fakeAlarms();
+        const gate = blockingGate();
+        const reminders = durableObjectReminders({
+            storage,
+            alarms,
+            blockConcurrencyWhile: gate
+        });
+        reminders.bind({
+            storage: durableObjectStorage(storage),
+            scheduler: manualScheduler(),
+            tickMs: 30_000,
+            ownsShard: () => true,
+            deliver: async () => undefined
+        });
+
+        await reminders.apiFor({ type: 'First', key: 'a' }).set('x', { due: 10 });
+        await expect(
+            reminders.apiFor({ type: 'Second', key: 'b' }).set('y', { due: 10 })
+        ).rejects.toThrow(/hosts First\/a/);
+
+        // The gate is still usable — it was not left held, and the object
+        // would not have been reset.
+        await expect(gate(async () => 'alive')).resolves.toBe('alive');
     });
 
     it('honours a reminder rescheduled from inside onReminder', async () => {

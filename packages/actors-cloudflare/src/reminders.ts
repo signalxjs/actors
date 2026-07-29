@@ -79,6 +79,21 @@ export function durableObjectReminders(
     const gate: BlockConcurrencyWhile = options.blockConcurrencyWhile ?? ((fn) => fn());
     let context: ActorRemindersContext | null = null;
 
+    /**
+     * A gated read-modify-write whose failure is raised AFTER the gate has
+     * closed.
+     *
+     * An exception escaping `blockConcurrencyWhile` RESETS the Durable
+     * Object: the isolate is torn down, every other in-flight call on it
+     * dies, and the caller gets a generic failure instead of whatever we
+     * were trying to tell them. So an expected, diagnosable failure travels
+     * back as a value and is thrown once we are outside.
+     */
+    const gated = async (fn: () => Promise<Error | void>): Promise<void> => {
+        const failure = await gate(fn);
+        if (failure) throw failure;
+    };
+
     const load = async (): Promise<Table> =>
         (await storage.get<Table>(TABLE_KEY)) ?? { entries: {} };
 
@@ -128,13 +143,16 @@ export function durableObjectReminders(
         stop() {},
 
         apiFor(ref: ActorRef): ReminderApi {
-            const claim = async (table: Table): Promise<Table> => {
+            // Returns the claimed table, or the reason it cannot be claimed.
+            // Deliberately NOT a throw: this runs inside the gate, and see
+            // `gated` above for why an exception must not escape one.
+            const claim = (table: Table): Table | Error => {
                 const owner = table.owner;
                 if (owner && (owner.type !== ref.type || owner.key !== ref.key)) {
                     // One DO holds one actor. A second identity here means
                     // the request was routed to the wrong object, and
                     // writing would corrupt the other actor's reminders.
-                    throw new Error(
+                    return new Error(
                         `[sigx actors-cloudflare] this Durable Object hosts ` +
                             `${owner.type}/${owner.key}, but ${ref.type}/${ref.key} tried to use ` +
                             `its reminders — check the placement's object id.`
@@ -152,71 +170,101 @@ export function durableObjectReminders(
                                 `anything tighter.`
                         );
                     }
-                    return gate(async () => {
-                    const table = await claim(await load());
-                    table.entries[name] = {
-                        nextDue: now() + opts.due,
-                        ...(opts.period !== undefined ? { period: opts.period } : {})
-                    };
-                    await save(table);
+                    return gated(async () => {
+                        const table = claim(await load());
+                        if (table instanceof Error) return table;
+                        table.entries[name] = {
+                            nextDue: now() + opts.due,
+                            ...(opts.period !== undefined ? { period: opts.period } : {})
+                        };
+                        await save(table);
                     });
                 },
                 clear(name) {
-                    return gate(async () => {
-                    const table = await claim(await load());
-                    if (!(name in table.entries)) return;
-                    delete table.entries[name];
-                    await save(table);
+                    return gated(async () => {
+                        const table = claim(await load());
+                        if (table instanceof Error) return table;
+                        if (!(name in table.entries)) return;
+                        delete table.entries[name];
+                        await save(table);
                     });
                 },
                 async list() {
-                    const table = await claim(await load());
+                    // Read-only, so it never takes the gate — and a throw
+                    // here cannot reset anything.
+                    const table = claim(await load());
+                    if (table instanceof Error) throw table;
                     return Object.keys(table.entries);
                 }
             };
         },
 
-        onAlarm() {
-            return gate(async () => {
-            if (!context) {
+        /**
+         * Three phases, and the middle one is deliberately NOT gated.
+         *
+         * A handler is expected to call `ctx.reminders.set()` — rescheduling
+         * from inside `onReminder` is the documented pattern — and that takes
+         * the gate. `blockConcurrencyWhile` blocks the whole object until its
+         * callback settles and does not nest, so holding it across delivery
+         * means the inner call waits for a lock its own caller holds: the
+         * object wedges, the alarm is never re-armed, and a periodic reminder
+         * is dead for good.
+         *
+         * Splitting the table writes from the delivery removes the
+         * re-entrancy rather than trying to detect it. (A "gate already
+         * held" flag cannot work: it can't tell a genuinely re-entrant call
+         * from a different concurrent one, and would let the latter skip the
+         * serialization the gate exists to provide.)
+         */
+        async onAlarm() {
+            const bound = context;
+            if (!bound) {
                 // Returning quietly would DROP whatever was due, and the
                 // platform has already cleared the alarm — so a periodic
                 // reminder would never fire again. Start the silo before
-                // wiring alarm() to this.
+                // wiring alarm() to this. Raised OUTSIDE the gate: a throw
+                // inside one resets the object.
                 throw new Error(
                     '[sigx actors-cloudflare] onAlarm() before the silo bound its reminders — ' +
                         'await the silo/app start inside the Durable Object before handling alarms.'
                 );
             }
-            const table = await load();
-            // Read the owner back from storage: after an eviction this runs
-            // before any activation, so there is nothing in memory to use.
-            const ref = table.owner;
-            const at = now();
-            const due = Object.entries(table.entries).filter(([, e]) => e.nextDue <= at);
 
-            // Advance BEFORE delivering, exactly as the sharded table does:
-            // a crash between persist and dispatch skips one firing rather
-            // than double-firing.
-            for (const [name, entry] of due) {
-                if (entry.period === undefined) {
-                    delete table.entries[name];
-                    continue;
+            // Phase 1 — gated: take what is due and persist the advance.
+            const { ref, due } = await gate(async () => {
+                const table = await load();
+                // Read the owner back from storage: after an eviction this
+                // runs before any activation, so there is nothing in memory.
+                const owner = table.owner;
+                const at = now();
+                const ready = Object.entries(table.entries).filter(([, e]) => e.nextDue <= at);
+
+                // Advance BEFORE delivering, exactly as the sharded table
+                // does: a crash between persist and dispatch skips one
+                // firing rather than double-firing.
+                for (const [name, entry] of ready) {
+                    if (entry.period === undefined) {
+                        delete table.entries[name];
+                        continue;
+                    }
+                    // Advance from the SCHEDULED time, not from now, so an
+                    // alarm that fires a little late does not drift the
+                    // cadence — and clamp past `at` after real downtime, so
+                    // we never queue a catch-up burst. Same rule as core.
+                    let next = entry.nextDue + entry.period;
+                    if (next <= at) next = at + entry.period;
+                    table.entries[name] = { ...entry, nextDue: next };
                 }
-                // Advance from the SCHEDULED time, not from now, so an alarm
-                // that fires a little late does not drift the cadence — and
-                // clamp past `at` after real downtime, so we never queue a
-                // catch-up burst. Same rule as the core sharded table.
-                let next = entry.nextDue + entry.period;
-                if (next <= at) next = at + entry.period;
-                table.entries[name] = { ...entry, nextDue: next };
-            }
-            await storage.put(TABLE_KEY, table);
+                await storage.put(TABLE_KEY, table);
+                return { ref: owner, due: ready.map(([name]) => name) };
+            });
 
+            // Phase 2 — UNGATED: deliver. A handler rescheduling itself now
+            // finds the gate free, which is the entire point of the split.
             if (ref) {
-                for (const [name] of due) {
+                for (const name of due) {
                     try {
-                        await context.deliver(ref, name);
+                        await bound.deliver(ref, name);
                     } catch (error) {
                         if (__DEV__) {
                             console.error(
@@ -232,13 +280,14 @@ export function durableObjectReminders(
                         'recorded — the table was written by an older version.'
                 );
             }
-            // Re-read before arming: a delivered `onReminder` may itself
-            // have called `ctx.reminders.set/clear`, which persisted a newer
-            // table and armed an earlier alarm. Arming from the snapshot we
-            // loaded before delivery would overwrite that with a later time
-            // — and a reminder rescheduled from its own handler is a normal
-            // pattern, not an edge case.
-            await rearm(await load(), true);
+
+            // Phase 3 — gated: re-read and re-arm. The re-read matters: a
+            // delivered `onReminder` may itself have called
+            // `ctx.reminders.set/clear`, persisting a newer table and arming
+            // an earlier alarm. Arming from the phase-1 snapshot would
+            // overwrite that with a later time.
+            await gate(async () => {
+                await rearm(await load(), true);
             });
         }
     };

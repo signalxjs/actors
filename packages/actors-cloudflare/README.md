@@ -70,6 +70,22 @@ reminder table can interleave with a `ctx.reminders.set/clear` from a
 concurrent dispatch — and one of the two writes would be lost. Pass
 `blockConcurrencyWhile` there.
 
+Two things follow from what that gate actually is, and both are handled for
+you:
+
+- **It is never held across delivery.** `blockConcurrencyWhile` blocks the
+  whole object until its callback settles, and does not nest. Since
+  rescheduling from inside `onReminder` is a normal pattern — and takes the
+  gate itself — holding it while delivering would deadlock the object. So
+  `onAlarm()` runs in three phases: claim what is due and persist the
+  advance (gated), deliver (**un**gated), then re-read and re-arm (gated).
+- **Expected failures are raised outside it.** An exception escaping
+  `blockConcurrencyWhile` *resets* the Durable Object, which would replace a
+  diagnosable error with a generic one and kill every other in-flight call.
+  A wrong-owner `ctx.reminders.set()` — the "this object hosts a different
+  actor" case — therefore travels back as a value and is thrown once the
+  gate has closed.
+
 ## Status
 
 Storage and reminders ship here. The placement (`ref` → DO stub) and the

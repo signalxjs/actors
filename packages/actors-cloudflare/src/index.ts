@@ -11,7 +11,12 @@
  * What is left is two seams: storage over the DO's own storage, and
  * reminders over its alarm.
  */
-export { durableObjectStorage, type DurableStorage } from './storage';
+export {
+    durableObjectStorage,
+    type BlockConcurrencyWhile,
+    type DurableObjectStorageOptions,
+    type DurableStorage
+} from './storage';
 export {
     durableObjectReminders,
     type DurableAlarms,

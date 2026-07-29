@@ -61,5 +61,13 @@
       "@sigx/server",
       "@sigx/serialize"
     ]
+  },
+  {
+    "name": "@sigx/actors-cloudflare",
+    "path": "packages/actors-cloudflare/dist/index.prod.js",
+    "limit": "2 KB",
+    "ignore": [
+      "@sigx/actors"
+    ]
   }
 ]
