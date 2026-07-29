@@ -2,7 +2,45 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mintCallId()` no longer draws its per-process seed at module scope**
+  (#136). workerd forbids generating random values in global scope, so the
+  seed was either refused or served from a deterministic startup seed — and
+  in the latter case every isolate of one bundle shares a seed while its
+  counter restarts at zero, so two Durable Objects mint *identical* call
+  ids. That id is what deadlock detection and cross-hop correlation are
+  built on. Now seeded lazily on first use, the same idiom `context.ts`
+  already uses for the AbortController it cannot construct at import.
+
+### Added
+
+- **`SiloEndpointRuntime` — the inbound half of `SiloTransportRuntime`**
+  (#136), plus `siloEndpointRuntime(silo)` in `@sigx/actors/cluster`. The
+  internal silo endpoint never calls `descriptor()` or `view()`; those
+  belong to the sending side, which has to pick a peer. Splitting them lets
+  a single-host runtime with no membership — a Cloudflare Durable Object,
+  where the platform guarantees the single instance — serve the internal
+  mount without fabricating a membership view. `SiloTransportRuntime` now
+  extends the narrower interface, so every existing transport is unchanged
+  and the whole cluster suite passes untouched.
+
+  `$sigx:silo#stats` resolves to `null` on such a runtime rather than
+  synthesizing a `SiloReport`: that payload is a *cluster* identity (siloId,
+  epoch, address, owned reminder shards) and inventing one would put fiction
+  on the ops channel. The endpoint's resolver now asks the runtime whether
+  it offers the ops channel instead of assuming every runtime does.
+
 ### Changed
+
+- **`SiloDefaults.sweepIntervalMs: 0` disables idle collection** (#136),
+  matching the existing `callTimeoutMs: 0` precedent. For a runtime that
+  evicts the whole silo when it goes idle the sweeper can never usefully
+  fire — eviction destroys the isolate, the silo and the activation
+  together, and nothing keeps the object resident except in-flight work,
+  which is exactly what the sweeper skips. It is also not free there: a
+  pending timer holds a Durable Object in memory and billable, so a
+  permanent interval would be one billing pin per actor.
 
 - **The actor wire now carries a per-grain routing token** (#132, stage 1 of
   #84): `POST {base}/r/{token}/{Type}%23{method}`, mirrored into an

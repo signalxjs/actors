@@ -26,8 +26,16 @@ import type { ActorScheduler } from '../types';
  *
  * WinterCG-clean — both globals are standard, and `unref` is
  * optional-chained. It is the right choice anywhere with a long-lived
- * process (Node, Deno, Bun); it is the WRONG choice on Workers, which is
- * what the seam is for.
+ * process (Node, Deno, Bun).
+ *
+ * It is the WRONG choice in a plain Worker, which only runs while handling a
+ * request: an interval registered at startup simply never fires. A Durable
+ * Object is the middle case — it MAY use timers while it is resident, so
+ * short-lived work (the write-behind flush, a watch throttle window,
+ * `ctx.timer`) works, but a long or repeating timer holds the object in
+ * memory and billable, and nothing survives eviction. That is why idle
+ * collection there is switched off with `sweepIntervalMs: 0` rather than
+ * merely slowed down.
  */
 export function timerScheduler(): ActorScheduler {
     return {

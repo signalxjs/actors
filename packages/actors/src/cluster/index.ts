@@ -21,6 +21,7 @@ export {
     matchesSiloRequest,
     createSiloResolver,
     resolveSiloSymbol,
+    siloEndpointRuntime,
     siloRuntime,
     type SiloEndpointOptions,
     type SiloRequestOptions,
@@ -41,6 +42,7 @@ export { httpTransport, HTTP_TRANSPORT_NAME, type HttpTransportOptions } from '.
 export type {
     SiloCallMode,
     SiloCallTarget,
+    SiloEndpointRuntime,
     SiloTransport,
     SiloTransportConfig,
     SiloTransportFactory,

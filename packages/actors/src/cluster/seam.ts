@@ -102,18 +102,17 @@ export interface SiloCallTarget {
 }
 
 /**
- * The LIVE silo behind this transport, handed over at `start()`.
+ * What the INBOUND endpoint actually needs: resolve a symbol, dispatch it
+ * locally, and count a refused authentication. No membership.
  *
- * Separate from the config on purpose: none of it exists at construction
- * time — a transport built inside `cluster()`'s body has no silo to
- * dispatch into yet. Splitting the two removes a whole class of
- * called-too-early bug instead of documenting it away.
+ * Split out of `SiloTransportRuntime` because `handleSiloRequestForRuntime`
+ * never touches `descriptor()` or `view()` — those belong to the SENDING
+ * side, which has to pick a peer. A host with exactly one actor and no
+ * cluster (a Cloudflare Durable Object) can therefore serve the internal
+ * endpoint without fabricating a membership view it has no way to answer.
+ * `siloEndpointRuntime(silo)` is the adapter for that case.
  */
-export interface SiloTransportRuntime {
-    /** This silo's membership descriptor as it stands right now. */
-    descriptor(): SiloDescriptor;
-    /** The current membership view. SYNC — `dispatcherFor` is on the hot path. */
-    view(): MembershipView;
+export interface SiloEndpointRuntime {
     /**
      * Resolve an inbound wire symbol (`Cart#addItem`) against the running
      * silo. `null` = no such type or method: answer this transport's
@@ -165,7 +164,31 @@ export interface SiloTransportRuntime {
      * Report a refused authentication. Counted, because a rejection here is
      * otherwise completely silent — and during a secret rotation it is the
      * only signal that half the cluster has not rotated yet.
+     *
+     * Optional here: a host with no shared secret refuses nothing, so it has
+     * nothing to count. A clustered transport must implement it — see
+     * `SiloTransportRuntime`.
      */
+    noteAuthFailure?(): void;
+}
+
+/**
+ * The LIVE silo behind this transport, handed over at `start()`.
+ *
+ * Separate from the config on purpose: none of it exists at construction
+ * time — a transport built inside `cluster()`'s body has no silo to
+ * dispatch into yet. Splitting the two removes a whole class of
+ * called-too-early bug instead of documenting it away.
+ *
+ * Adds the two members the SENDING side needs on top of the inbound
+ * `SiloEndpointRuntime`: who this silo is, and who its peers are.
+ */
+export interface SiloTransportRuntime extends SiloEndpointRuntime {
+    /** This silo's membership descriptor as it stands right now. */
+    descriptor(): SiloDescriptor;
+    /** The current membership view. SYNC — `dispatcherFor` is on the hot path. */
+    view(): MembershipView;
+    /** Required for a cluster: a refused auth must be counted. */
     noteAuthFailure(): void;
 }
 

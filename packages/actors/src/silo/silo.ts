@@ -39,7 +39,16 @@ export interface SiloDefaults {
     /** External-call deadline, ms (becomes `ActorCallContext.deadline`).
      *  Default 30s. `0` disables. */
     callTimeoutMs?: number;
-    /** Sweeper cadence, ms. Default 60s. */
+    /**
+     * Sweeper cadence, ms. Default 60s. `0` disables idle collection —
+     * for a runtime that evicts the whole silo when it goes idle, where a
+     * sweeper can never usefully fire. A Cloudflare Durable Object is the
+     * case: eviction destroys the isolate, the silo and the activation
+     * together, and nothing keeps the object resident except in-flight work,
+     * which is exactly what the sweeper skips. There a permanent interval is
+     * worse than useless — a pending timer holds the object in memory and
+     * billable, so it would be one billing pin per actor.
+     */
     sweepIntervalMs?: number;
     /** Reminder loop cadence, ms. Default 30s. */
     reminderTickMs?: number;
@@ -486,9 +495,12 @@ class SiloImpl implements Silo {
             }
             throw error;
         }
-        this.#stopSweeper = this.#scheduler.every(this.#defaults.sweepIntervalMs, () =>
-            this.#local.sweep(Date.now(), this.#defaults.idleAfterMs)
-        );
+        // `0` = no idle collection (see `SiloDefaults.sweepIntervalMs`).
+        if (this.#defaults.sweepIntervalMs > 0) {
+            this.#stopSweeper = this.#scheduler.every(this.#defaults.sweepIntervalMs, () =>
+                this.#local.sweep(Date.now(), this.#defaults.idleAfterMs)
+            );
+        }
         this.#started = true;
         this.#stopped = false;
         stampSilo(this);

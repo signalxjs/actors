@@ -108,6 +108,34 @@ describe('the silo drives its background work through the seam', () => {
         expect(scheduler.pending).toBe(0);
     });
 
+    it('registers no sweeper at all when sweepIntervalMs is 0', async () => {
+        // For a runtime that evicts the whole silo when it goes idle — a
+        // Cloudflare Durable Object — the sweeper can never usefully fire,
+        // and a permanent interval would pin the object in memory (and
+        // billable) for as long as the actor exists.
+        const scheduler = manualScheduler();
+        const silo = createSilo({
+            actors: [Counter],
+            storage: memoryStorage(),
+            scheduler,
+            defaults: { sweepIntervalMs: 0, reminderTickMs: 1_000, callTimeoutMs: 0 }
+        });
+        await silo.start();
+        try {
+            // The reminder tick only — no sweeper.
+            expect(scheduler.pending).toBe(1);
+
+            // And idle collection genuinely does not happen: an activation
+            // older than `idleAfterMs` survives an advance that would have
+            // swept it.
+            await silo.actor(Counter, 'a').increment(1);
+            scheduler.advance(600_000);
+            expect(silo.stats().activations).toBe(1);
+        } finally {
+            await silo.stop({ timeoutMs: 1_000 });
+        }
+    });
+
     it('coalesces timer fires that stack up inside one advance', async () => {
         // Documenting real behaviour, not a quirk of the fake clock:
         // `ctx.timer` drops a tick while one is already queued ("a tick
