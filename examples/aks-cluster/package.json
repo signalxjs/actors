@@ -1,0 +1,22 @@
+{
+    "name": "aks-cluster-example",
+    "private": true,
+    "type": "module",
+    "description": "Production-shaped multi-silo cluster for the AKS deployment test: env-driven silo entry + in-cluster load generator, one container image",
+    "scripts": {
+        "start": "node --conditions=production server.mjs",
+        "start:dev": "node server.mjs",
+        "loadgen": "node --conditions=production loadgen.mjs"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/actors-k8s": "workspace:*",
+        "@sigx/actors-redis": "workspace:*",
+        "ioredis": "^5.4.1",
+        "undici": "^7.16.0"
+    },
+    "devDependencies": {
+        "@sigx/actors-cli": "workspace:*",
+        "@sigx/cli": "^0.7.0"
+    }
+}

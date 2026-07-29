@@ -1,0 +1,11 @@
+# Keep the image build context small and deterministic: dependencies are
+# installed and dists are rebuilt INSIDE the container, so none of these
+# belong in the upload.
+.git
+.github
+**/node_modules
+**/dist
+**/.actors
+**/coverage
+benchmarks/profiles
+docs

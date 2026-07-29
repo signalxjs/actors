@@ -229,6 +229,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `pnpm --filter counter-example cluster:serve` keeps that cluster UP
   under steady traffic, with `metrics()` and `ops()` mounted — the
   target `sigx actors top` is demonstrated against.
+- `examples/aks-cluster` — the production-shaped deployment example: an
+  env-driven multi-silo entry (`MEMBERSHIP=redis|k8s` picks `redisCluster`
+  or `k8sMembership`+`redisDirectory`; storage is `redisStorage`), a
+  closed-loop load generator over the public wire endpoint (`loadgen.mjs`,
+  one JSON summary line per run), and the Dockerfile both run from
+  (multi-stage `pnpm deploy`, context = repo root). The app half of the
+  AKS scale-out/perf test; the Helm chart and runbook live with it under
+  `deploy/`. Not published.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-grain heap footprint, leak detection, and the CPU/allocation

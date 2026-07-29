@@ -91,6 +91,31 @@ importers:
         specifier: ^8.21.1
         version: 8.21.1
 
+  examples/aks-cluster:
+    dependencies:
+      '@sigx/actors':
+        specifier: workspace:*
+        version: link:../../packages/actors
+      '@sigx/actors-k8s':
+        specifier: workspace:*
+        version: link:../../packages/actors-k8s
+      '@sigx/actors-redis':
+        specifier: workspace:*
+        version: link:../../packages/actors-redis
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
+      undici:
+        specifier: ^7.16.0
+        version: 7.29.0
+    devDependencies:
+      '@sigx/actors-cli':
+        specifier: workspace:*
+        version: link:../../packages/actors-cli
+      '@sigx/cli':
+        specifier: ^0.7.0
+        version: 0.7.0
+
   examples/chat:
     dependencies:
       '@sigx/actors':

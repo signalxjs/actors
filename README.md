@@ -29,7 +29,7 @@ await actor(CartActor, cartId).addItem(item);
 | Package | Description |
 |---|---|
 | [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./silo`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
-| [`@sigx/actors-redis`](packages/actors-redis) | Redis cluster providers — membership and the actor directory |
+| [`@sigx/actors-redis`](packages/actors-redis) | Redis providers — cluster membership, the actor directory, and etag-CAS actor storage |
 | [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — silo liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Orleans-style framed TCP transport — one multiplexed connection per peer |
 | [`@sigx/actors-ws`](packages/actors-ws) | The same frames over WebSocket — one port, proxy-friendly |
@@ -58,6 +58,12 @@ framework at all**: plain DOM, plus a 3-silo cluster demo.
 pnpm --filter counter-example dev       # single-silo dev server
 pnpm --filter counter-example cluster   # 3-silo cluster demo over real HTTP
 ```
+
+[`examples/aks-cluster`](examples/aks-cluster) — a **production-shaped
+deployment**: an env-driven silo entry (Redis membership/directory/storage,
+or Lease-based membership via `@sigx/actors-k8s`), a closed-loop load
+generator, and the container image both run from — the app half of the
+AKS scale-out/perf test.
 
 ### Watching it happen
 
