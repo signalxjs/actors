@@ -248,7 +248,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   prod start the same app module. Not published.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev silo, client swap, streams, file persistence, and a runnable 3-silo
-  cluster demo (`pnpm --filter counter-example cluster`). Not published.
+  cluster demo (`pnpm --filter counter-example cluster`), and the
+  durable-job demo (`pnpm --filter counter-example job`): a checkpointing
+  `defineJob` whose owning silo is killed mid-run and which resumes from
+  its last checkpoint on a survivor. Not published.
   `pnpm --filter counter-example cluster:serve` keeps that cluster UP
   under steady traffic, with `metrics()` and `ops()` mounted — the
   target `sigx actors top` is demonstrated against.

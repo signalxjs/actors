@@ -7,7 +7,8 @@
         "build": "vite build",
         "start": "node server.mjs",
         "cluster": "node cluster-demo.mjs",
-        "cluster:serve": "node cluster-demo.mjs --serve"
+        "cluster:serve": "node cluster-demo.mjs --serve",
+        "job": "node job-demo.mjs"
     },
     "dependencies": {
         "@sigx/actors": "workspace:*",
