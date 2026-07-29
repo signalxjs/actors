@@ -162,23 +162,39 @@ scaling depends on, and it holds.
 One silo joining an N-silo cluster produces **exactly N notifications** —
 measured, not modelled. That much is inherent: every silo must learn.
 
-The cost is in what a notification *becomes*. The Redis provider answers
-each one with a `refresh()` — one `SMEMBERS`, then one `HGET` per id that
-came back (`packages/actors-redis/src/index.ts:137-141,188`), with no
-debounce. A join leaves `N + 1` silos in the set, so each refresh is `N + 2`
-round trips:
+The cost is in what a notification *becomes*. Measured against **Redis
+8.8.1** (`CONFIG RESETSTAT`, add one silo, `INFO commandstats`, with
+heartbeat and poll pushed out so only the join's traffic is counted):
 
-| N | notifications | Redis ops for ONE join |
-|---:|---:|---:|
-| 10 | 10 | 120 |
-| 50 | 50 | 2 600 |
-| 100 | 100 | **10 200** |
+| n | commands for ONE join | of which `hget` | refreshes |
+|---:|---:|---:|---:|
+| 1 | 21 | 4 | 2 |
+| 10 | 156 | 121 | 11 |
+| 50 | 2 716 | 2 601 | 51 |
+| **100** | **10 416** | **10 201** | 101 |
+
+`hget` is exactly `(n + 1)²` at every point, and the total fits
+
+```
+commands = (n + 1)(n + 3) + 13
+```
+
+exactly across the whole sweep. **The quadratic is measured, not argued.**
+Each of the `n + 1` members (the joiner included) runs a `refresh()`, and
+each refresh is one `SMEMBERS`, one `GET` of the version key, and one `HGET`
+per id that came back.
 
 A rolling restart of 100 silos is ~200 membership changes — on the order of
-**2 M Redis operations**, in bursts. The `redis_ops_modelled` metric applies
-the provider's own refresh shape to the measured notification count; it is
-derived from the provider source, **not measured against Redis** (that needs
-a Redis instance — Tier 2).
+**2 M Redis commands**, in bursts.
+
+> Reproduce with `REDIS_URL=... pnpm bench:run cluster/redis-amplification`.
+> This figure was previously *modelled* from the provider source and was
+> wrong twice — 10 100, then 10 200 — because the model missed that the
+> joining silo also refreshes (`n + 1` refreshers, not `n`) and that each
+> refresh reads the version key as well as the member set (2 fixed
+> commands, not 1). The `+ 13` is the joiner's own write path plus the
+> `CLIENT SETINFO` handshake ioredis performs on each new connection. It is
+> measured now.
 
 Cheapest fix is a debounce/coalesce on the subscriber path: N changes
 arriving together should cost one refresh, not N.

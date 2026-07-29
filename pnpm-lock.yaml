@@ -68,6 +68,9 @@ importers:
       '@sigx/actors':
         specifier: workspace:*
         version: link:../packages/actors
+      '@sigx/actors-redis':
+        specifier: workspace:*
+        version: link:../packages/actors-redis
     devDependencies:
       '@sigx/actors-tcp':
         specifier: workspace:*
@@ -78,6 +81,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      ioredis:
+        specifier: ^5
+        version: 5.11.1
       undici:
         specifier: ^7.29.0
         version: 7.29.0

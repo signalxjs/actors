@@ -224,12 +224,34 @@ an O(N²).
 counter, so `directory.claim`, `membership.refresh`, change notifications and
 the rest are all attributable per silo.
 
-**What this cannot tell you:** what those provider calls cost against real
-Redis. `memoryClusterHub` answers `refresh()` from a local map; the Redis
-provider answers it with one `SMEMBERS`, then one `HGET` per id that came
-back — so a refresh against a cluster of M silos is `M + 1` round trips. The
-`redis_ops_modelled` metric applies that shape to the measured notification
-count — it is *derived from the provider source, not measured*. Measuring it
+**What the in-process sweep cannot tell you:** what those provider calls cost
+against real Redis. `memoryClusterHub` answers `refresh()` from a local map.
+The `redis_ops_modelled` metric applies the Redis provider's refresh shape to
+the measured notification count — *derived from the provider source, not
+measured*, and it was wrong twice before anyone measured it.
+
+### Measuring it for real
+
+`cluster/redis-amplification` counts actual Redis commands per membership
+change. It skips cleanly without `REDIS_URL`, so the default suite still runs
+anywhere.
+
+```sh
+# macOS — no container runtime needed, Redis is a native bottle
+brew install redis
+redis-server --port 6399 --save '' --appendonly no --daemonize yes
+
+REDIS_URL=redis://localhost:6399 pnpm bench:run cluster/redis-amplification
+```
+
+`keydb` and `valkey` are also native bottles if you want to compare a
+multithreaded store — the amplification is algorithmic, so a faster server
+raises the ceiling without changing the shape. Podman is *not* needed on
+macOS and would cost a Linux VM for no benefit; use it only if you
+specifically want parity with CI's `redis:7` service.
+
+The same variable un-skips the provider tests:
+`REDIS_URL=redis://localhost:6399 pnpm test -- actors-redis`. Measuring it
 for real needs a Redis instance, and interpreting a real 100-silo run needs
 cluster-wide stats that do not exist yet (issue #38).
 

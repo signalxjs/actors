@@ -3,17 +3,19 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
-    "description": "Performance baselines for @sigx/actors — closed-loop throughput, latency percentiles, and heap/GC accounting. Not published.",
+    "description": "Performance baselines for @sigx/actors \u2014 closed-loop throughput, latency percentiles, and heap/GC accounting. Not published.",
     "scripts": {
         "bench": "node --conditions=production --expose-gc src/main.ts"
     },
     "dependencies": {
-        "@sigx/actors": "workspace:*"
+        "@sigx/actors": "workspace:*",
+        "@sigx/actors-redis": "workspace:*"
     },
     "devDependencies": {
         "@sigx/actors-tcp": "workspace:*",
         "@sigx/actors-ws": "workspace:*",
         "@types/ws": "^8.18.1",
+        "ioredis": "^5",
         "undici": "^7.29.0",
         "ws": "^8.21.1"
     }
