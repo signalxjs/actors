@@ -29,6 +29,42 @@
   then force-dropped. A turn parked on the signal now unwinds inside the
   drain window.
 
+- **`attachSignalHandlers(silo, { server, onStopBegin, onError })` drains the
+  HTTP edge** (#157). Stopping the actors was only half a graceful shutdown:
+  an orchestrator's preStop sleep and readiness-503 steer *new* connections
+  away, but connections already established survive endpoint removal
+  (conntrack) and ride into the exiting pod, where they are reset at
+  `process.exit`. #142 measured that as 122 lost calls out of ~1.7M on a
+  rolling restart — all connection-level, none visible from the actor layer,
+  which reported a clean hand-off.
+
+  That fix previously lived only in `examples/aks-cluster`, so the
+  **documented** Node recipe still had the bug. The sequence now belongs to
+  the seam, and both examples use it, so there is one shutdown story instead
+  of two.
+
+  The order is deliberately not the obvious one: `onStopBegin()` (the caller
+  starts answering `connection: close`, which is what actually drains client
+  pools — one response at a time, interrupting nothing) → `silo.stop()` →
+  `server.close()` + `closeAllConnections()` **last**. Closing the listener
+  first looks more decisive and is worse: on Node ≥ 19 `close()` also
+  destroys idle connections, and "idle" from the server's side includes a
+  socket the client is at that instant writing its next request onto — which
+  manufactures the very reset the sequence prevents. There is a test pinning
+  that, because the naive order is an easy "improvement" to reintroduce.
+
+  `server` is typed structurally, so `https`, `http2` and a test double all
+  satisfy it, and `closeAllConnections` is optional-called for Node < 18.2.
+  Omitting `server` behaves exactly as before — the options are additive.
+
+### Changed
+
+- **A failed drain now exits non-zero** (#157). `attachSignalHandlers`
+  swallowed a `silo.stop()` rejection and exited 0, so a pod that failed to
+  flush looked like a clean stop — and on a terminated pod the exit code is
+  often the only diagnostic left. It now exits 1 and reports through the new
+  `onError` hook.
+
 ### Fixed
 
 - **A fenced silo now fails LIVENESS, not just readiness** (#141).

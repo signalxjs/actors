@@ -17,14 +17,18 @@ import { Counter } from './src/counter.actor.ts';
 // plugin shared, declared once. Only the registry differs — Vite hands the
 // plugin's over, this entry names its actors.
 const silo = await app.withActors([Counter]).start();
-attachSignalHandlers(silo);
 
 // One handler for the public endpoint and any plugin-contributed route.
 const actorHandler = createAppHandler(app);
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
-createServer((req, res) => {
+// Once shutdown starts, every response says `connection: close` so keep-alive
+// clients retire their pooled socket after the response they are already
+// receiving — rather than reusing it right up to the moment it is destroyed.
+let stopping = false;
+const server = createServer((req, res) => {
+    if (stopping) res.setHeader('connection', 'close');
     void actorHandler(req, res, async () => {
         // Static fallthrough: the built client app.
         const path = req.url === '/' ? '/index.html' : req.url ?? '/index.html';
@@ -36,6 +40,13 @@ createServer((req, res) => {
             res.writeHead(404).end('not found');
         }
     });
-}).listen(5199, () => {
+});
+
+// Pass the server AND onStopBegin: stopping the actors is only half a
+// graceful shutdown, and `server` alone closes the listener at the end
+// without giving pools a chance to retire their sockets first.
+attachSignalHandlers(silo, { server, onStopBegin: () => (stopping = true) });
+
+server.listen(5199, () => {
     console.log('counter example on http://localhost:5199');
 });

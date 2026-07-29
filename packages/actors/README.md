@@ -553,8 +553,14 @@ and restarting is the caller's business.
   override). `ctx.deactivate()` = Orleans `DeactivateOnIdle`: finish the
   queue, then go.
 - `silo.stop()` drains every mailbox, flushes persistence, ends open streams
-  and rejects new external calls; `attachSignalHandlers(silo)` wires it to
-  SIGTERM/SIGINT.
+  and rejects new external calls.
+  `attachSignalHandlers(silo, { server, onStopBegin })`
+  wires it to SIGTERM/SIGINT **and** drains the HTTP edge,
+  which is the other half of a graceful shutdown. Both options matter:
+  `onStopBegin` is what retires keep-alive sockets gracefully, while
+  `server` alone only closes the listener at the end — see Clustering for
+  the full recipe and why the order is what it is. A failed drain exits
+  non-zero rather than vanishing as a clean stop.
 - Deactivation fires `ctx.abortSignal` **first** — before draining the
   mailbox — so a parked turn or a running task can observe it and wind down
   inside the drain window instead of holding it hostage.
@@ -1257,15 +1263,45 @@ import { createServer } from 'node:http';
 import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
 
 // ONE handler for both mounts — public endpoint and internal route.
-const server = createServer(createAppHandler(app));
+const handler = createAppHandler(app);
+
+// Once shutdown begins, every response says `connection: close`, so client
+// pools retire each socket after the response it is already receiving.
+let stopping = false;
+const server = createServer((req, res) => {
+    if (stopping) res.setHeader('connection', 'close');
+    handler(req, res);
+});
 
 // Listen BEFORE starting: `app.start()` joins membership, and from that
 // moment peers may place actors here and call them. Bind first and there
 // is no window where this silo is routable but nothing is listening.
 await new Promise<void>((resolve) => server.listen(7311, resolve));
 const silo = await app.start();
-attachSignalHandlers(silo);
+
+attachSignalHandlers(silo, { server, onStopBegin: () => (stopping = true) });
 ```
+
+**Pass the `server`, not just the silo.** Stopping the actors is only half a
+graceful shutdown. An orchestrator's preStop sleep and readiness-503 steer
+*new* connections away, but connections already established survive endpoint
+removal (conntrack) and ride into the exiting pod, where they are reset when
+the process exits. On a real cluster that measured as 122 lost calls out of
+~1.7M on a rolling restart — all connection-level, none of them visible from
+the actor layer, which reported a clean hand-off.
+
+The sequence is deliberately *not* the obvious one:
+
+1. `onStopBegin()` — start answering `connection: close`. This is what
+   actually drains the pools, one response at a time, interrupting nothing.
+2. `silo.stop()` — the actor drain. Pooled connections keep flowing; peers
+   whose dials are refused see `unreachable`, which is retryable by design.
+3. `server.close()` + `closeAllConnections()` — **last**.
+
+Closing the listener first looks more decisive and is worse: on Node ≥ 19
+`close()` also destroys idle connections, and "idle" from the server's side
+includes a socket the client is at that instant writing its next request
+onto. That produces exactly the reset the sequence exists to prevent.
 
 On other runtimes, route `app.routes` yourself — each is a
 `{ match(request), handle(request, silo) }` pair. The lower-level

@@ -4,5 +4,11 @@
  * and the file dev-storage provider.
  */
 export { fileStorage } from './file-storage';
-export { createActorHandler, attachSignalHandlers, type ActorHandlerOptions } from './handler';
+export {
+    createActorHandler,
+    attachSignalHandlers,
+    type ActorHandlerOptions,
+    type DrainableServer,
+    type SignalHandlerOptions
+} from './handler';
 export { createAppHandler, type AppHandlerOptions } from './app-handler';
