@@ -206,6 +206,7 @@ const grainColumns: Column<ActivationInfo>[] = [
     { key: 'queued', header: 'QUEUE', value: (g) => String(g.queued), align: 'right' },
     { key: 'age', header: 'AGE', value: (g) => uptime(g.ageMs), align: 'right' },
     { key: 'idle', header: 'IDLE', value: (g) => uptime(g.idleMs), align: 'right' },
+    { key: 'tasks', header: 'TASKS', value: (g) => (g.tasks > 0 ? String(g.tasks) : ''), align: 'right' },
     { key: 'alive', header: 'KEPT', value: (g) => (g.keptAlive ? 'yes' : '') }
 ];
 

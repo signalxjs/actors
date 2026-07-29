@@ -544,6 +544,10 @@ describe('tasks: keep-alive', () => {
         scheduler.advance(1000);
         await new Promise((r) => setTimeout(r, 20));
         expect(silo.stats().activations).toBe(1); // running task holds it
+        // And the operator can SEE why it is held.
+        const row = silo.activations()[0]!;
+        expect(row.tasks).toBe(1);
+        expect(row.keptAlive).toBe(true);
 
         release.open();
         await until(() => {

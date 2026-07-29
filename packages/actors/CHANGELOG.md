@@ -4,6 +4,12 @@
 
 ### Added
 
+- **`ActivationInfo.tasks` — running detached-task count per activation**
+  (#162). Flows through `silo.activations()` and the `ops()` snapshot, so
+  operators can see which grains hold long-running work (and why the idle
+  sweeper is skipping them); `sigx actors top` shows it as a TASKS column
+  in the grains table.
+
 - **Task durability: ledger + liveness reminder + crash-resume** (#151).
   `ctx.tasks.start()` now resolves only after the run is durably recorded —
   an entry in the reserved `$sigx:tasks` storage record (etag-CAS,

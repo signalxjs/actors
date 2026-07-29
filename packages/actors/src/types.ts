@@ -747,8 +747,12 @@ export interface ActivationInfo {
     ageMs: number;
     /** Since the last turn, ms. Wall clock — this is what idle collection reads. */
     idleMs: number;
-    /** Held open by a stream or an explicit keep-alive, so idle sweeping skips it. */
+    /** Held open — by a stream, a watch, or a running detached task — so
+     *  idle sweeping skips it. When `tasks > 0`, the tasks are the reason. */
     keptAlive: boolean;
+    /** Detached task runs currently held by this activation — the grains
+     *  hosting long-running work. Counted in `keptAlive` too. */
+    tasks: number;
 }
 
 export interface ActivationsOptions {

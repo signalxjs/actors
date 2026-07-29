@@ -383,7 +383,8 @@ export class LocalHost implements ActorDispatcher {
                 // backwards mid-activation would otherwise report a grain
                 // that was last used in the future.
                 idleMs: Math.max(0, now - activation.lastActivityMs),
-                keptAlive: activation.keptAlive
+                keptAlive: activation.keptAlive,
+                tasks: activation.tasks
             });
         }
 

@@ -270,6 +270,11 @@ export class Activation {
         return this.#deactivateRequested;
     }
 
+    /** Running detached task count (observability — `ActivationInfo.tasks`). */
+    get tasks(): number {
+        return this.#tasks.size;
+    }
+
     /** The identity used in call chains. */
     get id(): string {
         return actorId(this.ref);

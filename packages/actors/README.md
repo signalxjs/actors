@@ -599,8 +599,12 @@ grains themselves — bounded, sorted, and safe to poll:
 ```ts
 silo.activations({ sortBy: 'queued', limit: 20 });
 // [{ type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004,
-//    idleMs: 0, keptAlive: false }, …]
+//    idleMs: 0, keptAlive: false, tasks: 0 }, …]
 ```
+
+`tasks` is the running detached-task count — the grains hosting
+long-running work, and the usual reason a `keptAlive` row is being skipped
+by the idle sweeper. `sigx actors top` shows it as a TASKS column.
 
 `sortBy` picks which end you care about: `'queued'` (default) is the hot
 grains, `'age'` the long-lived ones, `'idle'` the next sweep's candidates.
