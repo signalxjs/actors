@@ -25,7 +25,7 @@
 import { createServer } from 'node:http';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { health, metrics, ops } from '@sigx/actors/silo';
-import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
+import { createAppHandler } from '@sigx/actors/node';
 import { cluster, clusterStats } from '@sigx/actors/cluster';
 import { redisCluster, redisDirectory } from '@sigx/actors-redis';
 import { k8sMembership } from '@sigx/actors-k8s';
@@ -101,7 +101,42 @@ const server = createServer(handler);
 // moment peers may place actors here and call them.
 await new Promise((resolve) => server.listen(PORT, resolve));
 const silo = await composed.start();
-attachSignalHandlers(silo);
+
+// Shutdown drains the HTTP edge, not just the actors (#142). The preStop
+// sleep + ready-503 dance only steers NEW connections away — established
+// keep-alive flows survive endpoint removal (conntrack) and ride into the
+// exiting pod, where they get RST at process exit. So on SIGTERM:
+//  1. server.close()            — stop accepting; Node marks kept-alive
+//                                 connections to close after their current
+//                                 response ('connection: close').
+//  2. closeIdleConnections()    — evict pooled idle sockets NOW, so client
+//                                 pools re-dial through the Service to a
+//                                 live pod instead of into this one.
+//  3. silo.stop()               — the actor drain (announces 'leaving',
+//                                 hands activations off; peers with pooled
+//                                 connections keep flowing, new peer dials
+//                                 are refused → unreachable → retryable).
+//  4. closeAllConnections()     — whatever straggled, then exit.
+let stopping = false;
+const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    server.close();
+    server.closeIdleConnections();
+    let code = 0;
+    try {
+        await silo.stop({ timeoutMs: 30_000 });
+    } catch (error) {
+        // A failed drain must not exit 0 and vanish — the exit code is the
+        // only diagnostic a terminated pod leaves behind.
+        console.error('[aks-cluster] drain failed:', error);
+        code = 1;
+    }
+    server.closeAllConnections();
+    process.exit(code);
+};
+process.once('SIGTERM', () => void shutdown());
+process.once('SIGINT', () => void shutdown());
 
 console.log(
     `[aks-cluster] silo ${plugin.placement.identity.siloId} on :${PORT} ` +
