@@ -17,8 +17,12 @@ const base = defineLibConfig({
         'cluster-frames': 'src/cluster/frames.ts',
         vite: 'src/vite/index.ts'
     },
-    // `sigx` is matched separately: the scoped pattern does not cover the
-    // un-scoped umbrella package that `./app` imports.
+    // The un-scoped `sigx` umbrella is matched too, though nothing here
+    // imports it any more — kept as a GUARD. This package must not depend on
+    // a renderer: `./app` uses `@sigx/runtime-core`, and pulling `sigx` would
+    // drag `@sigx/runtime-dom` in behind it, which is wrong for a terminal or
+    // a Lynx consumer. If an import ever reappears, this keeps it external
+    // rather than silently bundled.
     external: [/@sigx\/.*/, /^sigx(\/|$)/, /^node:/, 'vite'],
     root: import.meta.url
 }) as (env: ConfigEnv) => UserConfig;

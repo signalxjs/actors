@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`@sigx/actors` no longer depends on `sigx`** (#122). `./app` imported
+  the umbrella for six symbols and four types; all of them come from
+  `@sigx/runtime-core` (and `@sigx/runtime-core/internals`), which was
+  already an optional peer. `sigx` re-exports exactly those, so the types
+  are identical and **no consumer sees a difference**.
+
+  The umbrella's first line is `import '@sigx/runtime-dom/platform'`, so
+  depending on it dragged the DOM runtime in behind it. That is wrong for
+  every non-browser consumer this runtime is meant to serve — a terminal
+  app, a Lynx app, a headless silo — none of which have a DOM, and none of
+  which used a single DOM API through this package.
+
+  `sigx` is gone from `peerDependencies`; it stays a devDependency, because
+  the tests that mount a real sigx app and assert the plugin works there
+  are precisely the integration worth keeping, and tests are not shipped.
+  The build keeps `sigx` external as a guard, so a reappearing import stays
+  unbundled rather than silently shipping.
+
+  Incidentally smaller: the `@sigx/actors/app` bundle measures 2.92 kB
+  against its 3.5 kB budget. Its size-limit `ignore` now names
+  `@sigx/runtime-core`, which is what it actually links against.
+
 ### Fixed
 
 - **A `streams:` consumer that disconnects mid-pull can now tear the body

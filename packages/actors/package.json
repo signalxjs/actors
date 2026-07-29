@@ -111,7 +111,6 @@
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "@sigx/vite": "catalog:",
-        "sigx": "catalog:",
         "vite": ">=6"
     },
     "peerDependenciesMeta": {
@@ -119,9 +118,6 @@
             "optional": true
         },
         "@sigx/runtime-core": {
-            "optional": true
-        },
-        "sigx": {
             "optional": true
         },
         "vite": {

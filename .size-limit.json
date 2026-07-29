@@ -7,8 +7,7 @@
       "@sigx/reactivity",
       "@sigx/runtime-core",
       "@sigx/serialize",
-      "@sigx/server",
-      "sigx"
+      "@sigx/server"
     ]
   },
   {
@@ -20,8 +19,7 @@
       "@sigx/reactivity",
       "@sigx/runtime-core",
       "@sigx/serialize",
-      "@sigx/server",
-      "sigx"
+      "@sigx/server"
     ]
   },
   {
@@ -37,8 +35,8 @@
     "path": "packages/actors/dist/app.prod.js",
     "limit": "3.5 KB",
     "ignore": [
-      "@sigx/serialize",
-      "sigx"
+      "@sigx/runtime-core",
+      "@sigx/serialize"
     ]
   },
   {

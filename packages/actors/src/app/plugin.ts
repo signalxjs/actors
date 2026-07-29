@@ -16,11 +16,11 @@
  * serverFn wire. Registering them again here would be a second copy of one
  * vocabulary — a documentation gap, not a code gap.
  */
-import type { App, Plugin } from 'sigx';
+import type { App, Plugin } from '@sigx/runtime-core';
 import { configureActors, fetchTransport, type ActorTransport, type ActorTransportConfig } from '../client';
 import { ACTORS_TOKEN, isLiveClient, type ActorsContext } from './context';
 import { createCellRegistry } from './cell-registry';
-import { setProvided } from 'sigx/internals';
+import { setProvided } from '@sigx/runtime-core/internals';
 
 export interface ActorsPluginOptions {
     /**

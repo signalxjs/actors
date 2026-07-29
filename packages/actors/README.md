@@ -1288,7 +1288,7 @@ counters — see [Health & readiness](#health--readiness) above.
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |
-| `@sigx/actors/app` | `actorsPlugin()`, `useActorState`, `useActorAction` — the sigx app integration (the only entry that imports `sigx`) |
+| `@sigx/actors/app` | `actorsPlugin()`, `useActorState`, `useActorAction` — the sigx app integration (the only entry that imports `@sigx/runtime-core`) |
 | `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `clusterStats`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
 | `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |

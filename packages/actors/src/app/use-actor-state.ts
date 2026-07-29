@@ -24,7 +24,7 @@
  * during the render, and core's state-serialization plugin writes the value
  * into the page under the same canonical key the client then reads.
  */
-import { getCurrentInstance, onMounted, onUnmounted, useData, type AsyncState } from 'sigx';
+import { getCurrentInstance, onMounted, onUnmounted, useData, type AsyncState } from '@sigx/runtime-core';
 import { actor } from '../index';
 import { actorKey, type ActorKeyArg, type ActorKeyArgs } from '../actor-key';
 import { useActorsContext } from './context';

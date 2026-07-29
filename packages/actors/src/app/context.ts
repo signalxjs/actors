@@ -8,8 +8,8 @@
  * `configureActors()` seam is page-global by nature and stays that way for
  * the transport itself; everything with per-app identity lives here.
  */
-import { createToken, getProvided, type InjectionToken } from 'sigx/internals';
-import { useAppContext } from 'sigx';
+import { createToken, getProvided, type InjectionToken } from '@sigx/runtime-core/internals';
+import { useAppContext } from '@sigx/runtime-core';
 import { currentTransport, type ActorTransport } from '../client';
 import { createCellRegistry, type ActorCellRegistry } from './cell-registry';
 

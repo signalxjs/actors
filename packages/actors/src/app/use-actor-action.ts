@@ -12,7 +12,7 @@
  * normal case, and a default that UNDER-invalidates leaves stale data on
  * screen, which is a worse failure than one redundant refetch.
  */
-import { useAction, type AsyncAction } from 'sigx';
+import { useAction, type AsyncAction } from '@sigx/runtime-core';
 import { actor } from '../index';
 import { actorKey } from '../actor-key';
 import { useActorsContext } from './context';

@@ -177,7 +177,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   (createAppHandler + connect adapter, fileStorage, signal handlers),
   `./client` (build-swap target, configureActors, the `ActorTransport`
   seam + `fetchTransport`), `./app` (`actorsPlugin()` — the sigx app
-  integration, and the ONLY entry that imports `sigx`), `./cluster` (the
+  integration; it imports `@sigx/runtime-core`, NEVER the `sigx`
+  umbrella — see below), `./cluster` (the
   `cluster()` plugin, clusterPlacement, silo-to-silo endpoint, cluster
   provider seams, memoryClusterHub), `./vite`
   (`sigxActors()` plugin).
@@ -297,6 +298,18 @@ the queue, in two moments:
 
 ## Conventions & working principles
 
+- **Never depend on `sigx` from shipped code.** The published packages must
+  not pull a renderer. `sigx` is an umbrella whose first line is
+  `import '@sigx/runtime-dom/platform'`, so depending on it drags the DOM
+  runtime in behind it — wrong for a terminal app, a Lynx app, or a
+  headless silo, none of which have a DOM. `./app` needs framework
+  primitives, so it imports **`@sigx/runtime-core`** (and
+  `@sigx/runtime-core/internals`), which is what `sigx` re-exports anyway:
+  the types are identical and consumers see no difference. The build keeps
+  `sigx` external as a guard, so a reappearing import stays unbundled
+  rather than silently shipping. Tests may use `sigx` — they are not
+  shipped, and the ones that mount a real app *should*, because that is the
+  integration they exist to prove.
 - **Plan first for non-trivial work.** Both Claude Code and Copilot CLI have a built-in plan mode; use it and let the CLI manage the plan file.
 - **Verify before declaring done.** Run typecheck/tests for code changes; show evidence the change works.
 - **Test-first bug fixes.** Reproduce the bug with a *failing* unit test first (red), then make the fix so the test goes green — the failing test proves both that the bug exists and that the fix actually addresses it, and it stays behind as a regression test. Never fix a bug without a test that would have caught it. While you're in the area, if you find behaviour that should be covered but isn't, add the missing tests in the same PR.
