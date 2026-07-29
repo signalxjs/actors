@@ -26,6 +26,8 @@ import {
     type AnyActorDefinition,
     type DeactivationReason,
     type ReminderApi,
+    type TaskApi,
+    type TaskInfo,
     type TimerHandle,
     type TimerOptions
 } from '../types';
@@ -46,6 +48,12 @@ const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export interface ActivationHost {
     readonly idleAfterMs: number;
     readonly slowTurnMs: number;
+    /**
+     * How long deactivation waits for signalled tasks to settle before
+     * closing the mailbox, ms. Bounded so a task that ignores its abort
+     * signal cannot hold a deactivation hostage.
+     */
+    readonly taskGraceMs: number;
     /**
      * Optional turn observer. Its PRESENCE is what turns on the extra
      * timestamps — with none set the hot path is byte for byte what it was
@@ -111,6 +119,19 @@ interface StreamFeeds {
 
 type AnyFn = (...args: unknown[]) => unknown;
 type AnyStreamFn = (...args: unknown[]) => AsyncIterable<unknown>;
+type AnyTaskFn = (input: unknown) => void | Promise<void>;
+
+/** One running detached task. */
+interface TaskRun {
+    name: string;
+    /** Fires on cancel (`'cancelled'`) or deactivation (the reason). */
+    controller: AbortController;
+    /** One id for the whole run, so its `turn()`s correlate in traces. */
+    callId: string;
+    startedAt: number;
+    /** Settles when the body settles; never rejects. */
+    settled: Promise<void>;
+}
 
 export class Activation {
     readonly ref: ActorRef;
@@ -138,6 +159,9 @@ export class Activation {
     #keepAlive = 0;
     #warnedDroppedChanges = false;
     #warnedStreamState = false;
+    #warnedTaskState = false;
+    /** Running detached tasks, by name (single-flight per name). */
+    #tasks = new Map<string, TaskRun>();
     /** Shared watch loops, keyed by `method` + encoded args — see `./watch`. */
     #watches = new Map<string, SharedWatch>();
     lastActivityMs = Date.now();
@@ -437,10 +461,23 @@ export class Activation {
     // Lifecycle (driven by the local host)
 
     /**
-     * Graceful deactivation: close the mailbox, drain queued turns, run
-     * onDeactivate, flush a pending write-behind save, tear down.
+     * Graceful deactivation: signal in-flight work, give detached tasks a
+     * bounded grace to wind down, then close the mailbox, drain queued
+     * turns, run onDeactivate, flush a pending write-behind save, tear
+     * down.
+     *
+     * The aborts come FIRST — before the drain, not after it. An abort
+     * signal that fires only once the queue has drained is unobservable by
+     * exactly the long-running work it exists for: that work is what the
+     * drain is waiting on. The mailbox stays open through the task grace so
+     * a winding-down task can run a final `turn()` checkpoint.
      */
     async deactivate(reason: DeactivationReason): Promise<void> {
+        this.#abort.abort();
+        if (this.#tasks.size > 0) {
+            for (const run of this.#tasks.values()) run.controller.abort(reason);
+            await this.#settleTasks();
+        }
         this.mailbox.close();
         await this.mailbox.drain();
         const opts = this.def.__sigxActor;
@@ -475,19 +512,51 @@ export class Activation {
         }
         for (const t of this.#timers.values()) t.clear();
         this.#timers.clear();
-        this.#abort.abort();
         this.#scope.stop();
         this.#closeSubs(this.#subs);
     }
 
-    /** Force-drop on shutdown deadline: abort and tear down without drain. */
-    forceStop(): void {
+    /** Force-drop on the shutdown deadline: abort and tear down without
+     *  drain. `reason` is whatever the stop was using — `'migrated'` on a
+     *  cluster handoff — so task abort reasons keep their contract. */
+    forceStop(reason: DeactivationReason = 'shutdown'): void {
         this.mailbox.close();
         for (const t of this.#timers.values()) t.clear();
         this.#timers.clear();
         this.#abort.abort();
+        for (const run of this.#tasks.values()) run.controller.abort(reason);
         this.#scope.stop();
         this.#closeSubs(this.#subs);
+    }
+
+    /**
+     * Wait for every signalled task to settle, bounded by `taskGraceMs`.
+     * A host timer on purpose (not the scheduler): the grace is part of a
+     * stop already in flight, same as the shutdown drain deadline — and on
+     * a scheduler that never fires, a signal-ignoring task would otherwise
+     * hold deactivation forever.
+     */
+    async #settleTasks(): Promise<void> {
+        const pending = [...this.#tasks.values()].map((r) => r.settled);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<'timeout'>((r) => {
+            timer = setTimeout(() => r('timeout'), this.#host.taskGraceMs);
+            (timer as { unref?: () => void }).unref?.();
+        });
+        const outcome = await Promise.race([
+            Promise.all(pending).then(() => 'done' as const),
+            deadline
+        ]);
+        clearTimeout(timer);
+        if (outcome === 'timeout' && __DEV__) {
+            const names = [...this.#tasks.keys()].join('", "');
+            console.warn(
+                `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} ignored their ` +
+                    `abort signal past the ${this.#host.taskGraceMs}ms grace — proceeding ` +
+                    `with deactivation. Long-running task bodies must observe ` +
+                    `ctx.abortSignal.`
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -770,6 +839,183 @@ export class Activation {
         return derived;
     }
 
+    /**
+     * Launch one detached task run. Resolves once the body is launched —
+     * settlement is the run's own business. Single-flight per name.
+     */
+    async #startTask(name: string, input: unknown): Promise<void> {
+        if (this.#faulted) throw this.#faulted;
+        // Deactivation in progress: the grain is going away — starting new
+        // detached work now would either be instantly aborted or escape the
+        // settle the deactivation just awaited.
+        if (this.#abort.signal.aborted) throw new SiloShutdownError();
+        if (this.#tasks.has(name)) return;
+        const opts = this.def.__sigxActor;
+        if (!opts.tasks) {
+            throw new ActorMethodNotFoundError(
+                this.ref.type,
+                `${name} (no tasks: section on this actor)`
+            );
+        }
+        const run: TaskRun = {
+            name,
+            controller: new AbortController(),
+            callId: mintCallId(),
+            startedAt: Date.now(),
+            settled: Promise.resolve()
+        };
+        // Per RUN, like #streamTable is per subscription: each run's table
+        // closes over its own derived context (its own abortSignal).
+        const table = this.#scope.run(() => opts.tasks!(this.#taskContext(run)));
+        if (!table) throw new SiloShutdownError();
+        // Own keys only: `table[name]` would resolve prototype members
+        // ("toString", "constructor") into "tasks" instead of a clean
+        // not-found.
+        const fn = Object.hasOwn(table, name)
+            ? (table as Record<string, AnyTaskFn>)[name]
+            : undefined;
+        if (typeof fn !== 'function') {
+            throw new ActorMethodNotFoundError(
+                this.ref.type,
+                `${name} (not in the tasks: section)`
+            );
+        }
+        this.#tasks.set(name, run);
+        this.#keepAlive++;
+        run.settled = (async () => {
+            try {
+                await fn(input);
+            } catch (error) {
+                // Terminal: a thrown task is not restarted (retries belong
+                // to layers above). An abort unwinding as a throw is the
+                // expected wind-down path, not worth a warning.
+                if (__DEV__ && !run.controller.signal.aborted) {
+                    console.error(
+                        `[sigx actors] task "${name}" of ${actorLabel(this.ref)} threw:`,
+                        error
+                    );
+                }
+            } finally {
+                this.#tasks.delete(name);
+                this.#keepAlive--;
+                this.lastActivityMs = Date.now();
+            }
+        })();
+    }
+
+    /**
+     * A REQUEST, not a join: aborts the run's signal and returns. Awaiting
+     * settlement here would deadlock — cancel is called from method turns,
+     * and a winding-down task's final `turn()` queues behind exactly that
+     * turn. The run leaves `list()` when its body settles. (Deactivation
+     * CAN await settlement: its grace runs outside any turn.)
+     */
+    #cancelTask(name: string): Promise<void> {
+        this.#tasks.get(name)?.controller.abort('cancelled');
+        return Promise.resolve();
+    }
+
+    #listTasks(): readonly TaskInfo[] {
+        return [...this.#tasks.values()].map((r) => ({
+            name: r.name,
+            startedAt: r.startedAt,
+            restarts: 0
+        }));
+    }
+
+    /**
+     * Context for one task run: `abortSignal` is the RUN's signal, `turn()`
+     * re-enters the mailbox, `changes()` feeds are owned by the run (its
+     * abort closes them — a task parked in `for await (ctx.changes())` on a
+     * quiet actor is waiting on a wake nothing else would ever deliver, so
+     * cancellation must be able to end the feed from outside, exactly like
+     * a stream consumer disconnect), and — in dev — `state` is shadowed by
+     * a warning accessor (the type already omits it; this catches untyped
+     * access). Everything else is inherited unchanged.
+     */
+    #taskContext(run: TaskRun): ActorContext<object> {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const self = this;
+        const derived = Object.create(this.#ctx) as ActorContext<object>;
+        const feeds: StreamFeeds = { subs: new Set(), closed: false };
+        run.controller.signal.addEventListener(
+            'abort',
+            () => {
+                // Latched (`closed`), so a feed the body opens after the
+                // abort is born spent instead of parking forever.
+                feeds.closed = true;
+                self.#closeSubs(feeds.subs);
+            },
+            { once: true }
+        );
+        Object.defineProperty(derived, 'changes', {
+            value: (options?: { initial?: boolean }): AsyncIterable<object> =>
+                self.#openChanges(options, feeds),
+            enumerable: true,
+            configurable: true
+        });
+        Object.defineProperty(derived, 'abortSignal', {
+            value: run.controller.signal,
+            enumerable: true,
+            configurable: true
+        });
+        // Hard errors, not dev warnings: these WRITE. A detached save
+        // captures whatever half-mutated state a concurrent turn left, and
+        // races the etag another save is carrying — `turn()` is the door.
+        for (const member of ['save', 'clearState'] as const) {
+            Object.defineProperty(derived, member, {
+                value: () =>
+                    Promise.reject(
+                        new Error(
+                            `[sigx actors] ctx.${member}() called from a tasks: body on ` +
+                                `${actorLabel(self.ref)}. Task bodies run DETACHED from the ` +
+                                `mailbox — persistence must go through ctx.turn(), e.g. ` +
+                                `await ctx.turn((c) => c.${member}()).`
+                        )
+                    ),
+                enumerable: true,
+                configurable: true
+            });
+        }
+        Object.defineProperty(derived, 'turn', {
+            value: <T,>(fn: (ctx: ActorContext<object>) => T | Promise<T>): Promise<T> =>
+                self.mailbox.run(async () => {
+                    if (self.#faulted) throw self.#faulted;
+                    const started = Date.now();
+                    const prev = self.#currentCall;
+                    // The run's one callId, so ctx.actor() calls made inside
+                    // the turn carry a chain and traces correlate the run.
+                    self.#currentCall = { callChain: [self.id], callId: run.callId };
+                    try {
+                        return await fn(self.#ctx);
+                    } finally {
+                        self.#currentCall = prev;
+                        self.#afterTurn(started);
+                    }
+                }),
+            enumerable: true,
+            configurable: true
+        });
+        if (!__DEV__) return derived;
+        Object.defineProperty(derived, 'state', {
+            get() {
+                if (!self.#warnedTaskState) {
+                    self.#warnedTaskState = true;
+                    console.warn(
+                        `[sigx actors] a tasks: body on ${actorLabel(self.ref)} read live ` +
+                            `ctx.state. Task bodies run DETACHED from the mailbox — a turn ` +
+                            `can mutate underneath the read. Use ctx.snapshot(), ` +
+                            `ctx.changes(), or mutate inside ctx.turn().`
+                    );
+                }
+                return self.#state;
+            },
+            enumerable: true,
+            configurable: true
+        });
+        return derived;
+    }
+
     #buildBaseContext(): ActorContext<object> {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
@@ -879,6 +1125,11 @@ export class Activation {
                 self.#deactivateRequested = true;
             },
             abortSignal: this.#abort.signal,
+            tasks: {
+                start: (name: string, input?: unknown) => self.#startTask(name, input),
+                cancel: (name: string) => self.#cancelTask(name),
+                list: () => self.#listTasks()
+            } satisfies TaskApi,
             snapshot(): object {
                 return self.#snapshot();
             },

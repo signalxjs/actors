@@ -56,6 +56,13 @@ export interface SiloDefaults {
     /** __DEV__ slow-turn warning threshold, ms. Default 5s. */
     slowTurnMs?: number;
     /**
+     * How long deactivation waits for a detached task to observe its abort
+     * signal and settle, ms, before closing the mailbox anyway. Default
+     * 10s. Counts against `silo.stop()`'s own `timeoutMs`, so keep it
+     * smaller than that.
+     */
+    taskGraceMs?: number;
+    /**
      * __DEV__: round-trip dispatch args through the codec so same-process
      * code cannot accidentally depend on object identity a remote placement
      * would break. Default false (costs an encode per call).
@@ -115,6 +122,7 @@ interface ResolvedDefaults {
     sweepIntervalMs: number;
     reminderTickMs: number;
     slowTurnMs: number;
+    taskGraceMs: number;
     devSerializeChecks: boolean;
 }
 
@@ -150,6 +158,7 @@ class SiloImpl implements Silo {
             sweepIntervalMs: options.defaults?.sweepIntervalMs ?? 60_000,
             reminderTickMs: options.defaults?.reminderTickMs ?? 30_000,
             slowTurnMs: options.defaults?.slowTurnMs ?? 5_000,
+            taskGraceMs: options.defaults?.taskGraceMs ?? 10_000,
             devSerializeChecks: options.defaults?.devSerializeChecks ?? false
         };
         if (!options.storage && __DEV__) {
@@ -202,6 +211,7 @@ class SiloImpl implements Silo {
         const host: ActivationHost = this.#host = {
             idleAfterMs: this.#defaults.idleAfterMs,
             slowTurnMs: this.#defaults.slowTurnMs,
+            taskGraceMs: this.#defaults.taskGraceMs,
             scheduler: this.#scheduler,
             loadState: async (ref) => {
                 const record = await this.#storage.load(ref.type, ref.key);

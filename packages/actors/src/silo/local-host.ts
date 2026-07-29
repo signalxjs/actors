@@ -329,7 +329,7 @@ export class LocalHost implements ActorDispatcher {
                                 `the shutdown deadline (${timeoutMs}ms).`
                         );
                     }
-                    slot.activation.forceStop();
+                    slot.activation.forceStop(reason);
                 }
                 this.#directory.delete(id);
             }

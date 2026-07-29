@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`tasks:` — detached long-running work on an actor** (#147). Declare
+  long-running operations in a `tasks:` factory on `defineActor` and start
+  them with `ctx.tasks.start(name, input?)`: the body runs detached from
+  the mailbox (reads, streams and watches keep answering while it works),
+  touches state only through the new `ctx.turn(fn)` — one ordinary
+  serialized mailbox turn — and holds a keep-alive ref so the idle sweeper
+  skips the grain. Each run gets its own `abortSignal`, fired on
+  `ctx.tasks.cancel(name)` (reason `'cancelled'`) or deactivation (reason:
+  the `DeactivationReason`); deactivation waits a bounded grace
+  (`SiloDefaults.taskGraceMs`, default 10s) with the mailbox still open so
+  a winding-down task can run a final checkpoint turn. `start` is
+  single-flight per name; a thrown task is terminal; `cancel` is a request,
+  not a join. New types: `TaskApi`, `TaskInfo`, `ActorTaskContext`,
+  `ActorTask`, `ActorTaskTable`. Durable crash-resume ships separately.
+
+### Changed
+
+- **`ctx.abortSignal` now fires at the START of deactivation, before the
+  mailbox drain** (#147) — previously it fired after, which made its
+  documented contract ("long-running work should observe it")
+  unsatisfiable: work awaiting the signal was exactly what the drain was
+  waiting on, so a parked turn held `silo.stop()` to its deadline and was
+  then force-dropped. A turn parked on the signal now unwinds inside the
+  drain window.
+
 ### Fixed
 
 - **A fenced silo now fails LIVENESS, not just readiness** (#141).

@@ -374,6 +374,46 @@ export interface ReminderApi {
     list(): Promise<string[]>;
 }
 
+/** One running detached task, as `ctx.tasks.list()` reports it. */
+export interface TaskInfo {
+    name: string;
+    /** Epoch-ms this run first started. */
+    startedAt: number;
+    /**
+     * Times the runtime re-started the run after a deactivation or crash.
+     * Always 0 until task durability ships; the field exists so `list()`
+     * consumers don't change shape when it does.
+     */
+    restarts: number;
+}
+
+/**
+ * Detached long-running work — `ctx.tasks`. A task runs OUTSIDE the mailbox
+ * (reads interleave while it works) and holds a keep-alive ref so idle
+ * collection skips the grain. State access happens only through the task
+ * context's `turn()`, which is an ordinary serialized mailbox turn.
+ */
+export interface TaskApi {
+    /**
+     * Start the named task from the definition's `tasks:` table. Resolves
+     * once the run is launched — NOT when it finishes. Single-flight per
+     * name: starting an already-running task is a no-op. A task that throws
+     * is terminal (it is not restarted); a cancelled task ends with its
+     * abort reason.
+     */
+    start(name: string, input?: unknown): Promise<void>;
+    /**
+     * REQUEST cancellation: abort the run's signal (reason `'cancelled'`)
+     * and return. Deliberately not a join — awaiting settlement from a
+     * method turn would deadlock with the task's own wind-down `turn()`.
+     * The run leaves `list()` once its body settles; restart the name only
+     * after it has.
+     */
+    cancel(name: string): Promise<void>;
+    /** The tasks currently running on this activation. */
+    list(): readonly TaskInfo[];
+}
+
 /** `'migrated'` is reserved for cluster rebalancing — not yet emitted. */
 export type DeactivationReason =
     | 'idle'
@@ -417,8 +457,14 @@ export interface ActorContextBase<S extends object> {
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClient<D>;
     /** Orleans DeactivateOnIdle: finish the queue, then deactivate. */
     deactivate(): void;
-    /** Aborts on silo shutdown — long-running work should observe it. */
+    /**
+     * Aborts when this activation begins deactivating (any reason,
+     * including silo shutdown) — BEFORE the mailbox drain, so long-running
+     * work can observe it and wind down inside the drain window.
+     */
     readonly abortSignal: AbortSignal;
+    /** Detached long-running work declared in the `tasks:` section. */
+    readonly tasks: TaskApi;
     /** Deep, detached copy of the current state (safe outside the mailbox). */
     snapshot(): S;
     /**
@@ -455,6 +501,28 @@ export type ActorMethod = (...args: never[]) => unknown;
 export type ActorMethodTable = Record<string, ActorMethod>;
 export type ActorStreamMethod = (...args: never[]) => AsyncIterable<unknown>;
 export type ActorStreamTable = Record<string, ActorStreamMethod>;
+export type ActorTask = (input: never) => void | Promise<void>;
+export type ActorTaskTable = Record<string, ActorTask>;
+
+/**
+ * What a `tasks:` body sees. Tasks run DETACHED from the mailbox, so the
+ * live-state members are typed away: no `state`, no `save()`, no
+ * `clearState()`. State access goes through `turn()` — one ordinary
+ * serialized mailbox turn with the full context — and reads through
+ * `snapshot()` / `changes()`. `abortSignal` is the RUN's own signal: it
+ * fires on `ctx.tasks.cancel()` (reason `'cancelled'`) and on deactivation
+ * (reason: the `DeactivationReason`), before the mailbox drain, so a task
+ * can run a final `turn()` checkpoint while winding down.
+ */
+export type ActorTaskContext<
+    S extends object,
+    Ext extends object = Record<never, never>
+> = Omit<ActorContextBase<S>, 'state' | 'save' | 'clearState' | 'abortSignal'> & {
+    /** Re-enter the mailbox: run `fn` as one ordinary serialized turn. */
+    turn<T>(fn: (ctx: ActorContext<S, Ext>) => T | Promise<T>): Promise<T>;
+    /** This run's signal — see the type doc. */
+    readonly abortSignal: AbortSignal;
+} & Ext;
 
 export interface ActorOptions<
     S extends object,
@@ -519,6 +587,16 @@ export interface ActorOptions<
      * enumerated at definition time (for wire routing) with an inert probe.
      */
     streams?: (ctx: ActorContext<S, Ext>) => St;
+    /**
+     * Detached long-running work, started via `ctx.tasks.start(name,
+     * input?)`. A task body runs OUTSIDE the mailbox — other calls
+     * interleave while it works — and touches state only through the task
+     * context's `turn()`. The factory is called once per RUN with that
+     * run's derived context (its own `abortSignal`), and must be a pure
+     * table constructor. No wire surface: start/cancel go through your own
+     * methods, so the guard chain governs them.
+     */
+    tasks?: (ctx: ActorTaskContext<S, Ext>) => ActorTaskTable;
 }
 
 export interface ActorDefinition<

@@ -484,6 +484,66 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
   closable from outside the body. Nothing an author writes changes — the
   factory is a table constructor, not a place for per-activation state.
 
+## Tasks (long-running operations)
+
+A method call holds the mailbox until it settles — fine for milliseconds,
+wrong for a sync job or an AI workflow run. Declare that kind of work in the
+`tasks:` factory and start it with `ctx.tasks.start(name, input?)`: the body
+runs **detached from the mailbox**, so ordinary reads, streams and watches
+keep answering while it works.
+
+```ts
+const Sync = defineActor({
+    type: 'Sync',
+    unguarded: true,
+    state: () => ({ done: 0, total: 0, phase: 'idle' as string }),
+    methods: (ctx) => ({
+        begin: (total: number) => ctx.tasks.start('run', total),
+        status: () => ctx.snapshot(),
+        stop: () => ctx.tasks.cancel('run')
+    }),
+    tasks: (ctx) => ({
+        async run(total: number) {
+            await ctx.turn((c) => { c.state.phase = 'running'; c.state.total = total; });
+            for (let i = 0; i < total; i++) {
+                ctx.abortSignal.throwIfAborted();
+                await syncOne(i, { signal: ctx.abortSignal });
+                await ctx.turn((c) => { c.state.done = i + 1; });
+            }
+            await ctx.turn(async (c) => { c.state.phase = 'done'; await c.save(); });
+        }
+    })
+});
+```
+
+The rules, and why they hold the actor model together:
+
+- **State only through `ctx.turn(fn)`.** A task body is detached, so it gets
+  no `state`/`save()` — `turn()` enqueues `fn` as one ordinary serialized
+  mailbox turn with the full context. Every mutation stays race-free, and
+  everything downstream of a turn (change feeds, watches, write-behind) works
+  unmodified. Reads in the body use `ctx.snapshot()` / `ctx.changes()`.
+- **`ctx.abortSignal` in a task is the RUN's signal.** It fires on
+  `ctx.tasks.cancel(name)` (reason `'cancelled'`) and on deactivation for
+  any reason (reason: the `DeactivationReason`) — *before* the mailbox
+  drain. Deactivation gives signalled tasks a bounded grace
+  (`taskGraceMs`, default 10s) with the mailbox still open, so a
+  winding-down task can run one final `turn()` checkpoint.
+- **`cancel` is a request, not a join.** It aborts and returns; the run
+  leaves `ctx.tasks.list()` when its body settles. (Awaiting settlement from
+  a method turn would deadlock with the task's own wind-down `turn()`.)
+- **A running task keeps the grain alive** — the idle sweeper skips it, like
+  an open stream.
+- **`start` is single-flight per name** and resolves when the body is
+  *launched*, not finished. A task that throws is terminal — no automatic
+  retry; that policy belongs to the layer above.
+- **No wire surface.** Start/cancel/status go through your own methods, so
+  your guard chain governs them like any other call.
+
+Durable crash-resume (a ledger + liveness reminder that restarts a dead
+silo's tasks elsewhere) ships next — today a task dies with its activation
+and restarting is the caller's business.
+
 ## Lifecycle
 
 - `onActivate(ctx)` / `onDeactivate(ctx, reason)` hooks; an `onActivate`
@@ -495,6 +555,9 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
 - `silo.stop()` drains every mailbox, flushes persistence, ends open streams
   and rejects new external calls; `attachSignalHandlers(silo)` wires it to
   SIGTERM/SIGINT.
+- Deactivation fires `ctx.abortSignal` **first** — before draining the
+  mailbox — so a parked turn or a running task can observe it and wind down
+  inside the drain window instead of holding it hostage.
 - Calls that arrive during deactivation wait and land on a fresh activation.
 - External calls get a deadline (`callTimeoutMs`, default 30s) — on expiry
   the **caller** gets `ActorCallTimeoutError`; the turn itself always runs

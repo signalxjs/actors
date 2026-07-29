@@ -60,8 +60,13 @@ export type {
     PlacementBindings,
     ReminderApi,
     ActorScheduler,
+    ActorTask,
+    ActorTaskContext,
+    ActorTaskTable,
     Silo,
     SiloStats,
+    TaskApi,
+    TaskInfo,
     TimerHandle,
     TimerOptions
 } from './types';
