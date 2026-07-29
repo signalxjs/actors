@@ -33,6 +33,7 @@ import { Redis } from 'ioredis';
 import { app } from './src/actors.app.ts';
 import { Counter } from './src/counter.actor.ts';
 import { Crunch } from './src/crunch.actor.ts';
+import { SweepJob } from './src/sweep.job.ts';
 
 const need = (name) => {
     const value = process.env[name];
@@ -79,7 +80,7 @@ const plugin = cluster({
 });
 
 const composed = app
-    .withActors([Counter, Crunch])
+    .withActors([Counter, Crunch, SweepJob])
     .use(plugin)
     .use(metrics())
     .use(health())

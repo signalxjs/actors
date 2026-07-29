@@ -244,6 +244,29 @@ Note what the dashboard shows that the JSON summaries miss (queue-depth
 spikes, error kinds, transport fallbacks — should stay 0 with http-only)
 and capture one `stats --json` snapshot per scenario for the record.
 
+### (k) Long-running jobs under failover
+
+The workload the whole setup exists to protect: `MODE=jobs` starts
+`JOB_COUNT` SweepJob runs (`JOB_STEPS` × `JOB_STEP_MS` each, one
+checkpoint per step — a Redis CAS each) and polls until every one is
+terminal.
+
+```sh
+# ~5-minute jobs, enough runway to kill things mid-flight:
+load jobs 1 0 --set loadgen.mode=jobs   # then, via the raw job template,
+# env: JOB_COUNT=50 JOB_STEPS=300 JOB_STEP_MS=1000
+# Mid-run, do BOTH:
+kubectl -n $NS rollout restart deploy/$RELEASE-silo
+kubectl -n $NS delete pod <one silo> --grace-period=0 --force
+```
+
+Pass: `completed == jobs` and `stuck == 0` (a job stranded `running` on a
+dead silo means directory eviction failed to revive it);
+`crashResumes > 0` proves the kill landed on live runs and they resumed
+from their checkpoints; observed progress regresses at most one step per
+resume. Wall time stretches by roughly the membership TTL per hard kill —
+that detection window is the price of crash-resume.
+
 ### Optional: Lease-based membership (`@sigx/actors-k8s`)
 
 Re-run (a), (d)–(h) with membership on coordination Leases instead of
