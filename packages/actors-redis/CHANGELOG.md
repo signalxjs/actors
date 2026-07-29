@@ -4,6 +4,12 @@
 
 ### Added
 
+- `redisStorage({ client | url, namespace })` — a Redis-backed
+  `ActorStorage` with atomic etag compare-and-set (Lua/`EVALSHA`): one
+  HASH per actor under `{ns}:st:`, client-minted UUID etags, branded
+  `ActorStorageConflict` on mismatch. The first cluster-safe storage
+  provider; reminders ride it automatically.
+
 - Membership changes push over a `{ns}:membership` pub/sub channel (via a
   duplicated subscriber connection): views converge in sub-second time
   instead of waiting out the poll interval; the poll remains the safety

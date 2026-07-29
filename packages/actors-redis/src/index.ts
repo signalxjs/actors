@@ -311,3 +311,8 @@ export function redisDirectory(
         }
     };
 }
+
+// ---------------------------------------------------------------------------
+// Storage
+
+export { redisStorage, type RedisStorageOptions } from './storage';

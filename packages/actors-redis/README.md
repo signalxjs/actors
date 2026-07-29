@@ -1,7 +1,8 @@
 # @sigx/actors-redis
 
 Redis-backed cluster providers for [`@sigx/actors`](../actors) — membership
-(TTL heartbeats) and the distributed actor directory (claim CAS).
+(TTL heartbeats), the distributed actor directory (claim CAS), and
+`redisStorage`, an `ActorStorage` with etag compare-and-set.
 Requires **Redis ≥ 7**; [`ioredis`](https://github.com/redis/ioredis)
 (≥ 5) is a peer dependency.
 
@@ -53,6 +54,44 @@ actor runtime's storage etag CAS is the floor.
 
 Individual providers are exported too: `redisMembership(client, opts)`
 and `redisDirectory(client, opts)`.
+
+## Storage
+
+`redisStorage()` persists actor state in the same Redis — the first
+cluster-safe `ActorStorage` (`memoryStorage` dies with the process,
+`fileStorage` is single-process dev-only):
+
+```ts
+import { defineActorApp } from '@sigx/actors/silo';
+import { redisStorage } from '@sigx/actors-redis';
+
+const app = defineActorApp({
+    storage: redisStorage({ url: process.env.REDIS_URL, namespace: 'sigx' })
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `client` / `url` | — | ioredis client, or a URL to construct one |
+| `namespace` | `sigx` | key prefix (share it with the cluster providers) |
+
+One HASH per actor, no TTL. The record key joins actor type and key with
+a NUL byte — the same actorId shape the directory uses (Redis keys are
+binary-safe; a NUL renders invisibly in `redis-cli SCAN` output):
+
+```
+{ns}:st:{type}\x00{key}     HASH {e: etag, s: state JSON}
+```
+
+Etags are client-minted UUIDs; `save`/`clear` compare-and-set atomically
+in Redis (Lua, registered as `EVALSHA` commands — `save` is the hot path)
+and throw the branded `ActorStorageConflict` on mismatch, which the
+runtime turns into discard-and-reload. That CAS is the cluster's
+integrity floor: a briefly-wrong directory entry costs a rejected save,
+never corruption. Reminders ride the same storage automatically.
+
+Sharing one `ioredis` client across `redisCluster()` and `redisStorage()`
+is safe and saves connections.
 
 ## Tests
 

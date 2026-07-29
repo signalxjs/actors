@@ -182,10 +182,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `cluster()` plugin, clusterPlacement, silo-to-silo endpoint, cluster
   provider seams, memoryClusterHub), `./vite`
   (`sigxActors()` plugin).
-- `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) cluster
-  providers for `@sigx/actors/cluster`: `redisCluster` (membership and the
-  actor directory). ioredis ≥5 as a peer dependency; provider tests are
-  env-gated on `REDIS_URL`.
+- `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
+  `redisCluster` (membership and the actor directory) for
+  `@sigx/actors/cluster`, and `redisStorage` (etag-CAS `ActorStorage` —
+  the cluster-safe persistence option). ioredis ≥5 as a peer dependency;
+  provider tests are env-gated on `REDIS_URL`.
 - `packages/actors-k8s` → `@sigx/actors-k8s` — Kubernetes membership
   provider for `@sigx/actors/cluster`: `k8sMembership()`, silo liveness via
   a coordination.k8s.io Lease per silo (renewed on the heartbeat cadence)
