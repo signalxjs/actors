@@ -15,6 +15,7 @@ import type {
     ActorCallContext,
     ActorClientWith,
     ActorPlacement,
+    ActorLocation,
     ActorRef,
     ActorReminders,
     ActorStorage,
@@ -264,6 +265,18 @@ class SiloImpl implements Silo {
         const checked = this.#devCheckArgs(ref, method, args);
         const dispatcher = await this.#placement.dispatcherFor(ref);
         return dispatcher.dispatch(ref, method, checked, this.#withDefaultDeadline(call));
+    }
+
+    /**
+     * Where a grain lives, without dispatching.
+     *
+     * Always PRESENT — it is the return value that says whether there is an
+     * answer. A single-node silo, or any placement without `locate()`,
+     * yields `undefined`, which callers read as "cannot answer, just
+     * dispatch". Testing for the method alone is therefore not enough.
+     */
+    locate(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined {
+        return this.#placement.locate?.(ref);
     }
 
     /**

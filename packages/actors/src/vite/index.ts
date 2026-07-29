@@ -19,6 +19,7 @@
 import type { Plugin, ViteDevServer } from 'vite';
 import type { ActorApp, ActorAppOptions } from '../silo/app';
 import type { Silo } from '../types';
+import type { ActorMissPolicy } from '../server/actor-endpoint';
 import { createFilter, normalizePath } from 'vite';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -69,6 +70,15 @@ export interface SigxActorsOptions {
     origin?: 'same-origin' | 'verify-when-present' | string[] | false;
     /** Body cap forwarded to the dev endpoint. */
     maxBodyBytes?: number;
+    /**
+     * What the dev mount does with a call for a grain another silo owns.
+     * Default `'proxy'`, same as production.
+     *
+     * Forwarded so dev can reproduce a redirect setup rather than only
+     * proxying — a client that follows redirects in production and never
+     * sees one in dev is exactly the difference that ships a bug.
+     */
+    onMiss?: ActorMissPolicy;
 }
 
 const VIRTUAL_ID = 'virtual:sigx-actors';
@@ -505,7 +515,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                     silo,
                     base,
                     origin: options.origin,
-                    maxBodyBytes: options.maxBodyBytes
+                    maxBodyBytes: options.maxBodyBytes,
+                    ...(options.onMiss !== undefined ? { onMiss: options.onMiss } : {})
                 });
                 await handler(req, res, next);
             }

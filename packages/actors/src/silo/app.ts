@@ -821,6 +821,12 @@ function compositePlacement(c: Contributions): ActorPlacement | undefined {
             inner = factory?.({ definition: (type) => silo.definition(type) });
             return mergeBindings(inner?.bind?.(localDispatcher, silo) || undefined, c);
         },
+        // Forwarded, not wrapped: `locate` answers WHERE, and dispatch
+        // middleware wraps HOW — a middleware has no say in ownership, and
+        // running one here would let it observe calls that never happen.
+        // Undefined when the inner placement has no opinion, which is what
+        // tells a mount to proxy instead of redirect.
+        locate: (ref: ActorRef) => inner?.locate?.(ref),
         start: () => inner?.start?.(),
         beginStop: () => inner?.beginStop?.(),
         stop: () => inner?.stop?.()

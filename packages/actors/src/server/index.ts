@@ -11,7 +11,9 @@ export {
     createActorResolver,
     handleActorRequest,
     matchesActorRequest,
-    type ActorRequestOptions
+    type ActorMissPolicy,
+    type ActorRequestOptions,
+    type ActorResolverOptions
 } from './actor-endpoint';
 export {
     createFetchHandler,

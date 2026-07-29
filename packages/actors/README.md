@@ -897,6 +897,7 @@ all).
 | `wrongHostRedirects` | the directory and the placement policy disagree — usually membership flapping |
 | `unreachableRetries` / `drainingRetries` | a peer flapping, versus a rolling deploy in progress (should be zero at rest) |
 | `routeCacheHits` / `routeCacheMisses` / `routeCacheSize` | directory load. A collapsing hit rate is what precedes a directory melt-down |
+| `locates` / `locateRemote` | the miss rate the EDGE is producing. `locateRemote / locates` staying high means whatever routes in front of the cluster is not agreeing with placement — the number to watch after wiring up routing-token hashing |
 | `directoryLookups`, `directoryClaims`, `claimConflicts`, `directoryReleases` | activation races, and claim leaks — a widening claims-vs-releases gap strands keys |
 | `directoryEvictions`, `siloSweeps`, `sweptEntries` | failover actually happening. Zero sweeps after a crash means dead entries are only being reclaimed lazily |
 | `membershipChanges`, `membershipVersion` | store load. One join notifies every member, so this is the counter that makes membership cost visible |
@@ -1196,6 +1197,73 @@ On other runtimes, route `app.routes` yourself — each is a
 `{ match(request), handle(request, silo) }` pair. The lower-level
 `clusterPlacement` / `handleSiloRequest` / `matchesSiloRequest` remain
 exported for hand-rolled mounts.
+
+#### Redirect on a miss, instead of proxying
+
+When a call arrives at a silo that does not own the grain, the mount
+**proxies** it: one client round trip, one internal hop, every time. With
+the routing token in front of an LB that hop should be rare — but for
+callers that can reach silos directly, it can be removed entirely.
+
+```ts
+handleActorRequest(request, { silo, onMiss: 'redirect' });   // or 'auto'
+```
+
+| `onMiss` | behaviour |
+|---|---|
+| `'proxy'` *(default)* | forward and answer. Correct for browsers. |
+| `'redirect'` | answer `421` naming the owner; the client retries there. |
+| `'auto'` | redirect callers that advertise they can follow, proxy the rest. |
+
+It goes on the **mount**, not the silo, so one cluster can serve a browser
+origin that proxies and an internal origin that redirects.
+
+The client opts in, and remembers:
+
+```ts
+configureActors({ endpoint, follow: true });
+```
+
+Remembering is the point. Without it a redirect costs *two* client round
+trips versus one trip plus an internal hop — strictly worse than proxying.
+With it, only the first call to a grain pays: 2 requests once, then 1
+forever, straight to the owner. A learned endpoint is dropped as soon as it
+proves wrong (a connection failure or a 5xx), falling back to the configured
+endpoint rather than stranding the grain.
+
+**The owner must publish where clients can reach it:**
+
+```ts
+cluster({
+    advertise: 'http://10.0.4.7:7311',        // INTERNAL, peer-to-peer
+    publicAddress: 'https://silo-3.example.com' // what a client can reach
+});
+```
+
+Without `publicAddress` the mount **proxies anyway** (and dev-warns once).
+That is deliberate: `advertise` is typically a pod IP, so redirecting a
+client there would hang, and publishing it would hand out internal topology
+to anyone who can reach the public mount. The 421 body carries
+`owner.endpoint` and never `address`.
+
+Three things worth knowing before turning it on:
+
+- **`'proxy'` is the right answer for browsers.** A redirect to another
+  origin makes the retry cross-origin, so it preflights and is refused by
+  the endpoint's default same-origin policy. Redirecting a browser requires
+  an explicit `origin` allowlist and CORS on the owner's mount — which is
+  why the single-origin deployment (all silos behind one public origin, the
+  LB hashing the routing token) is usually the better answer there.
+- **`$live` is never redirected.** One held-open response fans out to many
+  grains, so there is no single owner to point at.
+- **421 is safe to retry.** The endpoint resolves the owner *before*
+  dispatching, so a redirect has provably run no code — which matters
+  because actor calls are not idempotent and a 421 is a status user agents
+  may retry on their own.
+
+Redirect chains are bounded at both ends (default 2 hops): the client cap is
+the useful one, the server cap is what makes a loop impossible even against
+a client that ignores its own.
 
 #### The silo-to-silo transport is pluggable
 

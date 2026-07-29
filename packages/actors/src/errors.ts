@@ -123,7 +123,26 @@ export class ActorCallTimeoutError extends ActorError {
 /** The owner hint a wrong-host error carries — enough to re-route. */
 export interface ActorOwnerHint {
     readonly siloId: string;
+    /**
+     * INTERNAL origin — the peer-reachable address of the owner's
+     * silo-to-silo endpoint, typically a private pod IP.
+     *
+     * Never send this to a client. It is unreachable from outside the
+     * cluster, and publishing it hands out internal topology to anyone who
+     * can reach the public mount. The public endpoint's redirect carries
+     * `publicAddress` instead, and asserts this field's absence.
+     */
     readonly address?: string;
+    /**
+     * PUBLIC origin — where a client can reach the owner's actor mount,
+     * e.g. `https://silo-3.example.com`. Set from `cluster({ publicAddress })`,
+     * absent unless an operator configured it.
+     *
+     * Absent means "do not redirect": guessing from `address` would be a
+     * silent assumption about both the mount path and whether the internal
+     * origin is client-reachable.
+     */
+    readonly publicAddress?: string;
 }
 
 /**

@@ -49,6 +49,16 @@ export interface ClusterCounterTotals {
     routeCacheHits: number;
     routeCacheMisses: number;
 
+    // --- locate (the public mount's redirect decision) --------------------
+    /** `locate()` calls — a mount asking WHERE without dispatching. */
+    locates: number;
+    /**
+     * …of which answered "a peer owns it". Read against `locates` this is
+     * the miss rate the edge is producing: if it stays high, whatever is
+     * routing in front of the cluster is not agreeing with placement.
+     */
+    locateRemote: number;
+
     // --- directory --------------------------------------------------------
     directoryLookups: number;
     directoryClaims: number;
@@ -113,6 +123,8 @@ export function createCounters(): ClusterCounterTotals {
         inboundWatches: 0,
         routeCacheHits: 0,
         routeCacheMisses: 0,
+        locates: 0,
+        locateRemote: 0,
         directoryLookups: 0,
         directoryClaims: 0,
         claimConflicts: 0,

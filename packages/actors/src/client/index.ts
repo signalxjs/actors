@@ -24,12 +24,17 @@
  * every client bundle whether or not the app uses any of it.
  */
 import {
+    ACTOR_FOLLOW_HEADER,
+    ACTOR_HOPS_HEADER,
+    ACTOR_OWNER_HEADER,
     ACTOR_ROUTE_HEADER,
     encodeRouteToken,
     routePath,
     routeTokenFor,
     type ActorRouteToken
 } from '../route';
+import { routeMemo, type RouteMemo } from './route-memo';
+import { actorId } from '../types';
 import {
     encodeWire,
     readNdjson,
@@ -124,6 +129,22 @@ export interface ActorTransportConfig {
      * upstream routes on it, and the server ignores it either way.
      */
     route?: ActorRouteToken;
+    /**
+     * Follow `421` wrong-host redirects, remembering where each grain lives
+     * so only the FIRST call to it pays the extra round trip.
+     *
+     * Default `false`, deliberately. The default consumer is a browser
+     * behind one origin, where a redirect is not merely useless but broken:
+     * the retry would be cross-origin, so it preflights and is refused by
+     * the server's same-origin policy. Turn it on for server-to-server and
+     * native clients that can reach silos directly — and note the server
+     * must be mounted with `onMiss: 'redirect'` or `'auto'` for anything to
+     * redirect in the first place.
+     *
+     * `maxHops` (default 2) bounds one call's redirect chain; `cache`
+     * (default 10 000) bounds how many grain→endpoint pairs are remembered.
+     */
+    follow?: boolean | { maxHops?: number; cache?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +159,8 @@ async function send(
     config: ActorTransportConfig,
     symbol: string,
     args: unknown[],
-    init?: ActorCallInit
+    init?: ActorCallInit,
+    following?: { endpoint?: string; hops: number }
 ): Promise<Response> {
     const extra = typeof config.headers === 'function' ? await config.headers() : config.headers;
     // content-type is NOT overridable — the endpoint 415s anything else.
@@ -161,13 +183,22 @@ async function send(
     // raw header beside an encoded path would route the two carriers to
     // different silos. Encoding also keeps the value valid ASCII.
     if (token !== null) headers[ACTOR_ROUTE_HEADER] = encodeRouteToken(token);
+    if (following !== undefined) {
+        // Advertise that we can follow, so an `onMiss:'auto'` mount knows to
+        // redirect us rather than proxy. The hop count lets the SERVER bound
+        // the chain too — a loop must be impossible, not just unlikely.
+        headers[ACTOR_FOLLOW_HEADER] = '1';
+        if (following.hops > 0) headers[ACTOR_HOPS_HEADER] = String(following.hops);
+    }
     const request: RequestInit = {
         method: 'POST',
         headers,
         body: JSON.stringify({ args: encodeWire(args) }),
         ...(init?.signal ? { signal: init.signal } : {})
     };
-    const url = routePath(endpointOf(config, init), token, symbol);
+    // A learned endpoint wins over every configured one: it is the only
+    // source that was told, rather than assumed, where this grain lives.
+    const url = routePath(following?.endpoint ?? endpointOf(config, init), token, symbol);
     return config.fetch ? config.fetch(url, request) : fetch(url, request);
 }
 
@@ -178,15 +209,117 @@ function skewHint(symbol: string, status: number): string {
         : `[sigx actors] call to "${symbol}" failed with HTTP ${status}`;
 }
 
+/** The grain a call is for, or null when there isn't exactly one — `$live`
+ *  multiplexes many grains onto one request and cannot be routed. */
+function grainOf(symbol: string, args: unknown[]): string | null {
+    const hash = symbol.lastIndexOf('#');
+    if (hash <= 0 || typeof args[0] !== 'string') return null;
+    const type = symbol.slice(0, hash);
+    if (type.startsWith('$')) return null;
+    return actorId({ type, key: args[0] });
+}
+
+/** The owner endpoint a 421 named, or null if this is any other failure. */
+async function redirectTarget(res: Response): Promise<string | null> {
+    if (res.status !== 421) return null;
+    // The header mirrors the body, and reading it costs nothing — but the
+    // body is authoritative, so fall back to it when a proxy stripped the
+    // header on the way through.
+    const header = res.headers.get(ACTOR_OWNER_HEADER);
+    if (header !== null && header !== '') return header;
+    try {
+        // CLONE: this Response is handed back to the caller when the hop cap
+        // is hit, and a drained body would leave it unable to parse the error.
+        const body = JSON.parse(await res.clone().text()) as {
+            error?: { data?: { kind?: string; owner?: { endpoint?: string } } };
+        };
+        const data = body?.error?.data;
+        if (data?.kind !== 'wrong-host') return null;
+        return typeof data.owner?.endpoint === 'string' ? data.owner.endpoint : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * One request, following wrong-host redirects and remembering the answer.
+ *
+ * The memo is what makes redirect worth doing: without it, a miss costs two
+ * client round trips forever, which is strictly worse than letting the silo
+ * proxy. With it, only the first call to a grain pays.
+ */
+async function sendFollowing(
+    config: ActorTransportConfig,
+    memo: RouteMemo,
+    maxHops: number,
+    symbol: string,
+    args: unknown[],
+    init?: ActorCallInit
+): Promise<Response> {
+    const grain = grainOf(symbol, args);
+    if (grain === null) return send(config, symbol, args, init);
+
+    let learned = memo.get(grain);
+    let hops = 0;
+    for (;;) {
+        let res: Response;
+        try {
+            res = await send(config, symbol, args, init, { ...(learned !== undefined ? { endpoint: learned } : {}), hops });
+        } catch (error) {
+            // A learned endpoint that no longer answers must not strand this
+            // grain forever — forget it and fall back to the configured one.
+            // Only ever once: after forgetting, `learned` is undefined and a
+            // second failure propagates.
+            if (learned === undefined) throw error;
+            memo.forgetEndpoint(learned);
+            learned = undefined;
+            continue;
+        }
+
+        const owner = await redirectTarget(res);
+        if (owner !== null) {
+            if (hops >= maxHops) return res; // give up; surface the 421
+            // Abandoning a body keeps its connection out of the pool in
+            // undici, which under load is a leak rather than a tidiness nit.
+            void res.body?.cancel();
+            memo.learn(grain, owner);
+            learned = owner;
+            hops++;
+            continue;
+        }
+
+        // A learned endpoint answering 5xx is the same staleness signal as a
+        // dead socket: the silo may be gone. Retry against the default once.
+        if (res.status >= 500 && learned !== undefined) {
+            void res.body?.cancel();
+            memo.forgetEndpoint(learned);
+            learned = undefined;
+            continue;
+        }
+        return res;
+    }
+}
+
 /**
  * The default transport: one POST per call, NDJSON for streams. Its
  * behaviour is exactly what shipped before the seam existed.
  */
 export function fetchTransport(config: ActorTransportConfig = {}): ActorTransport {
+    const follow = config.follow ?? false;
+    const opts = typeof follow === 'object' ? follow : {};
+    const maxHops = opts.maxHops ?? 2;
+    // Built only when following, so the default transport allocates no Map.
+    // Per transport instance, so `configureActors(...)` naturally clears it.
+    const memo = follow === false ? undefined : routeMemo(opts.cache);
+    const dispatch = (symbol: string, args: unknown[], init?: ActorCallInit) =>
+        memo === undefined
+            ? send(config, symbol, args, init)
+            : sendFollowing(config, memo, maxHops, symbol, args, init);
+
     return {
         name: 'fetch',
         async call(symbol: string, args: unknown[], init?: ActorCallInit): Promise<unknown> {
-            const res = await send(config, symbol, args, init);
+            const res = await dispatch(symbol, args, init);
             let parsed: { data?: unknown; error?: WireError } | undefined;
             try {
                 parsed = JSON.parse(await res.text(), reviver) as {
@@ -208,7 +341,7 @@ export function fetchTransport(config: ActorTransportConfig = {}): ActorTranspor
                 : controller.signal;
             async function* stream(): AsyncGenerator<unknown> {
                 try {
-                    const res = await send(config, symbol, args, { ...init, signal });
+                    const res = await dispatch(symbol, args, { ...init, signal });
                     if (!res.ok || !res.body) {
                         let wire: WireError | undefined;
                         try {

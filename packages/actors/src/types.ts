@@ -4,6 +4,7 @@
  * import types without pulling the public API module in.
  */
 import type { ServerFnGuard } from '@sigx/server';
+import type { ActorOwnerHint } from './errors';
 
 /** Identity of one virtual actor. Serializable; never holds memory. */
 export interface ActorRef {
@@ -160,6 +161,18 @@ export interface ActorPlacementStrategy {
 }
 
 /**
+ * Where a grain currently lives — the answer to `ActorPlacement.locate()`.
+ *
+ * A discriminated union rather than a nullable owner, so "it is here" cannot
+ * be confused with "I don't know". "I don't know" is `undefined` INSTEAD of
+ * an `ActorLocation` — either by not implementing `locate()` or by returning
+ * undefined from it, which a composing placement has to be able to do.
+ */
+export type ActorLocation =
+    | { readonly local: true }
+    | { readonly local: false; readonly owner: ActorOwnerHint };
+
+/**
  * Placement: given a ref, WHO dispatches it. The single-node provider
  * always answers "the local host"; a Durable Objects provider answers with
  * a stub whose dispatch() is a fetch to the DO. Sync-or-promise so the
@@ -167,6 +180,22 @@ export interface ActorPlacementStrategy {
  */
 export interface ActorPlacement {
     dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher>;
+    /**
+     * Where this grain lives, WITHOUT dispatching and WITHOUT activating —
+     * what a mount asks before deciding to redirect rather than proxy.
+     *
+     * A placement that cannot answer either omits this or returns
+     * `undefined`, and every mount then falls back to proxying. Both, rather
+     * than only the first, because a COMPOSING placement has to define the
+     * method to forward it and only discovers at call time whether the inner
+     * one implements it. Sync-or-promise so a placement holding the claim
+     * can answer without allocating.
+     *
+     * The answer is a HINT and is allowed to be stale — by the time the
+     * caller acts on it the grain may have moved. That is safe because the
+     * directory, not this, is the arbiter of single-activation.
+     */
+    locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
     /**
      * Called once by `createSilo` with the silo's own local dispatcher and
      * the silo itself, before `start()`. A distributed placement returns
@@ -666,6 +695,21 @@ export interface ActivationsOptions {
 export interface Silo extends ActorDispatcher {
     /** Definition lookup — the wire resolver's 404 authority. May load lazily. */
     definition(type: string): AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
+    /**
+     * Where a grain lives, without dispatching or activating — delegates to
+     * the placement's `locate()`.
+     *
+     * `undefined` means "cannot answer", which is what a single-node silo
+     * and any placement without `locate()` return. Callers must treat that
+     * as "assume local / just dispatch", never as an error — one check
+     * covers both a placement that opts out and a silo built before the
+     * seam existed.
+     *
+     * The endpoint uses this to answer 421 with the owner instead of
+     * proxying; nothing else should need it, because dispatching already
+     * routes correctly on its own.
+     */
+    locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D>;
     /** Starts sweeper + reminders and stamps the silo seam. Idempotent. */
     start(): Promise<void>;

@@ -33,7 +33,7 @@
   {
     "name": "@sigx/actors/app",
     "path": "packages/actors/dist/app.prod.js",
-    "limit": "3.5 KB",
+    "limit": "4 KB",
     "ignore": [
       "@sigx/runtime-core",
       "@sigx/serialize"

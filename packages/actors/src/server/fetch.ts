@@ -52,7 +52,10 @@ export function createFetchHandler(
             if (route.match(request)) return route.handle(request, silo);
         }
         if (matchesActorRequest(request, base)) {
-            return handleActorRequest(request, { ...actorOptions, silo });
+            // `base` is forwarded, not just consumed for matching: the
+            // redirect composes the owner endpoint from it, and a mount on
+            // a custom base must name ITS path, not the default.
+            return handleActorRequest(request, { ...actorOptions, base, silo });
         }
         return (await fallback?.(request)) ?? errorResponse(404, 'not found');
     };

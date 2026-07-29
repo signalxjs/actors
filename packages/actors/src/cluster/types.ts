@@ -38,6 +38,20 @@ export interface SiloDescriptor extends SiloIdentity {
      * transport with no address of its own is published under.
      */
     readonly addresses?: Readonly<Record<string, string>>;
+    /**
+     * Origin a CLIENT can reach this silo's PUBLIC actor mount on —
+     * `https://silo-3.example.com`. An origin only: the mount path is a
+     * mount concern, so the endpoint composes `publicAddress + base`.
+     *
+     * A typed field rather than a `meta` key on purpose. `meta` is
+     * free-form and is read by placement POLICIES; a field the endpoint
+     * redirects clients to must not be indistinguishable from a zone label,
+     * and must be findable by anyone auditing what gets disclosed.
+     *
+     * Absent on silos whose operator did not configure one, which reads as
+     * "never redirect a client here" — see `ActorOwnerHint.publicAddress`.
+     */
+    readonly publicAddress?: string;
     /** Free-form placement hints (zone, appVersion, weight …). */
     readonly meta?: Readonly<Record<string, string>>;
 }

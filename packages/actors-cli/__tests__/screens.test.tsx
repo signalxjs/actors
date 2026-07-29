@@ -228,6 +228,8 @@ describe('screens render', () => {
                         routingFailures: 0,
                         routeCacheHits: 9,
                         routeCacheMisses: 1,
+                        locates: 0,
+                        locateRemote: 0,
                         directoryLookups: 1,
                         directoryClaims: 2,
                         claimConflicts: 0,

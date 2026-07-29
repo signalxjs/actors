@@ -18,12 +18,47 @@ import {
 } from '@sigx/server/server';
 import { mintCallId } from '../call-id';
 import { runGuards } from '../guards';
+import { ACTOR_FOLLOW_HEADER, ACTOR_HOPS_HEADER, ACTOR_OWNER_HEADER } from '../route';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, subscribeAll } from './live-endpoint';
-import type { ActorCallContext, AnyActorDefinition, Silo } from '../types';
+import { actorLabel, type ActorCallContext, type ActorRef, type AnyActorDefinition, type Silo } from '../types';
+
+/**
+ * What this mount does with a call for a grain another silo owns.
+ *
+ * - `'proxy'` — forward it over the silo-to-silo transport and answer with
+ *   the result. One client round trip, one internal hop, every time. The
+ *   default, and the only correct answer for browsers: they usually cannot
+ *   reach silos individually, and a cross-origin retry would preflight and
+ *   be refused by the same-origin policy.
+ * - `'redirect'` — answer `421` naming the owner and let the client retry
+ *   there. One extra round trip on a miss, then direct forever if the
+ *   client remembers (`fetchTransport({ follow: true })` does).
+ * - `'auto'` — redirect callers that advertise they can follow, proxy the
+ *   rest. Lets one mount serve browsers and services at once.
+ *
+ * A redirect requires the owner to publish `cluster({ publicAddress })`.
+ * Without it this mount proxies regardless, rather than sending a client
+ * somewhere it cannot reach.
+ */
+export type ActorMissPolicy = 'proxy' | 'redirect' | 'auto';
+
+/** Knobs that change what the synthesized wrappers do, so the resolver
+ *  memo has to be keyed by them. */
+export interface ActorResolverOptions {
+    /** Default `'proxy'` — today's behaviour, byte for byte. */
+    onMiss?: ActorMissPolicy;
+    /** This mount's path prefix, used to compose the redirect endpoint.
+     *  Default `/_sigx/actor`. */
+    base?: string;
+    /** Redirects one call may be told to follow before this mount proxies
+     *  instead. Default 2. */
+    maxHops?: number;
+}
 
 export interface ActorRequestOptions
-    extends Omit<ServerFnRequestOptions, 'resolve' | 'renderBoundaries'> {
+    extends Omit<ServerFnRequestOptions, 'resolve' | 'renderBoundaries'>,
+        ActorResolverOptions {
     /** The running silo — explicit, never ambient. */
     silo: Silo;
 }
@@ -41,19 +76,76 @@ export function handleActorRequest(
     request: Request,
     options: ActorRequestOptions
 ): Promise<Response> {
-    const { silo, ...rest } = options;
-    return handleServerFnRequest(request, { ...rest, resolve: resolverFor(silo) });
+    const { silo, onMiss, base, maxHops, ...rest } = options;
+    const resolverOptions: ActorResolverOptions = {
+        ...(onMiss !== undefined ? { onMiss } : {}),
+        ...(base !== undefined ? { base } : {}),
+        ...(maxHops !== undefined ? { maxHops } : {})
+    };
+    return handleServerFnRequest(request, {
+        ...rest,
+        resolve: resolverFor(silo, resolverOptions)
+    });
 }
 
-const resolvers = new WeakMap<Silo, (symbol: string) => unknown | Promise<unknown>>();
+/**
+ * Per-silo, then per-CONFIGURATION: the synthesized wrappers close over
+ * `onMiss`, so two mounts of one silo with different miss policies — the
+ * browser origin proxying while the service origin redirects — must not
+ * share a cache. Keyed by a canonical string rather than the options
+ * object, which is freshly built per call.
+ */
+const resolvers = new WeakMap<
+    Silo,
+    Map<string, (symbol: string) => unknown | Promise<unknown>>
+>();
 
-function resolverFor(silo: Silo): (symbol: string) => unknown | Promise<unknown> {
-    let resolver = resolvers.get(silo);
+function resolverFor(
+    silo: Silo,
+    options: ActorResolverOptions
+): (symbol: string) => unknown | Promise<unknown> {
+    let perSilo = resolvers.get(silo);
+    if (!perSilo) {
+        perSilo = new Map();
+        resolvers.set(silo, perSilo);
+    }
+    const key = [
+        options.onMiss ?? 'proxy',
+        options.base ?? DEFAULT_BASE,
+        options.maxHops ?? DEFAULT_MAX_HOPS
+    ].join('|');
+    let resolver = perSilo.get(key);
     if (!resolver) {
-        resolver = createActorResolver(silo);
-        resolvers.set(silo, resolver);
+        resolver = createActorResolver(silo, options);
+        perSilo.set(key, resolver);
     }
     return resolver;
+}
+
+const DEFAULT_BASE = '/_sigx/actor';
+const DEFAULT_MAX_HOPS = 2;
+
+/** How many redirects this call has already been told to follow. Absent,
+ *  negative and unparsable all read as 0 — a hint, never trusted input. */
+function hopsOf(request: Request): number {
+    const raw = request.headers.get(ACTOR_HOPS_HEADER);
+    if (raw === null) return 0;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+const warnedSilos = new Set<string>();
+
+/** Once per owner silo: a redirect mount that silently proxies forever is
+ *  a misconfiguration worth naming, but not one worth logging per request. */
+function warnOnce(siloId: string): void {
+    if (!__DEV__ || warnedSilos.has(siloId)) return;
+    warnedSilos.add(siloId);
+    console.warn(
+        `[sigx actors] onMiss:'redirect' cannot redirect to silo ${siloId}: it ` +
+            `publishes no publicAddress, so this mount is proxying for it instead. ` +
+            `Set cluster({ publicAddress }) on that silo if clients can reach it directly.`
+    );
 }
 
 /**
@@ -68,7 +160,10 @@ function resolverFor(silo: Silo): (symbol: string) => unknown | Promise<unknown>
  * mount that tests the result for `null` to fall through to another handler
  * must instead compare against its own registry first.
  */
-export function createActorResolver(silo: Silo): (symbol: string) => unknown | Promise<unknown> {
+export function createActorResolver(
+    silo: Silo,
+    options: ActorResolverOptions = {}
+): (symbol: string) => unknown | Promise<unknown> {
     const cache = new Map<string, unknown>();
     return (symbol: string) => {
         const hit = cache.get(symbol);
@@ -90,12 +185,12 @@ export function createActorResolver(silo: Silo): (symbol: string) => unknown | P
         if (isPromise(def)) {
             return def.then((resolved) => {
                 if (!resolved) return notFound(symbol, type);
-                const wrapped = synthesize(silo, resolved, symbol, method);
+                const wrapped = synthesize(silo, resolved, symbol, method, options);
                 cache.set(symbol, wrapped);
                 return wrapped;
             });
         }
-        const wrapped = synthesize(silo, def, symbol, method);
+        const wrapped = synthesize(silo, def, symbol, method, options);
         cache.set(symbol, wrapped);
         return wrapped;
     };
@@ -149,9 +244,61 @@ function synthesize(
     silo: Silo,
     def: AnyActorDefinition,
     symbol: string,
-    method: string
+    method: string,
+    options: ActorResolverOptions
 ): unknown {
     const isStream = def.streamNames.includes(method);
+    const onMiss = options.onMiss ?? 'proxy';
+    const base = options.base ?? DEFAULT_BASE;
+    const maxHops = options.maxHops ?? DEFAULT_MAX_HOPS;
+
+    /**
+     * Answer 421 with the owner instead of proxying — or return quietly and
+     * let the caller dispatch, which forwards as it always has.
+     *
+     * Every early return is a fall-back to proxying, never an error: this
+     * whole path is an optimization, and the one thing it must not do is
+     * turn a working call into a failing one.
+     */
+    const redirectIfRemote = async (rq: ServerFnContext, ref: ActorRef): Promise<void> => {
+        // Checked FIRST so the default mount pays nothing new at all — not
+        // a header read, not a locate, not an await.
+        if (onMiss === 'proxy' || silo.locate === undefined) return;
+        // 'auto': only callers that said they can follow get redirected.
+        // Everyone else — browsers, curl, an old client — gets the proxy.
+        if (onMiss === 'auto' && rq.request.headers.get(ACTOR_FOLLOW_HEADER) === null) return;
+        // Bounded even against a client that ignores its own cap, for the
+        // price of one header read: a redirect loop must be impossible, not
+        // merely unlikely.
+        if (hopsOf(rq.request) >= maxHops) return;
+
+        const location = await silo.locate(ref);
+        if (location === undefined || location.local) return;
+
+        const origin = location.owner.publicAddress;
+        if (origin === undefined) {
+            // The owner never published a client-reachable origin. Its
+            // internal `address` is a pod IP — unreachable from outside and
+            // not ours to disclose — so proxy instead.
+            warnOnce(location.owner.siloId);
+            return;
+        }
+
+        const endpoint = `${origin.endsWith('/') ? origin.slice(0, -1) : origin}${base}`;
+        rq.responseHeaders.set(ACTOR_OWNER_HEADER, endpoint);
+        throw new ServerFnError(
+            421,
+            `[sigx actors] ${actorLabel(ref)} is owned by ${location.owner.siloId} — ` +
+                `retry at ${endpoint}`,
+            {
+                kind: 'wrong-host',
+                // `endpoint`, never `address`: the internal origin must not
+                // cross to a client.
+                owner: { siloId: location.owner.siloId, endpoint },
+                hops: hopsOf(rq.request) + 1
+            }
+        );
+    };
 
     const prepare = async (
         rq: ServerFnContext,
@@ -167,6 +314,13 @@ function synthesize(
         // The transport-independent chains — same pipeline as in-process
         // calls, run OUTSIDE the mailbox.
         await runGuards(def, method, rq);
+        // Redirect BEFORE dispatching, never by letting a wrong-host escape
+        // the routing loop. 421 is a status a user agent may retry on its
+        // own (RFC 7540 §9.1.2) and actor calls are not idempotent, so the
+        // answer has to be provably free of side effects — which "we have
+        // not dispatched anything yet" is, and "the forward failed partway"
+        // is not.
+        await redirectIfRemote(rq, { type: def.type, key });
         return {
             key,
             rest,

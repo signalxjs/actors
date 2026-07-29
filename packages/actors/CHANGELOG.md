@@ -31,6 +31,58 @@
   on the ops channel. The endpoint's resolver now asks the runtime whether
   it offers the ops channel instead of assuming every runtime does.
 
+- **`onMiss: 'proxy' | 'redirect' | 'auto'` on the public actor mount**
+  (#134, stage 2 of #84), plus `cluster({ publicAddress })`, the
+  `ActorPlacement.locate()` seam, and `configureActors({ follow })`.
+
+  A call for a grain this silo does not own has always been proxied: one
+  client round trip, one internal hop, every time. `'redirect'` answers
+  `421` naming the owner instead, and `'auto'` redirects only callers that
+  advertise they can follow (`x-sigx-actor-follow`), so one cluster can
+  serve a browser origin that proxies and a service origin that redirects.
+  The option sits on the **mount** rather than the silo for exactly that
+  reason. Default stays `'proxy'`, byte for byte.
+
+  **The client memo ships with it, not after it.** A redirect without
+  client-side memory costs *two* client round trips versus one trip plus an
+  internal hop — strictly worse than proxying. `configureActors({ follow:
+  true })` remembers where each grain lives, so the cost is 2 requests once
+  and 1 forever after, straight to the owner. A learned endpoint is dropped
+  the moment it proves wrong (connection failure or 5xx) and the call falls
+  back to the configured endpoint, because otherwise one dead silo would
+  strand every client that had learned it.
+
+  **The endpoint resolves the owner BEFORE dispatching**, via the new
+  optional `locate()` — it does not let a `wrong-host` escape the routing
+  loop. 421 is a status a user agent may retry on its own (RFC 7540
+  §9.1.2) and actor calls are not idempotent, so the answer has to be
+  provably free of side effects; "we have not dispatched anything yet" is,
+  and "the forward failed partway through" is not. A test asserts a
+  redirect moves no activation and increments no `remoteDispatches`.
+
+  **`publicAddress` is required for a redirect, and never defaulted from
+  `advertise`.** The latter is the internal peer origin — typically a pod
+  IP — so redirecting a client there would hang, and disclosing it would
+  hand internal topology to anyone who can reach the public mount. Without
+  `publicAddress` the mount proxies anyway and dev-warns once; the 421 body
+  carries `owner.endpoint` and never `address`.
+
+  Also fixed on the way: **`compositePlacement` silently dropped `locate()`**,
+  which would have made every app-built silo — i.e. every real deployment,
+  since `defineActorApp` is the setup path — proxy forever while looking
+  correctly configured. It forwards a fixed set of methods, so a new one is
+  invisible until something asks for it.
+
+  Known limits, documented rather than papered over: `$live` is never
+  redirected (one held-open response fans out to many grains, so there is no
+  single owner to name); a redirected watch is bound to its owner only until
+  the grain migrates; and cross-origin redirects need an explicit `origin`
+  allowlist and CORS, which is why `'proxy'` remains the browser answer.
+
+  New counters `locates` / `locateRemote` — their ratio is the miss rate the
+  edge is producing, and the number to watch after wiring up routing-token
+  hashing.
+
 ### Changed
 
 - **`SiloDefaults.sweepIntervalMs: 0` disables idle collection** (#136),

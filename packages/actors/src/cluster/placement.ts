@@ -14,7 +14,8 @@ import {
     ActorActivationError,
     ActorUnreachableError,
     ActorWrongHostError,
-    isActorError
+    isActorError,
+    type ActorOwnerHint
 } from '../errors';
 import {
     actorId,
@@ -22,6 +23,7 @@ import {
     emptySiloStats,
     type ActorCallContext,
     type ActorDispatcher,
+    type ActorLocation,
     type ActorPlacement,
     type ActorRef,
     type AnyActorDefinition,
@@ -58,6 +60,18 @@ import type {
 export interface ClusterPlacementOptions extends ClusterProviders {
     /** Peer-reachable origin of this silo's HTTP listener. */
     advertise: string;
+    /**
+     * Origin a CLIENT can reach this silo's PUBLIC actor mount on, e.g.
+     * `https://silo-3.example.com`. Published in the membership descriptor
+     * so peers can redirect callers here.
+     *
+     * Distinct from `advertise`, which is the INTERNAL origin: redirecting
+     * an external client to a pod IP hangs at best and discloses internal
+     * topology at worst. Leave it unset unless silos are individually
+     * reachable from outside — `onMiss: 'redirect'` then proxies instead,
+     * which is correct rather than broken.
+     */
+    publicAddress?: string;
     /** Shared cluster secret for the internal mount. */
     secret?: string;
     /** Path prefix of the internal mount. Default `/_sigx/silo`. */
@@ -108,6 +122,18 @@ export interface ClusterPlacement extends ActorPlacement {
      * on top of this.
      */
     migrate(ref: ActorRef): Promise<void>;
+    /**
+     * Where this grain lives, resolved WITHOUT dispatching and WITHOUT
+     * activating — the public endpoint's `onMiss: 'redirect'` asks this
+     * before it decides whether to answer 421 or proxy.
+     *
+     * Uses the same resolution order as dispatch (claim → route cache →
+     * directory → policy), so a redirect and a proxy would go to the same
+     * silo. Note it can PLACE a not-yet-placed grain in the route cache,
+     * exactly as a dispatch would — placement is sticky so concurrent
+     * callers agree — but it never activates anything.
+     */
+    locate(ref: ActorRef): Promise<ActorLocation>;
     /**
      * Inbound side, consumed by `handleSiloRequest`: dispatch LOCALLY or
      * throw wrong-host — never forward (redirect-not-proxy).
@@ -189,6 +215,10 @@ function rendezvous(key: string, silos: readonly SiloDescriptor[]): SiloDescript
 }
 
 const ROUTE_CACHE_MAX = 10_000;
+
+/** Shared, frozen — `locate()` answers this on every local hit, and the hot
+ *  path should not allocate to say "it's here". */
+const LOCAL: ActorLocation = Object.freeze({ local: true as const });
 
 /**
  * The `backend` tag this placement answers to. A strategy carrying a
@@ -341,6 +371,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
             address: this.#options.advertise,
             status: this.#status,
             ...(this.#addresses ? { addresses: this.#addresses } : {}),
+            ...(this.#options.publicAddress !== undefined
+                ? { publicAddress: this.#options.publicAddress }
+                : {}),
             ...(this.#options.meta ? { meta: this.#options.meta } : {})
         };
     }
@@ -393,12 +426,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 }
                 if (winner.activationId !== mine.activationId) {
                     this.#counters.claimConflicts++;
-                    throw new ActorWrongHostError(actorLabel(ref), {
-                        siloId: winner.siloId,
-                        ...(this.#address(winner.siloId) !== undefined
-                            ? { address: this.#address(winner.siloId)! }
-                            : {})
-                    });
+                    throw new ActorWrongHostError(
+                        actorLabel(ref),
+                        this.#ownerHint(winner.siloId)
+                    );
                 }
                 this.#claimed.set(id, mine);
             },
@@ -540,6 +571,17 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // Local fast path: we hold the claim, no store reads, no routing.
         if (this.#claimed.has(actorId(ref))) return this.#local!;
         return this.#routing;
+    }
+
+    async locate(ref: ActorRef): Promise<ActorLocation> {
+        this.#counters.locates++;
+        // Same fast path as dispatcherFor: holding the claim answers with
+        // no store read at all.
+        if (this.#claimed.has(actorId(ref))) return LOCAL;
+        const target = await this.#resolveTarget(ref);
+        if (target === 'local') return LOCAL;
+        this.#counters.locateRemote++;
+        return { local: false, owner: this.#ownerHint(target.siloId) };
     }
 
     // -----------------------------------------------------------------------
@@ -713,10 +755,24 @@ class ClusterPlacementImpl implements ClusterPlacement {
             this.#routedStreamed(ref, method, args, call, 'watch', options)
     };
 
-    #address(siloId: string): string | undefined {
-        return this.#options.membership
-            .view()
-            .silos.find((s) => s.siloId === siloId)?.address;
+    /**
+     * The owner hint for a peer — the ONE place both the wrong-host throw
+     * and `locate()` build it, so the internal and public answers cannot
+     * drift into disagreeing about who owns a grain.
+     *
+     * Carries both origins; it is the consumer's job to pick. The internal
+     * mount uses `address`, the public endpoint uses `publicAddress` and
+     * must never leak `address` to a client.
+     */
+    #ownerHint(siloId: string): ActorOwnerHint {
+        const member = this.#member(siloId);
+        return {
+            siloId,
+            ...(member?.address !== undefined ? { address: member.address } : {}),
+            ...(member?.publicAddress !== undefined
+                ? { publicAddress: member.publicAddress }
+                : {})
+        };
     }
 
     #member(siloId: string): SiloDescriptor | undefined {

@@ -29,6 +29,17 @@ export interface ClusterPluginOptions {
     /** Peer-reachable origin of this silo's HTTP listener. */
     advertise: string;
     /**
+     * Origin a CLIENT can reach this silo's PUBLIC actor mount on, e.g.
+     * `https://silo-3.example.com` — published so peers can redirect a
+     * caller here under `onMiss: 'redirect'`.
+     *
+     * Deliberately NOT defaulted from `advertise`, which is the internal
+     * origin: a pod IP is unreachable from outside and disclosing it hands
+     * out internal topology. Unset means peers proxy for this silo instead
+     * of redirecting to it.
+     */
+    publicAddress?: string;
+    /**
      * Shared cluster secret. Declared once here and used by BOTH the
      * outbound transport and the internal mount's HMAC verification.
      */
@@ -132,6 +143,9 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
     const placement = clusterPlacement({
         ...options.providers,
         advertise: options.advertise,
+        ...(options.publicAddress !== undefined
+            ? { publicAddress: options.publicAddress }
+            : {}),
         internalBase,
         transport,
         ...(options.secret !== undefined ? { secret: options.secret } : {}),

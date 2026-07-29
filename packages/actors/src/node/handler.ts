@@ -10,10 +10,12 @@ import {
     type ServerFnHandlerOptions
 } from '@sigx/server/node';
 import { createActorResolver } from '../server/actor-endpoint';
+import type { ActorResolverOptions } from '../server/actor-endpoint';
 import type { Silo } from '../types';
 
 export interface ActorHandlerOptions
-    extends Omit<ServerFnHandlerOptions, 'resolve' | 'functions' | 'renderBoundaries' | 'base'> {
+    extends Omit<ServerFnHandlerOptions, 'resolve' | 'functions' | 'renderBoundaries' | 'base'>,
+        ActorResolverOptions {
     /** The running silo — explicit, never ambient. */
     silo: Silo;
     /** URL prefix the handler owns. Default `/_sigx/actor`. */
@@ -25,11 +27,16 @@ export interface ActorHandlerOptions
  * — mount it beside the serverFn handler, before the document handler.
  */
 export function createActorHandler(options: ActorHandlerOptions): NodeRequestHandler {
-    const { silo, base, ...rest } = options;
+    const { silo, base, onMiss, maxHops, ...rest } = options;
+    const mount = base ?? '/_sigx/actor';
     return createServerFnHandler({
         ...rest,
-        base: base ?? '/_sigx/actor',
-        resolve: createActorResolver(silo)
+        base: mount,
+        resolve: createActorResolver(silo, {
+            base: mount,
+            ...(onMiss !== undefined ? { onMiss } : {}),
+            ...(maxHops !== undefined ? { maxHops } : {})
+        })
     });
 }
 

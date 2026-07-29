@@ -19,7 +19,11 @@ import {
     type ActorPlugin,
     type SiloDefaults
 } from '@sigx/actors/silo';
-import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
+import {
+    handleActorRequest,
+    matchesActorRequest,
+    type ActorMissPolicy
+} from '@sigx/actors/server';
 import {
     cluster,
     matchesSiloRequest,
@@ -71,6 +75,11 @@ export interface ClusterOptions {
     retryBackoffMs?: number;
     /** Spy hook: called with every URL crossing the pipe. */
     onRequest?: (url: string) => void;
+    /** Miss policy for the PUBLIC actor mount. Default `'proxy'`. */
+    onMiss?: ActorMissPolicy;
+    /** Client-reachable origin of silo `i`. The pipe already resolves
+     *  `silo<i>.test`, so a redirect is genuinely followable in-process. */
+    publicAddress?: (index: number) => string;
     /** Extra plugins for silo `i` — e.g. `health()`, `metrics()`. */
     plugins?: (index: number) => readonly ActorPlugin[];
     /** Wrap the shared pipe: stall a peer, rewrite a response, count
@@ -117,7 +126,11 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         const route = member.app.routes.find((candidate) => candidate.match(request));
         const response = route
             ? await route.handle(request, member.silo)
-            : await handleActorRequest(request, { silo: member.silo, origin: false });
+            : await handleActorRequest(request, {
+                  silo: member.silo,
+                  origin: false,
+                  ...(options.onMiss !== undefined ? { onMiss: options.onMiss } : {})
+              });
         expect(matchesSiloRequest(request) || matchesActorRequest(request)).toBe(true);
         return abortLinked(response, init?.signal ?? request.signal);
     };
@@ -130,6 +143,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         const plugin = cluster({
             providers: hub.providers(),
             advertise: `http://silo${i}.test`,
+            ...(options.publicAddress ? { publicAddress: options.publicAddress(i) } : {}),
             ...(secret !== undefined ? { secret } : {}),
             fetch: pipeFetch,
             ...(options.policy ? { policy: options.policy } : {}),

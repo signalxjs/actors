@@ -173,16 +173,18 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Eight
   runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`), `./silo` (defineActorApp
   + the plugin model, createSilo, runtime, memoryStorage), `./server`
-  (WinterCG wire endpoint, plus `actorRouteToken()` — read-only; the
-  endpoint never validates the routing token), `./node`
+  (WinterCG wire endpoint, `onMiss` proxy/redirect/auto for grains another
+  silo owns, plus `actorRouteToken()` — read-only; the endpoint never
+  validates the routing token), `./node`
   (createAppHandler + connect adapter, fileStorage, signal handlers),
   `./client` (build-swap target, configureActors, the `ActorTransport`
-  seam + `fetchTransport`, and the `route` option minting the per-grain
-  routing token), `./app` (`actorsPlugin()` — the sigx app
+  seam + `fetchTransport`, the `route` option minting the per-grain
+  routing token, and `follow` for 421 redirects with a route memo), `./app` (`actorsPlugin()` — the sigx app
   integration; it imports `@sigx/runtime-core`, NEVER the `sigx`
   umbrella — see below), `./cluster` (the
-  `cluster()` plugin, clusterPlacement, silo-to-silo endpoint, cluster
-  provider seams, memoryClusterHub), `./vite`
+  `cluster()` plugin, clusterPlacement (incl. `locate()` and
+  `publicAddress`), silo-to-silo endpoint, cluster provider seams,
+  memoryClusterHub), `./vite`
   (`sigxActors()` plugin).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
   `redisCluster` (membership and the actor directory) for

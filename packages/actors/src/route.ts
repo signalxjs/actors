@@ -55,6 +55,31 @@ export const ACTOR_ROUTE_SEGMENT = 'r';
 export const ACTOR_ROUTE_HEADER = 'x-sigx-actor-route';
 
 /**
+ * Client → server: "I can follow a wrong-host redirect."
+ *
+ * What makes `onMiss: 'auto'` possible: the mount redirects exactly the
+ * callers that opted in and proxies for everyone else, so one endpoint can
+ * serve a browser and a service without being configured twice.
+ */
+export const ACTOR_FOLLOW_HEADER = 'x-sigx-actor-follow';
+
+/**
+ * Client → server: how many redirects this call has already followed.
+ *
+ * The server caps on this too, not just the client. A redirect loop has to
+ * be impossible rather than merely unlikely, and a client that ignores its
+ * own cap — or is not ours — must not be able to bounce forever between two
+ * silos that disagree about ownership.
+ */
+export const ACTOR_HOPS_HEADER = 'x-sigx-actor-hops';
+
+/**
+ * Server → client: the owner's actor endpoint, mirrored out of the 421 body
+ * so a proxy or a log can see where a call was sent without parsing JSON.
+ */
+export const ACTOR_OWNER_HEADER = 'x-sigx-actor-owner';
+
+/**
  * How the client derives a grain's routing token.
  *
  * - `'hash'` (default) — an opaque hash of the actor id.
