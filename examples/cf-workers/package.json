@@ -1,0 +1,22 @@
+{
+    "name": "cf-workers-example",
+    "private": true,
+    "type": "module",
+    "description": "A deployable Cloudflare Workers app on @sigx/actors — one Durable Object per actor",
+    "scripts": {
+        "dev": "wrangler dev --define __DEV__:true",
+        "deploy": "wrangler deploy",
+        "tail": "wrangler tail --format pretty",
+        "verify": "node verify.mjs",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/actors-cloudflare": "workspace:*"
+    },
+    "devDependencies": {
+        "@cloudflare/workers-types": "^5.20260729.1",
+        "typescript": "^6.0.3",
+        "wrangler": "^4.115.0"
+    }
+}

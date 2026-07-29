@@ -72,3 +72,4 @@ benchmarks/profiles/
 .wrangler/
 .dev.vars
 .mf/
+examples/cf-workers/.wrangler/

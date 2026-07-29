@@ -65,6 +65,13 @@ or Lease-based membership via `@sigx/actors-k8s`), a closed-loop load
 generator, and the container image both run from — the app half of the
 AKS scale-out/perf test.
 
+[`examples/cf-workers`](examples/cf-workers) — the **Cloudflare** deployment:
+one Durable Object per actor, a Worker that hosts nothing and routes
+everything, and a `verify.mjs` that checks exact counts, per-key isolation,
+streaming through the edge and a reminder firing from a real alarm. Shows the
+app **factory** shape Workers needs — a module-scope app binds whichever
+object constructs it first.
+
 ### Watching it happen
 
 `cluster:serve` runs the same three silos but keeps them up under steady

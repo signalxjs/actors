@@ -257,6 +257,16 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   (multi-stage `pnpm deploy`, context = repo root). The app half of the
   AKS scale-out/perf test; the Helm chart and runbook live with it under
   `deploy/`. Not published.
+- `examples/cf-workers` — the Cloudflare deployment example: one Durable
+  Object per actor, a Worker that hosts nothing and routes everything, and
+  `verify.mjs` (six correctness checks, one JSON summary line, including a
+  reminder firing from a REAL alarm). The point of it is the app **factory**:
+  `examples/counter` builds its app at module scope, which on Workers binds
+  whichever object constructed it first. Three things it documents because
+  they all bite: `new_sqlite_classes` is a one-way door, `__DEV__` must be
+  `define`d or the silo throws on the first request, and the public mount
+  needs an explicit `origin` policy. `MODE=load` exists but its local numbers
+  describe `wrangler dev`, not Cloudflare — see the README. Not published.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-grain heap footprint, leak detection, and the CPU/allocation
