@@ -27,9 +27,11 @@ import type {
     Silo,
     SiloStats
 } from '../types';
+import { actorId } from '../types';
 import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } from './activation';
 import { LocalHost } from './local-host';
 import { shardedReminders } from './reminders';
+import { taskLedger } from './tasks';
 import { memoryStorage } from './storage-memory';
 import { timerScheduler } from './scheduler';
 
@@ -235,6 +237,11 @@ class SiloImpl implements Silo {
             encodeArgs: (args: readonly unknown[]): unknown =>
                 encodeWithHandlers(args, this.#types),
             reminders: (ref) => this.#reminders.apiFor(ref),
+            tasks: (ref) =>
+                taskLedger(this.#storage, actorId(ref), {
+                    encode: (value) => encodeWithHandlers(value, this.#types),
+                    revive: (value) => reviveWithHandlers(value, this.#types)
+                }),
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
             onFault: (activation: Activation) => {
                 void this.#local.deactivate(activation.ref, 'conflict');

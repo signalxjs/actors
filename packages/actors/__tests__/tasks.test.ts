@@ -388,9 +388,12 @@ describe('tasks: cancellation and deactivation', () => {
         await until(async () => (await client.read()).phase === 'following');
         await within(silo.stop({ timeoutMs: 5000 }), 2000);
 
-        const next = createSilo({ actors: [watcher], storage, defaults: quiet });
-        expect((await next.actor(watcher, 'a').read()).phase).toBe('wound-down');
-        await next.stop({ timeoutMs: 1000 });
+        // Asserted on STORAGE, not through a fresh silo: activating the
+        // grain again would RESUME the interrupted run (that's the
+        // durability contract) and its first turn would overwrite the
+        // phase before a read could see it.
+        const record = await storage.load('FeedWindDown', 'a');
+        expect((record?.state as { phase: string }).phase).toBe('wound-down');
     });
 
     it('deactivation aborts the run BEFORE the drain and lets it checkpoint via turn()', async () => {
@@ -429,8 +432,14 @@ describe('tasks: cancellation and deactivation', () => {
         await within(silo.stop({ timeoutMs: 5000 }), 2000);
         expect(reasons).toEqual(['shutdown']);
 
+        // On storage (see the feed test above for why not via a fresh
+        // silo) — and the interrupted run RESUMES there: its restart flips
+        // the phase back to 'running', which is the durability contract
+        // doing its job.
+        const record = await storage.load('Checkpointer', 'a');
+        expect((record?.state as { phase: string }).phase).toBe('wound-down');
         const next = createSilo({ actors: [worker], storage, defaults: quiet });
-        expect(await next.actor(worker, 'a').read()).toBe('wound-down');
+        await until(async () => (await next.actor(worker, 'a').read()) === 'running');
         await next.stop({ timeoutMs: 1000 });
     });
 

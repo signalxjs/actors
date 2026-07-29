@@ -4,6 +4,25 @@
 
 ### Added
 
+- **Task durability: ledger + liveness reminder + crash-resume** (#151).
+  `ctx.tasks.start()` now resolves only after the run is durably recorded —
+  an entry in the reserved `$sigx:tasks` storage record (etag-CAS,
+  reload-and-reapply) plus a liveness reminder armed under the same
+  reserved name. A run interrupted by deactivation (any reason but cancel)
+  keeps its entry and restarts on the grain's next activation with
+  `TaskInfo.restarts` bumped and its `input` replayed through the state
+  codec; completion, throw, and cancel remove the entry, and an empty
+  ledger disarms the reminder (and deletes the record — no tombstones).
+  The reminder is the crash driver: a dead silo's reminder shards are
+  re-owned by survivors, the tick delivers through placement, and the
+  grain re-activates — tasks and all — within ~60–90s, no client call
+  needed. The reminder name never reaches `onReminder`; its handler
+  self-heals (restarts a ledgered run that somehow is not running, disarms
+  a stale reminder whose ledger is gone). At-least-once by contract: the
+  runtime resumes the function, user code resumes the work from its own
+  checkpointed state. New in `@sigx/actors/silo`: `TASKS_TYPE`,
+  `TASK_REMINDER`, `TASK_REMINDER_MS`, `TaskLedger`, `TaskLedgerEntry`.
+
 - **`tasks:` — detached long-running work on an actor** (#147). Declare
   long-running operations in a `tasks:` factory on `defineActor` and start
   them with `ctx.tasks.start(name, input?)`: the body runs detached from

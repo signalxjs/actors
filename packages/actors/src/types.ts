@@ -380,9 +380,9 @@ export interface TaskInfo {
     /** Epoch-ms this run first started. */
     startedAt: number;
     /**
-     * Times the runtime re-started the run after a deactivation or crash.
-     * Always 0 until task durability ships; the field exists so `list()`
-     * consumers don't change shape when it does.
+     * Times the runtime re-started the run after a deactivation or crash
+     * (0 on a fresh start). At-least-once: a restarted body replays from
+     * its own checkpointed state.
      */
     restarts: number;
 }

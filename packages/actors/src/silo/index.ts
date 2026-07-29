@@ -39,6 +39,13 @@ export { timerScheduler, manualScheduler, type ManualScheduler } from './schedul
 export { Mailbox } from './mailbox';
 export { REMINDER_METHOD } from './activation';
 export { REMINDER_TYPE, shardedReminders } from './reminders';
+export {
+    TASKS_TYPE,
+    TASK_REMINDER,
+    TASK_REMINDER_MS,
+    type TaskLedger,
+    type TaskLedgerEntry
+} from './tasks';
 export type {
     ActivationInfo,
     ActivationsOptions,

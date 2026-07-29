@@ -540,9 +540,31 @@ The rules, and why they hold the actor model together:
 - **No wire surface.** Start/cancel/status go through your own methods, so
   your guard chain governs them like any other call.
 
-Durable crash-resume (a ledger + liveness reminder that restarts a dead
-silo's tasks elsewhere) ships next — today a task dies with its activation
-and restarting is the caller's business.
+**Crash-resume is built in.** `start()` resolves only after the run is
+durably recorded: a ledger entry in the reserved `$sigx:tasks` storage
+record plus a liveness reminder armed under the same name. From then on:
+
+- A run **interrupted by deactivation** (any reason but cancel) keeps its
+  entry — the next activation of the grain restarts it, with
+  `TaskInfo.restarts` bumped and the original `input` replayed through the
+  state codec. Completion, a throw, and `cancel` all remove the entry (a
+  thrown task is terminal; crash ≠ throw), and an empty ledger disarms the
+  reminder.
+- The **reminder is the crash driver**: when a silo dies, the reminder
+  shards are re-owned by the surviving silos, the next tick delivers
+  through placement, and the grain — tasks and all — re-activates wherever
+  the cluster puts it, within roughly 60–90s. No client call needed.
+- The contract is **at-least-once**: the runtime resumes the *function*;
+  your code resumes the *work* from its own checkpointed state (the
+  `ctx.turn()` + `save()` pattern above — resume by reading how far the
+  last checkpoint got). A run that completes in the same instant its silo
+  stops may restart once more; make the last step idempotent or gate it on
+  state.
+- On the Cloudflare Durable Object backend this degrades gracefully: the
+  ledger lives in the DO's own storage and the liveness reminder maps onto
+  its alarm; a fiber does not survive eviction, so a task there is
+  checkpoint-and-resume with short gaps rather than one continuous run —
+  the same at-least-once contract, checkpoint aggressively.
 
 ## Lifecycle
 

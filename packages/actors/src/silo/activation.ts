@@ -31,6 +31,12 @@ import {
     type TimerHandle,
     type TimerOptions
 } from '../types';
+import {
+    TASK_REMINDER,
+    TASK_REMINDER_MS,
+    type TaskLedgerApi,
+    type TaskLedgerEntry
+} from './tasks';
 
 /** Reserved dispatch method routing to `onReminder`. */
 export const REMINDER_METHOD = '$sigx:reminder';
@@ -81,6 +87,8 @@ export interface ActivationHost {
      */
     encodeArgs(args: readonly unknown[]): unknown;
     reminders(ref: ActorRef): ReminderApi;
+    /** The actor's task ledger — the reserved `$sigx:tasks` record. */
+    tasks(ref: ActorRef): TaskLedgerApi;
     actorClient<D extends AnyActorDefinition>(
         def: D,
         key: string,
@@ -129,7 +137,10 @@ interface TaskRun {
     /** One id for the whole run, so its `turn()`s correlate in traces. */
     callId: string;
     startedAt: number;
-    /** Settles when the body settles; never rejects. */
+    /** Times the runtime re-started this run (0 on a fresh start). */
+    restarts: number;
+    /** Settles when the body AND its ledger bookkeeping settle; never
+     *  rejects. Deactivation's grace wait covers both. */
     settled: Promise<void>;
 }
 
@@ -162,6 +173,8 @@ export class Activation {
     #warnedTaskState = false;
     /** Running detached tasks, by name (single-flight per name). */
     #tasks = new Map<string, TaskRun>();
+    /** Lazily bound — one instance per activation (one writer chain). */
+    #ledgerApi: TaskLedgerApi | null = null;
     /** Shared watch loops, keyed by `method` + encoded args — see `./watch`. */
     #watches = new Map<string, SharedWatch>();
     lastActivityMs = Date.now();
@@ -223,6 +236,16 @@ export class Activation {
             }
             if (opts.onActivate) {
                 await a.#scope.run(() => opts.onActivate!(a.#ctx));
+            }
+            // Crash recovery: restart every ledgered run. Only actors that
+            // DECLARE tasks pay the storage read; everyone else activates
+            // byte for byte as before. A liveness-reminder delivery lands
+            // here too — activating the grain is the delivery's real work.
+            if (opts.tasks) {
+                const ledger = await a.#ledger.load();
+                for (const [name, entry] of Object.entries(ledger)) {
+                    await a.#resumeTask(name, entry);
+                }
             }
             return a;
         } catch (cause) {
@@ -622,6 +645,25 @@ export class Activation {
         const opts = this.def.__sigxActor;
         if (method === REMINDER_METHOD) {
             const name = String(args[0]);
+            if (name === TASK_REMINDER) {
+                // The runtime's liveness reminder — never the user's. Its
+                // real work already happened: delivery re-activated the
+                // grain and `create` resumed the ledgered runs. Here, only
+                // self-heal: restart an entry that somehow has no run, and
+                // disarm a reminder whose ledger is gone.
+                const ledger = await this.#ledger.load();
+                const entries = Object.entries(ledger);
+                if (entries.length === 0) {
+                    if (this.#tasks.size === 0) {
+                        await this.#ctx.reminders.clear(TASK_REMINDER);
+                    }
+                    return undefined;
+                }
+                for (const [taskName, entry] of entries) {
+                    if (!this.#tasks.has(taskName)) await this.#resumeTask(taskName, entry);
+                }
+                return undefined;
+            }
             if (!opts.onReminder) {
                 if (__DEV__) {
                     console.warn(
@@ -839,9 +881,16 @@ export class Activation {
         return derived;
     }
 
+    get #ledger(): TaskLedgerApi {
+        return (this.#ledgerApi ??= this.#host.tasks(this.ref));
+    }
+
     /**
-     * Launch one detached task run. Resolves once the body is launched —
-     * settlement is the run's own business. Single-flight per name.
+     * Start one detached task run, DURABLY: the ledger entry is written and
+     * the liveness reminder armed before the body launches, so a crash any
+     * time after `start` resolves still resumes the run. Resolves once the
+     * body is launched — settlement is the run's own business.
+     * Single-flight per name.
      */
     async #startTask(name: string, input: unknown): Promise<void> {
         if (this.#faulted) throw this.#faulted;
@@ -850,38 +899,116 @@ export class Activation {
         // settle the deactivation just awaited.
         if (this.#abort.signal.aborted) throw new SiloShutdownError();
         if (this.#tasks.has(name)) return;
-        const opts = this.def.__sigxActor;
-        if (!opts.tasks) {
-            throw new ActorMethodNotFoundError(
-                this.ref.type,
-                `${name} (no tasks: section on this actor)`
-            );
-        }
         const run: TaskRun = {
             name,
             controller: new AbortController(),
             callId: mintCallId(),
             startedAt: Date.now(),
+            restarts: 0,
             settled: Promise.resolve()
         };
+        const fn = this.#resolveTask(name, run);
+        if (typeof fn !== 'function') {
+            throw new ActorMethodNotFoundError(
+                this.ref.type,
+                this.def.__sigxActor.tasks
+                    ? `${name} (not in the tasks: section)`
+                    : `${name} (no tasks: section on this actor)`
+            );
+        }
+        // Reserve SYNCHRONOUSLY, before the durable writes await: start is
+        // callable from detached code, so two concurrent starts would both
+        // pass the has() gate above and double-launch. Rolled back if the
+        // durable half fails.
+        this.#reserve(run);
+        try {
+            await this.#ledger.mutate((ledger) => {
+                ledger[name] = {
+                    ...(input !== undefined ? { input } : {}),
+                    startedAt: run.startedAt,
+                    restarts: 0
+                };
+            });
+            await this.#host
+                .reminders(this.ref)
+                .set(TASK_REMINDER, { due: TASK_REMINDER_MS, period: TASK_REMINDER_MS });
+        } catch (error) {
+            this.#release(run);
+            throw error;
+        }
+        this.#launch(run, fn, input);
+    }
+
+    /**
+     * Restart one ledgered run — on activation (the crash-recovery path)
+     * or from the liveness reminder's self-heal. An entry whose name is no
+     * longer in the `tasks:` table is dev-warned and forgotten.
+     */
+    async #resumeTask(name: string, entry: TaskLedgerEntry): Promise<void> {
+        if (this.#faulted || this.#abort.signal.aborted || this.#tasks.has(name)) return;
+        const run: TaskRun = {
+            name,
+            controller: new AbortController(),
+            callId: mintCallId(),
+            startedAt: entry.startedAt,
+            restarts: entry.restarts + 1,
+            settled: Promise.resolve()
+        };
+        const fn = this.#resolveTask(name, run);
+        if (typeof fn !== 'function') {
+            if (__DEV__) {
+                console.warn(
+                    `[sigx actors] the task ledger of ${actorLabel(this.ref)} names "${name}", ` +
+                        `which is not in the definition's tasks: section any more — dropping it.`
+                );
+            }
+            await this.#forgetTask(name);
+            return;
+        }
+        // Same synchronous reservation as #startTask: activation-resume and
+        // the reminder self-heal can race for one name.
+        this.#reserve(run);
+        try {
+            await this.#ledger.mutate((ledger) => {
+                const persisted = ledger[name];
+                if (persisted) persisted.restarts = run.restarts;
+            });
+        } catch (error) {
+            this.#release(run);
+            throw error;
+        }
+        this.#launch(run, fn, entry.input);
+    }
+
+    /** The single-flight gate. Synchronous on purpose — see #startTask. */
+    #reserve(run: TaskRun): void {
+        this.#tasks.set(run.name, run);
+        this.#keepAlive++;
+    }
+
+    #release(run: TaskRun): void {
+        if (this.#tasks.get(run.name) === run) this.#tasks.delete(run.name);
+        this.#keepAlive--;
+        this.lastActivityMs = Date.now();
+    }
+
+    /** Resolve `name` from a per-run `tasks:` table (own keys only —
+     *  `table[name]` would resolve prototype members into "tasks"). */
+    #resolveTask(name: string, run: TaskRun): AnyTaskFn | undefined {
+        const opts = this.def.__sigxActor;
+        if (!opts.tasks) return undefined;
         // Per RUN, like #streamTable is per subscription: each run's table
         // closes over its own derived context (its own abortSignal).
         const table = this.#scope.run(() => opts.tasks!(this.#taskContext(run)));
         if (!table) throw new SiloShutdownError();
-        // Own keys only: `table[name]` would resolve prototype members
-        // ("toString", "constructor") into "tasks" instead of a clean
-        // not-found.
         const fn = Object.hasOwn(table, name)
             ? (table as Record<string, AnyTaskFn>)[name]
             : undefined;
-        if (typeof fn !== 'function') {
-            throw new ActorMethodNotFoundError(
-                this.ref.type,
-                `${name} (not in the tasks: section)`
-            );
-        }
-        this.#tasks.set(name, run);
-        this.#keepAlive++;
+        return typeof fn === 'function' ? fn : undefined;
+    }
+
+    /** Run an already-RESERVED task body (see #reserve). */
+    #launch(run: TaskRun, fn: AnyTaskFn, input: unknown): void {
         run.settled = (async () => {
             try {
                 await fn(input);
@@ -891,16 +1018,46 @@ export class Activation {
                 // expected wind-down path, not worth a warning.
                 if (__DEV__ && !run.controller.signal.aborted) {
                     console.error(
-                        `[sigx actors] task "${name}" of ${actorLabel(this.ref)} threw:`,
+                        `[sigx actors] task "${run.name}" of ${actorLabel(this.ref)} threw:`,
                         error
                     );
                 }
             } finally {
-                this.#tasks.delete(name);
-                this.#keepAlive--;
-                this.lastActivityMs = Date.now();
+                this.#release(run);
+            }
+            // Ledger bookkeeping is INSIDE `settled`, so deactivation's
+            // grace wait covers it. An interrupted run — aborted by
+            // deactivation, not cancel — KEEPS its entry: that entry is the
+            // resume. This holds whether the body returned or threw during
+            // the wind-down; a run that completes right as deactivation
+            // fires restarts once more (at-least-once, documented).
+            const signal = run.controller.signal;
+            const interrupted = signal.aborted && signal.reason !== 'cancelled';
+            if (!interrupted) {
+                try {
+                    await this.#forgetTask(run.name);
+                } catch (error) {
+                    if (__DEV__) {
+                        console.error(
+                            `[sigx actors] failed to clear the task ledger for "${run.name}" ` +
+                                `of ${actorLabel(this.ref)} (the liveness reminder will ` +
+                                `self-heal):`,
+                            error
+                        );
+                    }
+                }
             }
         })();
+    }
+
+    /** Drop one entry; when the ledger empties, disarm the reminder too. */
+    async #forgetTask(name: string): Promise<void> {
+        const ledger = await this.#ledger.mutate((l) => {
+            delete l[name];
+        });
+        if (Object.keys(ledger).length === 0) {
+            await this.#host.reminders(this.ref).clear(TASK_REMINDER);
+        }
     }
 
     /**
@@ -919,7 +1076,7 @@ export class Activation {
         return [...this.#tasks.values()].map((r) => ({
             name: r.name,
             startedAt: r.startedAt,
-            restarts: 0
+            restarts: r.restarts
         }));
     }
 
