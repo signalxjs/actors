@@ -23,7 +23,8 @@ import {
     type Frame
 } from './frames';
 import { decodeEnvelope, verifyAuth } from './envelope';
-import type { SiloTransportConfig, SiloTransportRuntime } from './seam';
+import type { SiloCallMode, SiloTransportConfig, SiloTransportRuntime } from './seam';
+import { parseWatchOptions } from './watch-symbol';
 import type { ActorCallContext } from '../types';
 
 /**
@@ -477,7 +478,21 @@ export class SiloConnection {
             }
             const { call, ref, args } = this.#prepare(target, p);
             if ((frame.flags & FLAG_STREAM) !== 0) {
-                await this.#serveStream(corrId, runtime, ref, target.method, args, call, p?.c ?? this.#o.credit);
+                // The flag says the REPLY is a chunk stream; the symbol says
+                // what produced it. A watch is a stream on the wire and
+                // neither a `streams:` method nor a unary call in the
+                // runtime, which is exactly why the mode has to travel.
+                await this.#serveStream(
+                    corrId,
+                    runtime,
+                    ref,
+                    target.method,
+                    args,
+                    call,
+                    p?.c ?? this.#o.credit,
+                    target.mode,
+                    symbol
+                );
             } else {
                 const value = await runtime.dispatch(ref, target.method, args, call);
                 this.#send({
@@ -531,7 +546,11 @@ export class SiloConnection {
         method: string,
         args: unknown[],
         call: ActorCallContext,
-        initialCredit: number
+        initialCredit: number,
+        mode: SiloCallMode,
+        /** The WIRE symbol, so a rejection names what the caller actually
+         *  sent (`$watch:Counter#read`) rather than the bare method. */
+        symbol: string
     ): Promise<void> {
         const controller = new AbortController();
         const state: InboundStream = { controller, credit: initialCredit };
@@ -539,7 +558,19 @@ export class SiloConnection {
         const signal = call.abortSignal
             ? AbortSignal.any([call.abortSignal, controller.signal])
             : controller.signal;
-        const iterable = runtime.dispatchStream(ref, method, args, { ...call, abortSignal: signal });
+        const scoped = { ...call, abortSignal: signal };
+        // A watch leads its args with its options, after the key that
+        // `#prepare` already peeled off.
+        const iterable =
+            mode === 'watch'
+                ? runtime.dispatchWatch(
+                      ref,
+                      method,
+                      args.slice(1),
+                      scoped,
+                      parseWatchOptions(args[0], symbol)
+                  )
+                : runtime.dispatchStream(ref, method, args, scoped);
         const generator = iterable[Symbol.asyncIterator]() as AsyncGenerator<unknown>;
         state.generator = generator;
         try {

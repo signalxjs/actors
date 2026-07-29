@@ -26,6 +26,13 @@ export interface ClusterCounterTotals {
     /** Hops sent OUT to a peer, per ATTEMPT — so retries are included. */
     remoteDispatches: number;
     remoteStreams: number;
+    /**
+     * Watches opened ON a peer, per ATTEMPT. Counted apart from
+     * `remoteStreams` because they cost differently: a stream ends, while a
+     * watch holds a keep-alive on the owner until the subscriber leaves —
+     * so this is the number worth reading next to a host's activation count.
+     */
+    remoteWatches: number;
     /** Attempts beyond the first, whatever the cause. */
     retries: number;
     /** Calls that exhausted every attempt and threw `ActorActivationError`. */
@@ -35,6 +42,8 @@ export interface ClusterCounterTotals {
     /** Calls received from a peer on the internal mount. */
     inboundDispatches: number;
     inboundStreams: number;
+    /** Watches a peer opened on an actor THIS silo owns. */
+    inboundWatches: number;
 
     // --- route cache ------------------------------------------------------
     routeCacheHits: number;
@@ -96,10 +105,12 @@ export function createCounters(): ClusterCounterTotals {
         routedLocal: 0,
         remoteDispatches: 0,
         remoteStreams: 0,
+        remoteWatches: 0,
         retries: 0,
         routingFailures: 0,
         inboundDispatches: 0,
         inboundStreams: 0,
+        inboundWatches: 0,
         routeCacheHits: 0,
         routeCacheMisses: 0,
         directoryLookups: 0,

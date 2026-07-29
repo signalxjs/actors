@@ -33,6 +33,7 @@ import { createServer, connect, type Server, type Socket } from 'node:net';
 import {
     encodeEnvelope,
     signAuth,
+    watchSymbol,
     type MembershipView,
     type SiloDescriptor,
     type SiloTransport,
@@ -226,9 +227,8 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
             if (!target.addresses?.[TCP_TRANSPORT_NAME]) return null;
 
             const prepare = async (
-                ref: ActorRef,
-                method: string,
-                args: readonly unknown[],
+                symbol: string,
+                payloadArgs: readonly unknown[],
                 call: ActorCallContext
             ): Promise<{
                 connection: SiloConnection;
@@ -237,12 +237,11 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                 envelope: string;
                 auth: string | undefined;
             }> => {
-                const symbol = `${ref.type}#${method}`;
                 const connection = await linkTo(target);
                 return {
                     connection,
                     symbol,
-                    payload: config.codec.encode([ref.key, ...args]),
+                    payload: config.codec.encode(payloadArgs),
                     envelope: encodeEnvelope(call, config.siloId),
                     auth:
                         config.secret === undefined
@@ -251,9 +250,31 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                 };
             };
 
+            /** Shared by both streamed modes — they differ only in the symbol. */
+            const streamOver = (
+                symbol: string,
+                payloadArgs: readonly unknown[],
+                call: ActorCallContext
+            ): AsyncIterable<unknown> => {
+                const codec = config.codec;
+                async function* run(): AsyncGenerator<unknown> {
+                    const p = await prepare(symbol, payloadArgs, call);
+                    for await (const chunk of p.connection.dispatchStream(
+                        p.symbol,
+                        p.payload,
+                        p.envelope,
+                        p.auth,
+                        call
+                    )) {
+                        yield codec.decode(chunk);
+                    }
+                }
+                return run();
+            };
+
             return {
                 async dispatch(ref: ActorRef, method: string, args: readonly unknown[], call: ActorCallContext) {
-                    const p = await prepare(ref, method, args, call);
+                    const p = await prepare(`${ref.type}#${method}`, [ref.key, ...args], call);
                     const value = await p.connection.dispatch(
                         p.symbol,
                         p.payload,
@@ -264,20 +285,24 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                     return config.codec.decode(value);
                 },
                 dispatchStream(ref: ActorRef, method: string, args: readonly unknown[], call: ActorCallContext) {
-                    const codec = config.codec;
-                    async function* run(): AsyncGenerator<unknown> {
-                        const p = await prepare(ref, method, args, call);
-                        for await (const chunk of p.connection.dispatchStream(
-                            p.symbol,
-                            p.payload,
-                            p.envelope,
-                            p.auth,
-                            call
-                        )) {
-                            yield codec.decode(chunk);
-                        }
-                    }
-                    return run();
+                    return streamOver(`${ref.type}#${method}`, [ref.key, ...args], call);
+                },
+                dispatchWatch(
+                    ref: ActorRef,
+                    method: string,
+                    args: readonly unknown[],
+                    call: ActorCallContext,
+                    options?: { throttleMs?: number }
+                ) {
+                    // FLAG_STREAM still goes on the CALL — the reply IS a
+                    // chunk stream — so the credit window, the CANCEL frame
+                    // and every other stream mechanic apply unchanged. The
+                    // symbol is the only thing that says this is a watch.
+                    return streamOver(
+                        watchSymbol(ref.type, method),
+                        [ref.key, options ?? null, ...args],
+                        call
+                    );
                 }
             };
         };

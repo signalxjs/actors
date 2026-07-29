@@ -110,5 +110,5 @@ go wrong, and `ws` is already present in most Node deployments.
 ## Conformance
 
 Runs the shared transport conformance suite
-(`@sigx/actors/cluster/testing`) — all 16 cases, identical to the TCP run,
+(`@sigx/actors/cluster/testing`) — all 18 cases, identical to the TCP run,
 including the link-hygiene cases HTTP skips.

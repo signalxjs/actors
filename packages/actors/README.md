@@ -838,6 +838,7 @@ all).
 | counter | what it diagnoses |
 |---|---|
 | `routedLocal` / `remoteDispatches` / `inboundDispatches` | locality. `remoteDispatches` and `inboundDispatches` are the two sides of one hop — reported side by side, **never summed**; their gap is in-flight and retried attempts |
+| `remoteWatches` / `inboundWatches` | live subscriptions crossing a hop. Counted apart from streams because a watch holds a keep-alive on the OWNER until its subscriber leaves — read `inboundWatches` next to that host's activation count |
 | `retries`, `routingFailures` | convergence. Every `routingFailures` is a user-visible error after the last attempt |
 | `wrongHostRedirects` | the directory and the placement policy disagree — usually membership flapping |
 | `unreachableRetries` / `drainingRetries` | a peer flapping, versus a rolling deploy in progress (should be zero at rest) |
@@ -932,6 +933,23 @@ independently of `configureServerFn`.
 
 Renaming an actor's `type` or its methods is a **wire break** (and `type`
 is also the storage identity).
+
+The runtime reserves two symbol shapes on top of that, which is why
+`defineActor` refuses a `type` starting with `$` or `@`:
+
+| symbol | what it is |
+|---|---|
+| `$live#subscribe` | the public multiplexed subscribe mount — many live reads on one held-open NDJSON response |
+| `$watch:{Type}#{method}` | INTERNAL, silo-to-silo only: the same read as `{Type}#{method}`, but opened as a subscription |
+
+The second exists because a watch is an ordinary read dispatched in watch
+mode, so the receiving silo cannot tell which is meant from the method
+alone — `streamNames` separates streams from calls, and a watch is neither.
+It rides the **symbol** rather than the call envelope because the per-call
+HMAC signs `proto\nsymbol\ncallId\ntimestamp`: the envelope is not covered,
+so the intent would otherwise be free for anyone reaching the mount to
+flip. Its payload leads with the actor key and the per-subscription
+options: `{"args": [key, {"throttleMs": 50} | null, ...args]}`.
 
 ### Transports are pluggable, on both sides
 

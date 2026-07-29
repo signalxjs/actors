@@ -79,12 +79,26 @@ export interface SiloTransportConfig {
     ) => Error;
 }
 
+/**
+ * How an inbound call is dispatched.
+ *
+ * `'stream'` is a property of the METHOD (`streams:` declares it), while
+ * `'watch'` is a property of the CALL — the same read is a `'unary'` one
+ * moment and a `'watch'` the next. That is why the caller has to say so on
+ * the wire, and why this cannot be derived from the definition alone.
+ */
+export type SiloCallMode = 'unary' | 'stream' | 'watch';
+
 /** What an inbound wire symbol resolved to on this silo. */
 export interface SiloCallTarget {
     readonly type: string;
     readonly method: string;
-    /** True for `streams:` methods — dispatch through `dispatchStream`. */
-    readonly stream: boolean;
+    /**
+     * `'stream'` → `dispatchStream`, `'watch'` → `dispatchWatch`, otherwise
+     * `dispatch`. Both non-unary modes answer with a chunk stream, so a
+     * transport only has to branch on unary-vs-streamed to frame the reply.
+     */
+    readonly mode: SiloCallMode;
 }
 
 /**
@@ -129,6 +143,23 @@ export interface SiloTransportRuntime {
         method: string,
         args: readonly unknown[],
         call: ActorCallContext
+    ): AsyncIterable<unknown>;
+    /**
+     * Open a WATCH on a local actor: the read's result now, and again after
+     * every turn that mutates it. Answers as a chunk stream like
+     * `dispatchStream`, so a transport reuses its streaming reply path
+     * whole — the only thing that differs is which runtime method produced
+     * the iterable.
+     *
+     * `throttleMs` is per SUBSCRIPTION, not per actor, so it has to cross
+     * the hop with the call rather than being configured on the owner.
+     */
+    dispatchWatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
     ): AsyncIterable<unknown>;
     /**
      * Report a refused authentication. Counted, because a rejection here is

@@ -383,6 +383,50 @@ const streamCancellation: ConformanceCase = {
     }
 };
 
+const watchRoundTrip: ConformanceCase = {
+    name: 'a watch from a non-owner sees the owner mutate',
+    why: 'the receiving silo cannot tell a watch from a plain read by the method alone, so a transport that drops the intent silently serves a one-shot call instead of a subscription',
+    run: (create) =>
+        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
+            await h.silos[1]!.dispatch({ type: ECHO, key: 'watched' }, 'get', [], call());
+            const iterator = h.silos[0]!
+                .dispatchWatch!({ type: ECHO, key: 'watched' }, 'get', [], call())
+                [Symbol.asyncIterator]();
+            try {
+                assertEqual((await iterator.next()).value, 0, 'the initial value');
+                await h.silos[1]!.dispatch({ type: ECHO, key: 'watched' }, 'increment', [7], call());
+                assertEqual((await iterator.next()).value, 7, "the owner's mutation arrives");
+            } finally {
+                await iterator.return?.(undefined);
+            }
+        })
+};
+
+const watchCancellation: ConformanceCase = {
+    name: "a watch disconnect releases the OWNER's keep-alive",
+    why: 'the owner has no other way to learn the subscriber has gone — and an open watch counts as activity, so one never released pins that activation for the life of the process',
+    run: (create) =>
+        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
+            await h.silos[1]!.dispatch({ type: ECHO, key: 'pinned' }, 'get', [], call());
+            const iterator = h.silos[0]!
+                .dispatchWatch!({ type: ECHO, key: 'pinned' }, 'get', [], call())
+                [Symbol.asyncIterator]();
+            await iterator.next();
+
+            const pinned = (): boolean =>
+                h.silos[1]!.activations().some((a) => a.key === 'pinned' && a.keptAlive);
+            assert(pinned(), 'the open watch keeps the owner activation alive');
+
+            // A QUIET actor on purpose: nothing will arrive to resume the
+            // serving generator, so if the release depends on a value it
+            // never happens at all.
+            await iterator.return?.(undefined);
+            await waitFor(() =>
+                assert(!pinned(), "the owner's keep-alive is released when the consumer leaves")
+            );
+        })
+};
+
 const deadlinePropagation: ConformanceCase = {
     name: 'the deadline crosses the hop and the caller gives up on time',
     why: 'sending an absolute timestamp instead of remaining-ms makes every deadline wrong by the clock skew between hosts',
@@ -692,6 +736,8 @@ export const transportConformance: readonly ConformanceCase[] = [
     singleActivation,
     streamRoundTrip,
     streamCancellation,
+    watchRoundTrip,
+    watchCancellation,
     deadlinePropagation,
     wrongHostConvergence,
     unreachableClassification,

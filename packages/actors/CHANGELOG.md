@@ -112,11 +112,47 @@
   runtime's wire (`$live`) and data-key (`@actor`) namespaces while nothing
   has shipped.
 
-  **Limit:** a watch of a REMOTELY placed actor is refused with a message
-  naming the placement (#69). The silo-to-silo endpoint decides
-  stream-vs-unary from `streamNames`, and a watch is neither — forwarding it
-  needs the intent carried on the wire, somewhere the per-call HMAC covers.
-  Loud rather than silently watching a second activation on the wrong host.
+- **A watch crosses a cluster hop** (#69). A subscription now works for an
+  actor placed on ANY silo, over all three transports, rather than only for
+  the ones that happened to land on the host serving the connection.
+
+  A watch is an ordinary read dispatched in watch mode, so the receiving
+  silo cannot tell what is being asked of it from `Counter#read` alone —
+  `streamNames` separates streams from calls, and a watch is neither. The
+  intent therefore travels, as a reserved symbol prefix:
+  `$watch:Counter#read`.
+
+  **On the symbol rather than the call envelope, deliberately.** The
+  per-call HMAC signs `proto\nsymbol\ncallId\ntimestamp` — the envelope is
+  not part of it. Carried there, anyone who could reach the internal mount
+  could turn a plain read into a keep-alive-pinning subscription without
+  disturbing the signature. Carried on the symbol, they cannot. The prefix
+  is free to reserve because `defineActor` already refuses a `$`-prefixed
+  type, and the mount already answers reserved symbols before any
+  definition lookup — the same shape `$sigx:silo#stats` uses.
+
+  It also keeps both wire paths honest about the same thing. On the socket
+  transports `FLAG_STREAM` goes on meaning "the reply is a chunk stream",
+  which a watch's reply genuinely is, so credit, `CANCEL` and the rest
+  apply unchanged. No new frame type and no protocol bump.
+
+  `throttleMs` rides the payload beside the actor key, since it is per
+  SUBSCRIPTION rather than per actor — and is validated on arrival rather
+  than trusted: a non-finite value compares false against every bound and
+  would disable throttling outright, the same fail-open shape as the
+  `metrics()` caps.
+
+  **A disconnect releases the owner's keep-alive**, which is the part worth
+  doing deliberately: the owner has no other way to learn the subscriber
+  has gone. The serving generator spends its life parked at an `await`,
+  where an async generator cannot observe `return()` at all, so the watch
+  loop honours the CALLER's abort signal directly. Without that, a dropped
+  connection pinned an activation on a host with no idea anyone had left —
+  forever, for a quiet actor.
+
+  Both properties are in the shared transport conformance suite, so HTTP,
+  TCP and WebSocket are held to them together rather than one at a time.
+  New counters `remoteWatches` and `inboundWatches` report the two sides.
 
 - **`Silo.activations()` — the live grain list** (#101). Bounded and
   sorted: `{ type, key, queued, ageMs, idleMs, keptAlive }`, with

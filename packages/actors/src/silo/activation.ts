@@ -323,7 +323,11 @@ export class Activation {
             );
             this.#watches.set(id, shared);
         }
-        return shared.subscribe();
+        // The CALLER's signal, so an abandoned subscription releases even
+        // when nothing ever calls `return()` on it — which is the normal
+        // case across a silo hop, where the serving generator is parked at
+        // an `await` and cannot act on a queued `return()` at all.
+        return shared.subscribe(call.abortSignal);
     }
 
     openStream(

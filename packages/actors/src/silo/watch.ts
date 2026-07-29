@@ -40,6 +40,8 @@ interface Subscriber {
     failed: boolean;
     wake: (() => void) | null;
     done: boolean;
+    /** Detach this subscriber's abort listener; null once detached. */
+    off: (() => void) | null;
 }
 
 /** Bounded per subscriber: a consumer slower than the actor drops oldest. */
@@ -117,7 +119,20 @@ function writeCanonical(value: unknown, out: string[]): void {
 }
 
 export interface SharedWatch {
-    subscribe(): AsyncIterable<unknown>;
+    /**
+     * `signal` is the SUBSCRIBER's, not the watch's — one aborting drops
+     * only that subscriber, and the shared loop survives for the rest.
+     *
+     * It has to be honoured here rather than left to the consumer calling
+     * `return()`, because the consumer is often in no position to. A cross-
+     * silo watch is served by a generator parked at `await next()`, and an
+     * async generator suspended at an `await` cannot observe `return()` —
+     * the spec queues it until the generator next yields, which on a quiet
+     * actor is never. The abort is then the ONLY signal that reaches the
+     * owner, and without it a dropped connection pins the activation on a
+     * host that has no idea the subscriber has gone.
+     */
+    subscribe(signal?: AbortSignal): AsyncIterable<unknown>;
     /** Live subscriber count — the map owner drops the entry at zero. */
     readonly size: number;
 }
@@ -244,6 +259,8 @@ export function createSharedWatch(deps: WatchDeps, onEmpty: () => void): SharedW
         // awaited promise hanging for the life of the process.
         sub.done = true;
         sub.wake?.();
+        sub.off?.();
+        sub.off = null;
         // IDEMPOTENT. An external `return()` and the parked `next()` it wakes
         // both land here for the same subscriber, so the cleanup below would
         // run twice. That is not merely redundant: `onEmpty()` removes this
@@ -270,7 +287,7 @@ export function createSharedWatch(deps: WatchDeps, onEmpty: () => void): SharedW
         get size() {
             return subscribers.size;
         },
-        subscribe(): AsyncIterable<unknown> {
+        subscribe(signal?: AbortSignal): AsyncIterable<unknown> {
             const sub: Subscriber = {
                 // Seeded with the latest result if the loop has produced
                 // one; empty means the initial read is still in flight and
@@ -279,9 +296,18 @@ export function createSharedWatch(deps: WatchDeps, onEmpty: () => void): SharedW
                 error: null,
                 failed: false,
                 wake: null,
-                done: false
+                done: false,
+                off: null
             };
             subscribers.add(sub);
+            if (signal) {
+                if (signal.aborted) drop(sub);
+                else {
+                    const onAbort = (): void => drop(sub);
+                    signal.addEventListener('abort', onAbort, { once: true });
+                    sub.off = () => signal.removeEventListener('abort', onAbort);
+                }
+            }
             return {
                 [Symbol.asyncIterator]: () => ({
                     async next(): Promise<IteratorResult<unknown>> {

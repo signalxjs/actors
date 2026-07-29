@@ -39,6 +39,7 @@ export type { ClusterCounters, ClusterCounterTotals } from './counters';
 export { memoryClusterHub, type MemoryClusterHub } from './memory';
 export { httpTransport, HTTP_TRANSPORT_NAME, type HttpTransportOptions } from './transport';
 export type {
+    SiloCallMode,
     SiloCallTarget,
     SiloTransport,
     SiloTransportConfig,
@@ -47,6 +48,7 @@ export type {
     SiloWireCodec,
     SiloWireError
 } from './seam';
+export { parseWatchOptions, watchSymbol, WATCH_SYMBOL_PREFIX } from './watch-symbol';
 export { fromSiloWireError, siloWireCodec, toSiloWireError } from './wire-errors';
 export {
     SILO_AUTH_HEADER,

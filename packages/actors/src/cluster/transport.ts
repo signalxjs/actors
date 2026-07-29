@@ -12,7 +12,7 @@
  */
 import { ActorUnreachableError, isActorError } from '../errors';
 import type { ActorRoute } from '../silo/app';
-import type { ActorCallContext, ActorDispatcher, ActorRef } from '../types';
+import type { ActorCallContext, ActorDispatcher } from '../types';
 import { readNdjson, type WireError } from '../wire-shared';
 import { encodeEnvelope, signAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type {
@@ -27,6 +27,7 @@ import {
     type SiloEndpointOptions
 } from './silo-endpoint';
 import type { SiloDescriptor } from './types';
+import { watchSymbol } from './watch-symbol';
 
 export interface HttpTransportOptions {
     /**
@@ -67,13 +68,11 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
 
         const send = async (
             target: SiloDescriptor,
-            ref: ActorRef,
-            method: string,
-            args: readonly unknown[],
+            symbol: string,
+            payload: readonly unknown[],
             call: ActorCallContext,
             signal: AbortSignal | undefined
         ): Promise<Response> => {
-            const symbol = `${ref.type}#${method}`;
             const url = `${originFor(target)}${base}/${encodeURIComponent(symbol)}`;
             const headers: Record<string, string> = {
                 'content-type': 'application/json',
@@ -87,7 +86,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
                 return await doFetch(url, {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ args: config.codec.encode([ref.key, ...args]) }),
+                    body: JSON.stringify({ args: config.codec.encode(payload) }),
                     ...(signal ? { signal } : {})
                 });
             } catch (error) {
@@ -98,9 +97,77 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
             }
         };
 
+        /**
+         * The streamed reply path, shared by `dispatchStream` and
+         * `dispatchWatch`. A watch answers with the same NDJSON a stream
+         * does — the only difference is the symbol asking for it and the
+         * options riding the payload — so the abort linking, the terminator
+         * handling and the actor-kind re-lift are had once rather than
+         * kept in step by hand.
+         */
+        const streamOver = (
+            target: SiloDescriptor,
+            symbol: string,
+            payload: readonly unknown[],
+            call: ActorCallContext
+        ): AsyncIterable<unknown> => {
+            const controller = new AbortController();
+            const signal = call.abortSignal
+                ? AbortSignal.any([call.abortSignal, controller.signal])
+                : controller.signal;
+            async function* stream(): AsyncGenerator<unknown> {
+                try {
+                    const res = await send(target, symbol, payload, call, signal);
+                    if (!res.ok || !res.body) {
+                        let wire: WireError | undefined;
+                        try {
+                            wire = (
+                                JSON.parse(await res.text(), config.codec.reviver) as {
+                                    error?: WireError;
+                                }
+                            )?.error;
+                        } catch {
+                            wire = undefined;
+                        }
+                        throw config.fromWireError(
+                            res.status,
+                            wire,
+                            `[sigx actors] silo stream ${symbol} to ${target.siloId} ` +
+                                `failed with HTTP ${res.status}`
+                        );
+                    }
+                    try {
+                        yield* readNdjson(res, symbol);
+                    } catch (error) {
+                        // In-band error lines are serverFn-branded by
+                        // readNdjson; lift actor kinds back to their brand.
+                        const status = (error as { status?: number }).status;
+                        const data = (error as { data?: unknown }).data;
+                        if (!isActorError(error) && data !== undefined) {
+                            throw config.fromWireError(
+                                status ?? 500,
+                                { message: (error as Error).message, status, data },
+                                (error as Error).message
+                            );
+                        }
+                        throw error;
+                    }
+                } finally {
+                    controller.abort(); // consumer break/return or end
+                }
+            }
+            return stream();
+        };
+
         const dispatcherFor = (target: SiloDescriptor): ActorDispatcher => ({
             async dispatch(ref, method, args, call) {
-                const res = await send(target, ref, method, args, call, call.abortSignal);
+                const res = await send(
+                    target,
+                    `${ref.type}#${method}`,
+                    [ref.key, ...args],
+                    call,
+                    call.abortSignal
+                );
                 let parsed: { data?: unknown; error?: WireError } | undefined;
                 try {
                     parsed = JSON.parse(await res.text(), config.codec.reviver) as {
@@ -122,53 +189,20 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
             },
 
             dispatchStream(ref, method, args, call) {
-                const controller = new AbortController();
-                const signal = call.abortSignal
-                    ? AbortSignal.any([call.abortSignal, controller.signal])
-                    : controller.signal;
-                const symbol = `${ref.type}#${method}`;
-                async function* stream(): AsyncGenerator<unknown> {
-                    try {
-                        const res = await send(target, ref, method, args, call, signal);
-                        if (!res.ok || !res.body) {
-                            let wire: WireError | undefined;
-                            try {
-                                wire = (
-                                    JSON.parse(await res.text(), config.codec.reviver) as {
-                                        error?: WireError;
-                                    }
-                                )?.error;
-                            } catch {
-                                wire = undefined;
-                            }
-                            throw config.fromWireError(
-                                res.status,
-                                wire,
-                                `[sigx actors] silo stream ${symbol} to ${target.siloId} ` +
-                                    `failed with HTTP ${res.status}`
-                            );
-                        }
-                        try {
-                            yield* readNdjson(res, symbol);
-                        } catch (error) {
-                            // In-band error lines are serverFn-branded by
-                            // readNdjson; lift actor kinds back to their brand.
-                            const status = (error as { status?: number }).status;
-                            const data = (error as { data?: unknown }).data;
-                            if (!isActorError(error) && data !== undefined) {
-                                throw config.fromWireError(
-                                    status ?? 500,
-                                    { message: (error as Error).message, status, data },
-                                    (error as Error).message
-                                );
-                            }
-                            throw error;
-                        }
-                    } finally {
-                        controller.abort(); // consumer break/return or end
-                    }
-                }
-                return stream();
+                return streamOver(target, `${ref.type}#${method}`, [ref.key, ...args], call);
+            },
+
+            dispatchWatch(ref, method, args, call, options) {
+                // `options` leads the args, after the key — the same
+                // convention the key itself follows. It is NOT in the
+                // symbol: that would let a peer mint unbounded distinct
+                // cache keys on the receiving mount.
+                return streamOver(
+                    target,
+                    watchSymbol(ref.type, method),
+                    [ref.key, options ?? null, ...args],
+                    call
+                );
             }
         });
 

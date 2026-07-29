@@ -124,6 +124,13 @@ export interface ClusterPlacement extends ActorPlacement {
         args: readonly unknown[],
         call: ActorCallContext
     ): AsyncIterable<unknown>;
+    dispatchInboundWatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown>;
     /** The membership view this silo currently holds. */
     view(): MembershipView;
     /** Pull-based routing/directory counters for THIS silo. Fresh object. */
@@ -480,6 +487,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
             },
             dispatchStream: (ref, method, args, call) =>
                 this.dispatchInboundStream(ref, method, args, call),
+            dispatchWatch: (ref, method, args, call, options) =>
+                this.dispatchInboundWatch(ref, method, args, call, options),
             noteAuthFailure: () => this.noteAuthFailure()
         };
     }
@@ -559,6 +568,17 @@ class ClusterPlacementImpl implements ClusterPlacement {
     ): AsyncIterable<unknown> {
         this.#counters.inboundStreams++;
         return this.#local!.dispatchStream!(ref, method, args, call);
+    }
+
+    dispatchInboundWatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown> {
+        this.#counters.inboundWatches++;
+        return this.#local!.dispatchWatch!(ref, method, args, call, options);
     }
 
     // -----------------------------------------------------------------------
@@ -688,7 +708,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #routing: ActorDispatcher = {
         dispatch: (ref, method, args, call) => this.#routedDispatch(ref, method, args, call),
         dispatchStream: (ref, method, args, call) =>
-            this.#routedStream(ref, method, args, call)
+            this.#routedStream(ref, method, args, call),
+        dispatchWatch: (ref, method, args, call, options) =>
+            this.#routedStreamed(ref, method, args, call, 'watch', options)
     };
 
     #address(siloId: string): string | undefined {
@@ -962,6 +984,28 @@ class ClusterPlacementImpl implements ClusterPlacement {
         args: readonly unknown[],
         call: ActorCallContext
     ): AsyncIterable<unknown> {
+        return this.#routedStreamed(ref, method, args, call, 'stream');
+    }
+
+    /**
+     * Route a call that answers with a chunk stream — a `streams:` method or
+     * a watch.
+     *
+     * One body for both because the hard part is identical and worth having
+     * once: resolve, pull the FIRST value inside the retry loop so a
+     * `wrong-host` or `unreachable` surfaces as a re-route rather than as a
+     * failure halfway through, and hand the iterator back its `return()` on
+     * an early exit. If anything, retry matters more for a watch — a watch
+     * outlives the rebalance a stream would have finished before.
+     */
+    #routedStreamed(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        mode: 'stream' | 'watch',
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown> {
         const id = actorId(ref);
         const resolveTarget = (): Promise<'local' | SiloDescriptor> => this.#resolveTarget(ref);
         const noteFailure = (
@@ -988,10 +1032,29 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 let iterable: AsyncIterable<unknown>;
                 if (target === 'local') {
                     counters.routedLocal++;
-                    iterable = local.dispatchStream!(ref, method, args, call);
+                    iterable =
+                        mode === 'watch'
+                            ? local.dispatchWatch!(ref, method, args, call, options)
+                            : local.dispatchStream!(ref, method, args, call);
                 } else {
-                    counters.remoteStreams++;
-                    iterable = remoteDispatcher(target).dispatchStream!(ref, method, args, call);
+                    const dispatcher = remoteDispatcher(target);
+                    if (mode === 'watch') {
+                        if (!dispatcher.dispatchWatch) {
+                            // Names the TRANSPORT, not the placement: the
+                            // placement can watch perfectly well, and the
+                            // fix is to configure a transport that can.
+                            throw new Error(
+                                `[sigx actors] cannot watch ${actorLabel(ref)} on ` +
+                                    `${target.siloId}: the transport reaching it does not ` +
+                                    `implement dispatchWatch.`
+                            );
+                        }
+                        counters.remoteWatches++;
+                        iterable = dispatcher.dispatchWatch(ref, method, args, call, options);
+                    } else {
+                        counters.remoteStreams++;
+                        iterable = dispatcher.dispatchStream!(ref, method, args, call);
+                    }
                 }
                 const iterator = iterable[Symbol.asyncIterator]();
                 let first: IteratorResult<unknown>;

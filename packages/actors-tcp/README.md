@@ -117,7 +117,7 @@ or a private network between silos.
 This package runs the shared transport conformance suite
 (`@sigx/actors/cluster/testing`), which was written against `httpTransport()`
 *before* this transport existed — so it describes the contract rather than
-this implementation's habits. All 16 cases pass, including the two link-hygiene
+this implementation's habits. All 18 cases pass, including the two link-hygiene
 cases that HTTP skips because it holds no connections.
 
 ## Requirements

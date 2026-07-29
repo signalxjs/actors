@@ -24,11 +24,12 @@ import {
     handleServerFnRequest,
     type ServerFnRequestOptions
 } from '@sigx/server/server';
-import type { ActorCallContext, ActorRef, Silo } from '../types';
+import type { ActorCallContext, ActorRef, AnyActorDefinition, Silo } from '../types';
 import { decodeEnvelope, verifyAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type { ClusterPlacement } from './placement';
 import type { SiloCallTarget, SiloTransportRuntime } from './seam';
 import { SILO_STATS_METHOD, SILO_STATS_SYMBOL, SILO_STATS_TYPE } from './stats';
+import { parseWatchOptions, WATCH_SYMBOL_PREFIX } from './watch-symbol';
 import { toSiloWireError } from './wire-errors';
 
 /** Endpoint knobs a transport may forward: body caps, `onError`, timeouts. */
@@ -69,20 +70,31 @@ export function resolveSiloSymbol(
     symbol: string
 ): SiloCallTarget | null | Promise<SiloCallTarget | null> {
     if (symbol === SILO_STATS_SYMBOL) {
-        return { type: SILO_STATS_TYPE, method: SILO_STATS_METHOD, stream: false };
+        return { type: SILO_STATS_TYPE, method: SILO_STATS_METHOD, mode: 'unary' };
     }
-    const hash = symbol.lastIndexOf('#');
-    if (hash <= 0 || hash === symbol.length - 1) return null;
-    const type = symbol.slice(0, hash);
-    const method = symbol.slice(hash + 1);
+    // A watch is an ordinary read asked for in watch mode, so the intent
+    // rides on the symbol — the one caller-supplied field the per-call HMAC
+    // covers. Stripped before the lookup, exactly like the stats symbol is
+    // answered before it: `defineActor` refuses a `$`-prefixed type, so no
+    // actor can be reached by, or shadow, the prefixed form.
+    const watch = symbol.startsWith(WATCH_SYMBOL_PREFIX);
+    const bare = watch ? symbol.slice(WATCH_SYMBOL_PREFIX.length) : symbol;
+    const hash = bare.lastIndexOf('#');
+    if (hash <= 0 || hash === bare.length - 1) return null;
+    const type = bare.slice(0, hash);
+    const method = bare.slice(hash + 1);
     const def = silo.definition(type);
     if (!def) return null;
-    if (isPromise(def)) {
-        return def.then((resolved) =>
-            resolved ? { type, method, stream: resolved.streamNames.includes(method) } : null
-        );
-    }
-    return { type, method, stream: def.streamNames.includes(method) };
+    const resolve = (d: AnyActorDefinition): SiloCallTarget | null => {
+        const stream = d.streamNames.includes(method);
+        // Watching a `streams:` method is not a thing: a watch re-invokes a
+        // read and yields its RESULT, and a generator has none. 404 rather
+        // than a confusing runtime failure halfway into the subscription.
+        if (watch && stream) return null;
+        return { type, method, mode: watch ? 'watch' : stream ? 'stream' : 'unary' };
+    };
+    if (isPromise(def)) return def.then((resolved) => (resolved ? resolve(resolved) : null));
+    return resolve(def);
 }
 
 /**
@@ -104,6 +116,8 @@ export function siloRuntime(silo: Silo, placement: ClusterPlacement): SiloTransp
         },
         dispatchStream: (ref, method, args, call) =>
             placement.dispatchInboundStream(ref, method, args, call),
+        dispatchWatch: (ref, method, args, call, options) =>
+            placement.dispatchInboundWatch(ref, method, args, call, options),
         noteAuthFailure: () => placement.noteAuthFailure?.()
     };
 }
@@ -258,7 +272,7 @@ function synthesize(
     target: SiloCallTarget,
     symbol: string
 ): unknown {
-    const { type, method, stream } = target;
+    const { type, method, mode } = target;
 
     const prepare = (
         rq: ServerFnContext,
@@ -291,13 +305,25 @@ function synthesize(
         };
     };
 
-    if (stream) {
+    // Both streamed modes answer identically on the wire — the same NDJSON
+    // pump, the same cancellation path, the same error mapping. Only the
+    // runtime call and one extra leading argument differ.
+    if (mode !== 'unary') {
         return {
             __sigxName: method,
             __sigxStream: true,
             __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
                 const { ref, rest, call } = prepare(rq, args);
-                const iterable = runtime.dispatchStream(ref, method, rest, call);
+                const iterable =
+                    mode === 'watch'
+                        ? runtime.dispatchWatch(
+                              ref,
+                              method,
+                              rest.slice(1),
+                              call,
+                              watchOptions(rest[0], symbol)
+                          )
+                        : runtime.dispatchStream(ref, method, rest, call);
                 return (async function* pump(): AsyncGenerator<unknown> {
                     try {
                         yield* iterable;
@@ -320,6 +346,15 @@ function synthesize(
             }
         }
     };
+}
+
+/** The shared validator, in this mount's error currency. */
+function watchOptions(raw: unknown, symbol: string): { throttleMs?: number } | undefined {
+    try {
+        return parseWatchOptions(raw, symbol);
+    } catch (error) {
+        throw new ServerFnError(400, (error as Error).message);
+    }
 }
 
 /**
