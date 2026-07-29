@@ -42,6 +42,12 @@
             "production": "./dist/app.prod.js",
             "import": "./dist/app.js"
         },
+        "./job": {
+            "types": "./dist/job/index.d.ts",
+            "development": "./dist/job.js",
+            "production": "./dist/job.prod.js",
+            "import": "./dist/job.js"
+        },
         "./cluster": {
             "types": "./dist/cluster/index.d.ts",
             "development": "./dist/cluster.js",

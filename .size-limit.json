@@ -40,6 +40,14 @@
     ]
   },
   {
+    "name": "@sigx/actors/job",
+    "path": "packages/actors/dist/job.prod.js",
+    "limit": "3 KB",
+    "ignore": [
+      "@sigx/serialize"
+    ]
+  },
+  {
     "name": "@sigx/actors/cluster",
     "path": "packages/actors/dist/cluster.prod.js",
     "limit": "10 KB",

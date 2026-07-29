@@ -566,6 +566,74 @@ record plus a liveness reminder armed under the same name. From then on:
   checkpoint-and-resume with short gaps rather than one continuous run —
   the same at-least-once contract, checkpoint aggressively.
 
+## Jobs (`@sigx/actors/job`)
+
+`defineJob` is the packaged experience on top of `tasks:` — one durable
+long-running operation per grain, with the state machine, progress,
+checkpoints and client surface already decided. Start a job from a request
+handler and return immediately; check on it from anywhere in the cluster.
+
+```ts
+import { defineJob } from '@sigx/actors/job';
+
+export const SecuritySync = defineJob({
+    type: 'SecuritySync',
+    use: [adminGuard],
+    maxAttempts: 3,          // crash-resume attempts before 'failed'
+    retainMs: 86_400_000,    // keep the terminal record a day, then forget
+    run: async (job, input: { providerId: string }) => {
+        const users = await loadUsers(input.providerId, { signal: job.signal });
+        const from = (job.resumedFrom as { cursor: number } | undefined)?.cursor ?? 0;
+        for (let i = from; i < users.length; i++) {
+            job.signal.throwIfAborted();
+            await syncOne(users[i]);
+            await job.progress({ done: i + 1, total: users.length });
+            if (i % 100 === 0) await job.checkpoint({ cursor: i + 1 });
+        }
+        return { synced: users.length };
+    }
+});
+
+// A request handler — returns immediately, the job runs on the cluster:
+const runId = crypto.randomUUID();
+await actor(SecuritySync, runId).start({ providerId });
+// Later, from anywhere:
+await actor(SecuritySync, runId).status();   // JobInfo: status/progress/attempts
+await actor(SecuritySync, runId).cancel();   // marked immediately, run aborted
+await actor(SecuritySync, runId).result();   // the return value, once completed
+for await (const info of actor(SecuritySync, runId).watch()) render(info);
+```
+
+What the layer decides for you:
+
+- **State machine**: `pending → running → (paused ⇄ running) → completed |
+  failed | cancelled`. `status()`/`watch()` return `JobInfo` — never the
+  checkpoint (private) or the result (fetched once via `result()`).
+- **One grain per run** — key = your run id. The directory's
+  single-activation guarantee *is* the "exactly one runner" guarantee.
+- **`start` is idempotent under retry**: a non-pending job returns its
+  current info and never restarts.
+- **Crash-resume counts, pause-resume is free**: a crash-resumed run
+  arrives with `job.attempt` bumped and `job.resumedFrom` set to the last
+  checkpoint; past `maxAttempts` the job is marked `failed`. `resume(data)`
+  on a paused job re-runs with `job.resumeData` and no attempt cost.
+- **`pause` parks durably**: `return job.pause(checkpoint)` writes the
+  checkpoint, marks `paused`, and releases the task — the grain idles at
+  zero cost until `resume()`. For a timeout, arm `job.reminders` before
+  pausing and handle it in `onReminder(control, name)` — `control.resume()`
+  / `control.cancel()` are internal, so no self-dispatch deadlock.
+- **Progress rides the change feed, not storage**: `job.progress()` (and
+  `job.update()` for your own `state:` extra fields) mutate state in a
+  turn so `watch()` pushes them live, but nothing is persisted per tick —
+  after a crash, progress honestly regresses to the last checkpoint.
+- **`retainMs`** keeps the terminal record around for late `result()`
+  readers, then a one-shot reminder clears the state and deactivates;
+  `discard()` does it on demand.
+
+A singleton queue-worker (strict ordering, bounded concurrency) is a
+recipe, not an API: a plain actor whose state is the pending list, popping
+items into per-run jobs. See the repo docs.
+
 ## Lifecycle
 
 - `onActivate(ctx)` / `onDeactivate(ctx, reason)` hooks; an `onActivate`
@@ -1586,6 +1654,7 @@ counters — see [Health & readiness](#health--readiness) above.
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |
 | `@sigx/actors/app` | `actorsPlugin()`, `useActorState`, `useActorAction` — the sigx app integration (the only entry that imports `@sigx/runtime-core`) |
+| `@sigx/actors/job` | `defineJob` — durable long-running operations: state machine, progress, checkpoint/pause/resume, `watch()` (convention over `defineActor` + `tasks:`) |
 | `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `clusterStats`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
 | `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |

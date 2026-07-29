@@ -13,6 +13,7 @@ const base = defineLibConfig({
         node: 'src/node/index.ts',
         client: 'src/client/index.ts',
         app: 'src/app/index.ts',
+        job: 'src/job/index.ts',
         cluster: 'src/cluster/index.ts',
         'cluster-frames': 'src/cluster/frames.ts',
         vite: 'src/vite/index.ts'

@@ -4,6 +4,25 @@
 
 ### Added
 
+- **`@sigx/actors/job` — `defineJob`, durable long-running operations**
+  (#164). One job = one grain (key = your run id), as convention over
+  `defineActor` + the `tasks:` primitive: a standard state machine
+  (`pending → running → (paused ⇄ running) → completed | failed |
+  cancelled`), idempotent `start` (safe under HTTP retry), immediate
+  `cancel` with guarded terminal writes, `resume(data)` for paused jobs,
+  `result()` with typed errors (`JobNotDoneError` / `JobFailedError` /
+  `JobCancelledError`), a live `watch()` stream of `JobInfo`, and a
+  `JobHandle` for the run body — `progress()` (change-feed-visible; no
+  write of its own, persisted only as part of the next checkpoint or
+  terminal save), `checkpoint()` (durable resume point), `update()` (public
+  `extra` fields), `pause()` (park durably with no live task), and
+  `reminders` (HITL timeouts via the `onReminder(control, name)`
+  passthrough, whose control resumes/cancels internally — no
+  self-dispatch). Crash-resume bumps `attempts` and delivers
+  `resumedFrom`; past `maxAttempts` (default 3) the job fails.
+  `retainMs` clears terminal records via a one-shot reminder;
+  `discard()` does it on demand.
+
 - **`ActivationInfo.tasks` — running detached-task count per activation**
   (#162). Flows through `silo.activations()` and the `ops()` snapshot, so
   operators can see which grains hold long-running work (and why the idle
