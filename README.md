@@ -33,7 +33,7 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — silo liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Orleans-style framed TCP transport — one multiplexed connection per peer |
 | [`@sigx/actors-ws`](packages/actors-ws) | The same frames over WebSocket — one port, proxy-friendly |
-| [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — one DO per actor (storage, alarm reminders, placement) |
+| [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — run an actor app on Workers, one DO per actor |
 | [`@sigx/actors-cli`](packages/actors-cli) | `sigx` CLI plugin — observe silos, grains and clusters from the terminal |
 | [`benchmarks`](benchmarks) | Local performance baselines — throughput, latency, heap footprint, leak detection (not published) |
 

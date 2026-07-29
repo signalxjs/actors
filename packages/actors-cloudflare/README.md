@@ -137,9 +137,82 @@ change. `jurisdiction` and `objectName` are part of an actor's identity:
 changing either repoints every actor at a different object, which is a state
 migration.
 
+## The object and the Worker
+
+Two pieces, one bundle — on Cloudflare the Durable Object and the Worker are
+the same script, so the actor registry is a plain import in the entry.
+
+```ts
+import { createSiloDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
+import { Counter } from './counter.actor';
+
+interface Env { ACTORS: DurableObjectNamespace }
+
+// The object: hosts exactly the actor its id names.
+export class ActorHost extends createSiloDurableObject<Env>({
+    actors: [Counter],
+    namespace: (env) => env.ACTORS
+}) {}
+
+// The Worker: hosts nothing, routes everything.
+export default createWorkerHandler<Env>({
+    actors: [Counter],
+    namespace: (env) => env.ACTORS,
+    // Workers callers are not browsers posting a form; decide the policy.
+    fetch: { origin: false }
+});
+```
+
+`createSiloDurableObject` returns a class rather than being one to extend,
+because the object must own its seams — storage, reminders, placement and the
+defaults all come from its own state, and a subclass wiring them itself would
+be one `super()` away from silent corruption. Extending the returned class
+still works for `webSocketMessage` and friends.
+
+It boots through a memoized promise rather than `blockConcurrencyWhile` in the
+constructor. A throw inside that gate *resets the object*, so a transient
+start failure would tear the isolate down and retry invisibly instead of
+surfacing an error that says what went wrong. A rejection is never cached, so
+a failed start stays retryable.
+
+`alarm()` boots first and then delivers, which is not defensive: an alarm can
+be the **first** thing an evicted object sees, and `onAlarm()` refuses to run
+before the silo has bound its reminders.
+
+Every inbound call is checked against the object's own id. Under Durable
+Objects that can never be a race — `ref` → object id is a pure function — so a
+mismatch means the Worker and the object disagree about `objectName`,
+`jurisdiction`, or which namespace is bound, and it fails naming both sides
+rather than letting one actor quietly exist in two objects.
+
+An `app` factory can add plugins, and receives the object-derived options it
+must pass on. It is deliberately not handed `env`: without a namespace binding
+it cannot build a placement, and `setPlacement` being exclusive means an app
+that tries anyway fails naming both plugins rather than leaving the object
+able to fetch itself.
+
+The Worker's silo hosts nothing, so its storage is `unhostedStorage()` — every
+operation throws saying so. In-memory storage there would be a silent lie.
+
+## Eviction is not deactivation
+
+A Durable Object is evicted when it goes idle, and eviction destroys the
+isolate, the silo and the activation together. **`onDeactivate` never runs.**
+
+That is a real difference from every other backend. An actor that flushes in
+`onDeactivate` must instead `ctx.save()` inside the turn, or use write-behind
+with a short debounce. Nothing is lost that was already saved — storage is
+durable — but nothing unsaved survives, and there is no hook to save it in.
+
+For the same reason there is no idle sweeper (`sweepIntervalMs: 0`): the
+platform's eviction *is* idle collection, one level down. On Workers
+`keptAlive` is enforced by the request's lifetime rather than by a sweeper,
+so an open `ctx.changes()` stream holds the object up exactly as long as its
+response body is open.
+
 ## Status
 
-Storage, reminders and the placement ship here. The `SiloDurableObject` host
-class and the Worker front door are the next step; see
-[#143](https://github.com/andtii/actors/issues/143). Until then you wire the
-object class yourself.
+Storage, reminders, the placement and the host all ship here, so an actor app
+runs on Workers. Still to come: a real-`workerd` test suite (everything here is
+proven against fakes, which is fast and honest about what it covers, but has
+never met the platform) and a deployable example.

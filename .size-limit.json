@@ -65,7 +65,7 @@
   {
     "name": "@sigx/actors-cloudflare",
     "path": "packages/actors-cloudflare/dist/index.prod.js",
-    "limit": "2.5 KB",
+    "limit": "4 KB",
     "ignore": [
       "@sigx/actors"
     ]

@@ -209,17 +209,21 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   port. `ws` as a peer dependency. Picked over `actors-tcp` when one port,
   proxy traversal or a WinterCG client matters.
 - `packages/actors-cloudflare` → `@sigx/actors-cloudflare` — Durable
-  Objects as the backend, one DO per actor: `durableObjectStorage`,
-  `durableObjectReminders` (alarms) and `durableObjectPlacement` /
-  `durableObjects()` (ref → DO stub). Needs no membership, directory or
-  HMAC — Cloudflare already guarantees single-instance — but it DOES use
-  the internal mount: the Worker→object hop is `httpTransport()` with its
-  `fetch` swapped for a stub call, so envelope, NDJSON, deadlines and
-  branded errors are the runtime's own. The placement runs on BOTH sides
+  Objects as the backend, one DO per actor. A whole app runs on Workers:
+  `createSiloDurableObject()` (the object) + `createWorkerHandler()` (the
+  edge), over `durableObjectStorage`, `durableObjectReminders` (alarms) and
+  `durableObjectPlacement`/`durableObjects()`. Needs no membership,
+  directory or HMAC — Cloudflare already guarantees single-instance — but it
+  DOES use the internal mount: the Worker→object hop is `httpTransport()`
+  with its `fetch` swapped for a stub call, so envelope, NDJSON, deadlines
+  and branded errors are the runtime's own. The placement runs on BOTH sides
   with an `isSelf` predicate; giving the object's own silo the plain local
   host instead activates a callee INSIDE the caller's object and corrupts
-  state. Tested with fakes; no Workers runtime required (yet — a real
-  workerd suite is the next milestone).
+  state (break `isSelf` and the test suite OOMs — the object fetches itself
+  forever). **Eviction is not deactivation**: the platform destroys the
+  isolate, silo and activation together, so `onDeactivate` never runs and
+  `sweepIntervalMs` is 0. Tested with fakes; no Workers runtime required
+  (yet — a real workerd suite is the next milestone).
 - `packages/actors-cli` → `@sigx/actors-cli` — a `@sigx/cli` PLUGIN (the
   `@sigx/lynx-cli` shape, not its own binary) that observes silos:
   `sigx actors stats` and `sigx actors health`, over an embedded source

@@ -33,6 +33,33 @@
 
 ### Added
 
+- **`createSiloDurableObject()` and `createWorkerHandler()`** (#143) — an
+  actor app now runs on Workers. The object hosts exactly the actor its id
+  names; the Worker hosts nothing and routes everything.
+
+  The object boots through a memoized promise rather than
+  `blockConcurrencyWhile` in its constructor: a throw inside that gate
+  *resets the object*, so a transient start failure would tear the isolate
+  down and retry invisibly instead of surfacing an error. `alarm()` boots
+  before delivering, because an alarm can be the first thing an evicted
+  object sees and `onAlarm()` refuses to run unbound.
+
+  Every inbound call is checked against the object's own id. That can never
+  be a race here — `ref` to object id is a pure function — so a mismatch
+  means the two sides disagree about naming or bindings, and it fails naming
+  both rather than letting one actor exist in two objects.
+
+  The `app` factory is never handed `env`, so it structurally cannot build a
+  placement of its own; combined with `setPlacement` being exclusive, an app
+  that tries fails naming both plugins instead of leaving the object able to
+  fetch itself. `unhostedStorage()` backs the Worker's silo, which never
+  activates anything.
+
+  **Eviction is not deactivation**: the platform destroys the isolate, the
+  silo and the activation together, so `onDeactivate` never runs. Actors that
+  flush there must `ctx.save()` in the turn instead. Documented in the
+  README, because nothing in the type system says it.
+
 - **`durableObjectPlacement()` and the `durableObjects()` plugin** (#131) —
   a ref now routes to the Durable Object that holds it, via
   `idFromName` over the runtime's own actor id.
@@ -57,8 +84,8 @@
 - `DurableObjectStorageOptions` and `BlockConcurrencyWhile` are re-exported
   from the package root (#139). Both were declared and exported in
   `storage.ts` but never re-exported, so a consumer could not name either.
-- A `.size-limit.json` budget for the package (#139) — 2.5 KB against a
-  current 1.9 KB. It was the only shipped dist with no budget, and it is
+- A `.size-limit.json` budget for the package (#139) — now 4 KB against a
+  current 2.75 KB. It was the only shipped dist with no budget, and it is
   the one runtime where bytes are billed as startup CPU.
 
 - **Initial release** (#9): Cloudflare Durable Objects as the backend for

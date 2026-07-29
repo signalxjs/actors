@@ -103,8 +103,15 @@ export interface DurableObjectPlacementOptions {
     stubCacheSize?: number;
 }
 
-/** `type<NUL>key` — real keys may contain `/` or `:`, so neither is safe. */
-function defaultObjectName(ref: ActorRef): string {
+/**
+ * The object name a ref derives by default: `type<NUL>key`, the runtime's own
+ * actor id. Real keys may contain `/` or `:`, so neither is a safe separator.
+ *
+ * Exported because the Worker and the Durable Object must agree on it byte
+ * for byte — the object uses it to recognise its OWN actor, and a divergence
+ * means the two disagree about where an actor lives.
+ */
+export function durableObjectName(ref: ActorRef): string {
     return `${ref.type}${SEP}${ref.key}`;
 }
 
@@ -122,7 +129,7 @@ export function durableObjectPlacement(
                 `— got ${JSON.stringify(base)}.`
         );
     }
-    const objectName = options.objectName ?? defaultObjectName;
+    const objectName = options.objectName ?? durableObjectName;
     const cacheSize = options.stubCacheSize ?? DEFAULT_STUB_CACHE;
     const config: SiloTransportConfig = {
         siloId: options.siloId ?? 'cf',

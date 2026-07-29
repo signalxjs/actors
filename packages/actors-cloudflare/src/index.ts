@@ -24,10 +24,24 @@ export {
     type DurableObjectRemindersOptions
 } from './reminders';
 export {
+    durableObjectName,
     durableObjectPlacement,
     durableObjects,
     type DurableObjectPlacementOptions
 } from './placement';
+export {
+    createSiloDurableObject,
+    type DurableAppOptions,
+    type DurableObjectStateLike,
+    type SiloDurableObjectInstance,
+    type SiloDurableObjectOptions
+} from './host';
+export {
+    createWorkerHandler,
+    unhostedStorage,
+    type WorkerHandler,
+    type WorkerHandlerOptions
+} from './worker';
 export type {
     DurableObjectIdLike,
     DurableObjectNamespaceLike,
