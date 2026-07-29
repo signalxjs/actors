@@ -1,0 +1,122 @@
+# A Deployment, NOT a StatefulSet: silo identity is minted per start (a
+# restart is a NEW silo by design), so pods need no stable names — only a
+# pod-reachable advertise address, which the downward API provides.
+{{- if not .Values.image.tag }}
+{{- fail "image.tag is required (immutable git-sha tags; the chart never deploys :latest)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chart.fullname" . }}-silo
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: silo
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "chart.siloSelector" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Surge first, drain second: the new silo joins membership before
+      # any old silo announces 'leaving' — the zero-drop rolling deploy.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        app.kubernetes.io/component: silo
+    spec:
+      {{- if eq .Values.membership "k8s" }}
+      serviceAccountName: {{ include "chart.fullname" . }}-silo
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.affinity.siloAntiRedis "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "redis") | nindent 14 }}
+          {{- end }}
+          {{- if eq .Values.affinity.siloSelfSpread "required" }}
+          {{- if ne .Values.affinity.siloAntiRedis "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          {{- end }}
+            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "silo") | nindent 14 }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                {{- include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "silo") | nindent 16 }}
+          {{- end }}
+      containers:
+        - name: silo
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.port | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: REDIS_URL
+              {{- if .Values.redis.enabled }}
+              value: {{ .Values.redis.url | default (printf "redis://%s-redis:6379" (include "chart.fullname" .)) | quote }}
+              {{- else }}
+              value: {{ required "redis.url is required when redis.enabled=false (external Redis)" .Values.redis.url | quote }}
+              {{- end }}
+            - name: SIGX_NAMESPACE
+              value: {{ .Values.env.sigxNamespace | quote }}
+            - name: FETCH_CONNECTIONS
+              value: {{ .Values.env.fetchConnections | quote }}
+            - name: MEMBERSHIP
+              value: {{ .Values.membership | quote }}
+            - name: CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-secrets
+                  key: clusterSecret
+            - name: OPS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-secrets
+                  key: opsSecret
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /_sigx/health
+              port: http
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /_sigx/health
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /_sigx/health/ready
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.lifecycle.preStopSleepSeconds }}"]

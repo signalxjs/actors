@@ -102,6 +102,15 @@ importers:
       '@sigx/actors-redis':
         specifier: workspace:*
         version: link:../../packages/actors-redis
+      '@sigx/reactivity':
+        specifier: 'catalog:'
+        version: 0.13.0
+      '@sigx/serialize':
+        specifier: 'catalog:'
+        version: 0.13.0
+      '@sigx/server':
+        specifier: 'catalog:'
+        version: 0.13.0
       ioredis:
         specifier: ^5.4.1
         version: 5.11.1

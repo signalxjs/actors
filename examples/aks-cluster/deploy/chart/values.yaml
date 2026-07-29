@@ -1,0 +1,139 @@
+# Everything deployment-specific lives here — the image is generic.
+
+image:
+  repository: omniaflowtestacr.azurecr.io/sigx-actors-test
+  # REQUIRED at install: --set image.tag=<git-short-sha>. Immutable tags
+  # only — the chart never deploys :latest.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+port: 7311
+
+# redis | k8s — k8s swaps silo liveness onto coordination.k8s.io Leases
+# (adds the ServiceAccount + Lease RBAC below); the directory and actor
+# state stay in Redis either way.
+membership: redis
+
+env:
+  # Redis key namespace (cluster + storage + reminders).
+  sigxNamespace: sigx
+  # undici pool size per peer origin for silo-to-silo fetch.
+  fetchConnections: 64
+
+secrets:
+  # Empty = generated on install and PRESERVED on upgrade (lookup guard).
+  # A regenerated clusterSecret mid-rollout would partition the cluster
+  # into two mutually-401 halves.
+  clusterSecret: ""
+  opsSecret: ""
+
+# D2ls_v6 nodes are 2 vCPU / 4 GiB; leave headroom for kubelet + system.
+resources:
+  requests:
+    cpu: 1000m
+    memory: 512Mi
+  limits:
+    cpu: 1800m
+    memory: 1Gi
+
+probes:
+  # The recipe from packages/actors/README.md: startup covers a slow boot
+  # (Redis join), liveness stays cheap, readiness 503s for the whole drain
+  # window ('leaving', 'fenced', 'joining').
+  startup:
+    failureThreshold: 30
+    periodSeconds: 2
+  liveness:
+    periodSeconds: 10
+  readiness:
+    periodSeconds: 5
+
+lifecycle:
+  # Let the endpoint controllers notice ready=503 before SIGTERM starts
+  # the drain.
+  preStopSleepSeconds: 10
+# Must cover preStop + the 30s actor drain deadline, with margin.
+terminationGracePeriodSeconds: 60
+
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+hpa:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 60
+
+# The dedicated tainted node pool — every pod in this chart carries these.
+nodeSelector:
+  workload: sigx-actors-test
+tolerations:
+  - key: workload
+    operator: Equal
+    value: sigx-actors-test
+    effect: NoSchedule
+
+affinity:
+  # Redis and silos must never share a node: Redis carries the actor state
+  # and colocation both skews silo perf numbers and lets silos starve
+  # Redis. Both directions are required, so scale-out never lands a silo
+  # on the Redis node.
+  siloAntiRedis: required
+  redisAntiSilo: required
+  # silo-vs-silo spread: preferred packs within the pool; set to required
+  # to force one-per-node (the cluster-autoscaler scenario).
+  siloSelfSpread: preferred
+
+redis:
+  enabled: true
+  # External Redis instead of the in-chart pod: set enabled=false and
+  # point url at it (redis://host:6379). With enabled=true, url overrides
+  # the default in-chart Service address (rarely wanted).
+  url: ""
+  image: redis:7-alpine
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 1800m
+      memory: 1Gi
+  # AOF + a PVC: actor state survives Redis pod restarts (the Redis-outage
+  # scenario recovers from the append log, not from luck).
+  appendonly: true
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: managed-csi
+
+loadgen:
+  # Rendered per-run, never part of `helm install`:
+  #   helm template sigx <chart> -s templates/loadgen-job.yaml \
+  #     --set loadgen.enabled=true --set loadgen.nameSuffix=$(date +%s) ... \
+  #     | kubectl apply -f -
+  enabled: false
+  # Jobs are immutable — a unique suffix per run.
+  nameSuffix: ""
+  parallelism: 1
+  backoffLimit: 0
+  # counter | crunch | mixed | verify
+  mode: counter
+  concurrency: 32
+  durationS: 60
+  keyCount: 1000
+  hotRatio: "0.2"
+  # e.g. "1,2,4,8,16,32,64" for the baseline ladder
+  sweep: ""
+  crunchIters: 200
+  crunchPayload: 1024
+  # Default: the silo service in-namespace.
+  targetUrl: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 256Mi

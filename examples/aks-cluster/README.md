@@ -3,9 +3,9 @@
 A production-shaped `@sigx/actors` deployment: N identical silo pods on
 Kubernetes, cluster state in Redis, one container image that runs both the
 silo (`server.mjs`) and the closed-loop load generator (`loadgen.mjs`).
-This is the app half of the AKS scale-out/perf test; the Helm chart, the
-Azure setup and the full scenario runbook land in `deploy/` with
-[#129](https://github.com/andtii/actors/issues/129).
+This is the app half of the AKS scale-out/perf test; the Helm chart lives
+in [`deploy/chart/`](deploy/chart/) and the Azure setup plus the full
+scenario runbook in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
 
 Nothing is hardcoded — both entries read their entire configuration from
 environment variables (documented in each file's header). The silo:

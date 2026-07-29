@@ -1,0 +1,71 @@
+# Load runs are Jobs, and Jobs are immutable — render this per run with a
+# unique nameSuffix instead of managing it through helm upgrade:
+#
+#   helm template <release> examples/aks-cluster/deploy/chart -n <ns> \
+#     -s templates/loadgen-job.yaml \
+#     --set image.tag=$TAG --set loadgen.enabled=true \
+#     --set loadgen.nameSuffix=$(date +%s)-$RANDOM \
+#     --set loadgen.mode=counter --set loadgen.concurrency=64 \
+#     | kubectl apply -f -
+#
+#   kubectl -n <ns> logs job/<release>-loadgen-<suffix> | tail -1 | jq
+{{- if .Values.loadgen.enabled }}
+{{- if not .Values.loadgen.nameSuffix }}
+{{- fail "loadgen.nameSuffix is required: Jobs are immutable, every run needs a unique name (e.g. --set loadgen.nameSuffix=$(date +%s)-$RANDOM)" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "chart.fullname" . }}-loadgen-{{ .Values.loadgen.nameSuffix }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loadgen
+spec:
+  parallelism: {{ .Values.loadgen.parallelism }}
+  completions: {{ .Values.loadgen.parallelism }}
+  backoffLimit: {{ .Values.loadgen.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        app.kubernetes.io/component: loadgen
+    spec:
+      restartPolicy: Never
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: loadgen
+          image: "{{ .Values.image.repository }}:{{ required "image.tag is required" .Values.image.tag }}"
+          command: ["node", "--conditions=production", "loadgen.mjs"]
+          env:
+            - name: TARGET_URL
+              value: {{ .Values.loadgen.targetUrl | default (printf "http://%s-silo:%v" (include "chart.fullname" .) .Values.port) | quote }}
+            - name: MODE
+              value: {{ .Values.loadgen.mode | quote }}
+            - name: CONCURRENCY
+              value: {{ .Values.loadgen.concurrency | quote }}
+            - name: DURATION_S
+              value: {{ .Values.loadgen.durationS | quote }}
+            - name: KEY_COUNT
+              value: {{ .Values.loadgen.keyCount | quote }}
+            - name: HOT_RATIO
+              value: {{ .Values.loadgen.hotRatio | quote }}
+            - name: SWEEP
+              value: {{ .Values.loadgen.sweep | quote }}
+            - name: CRUNCH_ITERS
+              value: {{ .Values.loadgen.crunchIters | quote }}
+            - name: CRUNCH_PAYLOAD
+              value: {{ .Values.loadgen.crunchPayload | quote }}
+            - name: RUN_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            {{- toYaml .Values.loadgen.resources | nindent 12 }}
+{{- end }}

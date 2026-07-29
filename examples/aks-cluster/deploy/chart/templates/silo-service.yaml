@@ -1,0 +1,17 @@
+# ClusterIP only — nothing in this chart is exposed publicly. Reach ops
+# and the wire endpoint via `kubectl port-forward svc/<release>-silo`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chart.fullname" . }}-silo
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: silo
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "chart.siloSelector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.port }}
+      targetPort: http
