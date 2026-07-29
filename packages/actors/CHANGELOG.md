@@ -4,6 +4,64 @@
 
 ### Changed
 
+- **The actor wire now carries a per-grain routing token** (#132, stage 1 of
+  #84): `POST {base}/r/{token}/{Type}%23{method}`, mirrored into an
+  `x-sigx-actor-route` header. No compatibility shim — nothing has shipped,
+  and a wire that only *sometimes* carries the token means a load-balancer
+  config that only sometimes works.
+
+  The problem it solves: the actor **key** rides in the JSON body, so no
+  load balancer can see which grain a request is for, and locality decays as
+  1/N — measured 1.00, 0.50, 0.12, 0.02, 0.01 for N = 1, 2, 10, 50, 100. At
+  N=100 that is ~99% of calls paying a cross-silo hop, which #80 measured at
+  20× a local dispatch with HMAC off and **69× with it on**.
+
+  The token is a **middle** segment, which is what makes this cheap: the
+  symbol is decoded as the *last* path segment, so the token slots in ahead
+  of it and the endpoint neither parses nor validates it. Validating would
+  make a hint load-bearing, and routing is an optimization that must never
+  be — a stale, wrong or absent token costs a hop, never a wrong answer.
+  (`actorRouteToken()` is exported from `./server` for adapters that want to
+  log or shard on it; the endpoint itself does not call it.)
+
+  Two carriers because neither alone covers every edge: a path segment
+  cannot be silently stripped by a mesh, and a mangled one 404s loudly
+  rather than degrading to zero locality in silence — while Envoy has no
+  path-substring hash policy at all and can only hash a header.
+
+  `configureActors({ route })` selects `'hash'` (default — an opaque hash of
+  the actor id), `'key'` (raw, for debuggable routing), `'none'`, or a
+  function. The default is a hash because actor keys are frequently user ids
+  or emails; note this is **log hygiene, not privacy**, since an unkeyed
+  hash of an email is one dictionary lookup from plaintext at any width.
+  Because the composition needs only *stability* and not agreement, a hash
+  routes exactly as well as the key.
+
+  **The token alone changes nothing — it must be paired with
+  `preferLocalPolicy()`.** The new `cluster/locality-routed` benchmark
+  measures the composition in the steady state:
+
+  | edge × placement | N=10 | N=100 |
+  |---|---:|---:|
+  | round-robin × `randomPlacementPolicy()` (default) | 0.12 | 0.01 |
+  | hash token × `consistentHashPolicy()` | 0.09 | 0.01 |
+  | hash token × `preferLocalPolicy()` | **1.00** | **1.00** |
+
+  The middle row is an anti-pattern rather than a middle ground, and it
+  settles an open question on #84: deterministic placement does not help
+  here. The edge's hash and the cluster's rendezvous hash are different
+  functions over different sets, so they disagree on most keys and guarantee
+  a hop for every grain. Caller affinity is what composes; determinism is
+  not a precondition for it. The shipped default stays
+  `randomPlacementPolicy()` pending the warm-locality arms in stage 4.
+
+  Known limits, both documented rather than papered over: `$live#subscribe`
+  carries no token (one held-open response fans out to many grains, so there
+  is no single owner to route to — sharding it would defeat the reason it
+  exists), and a grain that is already hot does not follow a changed LB pool
+  until it deactivates, because `preferLocalPolicy()` only applies to new
+  activations.
+
 - **`@sigx/actors` no longer depends on `sigx`** (#122). `./app` imported
   the umbrella for six symbols and four types; all of them come from
   `@sigx/runtime-core` (and `@sigx/runtime-core/internals`), which was

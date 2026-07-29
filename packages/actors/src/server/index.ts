@@ -18,3 +18,6 @@ export {
     requireSilo,
     type FetchHandlerOptions
 } from './fetch';
+/** The routing token an inbound call carries. READ-ONLY — the endpoint does
+ *  not consult it, and deliberately never validates it. */
+export { ACTOR_ROUTE_HEADER, ACTOR_ROUTE_SEGMENT, actorRouteToken } from '../route';

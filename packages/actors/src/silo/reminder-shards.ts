@@ -8,17 +8,19 @@
  * explicit migration like the `$all` one.
  */
 
+import { fnv1a } from '../hash';
+
 export const REMINDER_SHARD_COUNT = 16;
 
-/** FNV-1a 32-bit — tiny, deterministic, stable. Pinned forever (see above). */
-export function fnv1a(input: string): number {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < input.length; i++) {
-        hash ^= input.charCodeAt(i);
-        hash = Math.imul(hash, 0x01000193);
-    }
-    return hash >>> 0;
-}
+/**
+ * FNV-1a 32-bit — tiny, deterministic, stable. Pinned forever (see above).
+ *
+ * The implementation is shared with the wire routing token (`../route`), but
+ * the PIN is not: that caller may re-hash at the cost of a locality dip,
+ * this one may never re-hash at all. Re-exported so the pin stays stated
+ * where it binds.
+ */
+export { fnv1a };
 
 /** The storage key of the shard holding `actorId`'s reminders. */
 export function reminderShardOf(actorId: string): string {

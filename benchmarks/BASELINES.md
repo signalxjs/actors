@@ -145,6 +145,7 @@ per-decision cost as a function of N. Node v24.11.1, Apple M4, prod dist.
 | silos doing reminder work | 1 | **16** (84 idle) | ❌ hard ceiling |
 | locality, random policy | 1.00 | **0.01** | ⚠️ 1/N, structural |
 | locality, consistent-hash | 1.00 | 0.00 | ⚠️ same |
+| locality, edge-hash × prefer-local | 1.00 | **1.00** | ✅ fixed by routing |
 | `choose()` random | 14.8 M/s | 3.7 M/s | ⚠️ 4× slower |
 | `choose()` consistent-hash | 3.9 M/s | **61.8 k/s** | ❌ 63× slower |
 
@@ -226,6 +227,34 @@ This is Orleans-normal and not a bug, but it fixes the performance model:
 **at any real cluster size essentially every call takes a network hop**, so
 cluster throughput is network-bound, and the shared state above is what
 decides whether it scales.
+
+### ✅ …and routing fixes it, if the edge and the policy agree to compose
+
+`cluster/locality-routed` measures the steady state (ownership established
+first, then measured — the probe above is cold-only, which makes it
+structurally 1.00 under any caller-affinity policy and unable to evaluate
+this at all). Local fraction:
+
+| edge × placement | N=2 | N=10 | N=50 | N=100 |
+|---|---:|---:|---:|---:|
+| round-robin × random *(default)* | 0.50 | 0.12 | 0.02 | 0.01 |
+| hash token × consistent-hash | 0.48 | 0.09 | 0.02 | 0.01 |
+| **hash token × prefer-local** | **1.00** | **1.00** | **1.00** | **1.00** |
+
+The edge hashes the routing token now in the request line (#132); the third
+row is the whole point — the load balancer *becomes* the placement, because
+whoever receives the first call activates the grain locally and the same key
+hashes back to that silo forever. The two agree on nothing but stability.
+
+The middle row is the result worth keeping: **deterministic placement is an
+anti-pattern here, not a middle ground.** The edge's hash and the cluster's
+rendezvous hash are different functions over different sets, so they
+disagree on most keys — consistent-hash under edge hashing is no better than
+random. Caller affinity composes; determinism does not.
+
+These are exact ratios from deterministic bookkeeping, not timings, so the
+noise warning in the runner does not apply to them; the spread on the low
+rows is real run-to-run variance in random placement.
 
 ### Per-call cluster costs (N=2, so the numbers mean something)
 

@@ -4,7 +4,13 @@
  * protocol other than fetch without any call site changing.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { __actorRef, configureActors, fetchTransport } from '@sigx/actors/client';
+import {
+    ACTOR_ROUTE_HEADER,
+    __actorRef,
+    configureActors,
+    fetchTransport,
+    hashRouteToken
+} from '@sigx/actors/client';
 import type { ActorCallInit, ActorTransport } from '@sigx/actors/client';
 
 const ENDPOINT = 'http://actors.test/_sigx/actor';
@@ -111,9 +117,10 @@ describe('the transport seam', () => {
         await expect(ref().__sigxActorProxy('c4').add('plum')).resolves.toBe(7);
 
         expect(fetchSpy).toHaveBeenCalledTimes(1);
-        // The configured endpoint wins over the one baked into the ref.
+        // The configured endpoint wins over the one baked into the ref; the
+        // routing token rides as a MIDDLE segment, leaving the symbol last.
         expect(String(fetchSpy.mock.calls[0][0])).toBe(
-            'http://other.test/actors/Cart%23add'
+            `http://other.test/actors/r/${hashRouteToken('Cart', 'c4')}/Cart%23add`
         );
     });
 
@@ -123,9 +130,22 @@ describe('the transport seam', () => {
 
         await ref().__sigxActorProxy('c5').add('fig');
 
-        expect(String(fetchSpy.mock.calls[0][0])).toBe(`${ENDPOINT}/Cart%23add`);
+        expect(String(fetchSpy.mock.calls[0][0])).toBe(
+            `${ENDPOINT}/r/${hashRouteToken('Cart', 'c5')}/Cart%23add`
+        );
         const init = fetchSpy.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)['x-tenant']).toBe('acme');
+    });
+
+    it('route:\'none\' restores the bare URL, and emits no header', async () => {
+        const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ data: 0 })));
+        configureActors({ route: 'none', fetch: fetchSpy });
+
+        await ref().__sigxActorProxy('c6').add('fig');
+
+        expect(String(fetchSpy.mock.calls[0][0])).toBe(`${ENDPOINT}/Cart%23add`);
+        const init = fetchSpy.mock.calls[0][1] as RequestInit;
+        expect((init.headers as Record<string, string>)[ACTOR_ROUTE_HEADER]).toBeUndefined();
     });
 
     it('clearing the transport falls back to the default', async () => {

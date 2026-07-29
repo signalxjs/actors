@@ -24,6 +24,13 @@
  * every client bundle whether or not the app uses any of it.
  */
 import {
+    ACTOR_ROUTE_HEADER,
+    encodeRouteToken,
+    routePath,
+    routeTokenFor,
+    type ActorRouteToken
+} from '../route';
+import {
     encodeWire,
     readNdjson,
     reviveWire,
@@ -31,6 +38,14 @@ import {
     wireFail,
     type WireError
 } from '../wire-shared';
+
+export {
+    ACTOR_ROUTE_HEADER,
+    ACTOR_ROUTE_SEGMENT,
+    hashRouteToken,
+    type ActorRouteMode,
+    type ActorRouteToken
+} from '../route';
 
 // ---------------------------------------------------------------------------
 // The seam
@@ -98,6 +113,17 @@ export interface ActorTransportConfig {
         | (() => Record<string, string> | Promise<Record<string, string>>);
     /** Fetch implementation; default is the global fetch. */
     fetch?: typeof globalThis.fetch;
+    /**
+     * How the per-grain routing token is derived — the thing an edge load
+     * balancer hashes to send every call for one grain to one silo. Default
+     * `'hash'`: an opaque hash of the actor id, so keys stay out of access
+     * logs. See `../route`.
+     *
+     * On by default because a wire that only SOMETIMES carries the token
+     * means the LB config only sometimes works. It is inert until something
+     * upstream routes on it, and the server ignores it either way.
+     */
+    route?: ActorRouteToken;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,13 +149,25 @@ async function send(
         }
     }
     headers['content-type'] = 'application/json';
+    // The routing token: the grain's type comes from the symbol, its key is
+    // wire arg 0 (the proxy splices it there). Both carriers get the SAME
+    // token from one call, so a path segment and a header can never disagree.
+    const hash = symbol.lastIndexOf('#');
+    const token =
+        hash > 0 && typeof args[0] === 'string'
+            ? routeTokenFor(config.route ?? 'hash', symbol.slice(0, hash), args[0])
+            : null;
+    // The SAME bytes as the path segment — an LB hashes what it sees, so a
+    // raw header beside an encoded path would route the two carriers to
+    // different silos. Encoding also keeps the value valid ASCII.
+    if (token !== null) headers[ACTOR_ROUTE_HEADER] = encodeRouteToken(token);
     const request: RequestInit = {
         method: 'POST',
         headers,
         body: JSON.stringify({ args: encodeWire(args) }),
         ...(init?.signal ? { signal: init.signal } : {})
     };
-    const url = `${endpointOf(config, init)}/${encodeURIComponent(symbol)}`;
+    const url = routePath(endpointOf(config, init), token, symbol);
     return config.fetch ? config.fetch(url, request) : fetch(url, request);
 }
 

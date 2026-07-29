@@ -173,10 +173,12 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Eight
   runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`), `./silo` (defineActorApp
   + the plugin model, createSilo, runtime, memoryStorage), `./server`
-  (WinterCG wire endpoint), `./node`
+  (WinterCG wire endpoint, plus `actorRouteToken()` — read-only; the
+  endpoint never validates the routing token), `./node`
   (createAppHandler + connect adapter, fileStorage, signal handlers),
   `./client` (build-swap target, configureActors, the `ActorTransport`
-  seam + `fetchTransport`), `./app` (`actorsPlugin()` — the sigx app
+  seam + `fetchTransport`, and the `route` option minting the per-grain
+  routing token), `./app` (`actorsPlugin()` — the sigx app
   integration; it imports `@sigx/runtime-core`, NEVER the `sigx`
   umbrella — see below), `./cluster` (the
   `cluster()` plugin, clusterPlacement, silo-to-silo endpoint, cluster

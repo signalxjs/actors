@@ -977,13 +977,106 @@ the last good client stub is served, or a loud refusal.
 
 ## Wire protocol
 
-`POST {base}/{Type}%23{method}` with `{"args": [key, ...args]}` →
-`{"data"}` / `{"error"}` envelope (NDJSON for streams). It is the serverFn
+`POST {base}/r/{token}/{Type}%23{method}` with `{"args": [key, ...args]}` →
+`{"data"}` / `{"error"}` envelope (NDJSON for streams). The `/r/{token}/`
+part is an optional routing hint — under `route: 'none'`, and for the
+`$`-reserved symbols below, the URL is plain `{base}/{Type}%23{method}` and
+everything else is unchanged. It is the serverFn
 protocol verbatim — same origin policy, body caps, prototype-pollution
 guards, error masking, and codec — because `handleActorRequest` *is*
 `handleServerFnRequest` with a silo-backed resolver. `configureActors()`
 (from `@sigx/actors/client`) points remote/native clients at another base,
 independently of `configureServerFn`.
+
+### The routing token
+
+`{token}` is a stable per-grain routing hint, mirrored into the
+`x-sigx-actor-route` header. It exists because the actor **key** rides in
+the JSON body, and no load balancer will parse a body to route — so without
+it the edge cannot tell which grain a request is for, and locality decays as
+1/N (measured 1.00, 0.50, 0.12, 0.02, 0.01 for N = 1, 2, 10, 50, 100).
+
+It is a **middle** segment, deliberately: the symbol is decoded as the
+*last* path segment, so the token slots in ahead of it and the endpoint
+neither parses nor validates it. Routing is an optimization and is never
+load-bearing for correctness — a stale, wrong, or absent token costs a
+network hop, never a wrong answer.
+
+| `route` | token | for |
+|---|---|---|
+| `'hash'` *(default)* | opaque hash of the actor id | production — keys stay out of access logs |
+| `'key'` | the raw actor key | debugging, human-readable routing |
+| `'none'` | *(no token; URL stays bare)* | opting out |
+| `(ref) => string \| null` | yours | tenant affinity, an existing sharding scheme |
+
+```ts
+configureActors({ route: 'key' });   // or 'none', or a function
+```
+
+The default is a hash because actor keys are frequently user ids or emails,
+and a raw key in the path lands in every access log, proxy trace and
+referrer header. **This is log hygiene, not privacy:** an unkeyed hash of an
+email is one dictionary lookup from plaintext at any width. Because the
+composition below needs only *stability* and not agreement, a hash routes
+exactly as well as the key.
+
+Two carriers, always the same value, because neither alone covers every
+edge — a path segment cannot be silently stripped by a mesh (and a mangled
+one 404s loudly rather than degrading to zero locality in silence), while
+Envoy has no path-substring hash policy at all.
+
+Both carry the token **percent-encoded**, byte for byte identical: a load
+balancer hashes what it sees, so `tenant%2Fa` in the path beside `tenant/a`
+in the header would route the two carriers to different silos. It also keeps
+the header value safe ASCII for keys that are not. Hash-mode tokens are
+`[0-9a-z]{7}`, so encoding is a no-op there; it matters for `'key'` mode and
+custom functions. `actorRouteToken()` decodes either carrier back to the
+real value.
+
+```nginx
+map $uri $grain { ~^/_sigx/actor/r/([^/]+)/ $1; }
+upstream silos { hash $grain consistent; server ...; }
+# or, equivalently:  hash $http_x_sigx_actor_route consistent;
+```
+
+```
+HAProxy   balance uri depth 4
+Envoy     hash_policy: { header: { header_name: x-sigx-actor-route } }
+```
+
+**Pair it with `preferLocalPolicy()` — the token alone changes nothing.**
+The composition is what produces locality: the LB hashes the token to silo
+X, the first call activates the grain *there*, and every later call for that
+key hashes to X again. The LB and the cluster then agree on nothing but
+stability, which is why the LB's algorithm need not match the cluster's.
+
+Measured (`pnpm bench:run locality`, `cluster/locality-routed`), local
+fraction in the steady state:
+
+| edge × placement | N=2 | N=10 | N=50 | N=100 |
+|---|---:|---:|---:|---:|
+| round-robin × `randomPlacementPolicy()` *(default)* | 0.50 | 0.12 | 0.02 | 0.01 |
+| hash token × `consistentHashPolicy()` | 0.48 | 0.09 | 0.02 | 0.01 |
+| **hash token × `preferLocalPolicy()`** | **1.00** | **1.00** | **1.00** | **1.00** |
+
+The middle row is an **anti-pattern**, not a middle ground: the edge's hash
+and the cluster's rendezvous hash are different functions over different
+sets, so they disagree on most keys and guarantee a hop for every grain.
+Deterministic placement does not help here — caller affinity does.
+
+Two limits worth knowing:
+
+- **`$live` carries no token** (nor does any `$`-reserved symbol). One
+  held-open response fans out to *many* grains, so there is no single token
+  and no single owner; sharding that connection would defeat the reason it
+  exists. Live subscriptions still dispatch correctly through placement —
+  they just keep paying the hop.
+- **A migrated grain does not follow the LB.** `preferLocalPolicy()` applies
+  to *new* activations, and the directory keeps a live grain where it is. So
+  after a scale-out, already-hot grains stay misrouted until they deactivate.
+
+The internal silo-to-silo mount carries no token: the caller has already
+resolved the exact owner.
 
 Renaming an actor's `type` or its methods is a **wire break** (and `type`
 is also the storage identity).

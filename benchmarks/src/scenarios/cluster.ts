@@ -13,7 +13,12 @@
  * an O(N²) waiting to happen.
  */
 import { defineActor } from '@sigx/actors';
-import { consistentHashPolicy, randomPlacementPolicy } from '@sigx/actors/cluster';
+import { hashRouteToken } from '@sigx/actors/client';
+import {
+    consistentHashPolicy,
+    preferLocalPolicy,
+    randomPlacementPolicy
+} from '@sigx/actors/cluster';
 import { createCluster, selfPolicy } from '../cluster-harness.ts';
 import { benchCall } from '../silo-fixture.ts';
 import { closedLoop, LATENCY_NOISE_FLOOR_MS } from '../loop.ts';
@@ -44,6 +49,19 @@ const Counted = defineActor({
         }
     })
 });
+
+/**
+ * What a load balancer does with the routing token: hash the STRING it sees,
+ * with its own algorithm, over its own pool. Deliberately NOT the cluster's
+ * rendezvous hash — the whole point of the composition is that the edge and
+ * the cluster agree on nothing but stability.
+ */
+function edgeSlot(key: string, n: number): number {
+    const token = hashRouteToken(Counted.type, key);
+    let h = 0;
+    for (let i = 0; i < token.length; i++) h = (Math.imul(h, 31) + token.charCodeAt(i)) >>> 0;
+    return h % n;
+}
 
 /** The sweep. 1 is the control; 100 is the question. */
 const SIZES = [1, 2, 10, 50, 100] as const;
@@ -274,6 +292,14 @@ const reminderShardOwnership: Scenario = {
  * time. At N=100 that means ~99% of calls take a network hop. This measures
  * the real ratio rather than assuming it, because it is the multiplier on
  * every latency number in a real deployment.
+ *
+ * COLD PLACEMENT ONLY: each grain is touched exactly once, and a local hit
+ * is inferred from the receiving silo gaining an activation. That makes this
+ * probe structurally 1.00 under any caller-affinity policy (`preferLocal`
+ * always activates on the receiver), and blind to the route cache — it
+ * cannot evaluate a WARM steady state. `cluster/locality-routed` below
+ * measures the composition that fixes locality; a warm probe over
+ * `placement.counters()` is stage 4 of the locality-routing RFC.
  */
 const locality: Scenario = {
     name: 'cluster/locality',
@@ -381,11 +407,102 @@ const crossSiloCall: Scenario = {
     }
 };
 
+/**
+ * Locality when the EDGE hashes the routing token — the composition the
+ * locality-routing RFC argues for, measured rather than asserted.
+ *
+ * Two phases, because the cold probe above cannot answer this: it infers a
+ * hit from a new activation on the receiver, which makes `preferLocal`
+ * structurally 1.00 whatever the edge does. So phase 1 establishes ownership
+ * (cold, activation deltas are meaningful), and phase 2 asks the question
+ * that actually matters — in the STEADY state, does the edge send a call to
+ * the silo that owns the grain?
+ *
+ * Three arms, chosen to measure the RFC's claim AND its central argument:
+ *
+ * - `roundrobin+random`  — today's default. The 1/N baseline.
+ * - `edgehash+hash`      — the ANTI-PATTERN. The edge's hash and the
+ *   cluster's rendezvous hash are different functions over different sets;
+ *   the RFC argues they cannot be made to agree, and this is what that costs.
+ * - `edgehash+prefer-local` — the recommended shape. The LB becomes the
+ *   placement: whoever receives the first call activates it, and the same
+ *   key hashes back to that silo forever.
+ *
+ * The edge hashes the REAL `hashRouteToken` off the shipped client entry —
+ * the same token the client puts in the request line — so this measures the
+ * actual composition, not a stand-in for it.
+ */
+const localityRouted: Scenario = {
+    name: 'cluster/locality-routed',
+    description: 'local fraction in the STEADY state, by edge strategy × placement policy',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const grains = ctx.quick ? 60 : 300;
+        const metrics: Metric[] = [];
+        for (const n of sizesFor(ctx)) {
+            for (const [label, policy, edge] of [
+                ['roundrobin+random', randomPlacementPolicy(), (i: number) => i % n],
+                [
+                    'edgehash+hash',
+                    consistentHashPolicy(),
+                    (_i: number, key: string) => edgeSlot(key, n)
+                ],
+                [
+                    'edgehash+prefer-local',
+                    preferLocalPolicy(),
+                    (_i: number, key: string) => edgeSlot(key, n)
+                ]
+            ] as const) {
+                const harness = await createCluster(n, { actors: [Counted], policy });
+                try {
+                    const call = benchCall();
+                    const ref = (i: number) => ({ type: Counted.type, key: `g${i}` });
+
+                    // Phase 1 — establish ownership. Cold, so an activation
+                    // delta identifies the owner exactly.
+                    const owner: number[] = Array.from({ length: grains }, () => -1);
+                    for (let i = 0; i < grains; i++) {
+                        const at = edge(i, `g${i}`);
+                        const before = harness.silos.map((s) => s.stats().activations);
+                        await harness.silos[at]!.dispatch(ref(i), 'noop', [], call);
+                        owner[i] = harness.silos.findIndex(
+                            (s, j) => s.stats().activations > before[j]!
+                        );
+                    }
+
+                    // Phase 2 — the steady state. Same edge decision, but now
+                    // the grains are already placed.
+                    let localHits = 0;
+                    let placed = 0;
+                    for (let i = 0; i < grains; i++) {
+                        const at = edge(i, `g${i}`);
+                        await harness.silos[at]!.dispatch(ref(i), 'noop', [], call);
+                        if (owner[i] === -1) continue; // never observed; not counted
+                        placed++;
+                        if (owner[i] === at) localHits++;
+                    }
+
+                    metrics.push({
+                        name: `n=${n}/${label}/local_fraction`,
+                        value: placed === 0 ? 0 : localHits / placed,
+                        unit: 'ratio',
+                        direction: 'higher',
+                        noiseFloor: 0.02
+                    });
+                } finally {
+                    await harness.stop();
+                }
+            }
+        }
+        return metrics;
+    }
+};
+
 export const clusterScenarios: Scenario[] = [
     membershipFanout,
     directoryOpsPerActivation,
     placementChoose,
     reminderShardOwnership,
     locality,
+    localityRouted,
     crossSiloCall
 ];
