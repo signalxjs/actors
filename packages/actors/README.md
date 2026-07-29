@@ -630,9 +630,9 @@ What the layer decides for you:
   readers, then a one-shot reminder clears the state and deactivates;
   `discard()` does it on demand.
 
-A singleton queue-worker (strict ordering, bounded concurrency) is a
-recipe, not an API: a plain actor whose state is the pending list, popping
-items into per-run jobs. See the repo docs.
+A singleton queue-worker (strict ordering, bounded concurrency), a
+cron-on-reminders scheduler, and the Cloudflare DO posture are recipes,
+not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob/main/docs/job-recipes.md).
 
 ## Lifecycle
 
