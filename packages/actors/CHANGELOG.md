@@ -4,6 +4,30 @@
 
 ### Fixed
 
+- **A `streams:` consumer that disconnects mid-pull can now tear the body
+  down** (#71). A body parked inside `ctx.changes()` is suspended at an
+  INTERNAL await, and the spec *queues* `gen.return()` there: the generator
+  is never resumed, so the feed's own `return()` — the one thing that would
+  wake it — was never called. `iterator.return()` therefore never settled,
+  the stream's keep-alive ref was never released, and idle sweeping skipped
+  that activation for the life of the process. A quiet actor never escaped
+  it, because only a mutation could have unparked the body.
+
+  The subscription now has to be closable from OUTSIDE the generator, which
+  needs to know which feeds that body opened. So the `streams:` table is
+  built **per subscription** rather than per activation, each with a context
+  of its own: a shared context cannot tell two concurrent bodies apart,
+  since a body resumes from its internal await in a microtask of its own and
+  no "currently running stream" flag can be trusted. The factory is a pure
+  table constructor by contract — it must not touch `ctx` while constructing,
+  and `defineActor` already calls it a second time to read `streamNames` —
+  so this costs a handful of closures per subscription and changes nothing
+  an actor author writes.
+
+  Disconnect still runs the body's `finally`: closing the feed unwinds the
+  body rather than abandoning it. A body is lazy, so it can reach its first
+  `ctx.changes()` *after* the disconnect has run — a feed opened then is born
+  closed, which makes teardown independent of the order the two land in.
 - **`metrics()` caps no longer fail open on a non-finite value** (#109).
   `Math.floor(NaN)` is `NaN` and every comparison against it is false, so
   `maxTypes: NaN` meant the `'(other)'` fold never fired and the per-type map

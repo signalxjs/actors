@@ -11,6 +11,7 @@ import {
     ActorActivationError,
     ActorMethodNotFoundError,
     ActorStateConflictError,
+    SiloShutdownError,
     isStorageConflict
 } from '../errors';
 import {
@@ -96,6 +97,18 @@ interface ChangeSub {
     done: boolean;
 }
 
+/**
+ * The change feeds one `streams:` body opened, and whether its consumer has
+ * gone. `closed` is not merely bookkeeping: a body starts lazily, so it can
+ * reach its first `ctx.changes()` AFTER the disconnect has already run its
+ * cleanup. A feed opened then is born closed, which is what makes teardown
+ * independent of the order those two land in.
+ */
+interface StreamFeeds {
+    subs: Set<ChangeSub>;
+    closed: boolean;
+}
+
 type AnyFn = (...args: unknown[]) => unknown;
 type AnyStreamFn = (...args: unknown[]) => AsyncIterable<unknown>;
 
@@ -110,7 +123,6 @@ export class Activation {
     #etag: string | null = null;
     #ctx!: ActorContext<object>;
     #methods!: Record<string, AnyFn>;
-    #streams: Record<string, AnyStreamFn> = {};
     #abort = new AbortController();
     #timers = new Map<string, { clear(): void }>();
     #subs = new Set<ChangeSub>();
@@ -173,19 +185,15 @@ export class Activation {
             // effect scope so computeds/watches they create die with it.
             a.#scope.run(() => {
                 a.#methods = opts.methods(a.#ctx) as Record<string, AnyFn>;
-                if (opts.streams) {
-                    // Stream bodies get a DERIVED context whose `state` warns:
-                    // bracketing the dispatch call sites cannot work, because
-                    // an async generator's return() awaits before resuming, so
-                    // a `finally` reading ctx.state runs in a later microtask.
-                    // Handing the factory its own context makes the guard exact
-                    // and timing-independent — and no mailbox turn can trip it,
-                    // since `methods` still gets the real ctx.
-                    a.#streams = opts.streams(
-                        __DEV__ ? a.#streamContext() : a.#ctx
-                    ) as Record<string, AnyStreamFn>;
-                }
             });
+            // The `streams:` table is built per SUBSCRIPTION, not here — see
+            // `#streamTable`. Its bodies get a derived context of their own:
+            // bracketing the dispatch call sites cannot work, because an async
+            // generator's return() awaits before resuming, so a `finally`
+            // reading ctx.state runs in a later microtask. Handing each body
+            // its own context makes both the dev `state` guard and change-feed
+            // ownership exact and timing-independent — and no mailbox turn can
+            // trip either, since `methods` still gets the real ctx.
             if (opts.persistence && typeof opts.persistence === 'object') {
                 a.#ensureDeepWatch();
             }
@@ -335,9 +343,12 @@ export class Activation {
         args: readonly unknown[],
         call: ActorCallContext
     ): AsyncIterable<unknown> {
+        // Every `ctx.changes()` this body opens, so a disconnect can close
+        // them from OUTSIDE the generator — see `#streamContext`.
+        const feeds: StreamFeeds = { subs: new Set(), closed: false };
         const setup = this.mailbox.run(async () => {
             if (this.#faulted) throw this.#faulted;
-            const fn = this.#streams[method];
+            const fn = this.#streamTable(feeds)[method];
             if (!fn) throw new ActorMethodNotFoundError(this.ref.type, method);
             const prev = this.#currentCall;
             this.#currentCall = call;
@@ -367,6 +378,13 @@ export class Activation {
         setup.catch(() => {
             released = true;
         });
+        const closeOwned = (): void => {
+            // Latched, so a feed the body opens later is born closed. The
+            // body is lazy: it can reach its first `ctx.changes()` after this
+            // has run, and a sub registered then would otherwise be missed.
+            feeds.closed = true;
+            this.#closeSubs(feeds.subs);
+        };
 
         return {
             [Symbol.asyncIterator](): AsyncIterator<unknown> {
@@ -375,14 +393,31 @@ export class Activation {
                         try {
                             const gen = await setup;
                             const result = await gen.next();
-                            if (result.done) release();
+                            if (result.done) {
+                                // A body that walked away from its feed
+                                // without returning it would otherwise leave
+                                // the subscription queueing snapshots until
+                                // the activation goes.
+                                closeOwned();
+                                release();
+                            }
                             return result;
                         } catch (error) {
+                            closeOwned();
                             release();
                             throw error;
                         }
                     },
                     async return(): Promise<IteratorResult<unknown>> {
+                        // FIRST, before awaiting anything. A body parked
+                        // inside `changes()` is suspended at an INTERNAL
+                        // await, and the spec queues `gen.return()` there:
+                        // the generator is never resumed, so the feed's own
+                        // `return()` — the thing that would wake it — is
+                        // never called. Closing the subscription from out
+                        // here wakes the parked `next()`, the body unwinds,
+                        // and the queued `gen.return()` finally settles.
+                        closeOwned();
                         try {
                             const gen = await setup;
                             if (gen.return) await gen.return(undefined);
@@ -442,11 +477,7 @@ export class Activation {
         this.#timers.clear();
         this.#abort.abort();
         this.#scope.stop();
-        for (const sub of this.#subs) {
-            sub.done = true;
-            sub.wake?.();
-        }
-        this.#subs.clear();
+        this.#closeSubs(this.#subs);
     }
 
     /** Force-drop on shutdown deadline: abort and tear down without drain. */
@@ -456,11 +487,7 @@ export class Activation {
         this.#timers.clear();
         this.#abort.abort();
         this.#scope.stop();
-        for (const sub of this.#subs) {
-            sub.done = true;
-            sub.wake?.();
-        }
-        this.#subs.clear();
+        this.#closeSubs(this.#subs);
     }
 
     // -----------------------------------------------------------------------
@@ -681,16 +708,49 @@ export class Activation {
     }
 
     /**
-     * Dev-only context for `streams:` bodies: the real context with `state`
-     * shadowed by a warning accessor. Stream bodies run detached from the
-     * mailbox, so a turn can mutate underneath a live read — they must use
-     * `snapshot()` / `changes()`. Everything else is inherited unchanged
-     * (the built-in accessors close over `self`, not `this`).
+     * The `streams:` table for ONE subscription, built with a context of its
+     * own — which is what makes the feeds that body opens attributable to it,
+     * and therefore closable when its consumer disconnects.
+     *
+     * Per-subscription rather than per-activation because a shared context
+     * cannot tell two concurrent bodies apart: a body resumes from an
+     * internal `await` in a microtask of its own, so no "currently running
+     * stream" flag can be trusted. The factory is a pure table constructor by
+     * contract (it must not touch `ctx` while constructing — `defineActor`
+     * already calls it a second time to read `streamNames`), so calling it
+     * again per subscription costs a handful of closures and nothing else.
      */
-    #streamContext(): ActorContext<object> {
+    #streamTable(feeds: StreamFeeds): Record<string, AnyStreamFn> {
+        const opts = this.def.__sigxActor;
+        if (!opts.streams) return {};
+        // Inside the scope, so computeds/watches a body creates die with it.
+        const table = this.#scope.run(() => opts.streams!(this.#streamContext(feeds)));
+        // `run` returns undefined on a stopped scope — a turn that survived a
+        // force-drop. Say so, rather than failing as an unknown method.
+        if (!table) throw new SiloShutdownError();
+        return table as Record<string, AnyStreamFn>;
+    }
+
+    /**
+     * Context for one `streams:` body: `changes()` records its subscriptions
+     * in `feeds` so `openStream` can close them from outside the generator,
+     * and — in dev — `state` is shadowed by a warning accessor. Stream bodies
+     * run detached from the mailbox, so a turn can mutate underneath a live
+     * read; they must use `snapshot()` / `changes()`. Everything else is
+     * inherited unchanged (the built-in accessors close over `self`, not
+     * `this`).
+     */
+    #streamContext(feeds: StreamFeeds): ActorContext<object> {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         const derived = Object.create(this.#ctx) as ActorContext<object>;
+        Object.defineProperty(derived, 'changes', {
+            value: (options?: { initial?: boolean }): AsyncIterable<object> =>
+                self.#openChanges(options, feeds),
+            enumerable: true,
+            configurable: true
+        });
+        if (!__DEV__) return derived;
         Object.defineProperty(derived, 'state', {
             get() {
                 if (!self.#warnedStreamState) {
@@ -823,48 +883,90 @@ export class Activation {
                 return self.#snapshot();
             },
             changes(options?: { initial?: boolean }): AsyncIterable<object> {
-                // The feed needs change detection even in explicit mode.
-                self.#ensureDeepWatch();
-                const sub: ChangeSub = { queue: [], wake: null, done: false };
-                // Seed BEFORE the subscription goes live, in this same
-                // synchronous call: a `yield ctx.snapshot()` prologue would
-                // instead subscribe only after the consumer resumes, losing
-                // every mutation in that window.
-                if (options?.initial) sub.queue.push(self.#snapshot());
-                self.#subs.add(sub);
+                return self.#openChanges(options);
+            }
+        };
+    }
+
+    /**
+     * One `ctx.changes()` subscription. `feeds` is the opening stream body's
+     * record, when there is one — the link `openStream` needs to close a feed
+     * whose generator can no longer be resumed to close it itself.
+     */
+    #openChanges(
+        options: { initial?: boolean } | undefined,
+        feeds?: StreamFeeds
+    ): AsyncIterable<object> {
+        const sub: ChangeSub = { queue: [], wake: null, done: false };
+        if (feeds?.closed) {
+            // The consumer went away before the body got this far. Hand it a
+            // spent feed — no seed, no registration — so the body unwinds on
+            // its first pull instead of parking on a subscription nothing
+            // will ever close.
+            sub.done = true;
+            return this.#changeFeed(sub);
+        }
+        // The feed needs change detection even in explicit mode.
+        this.#ensureDeepWatch();
+        // Seed BEFORE the subscription goes live, in this same synchronous
+        // call: a `yield ctx.snapshot()` prologue would instead subscribe
+        // only after the consumer resumes, losing every mutation in that
+        // window.
+        if (options?.initial) sub.queue.push(this.#snapshot());
+        this.#subs.add(sub);
+        feeds?.subs.add(sub);
+        return this.#changeFeed(sub, feeds);
+    }
+
+    /** The iterable side of one `ChangeSub`. */
+    #changeFeed(sub: ChangeSub, feeds?: StreamFeeds): AsyncIterable<object> {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const self = this;
+        return {
+            [Symbol.asyncIterator](): AsyncIterator<object> {
                 return {
-                    [Symbol.asyncIterator](): AsyncIterator<object> {
-                        return {
-                            async next(): Promise<IteratorResult<object>> {
-                                for (;;) {
-                                    if (sub.queue.length > 0) {
-                                        return { value: sub.queue.shift()!, done: false };
-                                    }
-                                    if (sub.done) return { value: undefined, done: true };
-                                    await new Promise<void>((r) => {
-                                        sub.wake = r;
-                                    });
-                                    sub.wake = null;
-                                }
-                            },
-                            async return(): Promise<IteratorResult<object>> {
-                                sub.done = true;
-                                self.#subs.delete(sub);
-                                // Wake a parked next(). Marking `done` is not
-                                // enough: a consumer that disconnects while
-                                // the feed is quiet is sitting on the wake
-                                // promise, and nothing else will ever resolve
-                                // it — the actor may never mutate again. The
-                                // await inside `return()` then never settles
-                                // and teardown hangs.
-                                sub.wake?.();
-                                return { value: undefined, done: true };
+                    async next(): Promise<IteratorResult<object>> {
+                        for (;;) {
+                            if (sub.queue.length > 0) {
+                                return { value: sub.queue.shift()!, done: false };
                             }
-                        };
+                            if (sub.done) return { value: undefined, done: true };
+                            await new Promise<void>((r) => {
+                                sub.wake = r;
+                            });
+                            sub.wake = null;
+                        }
+                    },
+                    async return(): Promise<IteratorResult<object>> {
+                        sub.done = true;
+                        self.#subs.delete(sub);
+                        feeds?.subs.delete(sub);
+                        // Wake a parked next(). Marking `done` is not
+                        // enough: a consumer that disconnects while the feed
+                        // is quiet is sitting on the wake promise, and
+                        // nothing else will ever resolve it — the actor may
+                        // never mutate again. The await inside `return()`
+                        // then never settles and teardown hangs.
+                        sub.wake?.();
+                        return { value: undefined, done: true };
                     }
                 };
             }
         };
+    }
+
+    /**
+     * Close subscriptions from outside their consumer: mark done, wake a
+     * parked `next()`, and drop them from the activation's set. Safe to pass
+     * `#subs` itself — deleting the current element mid-iteration is fine.
+     */
+    #closeSubs(subs: Set<ChangeSub>): void {
+        for (const sub of subs) {
+            sub.done = true;
+            sub.wake?.();
+            this.#subs.delete(sub);
+        }
+        subs.clear();
     }
 }
 

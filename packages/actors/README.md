@@ -477,6 +477,13 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
   (its method names are read at definition time); inside generator bodies,
   anything goes. `computed`/`watch` setup belongs in `methods:`.
 
+- It runs **once per subscription**, with a context of its own. That is what
+  lets a disconnect close the feeds a body opened: an async generator parked
+  inside `ctx.changes()` is suspended at an internal await, where the spec
+  queues `return()` instead of running it, so the subscription has to be
+  closable from outside the body. Nothing an author writes changes — the
+  factory is a table constructor, not a place for per-activation state.
+
 ## Lifecycle
 
 - `onActivate(ctx)` / `onDeactivate(ctx, reason)` hooks; an `onActivate`
