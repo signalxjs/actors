@@ -241,6 +241,12 @@ owns.
 
 ### Custom placement
 
+> Choosing between the shipped policies? See
+> [Which placement policy should you use?](#which-placement-policy-should-you-use)
+> — the short answer is that the default is right unless your load balancer
+> hashes the routing token.
+
+
 Two independent axes, the same split Orleans draws:
 
 - **The backend** — *who hosts an actor at all*: the local host, a cluster,
@@ -1636,6 +1642,52 @@ differently, so re-check on yours before tuning aggressively.
 > `node:http`, which is HTTP/1.1 only — the client negotiates nothing and
 > falls back. Multiplexing would need a `node:http2` server first, which is a
 > larger change than the pool cap for the same socket reduction.
+
+#### Which placement policy should you use?
+
+Measured, not argued — `pnpm bench:run locality-warm`, N=100, 240 grains, in
+the **warm** steady state (grains already placed, which is where a running
+cluster spends its life):
+
+| edge × policy | local fraction | ownership spread |
+|---|---:|---:|
+| round-robin × `randomPlacementPolicy()` *(default)* | 0.02 | 2.92 |
+| round-robin × `preferLocalPolicy()` | **0.00** | 1.25 |
+| **hash the routing token × `preferLocalPolicy()`** | **1.00** | 2.50 |
+| skewed LB × `randomPlacementPolicy()` | 0.00 | 2.92 |
+| skewed LB × `preferLocalPolicy()` | 0.80 | **80.4** |
+
+*Ownership spread is the most-loaded silo's grain count over the mean: 1.0 is
+perfectly even, and N means one silo owns everything.*
+
+**Use `preferLocalPolicy()` if — and only if — your edge hashes the routing
+token.** That is the one row that wins, and it wins completely. Set it
+per-type with `defineActor({ placement })` or cluster-wide with
+`cluster({ policy })`, and configure the LB as shown in *Wire protocol*.
+
+**The default stays `randomPlacementPolicy()`**, for the two rows that
+explain why:
+
+- Under a plain round-robin balancer, `preferLocalPolicy()` buys **nothing** —
+  0.00 versus random's 0.02, both of them noise around 1/N. It pins each grain wherever its first call
+  landed, and the balancer then sends the next call somewhere else anyway.
+  A default that only helps once you have also configured your load
+  balancer is not a default; it is a trap with a good outcome attached.
+- Under a balancer that is *not* even — a rolling deploy, a bad health
+  check, a scaled-down pool — it concentrates ownership catastrophically:
+  **80×** at N=100, one silo holding 80% of the grains. And they do not move
+  back, because placement only applies to *new* activations. Random holds
+  ~2.9 regardless of what the edge does, which is the property you want
+  precisely when things are going wrong.
+
+`consistentHashPolicy()` is a third option and mostly an anti-pattern under
+edge hashing (see *Wire protocol*): the edge's hash and the cluster's
+rendezvous hash are different functions over different sets, so they
+disagree on most keys. It is worth having when a client routes with the
+cluster's own rule rather than the LB's.
+
+Precedence, highest first: `defineActor({ placement })` →
+`cluster({ typePolicies })` → `cluster({ policy })` → random.
 
 #### Which transport should you use?
 

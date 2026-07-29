@@ -256,6 +256,54 @@ These are exact ratios from deterministic bookkeeping, not timings, so the
 noise warning in the runner does not apply to them; the spread on the low
 rows is real run-to-run variance in random placement.
 
+### ⚠️ …but caller affinity is not free, and is not a default
+
+`cluster/locality-routed` above measures placement under a STABLE edge.
+`cluster/locality-warm` asks the question a running cluster has — of the
+calls I am making now, how many hop? — and adds the arm that decides whether
+`preferLocalPolicy()` should be the default. N=100, 240 grains:
+
+| edge × policy | local fraction | ownership spread |
+|---|---:|---:|
+| round-robin × random *(default)* | 0.02 | 2.92 |
+| round-robin × prefer-local | **0.00** | 1.25 |
+| hash the routing token × prefer-local | **1.00** | 2.50 |
+| skewed LB × random | 0.00 | 2.92 |
+| skewed LB × prefer-local | 0.80 | **80.4** |
+
+Ownership spread = most-loaded silo's grains ÷ mean; 1.0 is even, N is "one
+silo owns everything".
+
+**Prefer-local buys nothing under a round-robin balancer** (0.00 vs 0.02,
+both noise around 1/N) —
+it pins each grain where its first call landed and the balancer sends the
+next one elsewhere regardless. **And under an uneven balancer it concentrates
+ownership 80×**, which is exactly the situation — a rolling deploy, a bad
+health check — where you can least afford one hot silo. Grains do not move
+back, because placement applies only to new activations.
+
+So the default stays random: it holds ~2.9 spread whatever the edge does.
+Prefer-local is the right answer only when the edge hashes the routing token,
+where it is worth the whole 69× cross-silo cost.
+
+Two measurement traps this scenario had to avoid, both of which silently
+flatter prefer-local:
+
+- **Do not derive locality from `routedLocal`.** `dispatcherFor` returns the
+  local dispatcher *before* the routing path that increments it, so in the
+  warm state a local hit counts nothing at all, and
+  `routedLocal / (routedLocal + remoteDispatches)` reads near-zero for a
+  perfectly local cluster. Count `remoteDispatches` against a known call
+  count instead.
+- **A skewed edge needs its own counter for the traffic it does NOT skew.**
+  Reusing one counter for both advances it by five per leftover call, so the
+  "spread the rest" fifth only ever visits every fifth silo — concentrating
+  the very traffic the arm exists to spread.
+- **Round-robin must be by arrival order, and the call order must not track
+  grain order.** A counter iterated in grain sequence is a stable per-grain
+  assignment wearing a costume, and scores 1.00 whenever `grains % N === 0`.
+  The scenario visits grains on a coprime stride for that reason.
+
 ### Per-call cluster costs (N=2, so the numbers mean something)
 
 | | ops/s | p99 |

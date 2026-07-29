@@ -497,6 +497,165 @@ const localityRouted: Scenario = {
     }
 };
 
+
+/**
+ * Locality in the WARM steady state, and what it costs to get there.
+ *
+ * The two probes above both measure PLACEMENT — where a grain first lands.
+ * Neither can answer the question a running cluster actually has: of the
+ * calls I am making right now, how many take a network hop? So this one
+ * warms up first, then measures.
+ *
+ * Read from `remoteDispatches` against a known call count, NOT from
+ * `routedLocal`. That is a trap worth stating: `dispatcherFor` returns the
+ * local dispatcher directly when the silo already holds the claim, BEFORE
+ * the routing path that increments `routedLocal` — so in the warm state
+ * being measured here, a local hit increments nothing at all. Dividing
+ * `routedLocal` by `routedLocal + remoteDispatches` would therefore report
+ * near-zero locality for a perfectly local cluster. The denominator has to
+ * come from outside the counters, and it does: this scenario issues the
+ * calls, so it knows.
+ *
+ * The arms exist to answer one open question — should `preferLocalPolicy()`
+ * be the default? Edge-hash + prefer-local is the shape the routing RFC
+ * recommends, and it wins on locality. The case AGAINST making it the
+ * default is that it inherits whatever distribution the load balancer has,
+ * and a load balancer is not always fair: during a rolling deploy, or a bad
+ * health check, one silo briefly takes most of the traffic. Prefer-local
+ * then places most of the grains there, and they do NOT move back. `skew/*`
+ * is that scenario, and `ownership_spread` is what it costs.
+ */
+const localityWarm: Scenario = {
+    name: 'cluster/locality-warm',
+    description: 'hops per call in the STEADY state, and how evenly grains ended up spread',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const grains = ctx.quick ? 60 : 240;
+        const metrics: Metric[] = [];
+
+        // Edges are FACTORIES so each arm gets fresh state, and so
+        // round-robin can be what it actually is.
+        //
+        // Subtle and load-bearing: a real round-robin balancer distributes by
+        // ARRIVAL ORDER, so the same grain lands on a different silo each
+        // time it is called. Deriving the silo from the grain index instead
+        // (`i % n`) is a stable per-grain assignment — edge hashing wearing a
+        // round-robin costume — and it makes prefer-local look perfect for
+        // free, which is exactly the claim under test.
+        type Edge = (i: number, key: string) => number;
+        const roundRobin = (n: number): Edge => {
+            let next = 0;
+            return () => next++ % n;
+        };
+        /** A lopsided balancer — a rolling deploy, or a bad health check:
+         *  four calls in five land on silo 0, the fifth round-robins over
+         *  ALL silos. The remainder needs its own counter: reusing `next`
+         *  advances it by five each time, so it would only ever visit every
+         *  fifth silo (silos 1 and 6 at n=10) and concentrate the leftover
+         *  traffic that this arm is supposed to spread. */
+        const skewed = (n: number): Edge => {
+            let next = 0;
+            let rest = 0;
+            return () => (next++ % 5 === 0 ? rest++ % n : 0);
+        };
+        const byGrain = (n: number): Edge => (_i, key) => edgeSlot(key, n);
+
+        for (const n of sizesFor(ctx)) {
+            for (const [label, policy, makeEdge] of [
+                ['roundrobin+random', randomPlacementPolicy(), roundRobin],
+                ['roundrobin+prefer-local', preferLocalPolicy(), roundRobin],
+                ['edgehash+prefer-local', preferLocalPolicy(), byGrain],
+                ['skew+random', randomPlacementPolicy(), skewed],
+                ['skew+prefer-local', preferLocalPolicy(), skewed]
+            ] as const) {
+                const harness = await createCluster(n, { actors: [Counted], policy });
+                try {
+                    const call = benchCall();
+                    const ref = (i: number) => ({ type: Counted.type, key: `g${i}` });
+                    // ONE edge across both phases: a balancer does not reset
+                    // when the cluster finishes warming up.
+                    const edge = makeEdge(n);
+
+                    // Warm up: place every grain. Unmeasured — this is the
+                    // cold cost the other two scenarios already report.
+                    for (let i = 0; i < grains; i++) {
+                        await harness.silos[edge(i, `g${i}`)]!.dispatch(
+                            ref(i),
+                            'noop',
+                            [],
+                            call
+                        );
+                    }
+
+                    // How evenly did ownership land? Activations ARE
+                    // ownership here: nothing has deactivated yet.
+                    const owned = harness.silos.map((s) => s.stats().activations);
+                    const mean = owned.reduce((a, b) => a + b, 0) / n;
+                    const spread = mean === 0 ? 1 : Math.max(...owned) / mean;
+
+                    // Measure: the same edge, now against placed grains —
+                    // the steady state a running cluster is in.
+                    //
+                    // Visited on a STRIDE coprime with `grains`, not in
+                    // order. Iterating grains sequentially keeps a
+                    // round-robin counter in lockstep with grain identity,
+                    // which quietly turns it back into a stable per-grain
+                    // assignment — and then prefer-local scores 1.00 purely
+                    // because `grains % n === 0`. Real traffic does not
+                    // arrive in grain order, and the stride is the cheapest
+                    // way to say so deterministically.
+                    const before = harness.placements.map(
+                        (p) => p.counters().remoteDispatches
+                    );
+                    const STRIDE = 97; // coprime with both grain counts
+                    for (let step = 0; step < grains; step++) {
+                        const i = (step * STRIDE) % grains;
+                        await harness.silos[edge(i, `g${i}`)]!.dispatch(
+                            ref(i),
+                            'noop',
+                            [],
+                            call
+                        );
+                    }
+                    const hops = harness.placements.reduce(
+                        (total, p, at) => total + (p.counters().remoteDispatches - before[at]!),
+                        0
+                    );
+
+                    metrics.push(
+                        {
+                            name: `n=${n}/${label}/hops_per_call`,
+                            value: hops / grains,
+                            unit: 'ratio',
+                            direction: 'lower',
+                            noiseFloor: 0.02
+                        },
+                        {
+                            name: `n=${n}/${label}/local_fraction`,
+                            value: Math.max(0, 1 - hops / grains),
+                            unit: 'ratio',
+                            direction: 'higher',
+                            noiseFloor: 0.02
+                        },
+                        {
+                            // 1.0 is perfectly even; n is "one silo owns
+                            // everything". The cost of caller affinity under
+                            // a balancer that is not itself even.
+                            name: `n=${n}/${label}/ownership_spread`,
+                            value: spread,
+                            unit: 'ratio',
+                            direction: 'lower',
+                            noiseFloor: 0.05
+                        }
+                    );
+                } finally {
+                    await harness.stop();
+                }
+            }
+        }
+        return metrics;
+    }
+};
+
 export const clusterScenarios: Scenario[] = [
     membershipFanout,
     directoryOpsPerActivation,
@@ -504,5 +663,6 @@ export const clusterScenarios: Scenario[] = [
     reminderShardOwnership,
     locality,
     localityRouted,
+    localityWarm,
     crossSiloCall
 ];

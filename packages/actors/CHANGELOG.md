@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The default placement policy stays `randomPlacementPolicy()`, decided on
+  a measurement** (#135, stage 4 of #84). RFC #84 asked whether it should
+  change now that its locality cost is quantifiable. It should not, and the
+  new `cluster/locality-warm` benchmark says why — N=100, warm steady state:
+
+  | edge × policy | local fraction | ownership spread |
+  |---|---:|---:|
+  | round-robin × random *(default)* | 0.02 | 2.92 |
+  | round-robin × `preferLocalPolicy()` | **0.00** | 1.25 |
+  | hash the routing token × `preferLocalPolicy()` | **1.00** | 2.50 |
+  | skewed LB × random | 0.00 | 2.92 |
+  | skewed LB × `preferLocalPolicy()` | 0.80 | **80.4** |
+
+  Caller affinity buys **nothing** under a plain round-robin balancer — it
+  pins each grain where its first call landed and the balancer sends the
+  next one elsewhere anyway. And under an uneven balancer (a rolling deploy,
+  a bad health check) it concentrates ownership **80×**: one silo holding
+  80% of the grains, which do not move back, because placement applies only
+  to new activations. Random holds ~2.9 spread whatever the edge does, which
+  is the property that matters precisely when things are going wrong.
+
+  `preferLocalPolicy()` remains the right answer when the edge hashes the
+  routing token from #132 — that row wins outright, and is documented under
+  "Which placement policy should you use?" in the README. It is a
+  configuration, not a default.
+
+  Recording the rationale even though nothing changed, so the question is
+  not re-litigated a third time.
+
 ### Added
 
 - **`@sigx/actors/job` — `defineJob`, durable long-running operations**
