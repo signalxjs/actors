@@ -33,11 +33,32 @@
 
 ### Added
 
+- **`durableObjectPlacement()` and the `durableObjects()` plugin** (#131) —
+  a ref now routes to the Durable Object that holds it, via
+  `idFromName` over the runtime's own actor id.
+
+  **One placement runs on both sides**, distinguished only by an `isSelf`
+  predicate. Giving the object's own silo the plain local host instead looks
+  obvious and silently corrupts state: `ctx.actor(Cart, 'x')` from inside
+  `Counter/alice` would activate `Cart/x` *in alice's object* and write its
+  record into the wrong object's storage — single activation violated, with
+  nothing to point at. A self-call short-circuits to the local dispatcher
+  before any stub is derived, so an object can never fetch itself.
+
+  The hop reuses `httpTransport()` with its `fetch` swapped for a stub call,
+  so the envelope, NDJSON framing, remaining-ms deadline re-anchoring and
+  branded error re-creation are the runtime's own rather than a second
+  implementation. No HMAC (a stub is not network-reachable — holding the
+  binding is the capability grant, and guards run once at the public edge),
+  no 421 wrong-host and no retry (`ref` to object id is a pure function and
+  the platform guarantees one instance, so a mismatch is a configuration bug
+  that must fail loudly).
+
 - `DurableObjectStorageOptions` and `BlockConcurrencyWhile` are re-exported
   from the package root (#139). Both were declared and exported in
   `storage.ts` but never re-exported, so a consumer could not name either.
-- A `.size-limit.json` budget for the package (#139) — 2 KB against a
-  current 1.22 KB. It was the only shipped dist with no budget, and it is
+- A `.size-limit.json` budget for the package (#139) — 2.5 KB against a
+  current 1.9 KB. It was the only shipped dist with no budget, and it is
   the one runtime where bytes are billed as startup CPU.
 
 - **Initial release** (#9): Cloudflare Durable Objects as the backend for

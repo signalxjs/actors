@@ -23,3 +23,13 @@ export {
     type DurableObjectReminders,
     type DurableObjectRemindersOptions
 } from './reminders';
+export {
+    durableObjectPlacement,
+    durableObjects,
+    type DurableObjectPlacementOptions
+} from './placement';
+export type {
+    DurableObjectIdLike,
+    DurableObjectNamespaceLike,
+    DurableObjectStubLike
+} from './types';

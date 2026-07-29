@@ -86,8 +86,60 @@ you:
   actor" case — therefore travels back as a value and is thrown once the
   gate has closed.
 
+## Placement
+
+```ts
+import { durableObjectPlacement } from '@sigx/actors-cloudflare';
+
+// In the Worker: nothing is local, so every call goes to an object.
+const placement = durableObjectPlacement({ namespace: env.ACTORS });
+
+// Inside a Durable Object: the SAME placement, plus a self predicate.
+const placement = durableObjectPlacement({
+    namespace: env.ACTORS,
+    isSelf: (ref) => `${ref.type}\u0000${ref.key}` === state.id.name
+});
+```
+
+A ref resolves to `idFromName("type\0key")` — the runtime's own actor id.
+Not `type:key` or `type/key`: nothing forbids `:` or `/` in an actor key, so
+neither is injective, which is exactly why the id uses a NUL separator.
+
+**Why one placement on both sides.** Giving the object's own silo the plain
+local host instead looks obvious and silently corrupts state:
+`ctx.actor(Cart, 'x')` called from `Counter/alice` would resolve locally and
+activate `Cart/x` *inside `Counter/alice`'s object*, writing that actor's
+record into the wrong object's storage. Every calling object would get its own
+copy — single activation violated, with nothing to point at. So a Durable
+Object routes everything that is not its own actor back out to the object that
+owns it. Self-recursion is impossible by construction: a self-call
+short-circuits to the local dispatcher before any stub is derived.
+
+The hop rides `httpTransport()` with its `fetch` swapped for a stub call, so
+the envelope, the NDJSON framing, the remaining-ms deadline and the branded
+error re-creation are the ones the rest of the runtime uses, not a second
+implementation of them.
+
+No HMAC: a stub is not network-reachable, and the only way to obtain one is to
+hold the namespace binding — a Worker-level capability grant. Guards therefore
+run once, at the public edge, where the request still carries real client
+headers.
+
+There is no 421 wrong-host and no retry either. That machinery exists because a
+cluster directory and a caller's cached routing can disagree; here `ref` →
+object id is a pure function and the platform guarantees one instance, so a
+mismatch is a *configuration* bug — a wrong binding, or an `objectName` /
+`jurisdiction` that differs between the Worker and the object — and fails
+loudly rather than retrying.
+
+`locationHint` only affects where a new object is first created and is safe to
+change. `jurisdiction` and `objectName` are part of an actor's identity:
+changing either repoints every actor at a different object, which is a state
+migration.
+
 ## Status
 
-Storage and reminders ship here. The placement (`ref` → DO stub) and the
-`SiloDurableObject` host class are the next step; see
-[#9](https://github.com/andtii/actors/issues/9).
+Storage, reminders and the placement ship here. The `SiloDurableObject` host
+class and the Worker front door are the next step; see
+[#143](https://github.com/andtii/actors/issues/143). Until then you wire the
+object class yourself.
