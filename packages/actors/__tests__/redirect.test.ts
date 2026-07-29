@@ -15,7 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { actor, defineActor } from '@sigx/actors';
-import { __actorRef, configureActors } from '@sigx/actors/client';
+import { __actorRef, configureActors, routedFetchTransport } from '@sigx/actors/client';
 import { createSilo } from '@sigx/actors/silo';
 import { handleActorRequest } from '@sigx/actors/server';
 import { createCluster, type ClusterHarness } from './harness';
@@ -255,7 +255,7 @@ describe('the client follows, and remembers', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'c9');
         const endpoint = harness.endpointOf(from);
-        configureActors({ endpoint, fetch: harness.fetch, follow: true });
+        configureActors(routedFetchTransport({ endpoint, fetch: harness.fetch, follow: true }));
         const Ref = __actorRef('Counter', endpoint) as typeof Counter;
 
         const publicUrls = () => urls.filter((u) => u.includes('/_sigx/actor'));
@@ -298,7 +298,7 @@ describe('the client follows, and remembers', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'c11');
         const endpoint = harness.endpointOf(from);
-        configureActors({ endpoint, fetch: harness.fetch, follow: true });
+        configureActors(routedFetchTransport({ endpoint, fetch: harness.fetch, follow: true }));
         const Ref = __actorRef('Counter', endpoint) as typeof Counter;
 
         await actor(Ref, 'c11').bump();
@@ -318,7 +318,7 @@ describe('the client follows, and remembers', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'c12');
         const endpoint = harness.endpointOf(from);
-        configureActors({ endpoint, fetch: harness.fetch, follow: true });
+        configureActors(routedFetchTransport({ endpoint, fetch: harness.fetch, follow: true }));
         const Ref = __actorRef('Counter', endpoint, ['ticks']) as typeof Counter;
 
         const got: number[] = [];
@@ -412,12 +412,12 @@ describe('the 421 the client gives up on stays readable', () => {
                 }
             }
         });
-        configureActors({
+        configureActors(routedFetchTransport({
             endpoint: 'http://edge.test/_sigx/actor',
             follow: { maxHops: 0 },
             // No x-sigx-actor-owner header: the body is the only source.
             fetch: async () => new Response(body, { status: 421 })
-        });
+        }));
         const Ref = __actorRef('Counter', 'http://edge.test/_sigx/actor') as typeof Counter;
 
         await expect(actor(Ref, 'x').bump()).rejects.toThrow('is owned by silo-9');
@@ -438,7 +438,7 @@ describe('the route memo respects its cap', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'cap0');
         const endpoint = harness.endpointOf(from);
-        configureActors({ endpoint, fetch: harness.fetch, follow: { cache: 0 } });
+        configureActors(routedFetchTransport({ endpoint, fetch: harness.fetch, follow: { cache: 0 } }));
         const Ref = __actorRef('Counter', endpoint) as typeof Counter;
 
         const publicUrls = () => urls.filter((u) => u.includes('/_sigx/actor'));

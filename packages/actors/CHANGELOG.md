@@ -23,6 +23,59 @@
   `retainMs` clears terminal records via a one-shot reminder;
   `discard()` does it on demand.
 
+- **`ActorRouter` — the pluggable client routing seam** (#135, stage 3 of
+  #84): `routedTransport()`, `learningRouter()`, `staticRouter()`,
+  `chainRouters()`, `routedFetchTransport()`, and `actorRedirect()`.
+
+  `ActorTransport` decides *how* a call travels; `ActorRouter` decides
+  *where* it goes. They sit beside each other and compose, so a router and a
+  custom transport are one wrapper apart instead of a new class each.
+
+  The grain is now threaded to the transport as `ActorCallInit.ref`, built
+  once per `actor(def, key)` rather than re-derived from the symbol and
+  `args[0]` — that convention belongs to `__actorRef`, and a transport that
+  re-implemented it would break silently the day it changes. `$live` carries
+  no ref (it multiplexes many grains onto one request), so it is never
+  routed.
+
+  **A router can never fail a call.** `resolve` throwing falls back to the
+  default endpoint; `learn` and `invalidate` throwing are ignored, because a
+  cache that breaks while *remembering* an answer must not destroy the
+  answer the caller is about to receive. That is what makes it safe to put
+  arbitrary user code on the dispatch path, and it holds because routing is
+  an optimization — a wrong endpoint costs a hop, never a wrong answer.
+
+  The redirect-following loop moved out of `fetchTransport` into
+  `routedTransport`, so a custom transport gets it for free. `learningRouter()`
+  is stage 2's route memo lifted into the public seam.
+
+### Changed
+
+- **`follow` and `router` moved off `ActorTransportConfig`** (#135) onto
+  `routedFetchTransport({ ... })`. `configureActors({ endpoint, follow: true })`
+  becomes `configureActors(routedFetchTransport({ endpoint, follow: true }))`.
+
+  Routing is now opt-in **by import**, and that is worth ~960 bytes: with the
+  sugar on the always-loaded config, `@sigx/actors/app` measured 4.15 kB;
+  without it, 3.19 kB. The client entry rides every bundle that touches an
+  actor, and the majority consumer — a single-origin browser app — cannot use
+  redirects at all, since the retry would be cross-origin and preflight-
+  refused. The `/app` budget goes back to 3.5 kB (it had been raised to 4 kB
+  for exactly this coupling), and a new size-limit entry guards the claim: a
+  plain `{ __actorRef, configureActors, fetchTransport }` import measures
+  1.56 kB against the 2.85 kB whole module.
+
+- **`endpointOf` precedence now puts a router's answer first** (#135):
+  `init.route ?? config.endpoint ?? init.endpoint`. Previously the configured
+  endpoint won, so any app that called `configureActors({ endpoint })` would
+  have silently defeated its own router.
+
+- **`@sigx/actors/app` uses the shared `resolveTransport`** (#135) instead of
+  its own copy of the `isTransport` duck-check plus `fetchTransport`. The
+  duplicate had already diverged once.
+
+### Added
+
 - **`ActivationInfo.tasks` — running detached-task count per activation**
   (#162). Flows through `silo.activations()` and the `ops()` snapshot, so
   operators can see which grains hold long-running work (and why the idle

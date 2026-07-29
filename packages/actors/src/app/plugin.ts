@@ -17,7 +17,12 @@
  * vocabulary — a documentation gap, not a code gap.
  */
 import type { App, Plugin } from '@sigx/runtime-core';
-import { configureActors, fetchTransport, type ActorTransport, type ActorTransportConfig } from '../client';
+import {
+    configureActors,
+    resolveTransport,
+    type ActorTransport,
+    type ActorTransportConfig
+} from '../client';
 import { ACTORS_TOKEN, isLiveClient, type ActorsContext } from './context';
 import { createCellRegistry } from './cell-registry';
 import { setProvided } from '@sigx/runtime-core/internals';
@@ -34,9 +39,6 @@ export interface ActorsPluginOptions {
 /** Page-global, like the seam it guards: last install wins. */
 let installed: ActorTransport | null = null;
 
-function isTransport(value: ActorTransportConfig | ActorTransport): value is ActorTransport {
-    return typeof (value as ActorTransport).call === 'function';
-}
 
 export function actorsPlugin(options: ActorsPluginOptions = {}): Plugin {
     return {
@@ -46,9 +48,11 @@ export function actorsPlugin(options: ActorsPluginOptions = {}): Plugin {
             let transport: ActorTransport | null = null;
 
             if (options.transport && live) {
-                transport = isTransport(options.transport)
-                    ? options.transport
-                    : fetchTransport(options.transport);
+                // `resolveTransport`, NOT a local isTransport +
+                // fetchTransport. The duplicate had already diverged once,
+                // quietly doing less here than the direct `configureActors`
+                // path — one resolution rule, one place.
+                transport = resolveTransport(options.transport);
                 if (__DEV__ && installed && installed !== transport) {
                     console.warn(
                         '[sigx actors] actorsPlugin: overwriting a live actor transport ' +

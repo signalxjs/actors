@@ -1309,6 +1309,66 @@ instead of a route — `httpTransport()`, the default, does contribute a route
 like any other plugin, but a socket transport does not have to. See
 [the silo-to-silo transport seam](#the-silo-to-silo-transport-is-pluggable).
 
+### Routing is pluggable too
+
+`ActorTransport` decides *how* a call travels; `ActorRouter` decides *where*
+it goes. They sit side by side and compose, so a router and a custom
+transport are one wrapper apart:
+
+```ts
+import {
+    configureActors, fetchTransport, learningRouter, routedTransport
+} from '@sigx/actors/client';
+
+configureActors(routedTransport(fetchTransport({ endpoint }), learningRouter()));
+```
+
+| router | how it decides | good for |
+|---|---|---|
+| *(none — the default)* | always the configured endpoint | one origin, browsers |
+| `learningRouter()` | caches what redirects teach it | any caller that can reach silos directly |
+| `staticRouter(url)` | always `url` | pinning over the build-time endpoint |
+| `chainRouters(a, b)` | first non-null answer wins | composing a precise router with a learning one |
+| yours | a service mesh, an existing sharding scheme, tenant affinity | whatever the deployment already does |
+
+```ts
+interface ActorRouter {
+    readonly name: string;
+    resolve(ref: ActorRef, ctx: ActorRouteContext): string | null;
+    learn?(ref: ActorRef, endpoint: string): void;
+    invalidate?(endpoint?: string): void;
+    stats?(): ActorRouterStats;
+    close?(): void;
+}
+```
+
+`resolve` is **sync** on purpose: it runs on every call, and a router that
+needs to await something should answer from cache and fill in the background
+rather than put a round trip in front of every dispatch. Returning `null`
+means "no opinion" and falls back to the configured endpoint.
+
+**A router can never fail a call.** Every callback is wrapped: `resolve`
+throwing falls back to the default, and `learn` or `invalidate` throwing is
+ignored, because a cache that breaks while *remembering* an answer must not
+destroy the answer. That is not politeness — it is what makes it safe to put
+arbitrary user code on the dispatch path, and it holds because routing is an
+optimization: a wrong endpoint costs a hop, never a wrong answer, since the
+receiving silo still forwards or redirects and the directory remains the
+sole arbiter of who owns a grain.
+
+Two limits worth knowing:
+
+- **`$live` is never routed.** One held-open response fans out to many
+  grains, so there is no single owner to pick; the router is bypassed and
+  the server fans out through placement as usual.
+- **A stream is routed on its FIRST pull only.** A redirect there re-routes
+  cleanly; past the first value the endpoint is settled, and a later failure
+  is a stream failure rather than a routing question.
+
+`routedTransport(...).stats()` reports `routed` / `redirects` /
+`invalidations` / `routerErrors` — `redirects` trending to ~0 as a learning
+router warms is the signal that it is working.
+
 ### The app plugin
 
 ```ts
@@ -1425,8 +1485,15 @@ origin that proxies and an internal origin that redirects.
 The client opts in, and remembers:
 
 ```ts
-configureActors({ endpoint, follow: true });
+import { routedFetchTransport } from '@sigx/actors/client';
+
+configureActors(routedFetchTransport({ endpoint, follow: true }));
 ```
+
+Routing is opt-in **by import**: `configureActors({ endpoint })` on its own
+ships none of it, which matters because the client entry rides every bundle
+that touches an actor and a single-origin browser app cannot use redirects
+at all.
 
 Remembering is the point. Without it a redirect costs *two* client round
 trips versus one trip plus an internal hop — strictly worse than proxying.
