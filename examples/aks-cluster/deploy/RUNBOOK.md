@@ -267,6 +267,43 @@ from their checkpoints; observed progress regresses at most one step per
 resume. Wall time stretches by roughly the membership TTL per hard kill —
 that detection window is the price of crash-resume.
 
+### (l) The real app, from the outside world
+
+The chat example ([`examples/chat/deploy`](../../chat/deploy)) publicly
+exposed: SSR + browser client + signed sessions + live NDJSON streams
+through the ingress. Deploy:
+
+```sh
+TAG=$(git rev-parse --short HEAD)
+az acr build --registry $ACR --image sigx-chat:$TAG \
+  --platform linux/amd64 --file examples/chat/Dockerfile .
+kubectl create namespace sigx-chat
+helm install chat examples/chat/deploy/chart -n sigx-chat --set image.tag=$TAG
+az network dns record-set a add-record -g <dns-rg> -z <zone> \
+  -n chat -a <ingress-lb-ip> --ttl 300
+# pre-DNS smoke: curl -sI --resolve chat.<zone>:443:<lb-ip> https://chat.<zone>/
+```
+
+The matrix — every test runs from OUTSIDE the cluster:
+
+| # | Test | Pass |
+|---|---|---|
+| 1 | `curl -v https://chat.<zone>/` | 200 SSR HTML over h2, wildcard cert |
+| 2 | real browser, two tabs, different users, post in one | appears live in the other — no reload |
+| 3 | `/r/general` + `/r/random` | isolated rooms; ops (port-forward internal port) shows grains spread |
+| 4 | `GET /_sigx/health`, `GET /_sigx/ops`, `POST /_sigx/silo/x` on the public host | all 404 — the dual listener seals them; never JSON, never SSR HTML |
+| 5 | `POST /_sigx/fn/... -H 'Origin: https://evil.example'` | 403 (same-origin via x-forwarded-*) |
+| 6 | no cookie → 401; forged `user=ada.deadbeef` → 401; signed cookie → 200 | the guard chain, end to end |
+| 7 | `POST /_sigx/actor/Room%23topic` (signed) | 200 — nginx passed `%23` through untouched |
+| 8 | hold a quiet watch stream ≥ 120 s | stays open (3600 s timeouts; per-actor streams send no pings — the reconnect loop is the systemic answer) |
+| 9 | `kubectl -n sigx-chat rollout restart deploy/chat-silo` with a tab streaming | tab reconnects by itself and resumes receiving |
+| 10 | post → `kubectl -n sigx-chat delete pod chat-redis-...` | AOF recovery, history intact |
+| 11 | WAN load from a laptop (signed cookie + correct Origin, recent+post loop) | p50/p99 vs the in-cluster curve; no 5xx |
+
+Teardown: `az network dns record-set a delete ... -n chat -y` and
+`helm uninstall chat -n sigx-chat` (the room-history PVC survives until
+the namespace goes).
+
 ### Optional: Lease-based membership (`@sigx/actors-k8s`)
 
 Re-run (a), (d)–(h) with membership on coordination Leases instead of

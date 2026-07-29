@@ -1,0 +1,38 @@
+# The public edge. TLS comes from the controller's default certificate
+# (the *.omniaflowtest.net wildcard) — no tls block, no cert-manager
+# annotation needed for a host the wildcard covers.
+#
+# The annotations are load-bearing for the live streams:
+# - proxy-buffering off: actor watch() responses are long-lived NDJSON;
+#   buffered, the page silently stops being live.
+# - read/send-timeout 3600: the per-actor stream mount sends NO keepalive
+#   pings, so nginx's default 60s idle timeout would cut every quiet
+#   stream. (The client reconnect loop makes drops survivable either way;
+#   the long timeout makes them rare.)
+# - NO rewrite/regex annotations of any kind: actor symbols travel
+#   percent-encoded (/_sigx/actor/Room%23watch) and a rewriting location
+#   would decode the %23 and break routing.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "chat.fullname" . }}-web
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "chat.fullname" . }}-silo
+                port:
+                  name: public

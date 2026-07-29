@@ -1,0 +1,81 @@
+image:
+  repository: omniaflowtestacr.azurecr.io/sigx-chat
+  # REQUIRED at install: --set image.tag=<git-short-sha>. Immutable tags only.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+ports:
+  # What the ingress routes to: SSR + assets + serverFns + actor endpoint.
+  public: 8080
+  # Probes, peer silos (advertise target), ops via port-forward. Never
+  # routed by the ingress.
+  internal: 7311
+
+ingress:
+  host: chat.omniaflowtest.net
+
+env:
+  # Redis key namespace (cluster + storage + reminders).
+  sigxNamespace: chat
+  fetchConnections: 64
+
+secrets:
+  # Empty = generated on install and PRESERVED on upgrade (lookup guard).
+  clusterSecret: ""
+  opsSecret: ""
+  # Signs the session cookies — rotating it signs everyone out.
+  authSecret: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 2
+  liveness:
+    periodSeconds: 10
+  readiness:
+    periodSeconds: 5
+
+lifecycle:
+  preStopSleepSeconds: 10
+terminationGracePeriodSeconds: 60
+
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+# The dedicated tainted node pool shared with the actors test rig.
+nodeSelector:
+  workload: sigx-actors-test
+tolerations:
+  - key: workload
+    operator: Equal
+    value: sigx-actors-test
+    effect: NoSchedule
+
+redis:
+  # Deliberately its OWN Redis: the perf rig's runbook kills and tears
+  # down the sigx-actors-test one as part of its scenarios — the public
+  # demo must not couple to that.
+  image: redis:7-alpine
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  appendonly: true
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: managed-csi
