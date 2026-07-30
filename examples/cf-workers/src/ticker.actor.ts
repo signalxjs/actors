@@ -44,6 +44,20 @@ export const Ticker = defineActor({
             return ctx.state.ticks;
         }
     }),
+    streams: (ctx) => ({
+        /**
+         * The tick count, pushed.
+         *
+         * `ctx.changes()` emits after any turn that mutated state — and a
+         * reminder delivery IS such a turn. So a reminder firing notifies
+         * every watcher by itself, with nothing polling for it. That is the
+         * whole point worth demonstrating, and it is why this page needs no
+         * timer.
+         */
+        async *watch() {
+            yield* ctx.changes({ initial: true });
+        }
+    }),
     async onReminder(ctx) {
         ctx.state.ticks++;
         if (ctx.state.repeating) {

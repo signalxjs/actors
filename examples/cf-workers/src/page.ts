@@ -89,9 +89,11 @@ const HTML = String.raw`<!doctype html>
     <button id="arm">Arm for 20s</button>
     <span id="ticks">ticks: –</span>
   </div>
-  <p class="note">A durable alarm. Close this tab, come back after it is due,
-     and the count will have gone up — the platform woke the object with no
-     request involved. This is the one thing a request cannot fake.</p>
+  <p class="note">A durable alarm. Leave this tab open and the count will
+     tick up on its own — the platform woke the object and its turn pushed the
+     change down the same stream. Nothing here polls. Close the tab and come
+     back and it will still have fired, which is the one thing a request
+     cannot fake.</p>
 </section>
 
 <script type="module">
@@ -108,15 +110,26 @@ async function call(type, method, args) {
     return body.data;
 }
 
-let watching = null;
+let streams = [];
 
-/** Follow the NDJSON body of a watch stream and paint every frame. */
-async function watch(key) {
-    watching?.abort();
-    const ac = (watching = new AbortController());
+function stopStreams() {
+    for (const ac of streams) ac.abort();
+    streams = [];
+}
+
+/**
+ * Follow one actor's changes and hand every frame to onChunk.
+ *
+ * NDJSON carries three kinds of line: a chunk, a terminating done, and an
+ * in-band error. Handling only chunks would leave the badge claiming
+ * "streaming" forever after the stream ended or failed.
+ */
+async function follow(type, key, onChunk) {
+    const ac = new AbortController();
+    streams.push(ac);
     const badge = $('stream');
     try {
-        const res = await fetch('/_sigx/actor/' + encodeURIComponent('Counter#watch'), {
+        const res = await fetch('/_sigx/actor/' + encodeURIComponent(type + '#watch'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: [key] }),
@@ -128,9 +141,6 @@ async function watch(key) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        // NDJSON carries three kinds of line: a chunk, a terminating done,
-        // and an in-band error. Handling only chunks would leave the badge
-        // claiming "streaming" forever after the stream ended or failed.
         reading: for (;;) {
             const { value, done } = await reader.read();
             if (done) break;
@@ -143,11 +153,9 @@ async function watch(key) {
                 const frame = JSON.parse(line);
                 if ('error' in frame) throw new Error(frame.error?.message ?? 'stream failed');
                 if ('done' in frame) break reading;
-                if ('chunk' in frame) $('count').textContent = frame.chunk.count;
+                if ('chunk' in frame) onChunk(frame.chunk);
             }
         }
-        // A clean end: the actor stopped sending, so say so rather than
-        // leaving a green dot implying a live connection.
         badge.classList.remove('on');
         badge.textContent = 'stream ended';
     } catch (error) {
@@ -159,10 +167,14 @@ async function watch(key) {
 
 const keyOf = () => $('key').value.trim() || 'demo';
 
-async function load() {
-    $('count').textContent = await call('Counter', 'read', [keyOf()]);
-    void watch(keyOf());
-    void ticks();
+function load() {
+    stopStreams();
+    const key = keyOf();
+    // Both numbers arrive on streams. Nothing on this page polls — including
+    // the reminder count, because a reminder delivery is a turn that mutates
+    // state, so it notifies watchers like any other turn.
+    void follow('Counter', key, (s) => ($('count').textContent = s.count));
+    void follow('Ticker', key, (s) => ($('ticks').textContent = 'ticks: ' + s.ticks));
 }
 
 const bump = (by) => async () => {
@@ -170,14 +182,6 @@ const bump = (by) => async () => {
     // point being demonstrated.
     await call('Counter', 'increment', [keyOf(), by]);
 };
-
-async function ticks() {
-    try {
-        $('ticks').textContent = 'ticks: ' + (await call('Ticker', 'ticks', [keyOf()]));
-    } catch {
-        $('ticks').textContent = 'ticks: –';
-    }
-}
 
 $('load').onclick = load;
 $('inc').onclick = bump(1);
@@ -189,9 +193,7 @@ $('arm').onclick = async () => {
     setTimeout(() => ($('arm').textContent = 'Arm for 20s'), 20_000);
 };
 
-// Poll the reminder count only. Everything else arrives on the stream.
-setInterval(ticks, 3_000);
-void load();
+load();
 </script>
 `;
 

@@ -18,7 +18,12 @@ TARGET_URL=http://127.0.0.1:8787 pnpm --filter cf-workers-example verify
 Then open <http://127.0.0.1:8787> — the Worker serves a page as well as the
 actors, from `createFetchHandler`'s `fallback`. Type any key to get a different
 actor, increment it, and watch the number arrive over a `watch` stream rather
-than from the button. There is a reminder you can arm and come back to.
+than from the button.
+
+**Nothing on the page polls**, including the reminder count. `ctx.changes()`
+emits after any turn that mutated state, and a reminder delivery *is* such a
+turn — so an alarm firing pushes down the same stream as a button press. Arm
+the reminder, leave the tab open, and watch the count move on its own.
 
 It is one HTML string with an inline script (`src/page.ts`) — no build step and
 no client bundle, because its job is to make the model visible, not to be an
