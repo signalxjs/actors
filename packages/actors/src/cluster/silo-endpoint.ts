@@ -33,6 +33,7 @@ import type { ClusterPlacement } from './placement';
 import type { SiloCallTarget, SiloEndpointRuntime, SiloTransportRuntime } from './seam';
 import { SILO_STATS_METHOD, SILO_STATS_SYMBOL, SILO_STATS_TYPE } from './stats';
 import { parseWatchOptions, WATCH_SYMBOL_PREFIX } from './watch-symbol';
+import { relayStream } from '../stream-relay';
 import { toSiloWireError } from './wire-errors';
 
 /** Endpoint knobs a transport may forward: body caps, `onError`, timeouts. */
@@ -385,13 +386,14 @@ function synthesize(
                               watchOptions(rest[0], symbol)
                           )
                         : runtime.dispatchStream(ref, method, rest, call);
-                return (async function* pump(): AsyncGenerator<unknown> {
-                    try {
-                        yield* iterable;
-                    } catch (error) {
-                        throw toServerFnError(error);
-                    }
-                })();
+                // An iterator, not a generator — see `relayStream`: a
+                // generator parked at `yield*` queues `return()` and never
+                // forwards it, so a peer hanging up would leak the owner's
+                // keep-alive ref.
+                return relayStream(iterable, {
+                    mapError: toServerFnError,
+                    signal: rq.abortSignal
+                });
             }
         };
     }

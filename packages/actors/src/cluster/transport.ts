@@ -13,6 +13,7 @@
 import { ActorUnreachableError, isActorError } from '../errors';
 import type { ActorRoute } from '../silo/app';
 import type { ActorCallContext, ActorDispatcher } from '../types';
+import { relayStream } from '../stream-relay';
 import { readNdjson, type WireError } from '../wire-shared';
 import { encodeEnvelope, signAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type {
@@ -153,10 +154,19 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
                         throw error;
                     }
                 } finally {
-                    controller.abort(); // consumer break/return or end
+                    controller.abort(); // normal end, or an error unwinding
                 }
             }
-            return stream();
+            // Relayed, not returned raw. A generator parked at `yield*
+            // readNdjson(...)` has `return()` QUEUED rather than run, so the
+            // `finally` above never fires on a consumer hanging up — the fetch
+            // is never aborted, the peer never learns, and its activation's
+            // keep-alive ref leaks. `onClose` aborts synchronously, which is
+            // what wakes the parked `reader.read()`.
+            return relayStream(stream(), {
+                mapError: (error) => error,
+                onClose: () => controller.abort()
+            });
         };
 
         const dispatcherFor = (target: SiloDescriptor): ActorDispatcher => ({

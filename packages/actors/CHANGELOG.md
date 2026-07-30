@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A disconnected stream or watch consumer now releases the activation**
+  (#184). #120 fixed this inside the activation; the same trap was sitting in
+  three layers ABOVE it, so on the wire nothing ever pulled the lever.
+
+  Each layer wrapped the stream in an async generator (`async function* pump()
+  { yield* iterable }`). A generator parked at `yield*` is suspended at an
+  internal await, and the spec QUEUES `return()` there instead of running it —
+  so the generator is never resumed, never forwards `return()` inward, and the
+  activation's teardown is never reached. The affected layers were the public
+  actor endpoint, the internal silo-to-silo endpoint, and `httpTransport`'s
+  sending side (where the victim was `finally { controller.abort() }`, meaning
+  a hung-up caller never even aborted its fetch).
+
+  The cost was quiet and unbounded. `keptAlive` does not delay idle
+  collection, it EXEMPTS an activation from it (`if (a.idle && !a.keptAlive &&
+  …)`), so a departed consumer left the grain permanently ineligible — not
+  "collected late", never collected. A control test pins the distinction: a
+  plain idle activation is collected, a watched one was not, after five sweep
+  periods at `idleAfterMs: 0`.
+
+  All three now share `relayStream()`: a hand-written async iterator whose
+  `return()` marks itself done and forwards inward BEFORE awaiting anything
+  that could park it, plus a synchronous `onClose` hook for whatever wakes a
+  parked reader (the transport aborts its fetch there). Both triggers are
+  wired — a body cancel and a request abort — because hosts differ in which
+  one they raise.
+
+  **Not fixed on Cloudflare** (#187): `stub.fetch(url, { signal })` does not
+  propagate cancellation into a Durable Object, so the chain is correct right
+  up to that boundary and the boundary swallows it. Measured directly; the
+  reproduction ships skipped.
+
 ### Changed
 
 - **The default placement policy stays `randomPlacementPolicy()`, decided on

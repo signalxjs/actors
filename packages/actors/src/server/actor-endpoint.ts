@@ -19,6 +19,7 @@ import {
 import { mintCallId } from '../call-id';
 import { runGuards } from '../guards';
 import { ACTOR_FOLLOW_HEADER, ACTOR_HOPS_HEADER, ACTOR_OWNER_HEADER } from '../route';
+import { relayStream } from '../stream-relay';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, subscribeAll } from './live-endpoint';
 import { actorLabel, type ActorCallContext, type ActorRef, type AnyActorDefinition, type Silo } from '../types';
@@ -336,9 +337,11 @@ function synthesize(
         return {
             __sigxName: method,
             __sigxStream: true,
-            // Resolves to an async generator: the endpoint's streamResponse
-            // drives it (and generator.return() propagates to the actor's
-            // stream on client disconnect).
+            // Resolves to an async ITERATOR, not a generator: `streamResponse`
+            // calls `return()` on client disconnect, and a generator parked at
+            // `yield*` would queue that instead of forwarding it — stranding
+            // the activation's teardown and leaking its keep-alive ref. See
+            // `relayStream`.
             __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
                 const { key, rest, call } = await prepare(rq, args);
                 const iterable = silo.dispatchStream!(
@@ -347,13 +350,10 @@ function synthesize(
                     rest,
                     call
                 );
-                return (async function* pump(): AsyncGenerator<unknown> {
-                    try {
-                        yield* iterable;
-                    } catch (error) {
-                        throw toClientError(error);
-                    }
-                })();
+                return relayStream(iterable, {
+                    mapError: toClientError,
+                    signal: rq.abortSignal
+                });
             }
         };
     }
