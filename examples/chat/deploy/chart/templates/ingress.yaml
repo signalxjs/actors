@@ -1,8 +1,12 @@
-# The public edge. TLS comes from the controller's default certificate
-# (the *.omniaflowtest.net wildcard) — no tls block, no cert-manager
-# annotation needed for a host the wildcard covers.
+# The public edge, deliberately TWO Ingress objects on one host: annotations
+# in ingress-nginx are per-Ingress, and the actor endpoint needs one the
+# rest of the site must NOT have (see below).
 #
-# The annotations are load-bearing for the live streams:
+# TLS comes from the controller's default certificate (the
+# *.omniaflowtest.net wildcard) — no tls block, no cert-manager annotation
+# needed for a host the wildcard covers.
+#
+# Shared annotations, load-bearing for the live streams:
 # - proxy-buffering off: actor watch() responses are long-lived NDJSON;
 #   buffered, the page silently stops being live.
 # - read/send-timeout 3600: the per-actor stream mount sends NO keepalive
@@ -12,6 +16,12 @@
 # - NO rewrite/regex annotations of any kind: actor symbols travel
 #   percent-encoded (/_sigx/actor/Room%23watch) and a rewriting location
 #   would decode the %23 and break routing.
+{{- $ann := dict
+  "nginx.ingress.kubernetes.io/proxy-buffering" "off"
+  "nginx.ingress.kubernetes.io/proxy-request-buffering" "off"
+  "nginx.ingress.kubernetes.io/proxy-read-timeout" "3600"
+  "nginx.ingress.kubernetes.io/proxy-send-timeout" "3600" }}
+{{- $locality := dig "localityRouting" true (.Values.ingress | default dict) }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -19,16 +29,16 @@ metadata:
   labels:
     {{- include "chat.labels" . | nindent 4 }}
   annotations:
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    {{- toYaml $ann | nindent 4 }}
 spec:
   ingressClassName: nginx
   rules:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
+          # SSR documents, assets and serverFns: plain round-robin. These
+          # carry NO routing token, so hashing them would hash the empty
+          # string and pin every page render onto a single silo.
           - path: /
             pathType: Prefix
             backend:
@@ -36,3 +46,52 @@ spec:
                 name: {{ include "chat.fullname" . }}-silo
                 port:
                   name: public
+{{- if $locality }}
+          # `$live` (and any other `$`-reserved symbol) is the ONE actor path
+          # that must stay off the hash: one held-open response fans out to
+          # many grains, so the runtime deliberately sends no token — and an
+          # empty hash key would pin every live subscription in the
+          # deployment onto a single silo. A longer prefix wins in nginx, so
+          # this carves it back out of the hashed Ingress below. (Chat does
+          # not open a $live channel today; this keeps the chart correct for
+          # anyone who copies it and does.)
+          - path: /_sigx/actor/$live
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "chat.fullname" . }}-silo
+                port:
+                  name: public
+{{- end }}
+{{- if $locality }}
+---
+# The actor endpoint ONLY: hash each call to the silo that owns the grain.
+# Every actor request carries the routing token in `x-sigx-actor-route`
+# (and in the path), so a consistent hash on it PLUS `preferLocalPolicy()`
+# in the app makes the edge and the cluster agree on one owner per key —
+# the documented composition, measured at 1.00 local fraction against 0.01
+# for round-robin. Neither half works alone. `$live` and other reserved
+# symbols carry no token and keep paying a hop by design.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "chat.fullname" . }}-actor
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_x_sigx_actor_route"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /_sigx/actor
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "chat.fullname" . }}-silo
+                port:
+                  name: public
+{{- end }}

@@ -25,6 +25,11 @@ ports:
 
 ingress:
   host: chat.omniaflowtest.net
+  # Hash actor calls to the grain's owner at the edge (a second Ingress for
+  # /_sigx/actor with upstream-hash-by on the routing token). Only useful
+  # together with preferLocalPolicy() in the app — the pair is what turns
+  # ~0.85 cross-silo hops per request into ~0.
+  localityRouting: true
 
 env:
   # Redis key namespace (cluster + storage + reminders).

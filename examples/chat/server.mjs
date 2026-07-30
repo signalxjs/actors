@@ -39,7 +39,7 @@ import {
     attachSignalHandlers
 } from '@sigx/actors/node';
 import { health, metrics, ops } from '@sigx/actors/silo';
-import { cluster, clusterStats } from '@sigx/actors/cluster';
+import { cluster, clusterStats, preferLocalPolicy } from '@sigx/actors/cluster';
 import { redisCluster } from '@sigx/actors-redis';
 
 const here = import.meta.dirname;
@@ -77,6 +77,14 @@ if (REDIS_URL) {
         }),
         advertise: `http://${process.env.POD_IP ?? '127.0.0.1'}:${INTERNAL_PORT}`,
         secret: need('CLUSTER_SECRET'),
+        // Half of the locality pair (the other half is the edge hashing
+        // `x-sigx-actor-route` — see the chart's actor Ingress). The LB
+        // sends every call for a room to the same silo; this makes that
+        // silo ACTIVATE the room, so the two agree without either knowing
+        // the other's algorithm. Measured before this: 213k cross-silo
+        // hops per 250k public requests, and adding silos bought +7%
+        // throughput for +60% CPU. Neither half works alone.
+        policy: preferLocalPolicy(),
         fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
     });
     composed = composed.use(plugin).use(
