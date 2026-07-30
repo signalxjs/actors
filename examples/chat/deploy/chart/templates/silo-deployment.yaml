@@ -37,6 +37,26 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- /* dig with defaults: a `helm upgrade --reuse-values` replays values
+             from before this key existed, and a bare .Values.spread.enabled
+             would nil-pointer the whole render. */}}
+      {{- $spread := .Values.spread | default dict }}
+      {{- if dig "enabled" true $spread }}
+      # WITHOUT this, replicaCount buys no capacity: every silo is a
+      # single-threaded Node process, so three of them packed onto one
+      # 2-vCPU node contend for ~1.9 cores and the public endpoint tops out
+      # (measured: 1,738m on one node = 91% of it, while sibling nodes sat
+      # at 6% — a hard ~1,100 ops/s ceiling). ScheduleAnyway, not
+      # DoNotSchedule: this pool is shared and a spread PREFERENCE must
+      # never wedge a rollout.
+      topologySpreadConstraints:
+        - maxSkew: {{ dig "maxSkew" 1 $spread }}
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: {{ dig "whenUnsatisfiable" "ScheduleAnyway" $spread }}
+          labelSelector:
+            matchLabels:
+              {{- include "chat.siloSelector" . | nindent 14 }}
+      {{- end }}
       containers:
         - name: silo
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

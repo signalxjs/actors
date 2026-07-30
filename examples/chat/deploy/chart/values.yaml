@@ -6,6 +6,16 @@ image:
 
 replicaCount: 3
 
+# Spread silos across nodes. A silo is one single-threaded Node process, so
+# replicas on the same node share one node's cores and add no throughput —
+# this is what makes replicaCount mean something.
+spread:
+  enabled: true
+  maxSkew: 1
+  # ScheduleAnyway keeps it a preference: the pool is shared with the
+  # actors test rig, and a spread rule must not block a rollout.
+  whenUnsatisfiable: ScheduleAnyway
+
 ports:
   # What the ingress routes to: SSR + assets + serverFns + actor endpoint.
   public: 8080
@@ -75,6 +85,8 @@ redis:
       cpu: 500m
       memory: 256Mi
   appendonly: true
+  # Prefer a node without silos on it (soft — see the template).
+  awayFromSilos: true
   persistence:
     enabled: true
     size: 1Gi
