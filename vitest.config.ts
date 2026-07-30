@@ -15,7 +15,14 @@ export default defineConfig({
     },
     test: {
         environment: 'happy-dom',
-        include: ['packages/**/__tests__/**/*.test.{ts,tsx}'],
+        // Examples are included for the env-gated INFRA suite: it tests a
+        // DEPLOYMENT (proxy behaviour, sealed mounts, chaos), which no
+        // package-level test can reach. It skips itself without INFRA_URL,
+        // so `pnpm test` and CI are unaffected.
+        include: [
+            'packages/**/__tests__/**/*.test.{ts,tsx}',
+            'examples/**/__tests__/**/*.test.ts'
+        ],
         // The workers pool has its own config, its own runtime and its own
         // CI job (wrangler needs Node >= 22, this matrix includes 20). These
         // files import `cloudflare:test`, which only resolves there.

@@ -12,7 +12,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { calibrationMedian, instability } from './calibrate.ts';
-import { envMismatch } from './env.ts';
+import { envMismatch, INFRA_SHAPE_MISMATCH } from './env.ts';
 import type { AggregatedMetric, BenchResult } from './types.ts';
 
 export const RESULTS_DIR = fileURLToPath(new URL('../results/', import.meta.url));
@@ -242,6 +242,12 @@ export interface CompareOutcome {
      * has nothing to do with the code.
      */
     machineDelta: number;
+    /**
+     * Mismatches that make the comparison meaningless rather than merely
+     * suspect — currently a differing deployment shape. Non-empty means the
+     * caller must refuse to print a verdict.
+     */
+    fatalMismatch: string[];
 }
 
 export function compare(
@@ -282,6 +288,7 @@ export function compare(
     }
 
     return {
+        fatalMismatch: envWarnings.filter((w) => w.startsWith(INFRA_SHAPE_MISMATCH)),
         comparisons,
         regressions: comparisons.filter((c) => c.verdict === 'regressed'),
         envWarnings,

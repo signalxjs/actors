@@ -56,8 +56,12 @@ spec:
           # this carves it back out of the hashed Ingress below. (Chat does
           # not open a $live channel today; this keeps the chart correct for
           # anyone who copies it and does.)
+          # ImplementationSpecific, NOT Prefix: `$` is rejected by the
+          # ingress-nginx admission webhook in a Prefix path ("cannot be
+          # used with pathType Prefix"), which neither `helm lint` nor
+          # `helm template` can see — only a real apply does.
           - path: /_sigx/actor/$live
-            pathType: Prefix
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: {{ include "chat.fullname" . }}-silo

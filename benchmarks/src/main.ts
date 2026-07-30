@@ -145,8 +145,19 @@ async function main(): Promise<void> {
             );
         }
         const outcome = compare(result, loadResult(BASELINE_PATH), options.threshold);
-        printComparison(outcome, options.threshold);
-        if (outcome.regressions.length > 0) process.exitCode = 1;
+        if (outcome.fatalMismatch.length > 0) {
+            // Refuse rather than warn: a comparison across deployment shapes
+            // is not a noisy answer, it is a wrong one (#183 — the same three
+            // replicas differ by >2x packed vs spread, and every report looks
+            // identical). Re-baseline for the new shape instead.
+            console.error('\nrefusing to compare — the deployment differs from the baseline:');
+            for (const m of outcome.fatalMismatch) console.error(`  ${m}`);
+            console.error('\nrecord a baseline for THIS shape with --save-baseline.');
+            process.exitCode = 1;
+        } else {
+            printComparison(outcome, options.threshold);
+            if (outcome.regressions.length > 0) process.exitCode = 1;
+        }
     }
 
     const failed = results.filter((r) => r.error);

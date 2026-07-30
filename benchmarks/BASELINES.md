@@ -11,6 +11,28 @@ the machine.
 
 ## Tiers — read this before quoting a number
 
+### Tier 3 — a real deployment (`infra/*`)
+
+Measured against a deployed cluster over its public endpoint: TLS, an
+ingress, a placement policy, an edge hash, a directory in Redis. **Not
+comparable to Tier 1 or Tier 2 numbers** — a Tier 1 dispatch figure counts
+microseconds inside one process, a Tier 3 figure counts a request that
+crossed the internet, a proxy and possibly two silos.
+
+Opt-in (`BENCH_INFRA=1` plus an `INFRA_URL`, a signed-cookie secret, and a
+load VM), and the load is driven FROM A VM IN THE CLUSTER'S REGION: the
+same ladder run from a laptop across an ocean varies 50-80% run to run and
+cannot detect a 30% regression. Comparisons are refused outright when the
+deployment shape (replica count, how many distinct NODES those replicas
+span, image tag) differs from the baseline's — three replicas packed on one
+node and three spread across three read identically in every report and
+differ by more than 2x.
+
+Recorded with `node examples/aks-cluster/deploy/testenv.mjs baseline`;
+compared by `… testenv.mjs test`. Absolute capacity is a different
+question from regression detection — for that, `testenv.mjs load` runs the
+generator directly with as many clients as you care to point at it.
+
 Figures here come from two different kinds of measurement, and confusing them
 is how a modelled number ends up cited as a fact (which is what #87 is fixing
 for the Redis figures). The scenario name says which tier it is:

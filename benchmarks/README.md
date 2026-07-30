@@ -74,6 +74,22 @@ process per silo and binds ports, and it is slow.
 ```sh
 pnpm bench:tier2                        # the Tier-2 scenarios
 BENCH_TIER2=1 pnpm bench:run cluster2/  # same thing, spelled out
+
+**Tier 3 (`infra/*`)** measures a REAL DEPLOYMENT over its public endpoint,
+and is opt-in twice: `BENCH_INFRA=1` plus an `INFRA_URL`, a cookie secret,
+and a same-region load VM (`INFRA_VM_RG`/`INFRA_VM_NAME`) — because the
+same ladder driven from a laptop across an ocean swings 50-80% and can
+prove nothing. The driver is `examples/aks-cluster/deploy/edge-ladder.mjs`,
+shipped to the VM per run. A comparison is REFUSED when the deployment
+shape differs from the baseline's (`INFRA_SHAPE`: replicas, distinct nodes,
+image), because packed and spread replicas look identical in a report and
+differ by more than 2x. Normal entry points:
+
+```sh
+node examples/aks-cluster/deploy/testenv.mjs baseline   # record for THIS shape
+node examples/aks-cluster/deploy/testenv.mjs test       # assertions + compare
+```
+
 ```
 
 Inside Tier 2 there is a second split, and **it is enforced in code rather

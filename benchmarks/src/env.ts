@@ -19,6 +19,15 @@ export interface BenchEnv {
     conditions: string;
     commit: string;
     dirty: boolean;
+    /**
+     * Tier 3 only: the DEPLOYMENT's shape, supplied via `INFRA_SHAPE` by
+     * whoever knows it (`testenv.mjs` computes it from the live release).
+     * Empty for Tier 1/2. Compared verbatim and never guessed: three silos
+     * packed on one node and three spread across three look identical in
+     * every report and differ by more than 2x in throughput, so a silent
+     * comparison across shapes is a confident wrong answer.
+     */
+    infraShape?: string;
 }
 
 function gitCommit(): { commit: string; dirty: boolean } {
@@ -60,12 +69,16 @@ export function captureEnv(): BenchEnv {
         cpuCount: cpu.length,
         totalMemBytes: totalmem(),
         conditions: resolvedConditions(),
+        infraShape: process.env.INFRA_SHAPE ?? '',
         commit,
         dirty
     };
 }
 
 /** Fields that must match for two results to be worth comparing. */
+/** Marks a mismatch that must ABORT a comparison rather than warn. */
+export const INFRA_SHAPE_MISMATCH = 'deployment shape:';
+
 export function envMismatch(a: BenchEnv, b: BenchEnv): string[] {
     const differing: string[] = [];
     if (a.nodeMajor !== b.nodeMajor) differing.push(`node ${a.node} vs ${b.node}`);
@@ -74,6 +87,16 @@ export function envMismatch(a: BenchEnv, b: BenchEnv): string[] {
     if (a.cpuModel !== b.cpuModel) differing.push(`cpu ${a.cpuModel} vs ${b.cpuModel}`);
     if (a.conditions !== b.conditions) {
         differing.push(`conditions ${a.conditions} vs ${b.conditions}`);
+    }
+    // Normalize: a baseline recorded before this field existed has it
+    // undefined, which must read as "no shape", not as a mismatch against
+    // an empty one — otherwise Tier 1/2 comparisons start refusing.
+    if ((a.infraShape ?? '') !== (b.infraShape ?? '')) {
+        // Prefixed so the comparer can tell this apart from the advisory
+        // mismatches above and refuse outright.
+        differing.push(
+            `${INFRA_SHAPE_MISMATCH} ${a.infraShape || '(none)'} vs ${b.infraShape || '(none)'}`
+        );
     }
     return differing;
 }

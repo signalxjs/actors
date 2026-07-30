@@ -150,6 +150,9 @@ pnpm bench:baseline       # record this machine's reference (gitignored)
 pnpm bench:compare        # run again and diff against that reference
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 pnpm bench:tier2          # Tier 2: real sockets, one process per silo (opt-in)
+pnpm test:infra           # Tier-3 assertions against a DEPLOYED environment (env-gated)
+pnpm bench:infra          # Tier 3 perf: a real deployment, load driven from a same-region VM
+node examples/aks-cluster/deploy/testenv.mjs up|test|baseline|load|down
 ```
 
 Benchmarks measure the built `dist/*.prod.js` via `--conditions=production`,
@@ -285,7 +288,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   dist, per-grain heap footprint, leak detection, and the CPU/allocation
   profiling recipes. Run by hand (`pnpm bench`), never in CI. See
   `benchmarks/README.md`, and `benchmarks/BASELINES.md` for the reference
-  figures. Not published.
+  figures. **Tier 3** (`infra/*`, `BENCH_INFRA=1`) measures a real
+  DEPLOYMENT over its public endpoint with the load driven from a
+  same-region VM, and refuses to compare across deployment shapes; see
+  `examples/aks-cluster/deploy/testenv.mjs`. Not published.
 
 Path aliases: `tsconfig.json` and `vitest.config.ts` map `@sigx/actors` and
 its subpaths to `packages/actors/src`, so tests and typecheck run against

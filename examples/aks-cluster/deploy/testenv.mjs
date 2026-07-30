@@ -17,10 +17,10 @@
  * and `up` is idempotent, so re-running it converges rather than
  * duplicating. Requires az (logged in), kubectl and helm on PATH.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,9 @@ const cfg = {
     loadRg: process.env.LOAD_RG ?? 'sigx-loadtest',
     loadVm: process.env.LOAD_VM ?? 'loadvm',
     loadVmSize: process.env.LOAD_VM_SIZE ?? 'Standard_D4s_v5',
-    ingressNs: process.env.INGRESS_NS ?? 'ingress-nginx'
+    ingressNs: process.env.INGRESS_NS ?? 'ingress-nginx',
+    // Mirrors the chart's ports.internal — where health and ops live.
+    ports: { internal: Number(process.env.INTERNAL_PORT ?? 7311) }
 };
 
 // Suffix-anchored, and fatal if it does not match: a loose replace() on a
@@ -124,6 +126,15 @@ function buildImage(name, dockerfile, tag) {
 function release(name, chart, ns, extra) {
     const exists = helm(['list', '-n', ns, '-q'], { quiet: true, allowFail: true })?.split('\n').includes(name);
     kube(['create', 'namespace', ns], { quiet: true, allowFail: true });
+    // Preflight against the REAL API server: admission webhooks reject
+    // things `helm lint` and `helm template` render happily (an nginx
+    // Ingress path containing `$` under pathType Prefix, for one).
+    const dry = helm(['upgrade', '--install', name, chart, '-n', ns, '--dry-run=server', ...extra],
+        { quiet: true, allowFail: true });
+    if (dry === null) {
+        log(`✗ ${name}: the API server rejected this chart — running it again for the error:`);
+        helm(['upgrade', '--install', name, chart, '-n', ns, '--dry-run=server', ...extra]);
+    }
     step(`${exists ? 'upgrading' : 'installing'} ${name} in ${ns}`);
     helm([exists ? 'upgrade' : 'install', name, chart, '-n', ns,
         // reset-then-reuse (not --reuse-values): replaying old values breaks
@@ -247,6 +258,109 @@ ${env}
     log(out);
 }
 
+/**
+ * The deployment's identity for baseline purposes. Node spread is IN it on
+ * purpose: replicas sharing a node add almost no capacity, and a report
+ * cannot tell the two apart (#183).
+ */
+function infraShape() {
+    const replicas = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-silo',
+        '-o', 'jsonpath={.spec.replicas}'], { quiet: true });
+    const nodes = kube(['-n', cfg.chatNs, 'get', 'pods', '-l', 'app.kubernetes.io/component=silo',
+        '-o', 'jsonpath={range .items[*]}{.spec.nodeName}{"\\n"}{end}'], { quiet: true });
+    const distinct = new Set(nodes.split('\n').filter(Boolean)).size;
+    const image = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-silo',
+        '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
+    return `replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}`;
+}
+
+const opsSecret = () =>
+    Buffer.from(
+        kube(['-n', cfg.chatNs, 'get', 'secret', 'chat-secrets',
+            '-o', 'jsonpath={.data.opsSecret}'], { quiet: true }),
+        'base64'
+    ).toString('utf8');
+
+const authSecret = () =>
+    Buffer.from(
+        kube(['-n', cfg.chatNs, 'get', 'secret', 'chat-secrets',
+            '-o', 'jsonpath={.data.authSecret}'], { quiet: true }),
+        'base64'
+    ).toString('utf8');
+
+/**
+ * The whole point of the exercise: assert, then measure, then say one
+ * thing. Extra args go to vitest (`test -t "sealed"`), and `INFRA_CHAOS=1`
+ * adds the destructive scenarios.
+ */
+async function test(args) {
+    // Tier 3 drives its load from the VM (a laptop's WAN jitter is +/-50%,
+    // which cannot detect a regression), so the VM is part of `test`.
+    await loadVmUp();
+    // The harness measures the BUILT dist; without it the scenario registry
+    // cannot even load (it imports every tier).
+    if (!existsSync(join(repoRoot, 'packages/actors/dist/index.prod.js'))) {
+        step('building (the bench harness needs dist/*.prod.js)');
+        sh('pnpm', ['build'], { quiet: true });
+    }
+    // The ops checks read the INTERNAL listener, which is deliberately not
+    // routable from outside — so do what an operator does: port-forward it.
+    const forwardPort = Number(process.env.INFRA_OPS_PORT ?? 7399);
+    const forward = spawn('kubectl', ['--context', cfg.cluster, '-n', cfg.chatNs,
+        'port-forward', `svc/${'chat'}-silo`, `${forwardPort}:${cfg.ports.internal}`],
+        { stdio: 'ignore' });
+    await new Promise((r) => setTimeout(r, 3_000));
+    const env = {
+        ...process.env,
+        INFRA_URL: `https://${cfg.chatHost}`,
+        INFRA_AUTH_SECRET: authSecret(),
+        INFRA_OPS_SECRET: opsSecret(),
+        INFRA_NS: cfg.chatNs,
+        INFRA_CONTEXT: cfg.cluster,
+        INFRA_SHAPE: infraShape(),
+        INFRA_OPS_URL: `http://127.0.0.1:${forwardPort}`,
+        INFRA_VM_RG: cfg.loadRg,
+        INFRA_VM_NAME: cfg.loadVm
+    };
+    log(`  shape: ${env.INFRA_SHAPE}`);
+    step('assertions (vitest)');
+    const assertions = spawnInherit('pnpm', ['test:infra', ...args], env);
+    step('perf (bench tier 3, compared against the recorded baseline)');
+    const perf = spawnInherit('pnpm', ['bench:infra:compare'], env);
+    forward.kill();
+    log(`\n${assertions === 0 ? '✓' : '✗'} assertions   ${perf === 0 ? '✓' : '✗'} perf`);
+    if (assertions !== 0 || perf !== 0) process.exitCode = 1;
+}
+
+/** Record the perf baseline FOR THE CURRENT SHAPE. */
+async function baseline() {
+    await loadVmUp();
+    const env = {
+        ...process.env,
+        INFRA_URL: `https://${cfg.chatHost}`,
+        INFRA_AUTH_SECRET: authSecret(),
+        INFRA_SHAPE: infraShape(),
+        INFRA_VM_RG: cfg.loadRg,
+        INFRA_VM_NAME: cfg.loadVm
+    };
+    log(`  shape: ${env.INFRA_SHAPE}`);
+    // Propagate failure: automation that reads exit 0 as "baseline recorded"
+    // would compare against a stale one forever.
+    if (spawnInherit('pnpm', ['bench:infra:baseline'], env) !== 0) {
+        log('✗ baseline FAILED — nothing was recorded');
+        process.exitCode = 1;
+    }
+}
+
+function spawnInherit(cmd, args, env) {
+    try {
+        execFileSync(cmd, args, { stdio: 'inherit', cwd: repoRoot, env });
+        return 0;
+    } catch {
+        return 1;
+    }
+}
+
 /** A signed session cookie, minted the way the chat app's guard verifies. */
 function mintCookie() {
     const secret = Buffer.from(
@@ -277,7 +391,15 @@ async function down() {
 }
 
 const [verb = 'status', ...rest] = process.argv.slice(2);
-const verbs = { up, down, status, load: () => load(rest), 'vm-up': loadVmUp };
+const verbs = {
+    up,
+    down,
+    status,
+    test: () => test(rest),
+    baseline,
+    load: () => load(rest),
+    'vm-up': loadVmUp
+};
 if (!verbs[verb]) {
     log(`usage: node testenv.mjs <${Object.keys(verbs).join('|')}>`);
     process.exit(1);

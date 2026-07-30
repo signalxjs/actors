@@ -1,5 +1,6 @@
 import { clusterScenarios } from './cluster.ts';
 import { tier2Scenarios } from './cluster2.ts';
+import { TIER3_ENABLED, tier3Scenarios } from './infra.ts';
 import { dispatchScenarios } from './dispatch.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
@@ -30,7 +31,10 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...memoryScenarios,
     ...clusterScenarios,
     ...redisScenarios,
-    ...(TIER2_ENABLED ? tier2Scenarios : [])
+    ...(TIER2_ENABLED ? tier2Scenarios : []),
+    // Tier 3 measures a DEPLOYMENT, not this process — a different kind of
+    // number again, so it comes last and never reads as another rung.
+    ...(TIER3_ENABLED ? tier3Scenarios : [])
 ];
 
 const TIER2_NAMES = tier2Scenarios.map((s) => s.name);

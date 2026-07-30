@@ -318,6 +318,12 @@ az network dns record-set a add-record -g <dns-rg> -z <zone> \
 # pre-DNS smoke: curl -sI --resolve chat.<zone>:443:<lb-ip> https://chat.<zone>/
 ```
 
+**Most of this matrix is now automated** — `node testenv.mjs test` runs the
+assertion suite (`examples/aks-cluster/__tests__/infra.test.ts`) and then
+the Tier-3 perf comparison, and prints one verdict. Add `INFRA_CHAOS=1` for
+the destructive rows. What remains manual is the browser: two tabs, a live
+cross-tab update, and a reconnect through a rolling restart.
+
 The matrix — every test runs from OUTSIDE the cluster:
 
 | # | Test | Pass |
