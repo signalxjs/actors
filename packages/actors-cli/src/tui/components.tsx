@@ -17,6 +17,26 @@ import { fit, layoutTable, type Column } from './table';
 import type { HistogramSnapshot } from '@sigx/actors/silo';
 import type { ShardCell } from './bars';
 
+/**
+ * One standalone line.
+ *
+ * `<text>` is a SPAN — terminal-zero calls it "deliberately INLINE, unlike
+ * every other component" — so consecutive `<text>` siblings share a line.
+ * That is a feature when composing within a line and a trap when writing a
+ * list of rows, and it is how every screen once rendered as a single
+ * concatenated line. `Line` is the block wrapper, named so the intent is
+ * visible at the call site.
+ */
+export function Line(props: { color?: string; bold?: boolean; children?: unknown }) {
+    return (
+        <box>
+            <text color={props.color} bold={props.bold}>
+                {props.children as never}
+            </text>
+        </box>
+    );
+}
+
 /** A time series in one line, with its current value alongside. */
 export function Sparkline(props: {
     values: readonly (number | null)[];
@@ -27,13 +47,13 @@ export function Sparkline(props: {
     color?: string;
 }) {
     return (
-        <text>
+        <box>
             {props.label ? <text color="dim">{fit(props.label, 12)}</text> : null}
             <text color={props.color ?? 'accent'}>
                 {sparkline(props.values, { width: props.width ?? 24, max: props.max, pad: true })}
             </text>
             {props.value ? <text> {props.value}</text> : null}
-        </text>
+        </box>
     );
 }
 
@@ -47,13 +67,13 @@ export function Meter(props: {
     color?: string;
 }) {
     return (
-        <text>
+        <box>
             <text color="dim">{fit(props.label, 12)}</text>
             <text color={props.color ?? 'accent'}>
                 {meter(props.value, props.max, props.width ?? 16)}
             </text>
             {props.text ? <text> {props.text}</text> : null}
-        </text>
+        </box>
     );
 }
 
@@ -74,15 +94,17 @@ export function HistogramBars(props: {
     const row: HistogramRow = histogramRow(props.label, props.snapshot, props.scaleMs);
     if (row.empty) {
         return (
-            <text>
+            <box>
                 <text color="dim">{fit(props.label, 8)}</text>
                 <text color="dim">no samples</text>
-            </text>
+            </box>
         );
     }
     const width = props.width ?? 10;
     return (
-        <text>
+        // One block row; the percentile cells inside are spans, so they
+        // correctly stay on that single line.
+        <box>
             <text color="dim">{fit(props.label, 8)}</text>
             {row.cells.map((cell) => (
                 <text>
@@ -91,7 +113,7 @@ export function HistogramBars(props: {
                     <text> {fit(props.format(cell.ms), 8)}</text>
                 </text>
             ))}
-        </text>
+        </box>
     );
 }
 
@@ -116,23 +138,33 @@ export function DataTable<T>(props: {
     const cursor = props.cursor ?? -1;
     return (
         <box>
-            <text color="dim" bold>
-                {table.header}
-            </text>
+            <box>
+                {/* Indented by the cursor marker's width, or the header
+                    sits one column left of every value beneath it. */}
+                <text color="dim" bold>
+                    {` ${table.header}`}
+                </text>
+            </box>
             {table.rows.map((line, index) => {
                 const selected = index === cursor;
                 const tone = props.tone?.(props.rows[index]!);
                 return (
-                    <text
-                        color={selected ? 'accentText' : (tone ?? 'fg')}
-                        backgroundColor={selected ? 'selSoft' : undefined}
-                    >
-                        {selected ? '▸' : ' '}
-                        {line}
-                    </text>
+                    <box>
+                        <text
+                            color={selected ? 'accentText' : (tone ?? 'fg')}
+                            backgroundColor={selected ? 'selSoft' : undefined}
+                        >
+                            {selected ? '▸' : ' '}
+                            {line}
+                        </text>
+                    </box>
                 );
             })}
-            {table.rows.length === 0 ? <text color="dim">nothing to show</text> : null}
+            {table.rows.length === 0 ? (
+                <box>
+                    <text color="dim">nothing to show</text>
+                </box>
+            ) : null}
         </box>
     );
 }
@@ -143,16 +175,18 @@ export function ShardGrid(props: { rows: readonly (readonly ShardCell[])[] }) {
         cell.tone === 'ok' ? 'success' : cell.tone === 'unclaimed' ? 'danger' : 'warn';
     return (
         <box>
-            <text color="dim">reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice</text>
+            <box>
+                <text color="dim">reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice</text>
+            </box>
             {props.rows.map((row) => (
-                <text>
+                <box>
                     {row.map((cell) => (
                         <text>
                             <text color="dim">{fit(cell.shard, 4)}</text>
                             <text color={toneOf(cell)}>{cell.glyph} </text>
                         </text>
                     ))}
-                </text>
+                </box>
             ))}
         </box>
     );
@@ -167,23 +201,47 @@ export function KeyValue(props: {
     return (
         <box>
             {props.rows.map((row) => (
-                <text>
+                // A <box> is BLOCK; a <text> is a span. Wrapping each pair
+                // is what puts it on its own line — sibling <text> elements
+                // share one, which is how every row ended up concatenated.
+                <box>
                     <text color="dim">{fit(row.label, width)}</text>
                     <text color={row.tone ?? 'fg'}>{row.value}</text>
-                </text>
+                </box>
             ))}
         </box>
     );
 }
 
-/** A value with its direction of travel against the previous reading. */
-export function DeltaText(props: { value: string; current: number | null; previous: number | null }) {
+/**
+ * A value with its direction of travel against the previous reading.
+ *
+ * `polarity` decides what rising MEANS. Hardcoding `▲` as a warning is
+ * right for latency and wrong for throughput — rising calls/s is good news,
+ * and colouring it as a warning makes the component lie half the time.
+ * `'lower-is-better'` (the default, for latency, queue depth, errors) or
+ * `'higher-is-better'` (throughput, cache hit rate); `'neutral'` just shows
+ * the arrow.
+ */
+export function DeltaText(props: {
+    value: string;
+    current: number | null;
+    previous: number | null;
+    polarity?: 'lower-is-better' | 'higher-is-better' | 'neutral';
+}) {
     const direction = trend(props.current, props.previous);
-    const tone = direction === '▲' ? 'warn' : direction === '▼' ? 'success' : 'dim';
+    const polarity = props.polarity ?? 'lower-is-better';
+    const good = polarity === 'higher-is-better' ? '▲' : '▼';
+    const tone =
+        direction === '·' || polarity === 'neutral'
+            ? 'dim'
+            : direction === good
+              ? 'success'
+              : 'warn';
     return (
-        <text>
+        <box>
             <text>{props.value}</text>
             <text color={tone}> {direction}</text>
-        </text>
+        </box>
     );
 }

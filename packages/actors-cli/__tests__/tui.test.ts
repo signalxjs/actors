@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+    cellWidth,
     commonScale,
     fit,
     histogramRow,
@@ -294,5 +295,39 @@ describe('shardGrid', () => {
     it('handles an empty map', () => {
         expect(shardGrid({}, 8)).toEqual([]);
         expect(unclaimedShards({})).toEqual([]);
+    });
+});
+
+describe('display width, not code units', () => {
+    it('counts a wide glyph as two cells', () => {
+        // A grain key is user data, so this is reachable with an ordinary
+        // key: two wide glyphs (4 cells) plus `-42` (3) is 7, where
+        // `.length` says 5 — so a column sized by length under-pads by 2
+        // and everything to its right shifts left.
+        expect('用户-42'.length).toBe(5);
+        expect(cellWidth('用户-42')).toBe(7);
+        expect(cellWidth('plain')).toBe(5);
+        expect(cellWidth('')).toBe(0);
+    });
+
+    it('pads to the DISPLAYED width, so later columns do not shift left', () => {
+        // Sized by `.length` this returns 5 visible cells too many.
+        expect(cellWidth(fit('用户-42', 12))).toBe(12);
+        expect(cellWidth(fit('plain', 12))).toBe(12);
+        expect(cellWidth(fit('plain', 12, 'right'))).toBe(12);
+    });
+
+    it('never splits a wide glyph or overflows when truncating', () => {
+        const out = fit('用户名称超长', 7);
+        expect(cellWidth(out)).toBeLessThanOrEqual(7);
+        expect(out).toContain('…');
+        // Half a character would be a mojibake cell.
+        expect(out).not.toMatch(/�/);
+    });
+
+    it('aligns a mixed-width column', () => {
+        const rows = ['用户-42', 'user-42', '猫'];
+        const widths = rows.map((r) => cellWidth(fit(r, 10)));
+        expect(new Set(widths).size).toBe(1);
     });
 });

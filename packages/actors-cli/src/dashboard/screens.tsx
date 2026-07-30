@@ -13,6 +13,7 @@ import {
     DataTable,
     HistogramBars,
     KeyValue,
+    Line,
     ShardGrid,
     Sparkline
 } from '../tui/components';
@@ -83,9 +84,9 @@ function Alerts(props: { state: DashboardState }) {
     return (
         <box border="none">
             {lines.map((line) => (
-                <text color={line.tone} bold>
+                <Line color={line.tone} bold>
                     ! {line.text}
-                </text>
+                </Line>
             ))}
             <br />
         </box>
@@ -101,7 +102,7 @@ function totalCounter(silos: readonly SiloView[], key: 'authFailures'): number {
 export function OverviewScreen(props: { state: DashboardState }) {
     const state = props.state;
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <text color="dim">connecting…</text>;
+    if (!snapshot) return <Line color="dim">connecting…</Line>;
 
     const totals = snapshot.cluster?.totals;
     const activations = totals?.activations ?? sum(snapshot.silos, (s) => s.stats.activations);
@@ -145,10 +146,10 @@ export function OverviewScreen(props: { state: DashboardState }) {
                     <HistogramBars label="latency" snapshot={metrics.latencyMs} scaleMs={scale} format={durationMs} />
                     <HistogramBars label="queue" snapshot={metrics.queueMs} scaleMs={scale} format={durationMs} color="warn" />
                     <HistogramBars label="turn" snapshot={metrics.turnMs} scaleMs={scale} format={durationMs} color="accent" />
-                    <text color="dim">high queue = a hot grain · high turn = a slow method</text>
+                    <Line color="dim">high queue = a hot grain · high turn = a slow method</Line>
                 </box>
             ) : (
-                <text color="dim">no metrics — add .use(metrics()) to see calls, latency and errors</text>
+                <Line color="dim">no metrics — add .use(metrics()) to see calls, latency and errors</Line>
             )}
         </box>
     );
@@ -171,7 +172,7 @@ const siloColumns: Column<SiloView>[] = [
 
 export function SilosScreen(props: { state: DashboardState; cursor: number; width?: number }) {
     const snapshot = props.state.view.snapshot;
-    if (!snapshot) return <text color="dim">connecting…</text>;
+    if (!snapshot) return <Line color="dim">connecting…</Line>;
     const unreachable = snapshot.cluster?.unreachable ?? [];
     return (
         <box border="none">
@@ -186,13 +187,13 @@ export function SilosScreen(props: { state: DashboardState; cursor: number; widt
             {unreachable.length > 0 ? (
                 <box border="none">
                     <br />
-                    <text color="danger" bold>
+                    <Line color="danger" bold>
                         unreachable
-                    </text>
+                    </Line>
                     {unreachable.map((failure) => (
-                        <text color="danger">
+                        <Line color="danger">
                             {`  ${failure.siloId}  ${failure.address}  ${failure.reason} — ${failure.message}`}
-                        </text>
+                        </Line>
                     ))}
                 </box>
             ) : null}
@@ -212,7 +213,7 @@ const grainColumns: Column<ActivationInfo>[] = [
 
 export function GrainsScreen(props: { state: DashboardState; cursor: number; width?: number }) {
     const snapshot = props.state.view.snapshot;
-    if (!snapshot) return <text color="dim">connecting…</text>;
+    if (!snapshot) return <Line color="dim">connecting…</Line>;
     const metrics = snapshot.metrics;
     const byMethod = metrics
         ? Object.entries(metrics.byMethod)
@@ -232,18 +233,18 @@ export function GrainsScreen(props: { state: DashboardState; cursor: number; wid
                     tone={(grain) => (grain.queued > 0 ? 'warn' : undefined)}
                 />
             ) : (
-                <text color="dim">no activation list — the source reports none</text>
+                <Line color="dim">no activation list — the source reports none</Line>
             )}
             {byMethod.length > 0 ? (
                 <box border="none">
                     <br />
-                    <text color="dim" bold>
+                    <Line color="dim" bold>
                         slowest methods (p99 turn)
-                    </text>
+                    </Line>
                     {byMethod.map(([name, m]) => (
-                        <text>
+                        <Line>
                             {`  ${name.padEnd(30)} ${durationMs(m.turnMs?.p99Ms ?? 0).padStart(9)}  ${count(m.calls)} calls  ${m.failed > 0 ? `${count(m.failed)} failed` : ''}`}
-                        </text>
+                        </Line>
                     ))}
                 </box>
             ) : null}
@@ -253,13 +254,13 @@ export function GrainsScreen(props: { state: DashboardState; cursor: number; wid
 
 export function ClusterScreen(props: { state: DashboardState }) {
     const snapshot = props.state.view.snapshot;
-    if (!snapshot) return <text color="dim">connecting…</text>;
+    if (!snapshot) return <Line color="dim">connecting…</Line>;
     const cluster = snapshot.cluster;
     if (!cluster) {
         return (
             <box border="none">
                 <Alerts state={props.state} />
-                <text color="dim">single-node — no cluster to report on</text>
+                <Line color="dim">single-node — no cluster to report on</Line>
             </box>
         );
     }
@@ -299,7 +300,7 @@ export function ClusterScreen(props: { state: DashboardState }) {
 
 export function HealthScreen(props: { state: DashboardState }) {
     const snapshot = props.state.view.snapshot;
-    if (!snapshot) return <text color="dim">connecting…</text>;
+    if (!snapshot) return <Line color="dim">connecting…</Line>;
     const health = snapshot.health;
     const metrics = snapshot.metrics;
 
@@ -317,66 +318,66 @@ export function HealthScreen(props: { state: DashboardState }) {
                     />
                     {health.live && !health.ready ? (
                         // The distinction the whole endpoint exists for.
-                        <text color="warn" bold>
+                        <Line color="warn" bold>
                             ALIVE but out of rotation — drain it, do not restart it
-                        </text>
+                        </Line>
                     ) : null}
                     <br />
                     {Object.entries(health.checks).map(([name, check]) => (
-                        <text color={check.ready ? 'success' : 'danger'}>
+                        <Line color={check.ready ? 'success' : 'danger'}>
                             {`  ${check.ready ? 'ok  ' : 'FAIL'} ${name}${check.detail ? ` — ${check.detail}` : ''}`}
-                        </text>
+                        </Line>
                     ))}
                     {Object.keys(health.checks).length === 0 ? (
-                        <text color="dim">  no readiness checks contributed</text>
+                        <Line color="dim">  no readiness checks contributed</Line>
                     ) : null}
                 </box>
             ) : (
-                <text color="dim">no health status — export an ops() or health() handle</text>
+                <Line color="dim">no health status — export an ops() or health() handle</Line>
             )}
             {metrics ? (
                 <box border="none">
                     <br />
-                    <text color="dim" bold>
+                    <Line color="dim" bold>
                         errors by kind
-                    </text>
+                    </Line>
                     {Object.entries(metrics.errors.byKind).length === 0 ? (
-                        <text color="dim">  none</text>
+                        <Line color="dim">  none</Line>
                     ) : (
                         Object.entries(metrics.errors.byKind)
                             .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
                             .map(([kind, n]) => (
-                                <text color={kind === '(unknown)' ? 'fg' : 'warn'}>
+                                <Line color={kind === '(unknown)' ? 'fg' : 'warn'}>
                                     {`  ${kind.padEnd(20)} ${count(n ?? 0)}`}
-                                </text>
+                                </Line>
                             ))
                     )}
                     {metrics.errors.recent.length > 0 ? (
                         <box border="none">
                             <br />
-                            <text color="dim" bold>
+                            <Line color="dim" bold>
                                 recent failures
-                            </text>
+                            </Line>
                             {metrics.errors.recent
                                 .slice(-6)
                                 .reverse()
                                 .map((entry) => (
-                                    <text color="dim">
+                                    <Line color="dim">
                                         {`  ${new Date(entry.at).toISOString().slice(11, 19)} ${entry.type}#${entry.method} ${entry.kind}: ${entry.message}`}
-                                    </text>
+                                    </Line>
                                 ))}
                         </box>
                     ) : null}
                     <br />
-                    <text color="dim" bold>
+                    <Line color="dim" bold>
                         storage
-                    </text>
-                    <text>
+                    </Line>
+                    <Line>
                         {`  ${count(metrics.storage.loads)} loads  ${count(metrics.storage.saves)} saves  ${count(metrics.storage.clears)} clears`}
-                    </text>
-                    <text color={metrics.storage.conflicts > 0 ? 'warn' : 'fg'}>
+                    </Line>
+                    <Line color={metrics.storage.conflicts > 0 ? 'warn' : 'fg'}>
                         {`  ${count(metrics.storage.conflicts)} etag conflicts — each one discarded an activation`}
-                    </text>
+                    </Line>
                 </box>
             ) : null}
         </box>

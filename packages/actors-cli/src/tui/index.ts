@@ -47,6 +47,7 @@ export {
 export {
     layoutTable,
     fit,
+    cellWidth,
     scrollOffset,
     moveCursor,
     sortRows,

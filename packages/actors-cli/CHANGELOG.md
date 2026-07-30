@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every screen rendered as one concatenated line** (#121). `<text>` is a
+  SPAN — terminal-zero calls it "deliberately INLINE, unlike every other
+  component" — so consecutive `<text>` siblings share a line. Every
+  component emitted a `<box>` wrapping N sibling `<text>` rows expecting one
+  line each, so they all ran together: `2activations` was a value welded to
+  the next row's label, and an entire silo table rendered on a single line
+  running into its own header.
+
+  Rows are block elements now, via a named `Line` component so the intent is
+  visible at the call site rather than implied by a bare `<box>`.
+
+  **Why the tests passed.** `screens.test.tsx` joined the rendered lines
+  with `renderNodeToLines(...).join(...)` before `toContain(...)`. Joining
+  before substring-matching is structurally blind — it cannot tell twenty
+  lines from one. The suite checked content and was mistaken for checking
+  rendering. `lines()` and `rows()` now return the array, and the new
+  `layout.test.tsx` asserts line counts, which row carries which text, that
+  a value never shares a line with the next label, and that nothing exceeds
+  the width it was given. Verified by reverting one component and watching
+  them fail.
+
+- **Table headers sat one column left of their values** (#121). Rows carry a
+  cursor marker the header did not, so every column heading was off by one.
+
+- **Column widths were measured with `.length`, not display cells** (#121).
+  A wide glyph is two cells, so an ordinary grain key like `用户-42`
+  (`.length` 5, width 7) under-padded its column and shifted everything to
+  its right. Truncation now cuts by cells too, so a wide glyph is never
+  split in half. Found by the `@sigx/terminal` maintainer while generalising
+  these components upstream (signalxjs/terminal#103), where the same bug is
+  documented in the existing `Table`; `cellWidth` goes away when their
+  `fitCell`/`padCell` land.
+
+- **`DeltaText` hardcoded `▲` as a warning** (#121). Right for latency,
+  wrong for throughput — rising calls/s is good news drawn as a problem. It
+  takes a `polarity` now (`lower-is-better` by default), so it stops lying
+  half the time. Also from the upstream review.
+
 ### Added
 
 - **A cluster to point it at** (#101). `examples/counter`'s cluster demo

@@ -115,11 +115,33 @@ function stateWith(over: Partial<MonitorSnapshot> = {}): DashboardState {
     return state;
 }
 
-/** Render a screen to plain lines. */
-function draw(node: unknown): string {
+/**
+ * Render a screen to its LINE ARRAY.
+ *
+ * `draw` used to join before returning, and every assertion here was a
+ * `toContain` over the joined string — which cannot tell twenty lines from
+ * one. That is exactly how the screens shipped with every row concatenated
+ * onto a single line while this suite stayed green. The join now happens at
+ * the call site, so structure is assertable.
+ */
+function lines(node: unknown): string[] {
     const container = { type: 'element', tag: 'box', props: {}, children: [] } as never;
     render(node as never, container);
-    return renderNodeToLines(container).join('\n');
+    // Strip SGR so assertions are about text, not styling.
+    return renderNodeToLines(container).map((line) =>
+        line.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
+    );
+}
+
+/** Non-empty rendered lines, trimmed. */
+function rows(node: unknown): string[] {
+    return lines(node)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+}
+
+function draw(node: unknown): string {
+    return lines(node).join('\n');
 }
 
 describe('screens render', () => {
@@ -161,6 +183,22 @@ describe('screens render', () => {
         expect(out).toContain('FENCED');
         expect(out).toContain('refusing activations');
         expect(out).toContain('silo-a');
+    });
+
+    it('puts each silo on its own line, under a header', () => {
+        const state = stateWith({
+            silos: [silo(), silo({ siloId: 'silo-b' }), silo({ siloId: 'silo-c' })]
+        });
+        const out = rows(<SilosScreen state={state} cursor={0} />);
+        const header = out.findIndex((line) => line.includes('SILO') && line.includes('STATUS'));
+        expect(header).toBeGreaterThan(-1);
+        // Three silos, three lines after the header — not one line holding
+        // all three, which is what shipped.
+        expect(out[header + 1]).toContain('silo-a');
+        expect(out[header + 2]).toContain('silo-b');
+        expect(out[header + 3]).toContain('silo-c');
+        expect(out[header + 1]).not.toContain('silo-b');
+        expect(out[header]).not.toContain('silo-a');
     });
 
     it('lists unreachable peers with their classified reason', () => {
