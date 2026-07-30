@@ -49,6 +49,17 @@ export function rate(value: number | null): string {
     return value === null ? '—' : `${count(value)}/s`;
 }
 
+/**
+ * A gauge reading — how many there are right now — or an em dash for a gap.
+ *
+ * The counterpart to `rate`, and kept distinct from it on purpose: queue
+ * depth and activation count are not per-second quantities, and labelling
+ * one "33/s" claims a throughput that was never measured.
+ */
+export function gauge(value: number | null): string {
+    return value === null ? '—' : count(value);
+}
+
 /** A ratio as a whole percent; `null` when the denominator is 0. */
 export function percent(numerator: number, denominator: number): string {
     if (denominator <= 0) return '—';
@@ -56,17 +67,25 @@ export function percent(numerator: number, denominator: number): string {
 }
 
 /**
- * Truncate to `width`, marking the cut with an ellipsis.
+ * Truncate to `width` CODE POINTS, marking the cut with an ellipsis.
  *
  * Grain keys are user data and can be long; a table that reflows because
  * one key is a UUID is unreadable, and silently cutting hides that the key
  * continues.
+ *
+ * Code points rather than code units, so an emoji or an astral-plane
+ * character is never cut in half into a replacement glyph. It is NOT
+ * display cells: this module is deliberately renderer-free (a web
+ * dashboard imports it too), and cell-accurate fitting belongs to whatever
+ * is drawing — in the terminal that is `fitCell` from `@sigx/terminal`,
+ * which is what every column here actually goes through.
  */
 export function ellipsis(text: string, width: number): string {
     if (width <= 0) return '';
-    if (text.length <= width) return text;
+    const points = [...text];
+    if (points.length <= width) return text;
     if (width === 1) return '…';
-    return `${text.slice(0, width - 1)}…`;
+    return `${points.slice(0, width - 1).join('')}…`;
 }
 
 /** Three significant figures, without a trailing `.0`. */

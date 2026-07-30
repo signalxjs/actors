@@ -118,6 +118,16 @@ every other sigx tool.
 
 Piped or in CI it degrades rather than hanging: one poll, one line, exit.
 
+**Every screen fits the pane it is given.** Tables window to the rows that
+are left rather than running off the bottom, columns shrink from the right
+so an identity is never the thing that gets truncated, and banners wrap
+instead of being cut mid-sentence. `j`/`k` move the cursor on the tab you
+are actually looking at, and the table scrolls to follow it.
+
+Requires `@sigx/cli` >= 0.9, which is where a tab learns its pane size and
+which tab is on screen (signalxjs/cli#88); the components come from
+`@sigx/terminal` >= 0.11 (signalxjs/terminal#103).
+
 **A failed poll does not blank the screen.** The last good snapshot stays
 up, labelled as such, with the status line showing `poll FAILING` and how
 stale the numbers are — a dashboard that goes blank the moment a silo

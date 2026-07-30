@@ -2,7 +2,76 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The component layer is upstream's now** (#121). `@sigx/terminal` 0.11
+  ships everything offered in signalxjs/terminal#103 — `DataTable`,
+  `Sparkline`, `Trend`, `Meter`, `BarChart`, `DetailList`, `StatusGrid` over
+  `displayWidth` / `fitCell` / `layoutTable` / `scrollWindow` /
+  `commonScale` / `statusGrid` — with our decisions kept as its defaults. So
+  `src/tui/sparkline.ts` and `src/tui/table.ts` are **deleted** rather than
+  wrapped, and `cellWidth` is gone exactly as its own comment promised it
+  would be when `fitCell`/`padCell` landed. A second implementation of a
+  sparkline is how two panels start disagreeing about what a flat line means.
+
+  What stays local is only what is about actors: the percentile triple, the
+  reminder-shard claim map, and `Line` (because `Text` is still a span).
+
+  The assertions did NOT move upstream with the code. `tui.test.ts` now
+  points at `@sigx/terminal` and states what this dashboard depends on — a
+  gap is not a zero, a tiny non-zero value does not round away, truncation is
+  marked, equal rows do not shuffle between polls. All of it passed on the
+  first run against 0.11; keeping it means a future bump cannot quietly take
+  any of it back.
+
+- **Requires `@sigx/cli` >= 0.9 and `@sigx/terminal` >= 0.11** (#121), and
+  `examples/counter` / `examples/aks-cluster` move with it so the demo
+  instructions still run.
+
+### Added
+
+- **Every screen fits the pane it is given** (#121). `@sigx/cli` 0.9 hands a
+  tab's `render` its content box (signalxjs/cli#88), so the tables window to
+  the rows that are left instead of running off the bottom, the sparklines
+  and bar groups size to the width, and banners WRAP rather than being cut
+  mid-sentence — an alert truncated at the pane edge loses the half that says
+  what to do about it. Before this nothing here called for a size at all:
+  content clipped at the right edge while most of the screen sat empty.
+
+  `layout.test.tsx` asserts every screen against a wide pane and a cramped
+  one, in display cells; "fits at 100×30" says nothing about an ssh window.
+
+- **A frame snapshot per screen** (`frames.test.tsx`, #121). The whole
+  rendered frame, non-TTY, from a fixed fixture — so a rendering regression
+  arrives as a diff in a pull request rather than as a screenshot months
+  later. Reviewing the diff is reviewing the dashboard.
+
+- **`fatal`, the locate miss rate, and watch counts are on screen** (#121).
+  `HealthStatus.fatal` (#144) says a silo cannot recover and must be
+  REPLACED, which read as ordinary not-ready before; `locateRemote/locates`
+  (#138) is the edge-routing miss rate; `remoteWatches`/`inboundWatches`
+  (#119) matter next to an activation count, because a watch holds a
+  keep-alive on its owner.
+
 ### Fixed
+
+- **`j`/`k` moved every table's cursor at once** (#121). `ShellHandle` could
+  not say which tab was showing, so the workaround was to move them all.
+  `@sigx/cli` 0.9 answers it (`activeTab`), so only the visible tab's cursor
+  moves — and the table scrolls to follow it, which is the first time the
+  Silos cursor has done anything observable at all.
+
+- **The queue and activation sparklines were labelled as rates** (#121).
+  Both are gauges — how many there are right now — so `33/s` claimed a
+  throughput that was never measured. `gauge()` sits beside `rate()` in
+  `model/format.ts` to keep the two apart.
+
+- **`ellipsis()` cut by code units** (#121), so an emoji or an astral-plane
+  character could be split into a replacement glyph. It counts code points
+  now. (It is not display cells on purpose: `model/` is renderer-free, and
+  cell-accurate fitting is `fitCell`'s job in the terminal layer.)
+
+### Fixed (earlier, in this same cycle)
 
 - **Every screen rendered as one concatenated line** (#121). `<text>` is a
   SPAN — terminal-zero calls it "deliberately INLINE, unlike every other

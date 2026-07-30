@@ -7,8 +7,8 @@
  * slash-command palette and the teardown consistent with every other sigx
  * tool, and what lets other plugins' contributions merge in alongside ours.
  */
-import { runShell, type ShellHandle } from '@sigx/cli/shell';
-import { signal } from '@sigx/terminal';
+import { runShell, type ShellHandle, type ShellPane } from '@sigx/cli/shell';
+import { createModel, moveCursor, signal, type Model } from '@sigx/terminal';
 import type { ActorsCommandContext } from './context';
 import { out } from './out';
 import { resolveSource } from '../resolve';
@@ -20,8 +20,11 @@ import {
     OverviewScreen,
     SilosScreen
 } from '../dashboard/screens';
-import { moveCursor } from '../tui/table';
 import { count, uptime } from '../model/format';
+
+/** The tabs that own a cursor. */
+const SILOS_TAB = 'silos';
+const GRAINS_TAB = 'grains';
 
 export async function runTop(ctx: ActorsCommandContext): Promise<void> {
     const source = await resolveSource(ctx.cwd, ctx.args);
@@ -32,29 +35,45 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
 
     // Cursors are per-table and live here rather than in DashboardState:
     // they are view state, and a poll must never move somebody's selection.
-    const siloCursor = signal({ index: 0 });
-    const grainCursor = signal({ index: 0 });
+    //
+    // Each is handed to its `DataTable` as a MODEL rather than as a plain
+    // index. The table reads it to mark the row and to window around it,
+    // while the shell's own shortcuts stay the thing that MOVES it — so `r`
+    // keeps meaning refresh rather than the table's reverse-sort, and we do
+    // not depend on focus routing inside a shell we do not own.
+    const cursors: Record<string, { index: number }> = {
+        [SILOS_TAB]: signal({ index: 0 }),
+        [GRAINS_TAB]: signal({ index: 0 })
+    };
+    const modelFor = (tab: string): Model<number> =>
+        createModel<number>([cursors[tab]!, 'index'], (value) => {
+            cursors[tab]!.index = value;
+        });
+    const siloCursor = modelFor(SILOS_TAB);
+    const grainCursor = modelFor(GRAINS_TAB);
 
-    /**
-     * Move BOTH cursors, rather than only the visible tab's.
-     *
-     * `ShellHandle` exposes `switchTab` but not which tab is showing, so
-     * there is no way to ask. Moving both is not a compromise: each cursor
-     * is clamped to its own table's length, only one table is on screen, and
-     * a selection that survives tab-switching is what you would want anyway.
-     * The alternative — tracking the active tab ourselves — would be a
-     * second source of truth that the shell's own `1`–`9` keys silently
-     * desynchronise.
-     */
-    const move = (delta: number): void => {
+    /** Rows the tab's table currently holds — the clamp for its cursor. */
+    const lengthOf = (tab: string): number => {
         const snapshot = state.view.snapshot;
-        const silos = snapshot?.silos.length ?? 0;
-        const grains = snapshot?.activations?.length ?? 0;
-        siloCursor.index = moveCursor(siloCursor.index, delta, silos);
-        grainCursor.index = moveCursor(grainCursor.index, delta, grains);
+        if (tab === GRAINS_TAB) return snapshot?.activations?.length ?? 0;
+        return snapshot?.silos.length ?? 0;
     };
 
-
+    /**
+     * Move the VISIBLE tab's cursor.
+     *
+     * This used to move EVERY cursor at once, because `ShellHandle` could be
+     * told which tab to switch to but could not say which one was showing,
+     * and a plugin-side copy desynchronised silently the moment somebody
+     * pressed the shell's own `1`–`9`. `@sigx/cli` 0.9 answers it directly
+     * (signalxjs/cli#88), so the workaround is gone.
+     */
+    const move = (shell: ShellHandle, delta: number): void => {
+        const tab = shell.activeTab;
+        const cursor = cursors[tab];
+        if (!cursor) return;
+        cursor.index = moveCursor(cursor.index, delta, lengthOf(tab));
+    };
 
     const handle = await runShell({
         mode: 'fullscreen',
@@ -64,19 +83,35 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
         // in an app that also has, say, a dev-server plugin shows both.
         plugins: ctx.plugins,
         tabs: [
-            { id: 'overview', label: 'Overview', render: () => OverviewScreen({ state }) },
+            // Every screen is handed the pane it has to fill — the terminal
+            // minus the shell's own chrome. Ignoring it means guessing, and
+            // guessing means either clipping or leaving most of the screen
+            // empty; this dashboard did the latter until `@sigx/cli` 0.9.
             {
-                id: 'silos',
+                id: 'overview',
+                label: 'Overview',
+                render: (pane: ShellPane) => OverviewScreen({ state, pane })
+            },
+            {
+                id: SILOS_TAB,
                 label: 'Silos',
-                render: () => SilosScreen({ state, cursor: siloCursor.index })
+                render: (pane: ShellPane) => SilosScreen({ state, pane, cursor: siloCursor })
             },
             {
-                id: 'grains',
+                id: GRAINS_TAB,
                 label: 'Grains',
-                render: () => GrainsScreen({ state, cursor: grainCursor.index })
+                render: (pane: ShellPane) => GrainsScreen({ state, pane, cursor: grainCursor })
             },
-            { id: 'cluster', label: 'Cluster', render: () => ClusterScreen({ state }) },
-            { id: 'health', label: 'Health', render: () => HealthScreen({ state }) }
+            {
+                id: 'cluster',
+                label: 'Cluster',
+                render: (pane: ShellPane) => ClusterScreen({ state, pane })
+            },
+            {
+                id: 'health',
+                label: 'Health',
+                render: (pane: ShellPane) => HealthScreen({ state, pane })
+            }
         ],
         status: () => {
             const view = state.view;
@@ -99,8 +134,8 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
             { key: 'r', label: 'refresh', run: () => void state.poll() },
             { key: '+', label: 'slower', run: () => state.nudgeInterval(2) },
             { key: '-', label: 'faster', run: () => state.nudgeInterval(0.5) },
-            { key: 'j', label: 'down', run: () => move(1) },
-            { key: 'k', label: 'up', run: () => move(-1) }
+            { key: 'j', label: 'down', run: (sh) => move(sh, 1) },
+            { key: 'k', label: 'up', run: (sh) => move(sh, -1) }
         ],
         commands: [
             {
@@ -121,7 +156,6 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
             }
         ],
         onReady(sh: ShellHandle) {
-
             state.start();
             sh.say(`watching ${source.label} (${source.kind})`);
         },
@@ -129,8 +163,6 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
             await state.stop();
         }
     });
-
-
 
     // Non-TTY (piped, CI): the shell renders one frame at teardown, so an
     // interactive dashboard would exit before it had anything to show.

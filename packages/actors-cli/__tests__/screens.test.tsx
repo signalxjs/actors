@@ -14,6 +14,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { render, renderNodeToLines } from '@sigx/terminal';
+import { cursorModel } from './fixture';
 import {
     ClusterScreen,
     GrainsScreen,
@@ -179,7 +180,7 @@ describe('screens render', () => {
 
     it('calls out a fenced silo, which a load balancer cannot see', () => {
         const state = stateWith({ silos: [silo({ status: 'fenced' })] });
-        const out = draw(<SilosScreen state={state} cursor={0} />);
+        const out = draw(<SilosScreen state={state} cursor={cursorModel(0)} />);
         expect(out).toContain('FENCED');
         expect(out).toContain('refusing activations');
         expect(out).toContain('silo-a');
@@ -189,15 +190,15 @@ describe('screens render', () => {
         const state = stateWith({
             silos: [silo(), silo({ siloId: 'silo-b' }), silo({ siloId: 'silo-c' })]
         });
-        const out = rows(<SilosScreen state={state} cursor={0} />);
+        const out = rows(<SilosScreen state={state} cursor={cursorModel(0)} />);
         const header = out.findIndex((line) => line.includes('SILO') && line.includes('STATUS'));
         expect(header).toBeGreaterThan(-1);
-        // Three silos, three lines after the header — not one line holding
-        // all three, which is what shipped.
-        expect(out[header + 1]).toContain('silo-a');
-        expect(out[header + 2]).toContain('silo-b');
-        expect(out[header + 3]).toContain('silo-c');
-        expect(out[header + 1]).not.toContain('silo-b');
+        // Three silos, three lines after the header and its rule — not one
+        // line holding all three, which is what shipped.
+        expect(out[header + 2]).toContain('silo-a');
+        expect(out[header + 3]).toContain('silo-b');
+        expect(out[header + 4]).toContain('silo-c');
+        expect(out[header + 2]).not.toContain('silo-b');
         expect(out[header]).not.toContain('silo-a');
     });
 
@@ -214,26 +215,31 @@ describe('screens render', () => {
                 ]
             }
         });
-        const out = draw(<SilosScreen state={state} cursor={0} />);
+        const out = draw(<SilosScreen state={state} cursor={cursorModel(0)} />);
         expect(out).toContain('unreachable');
         expect(out).toContain('silo-b');
         expect(out).toContain('timeout');
     });
 
-    it('marks the selected row, and only that one', () => {
-        // The cursor is why `DataTable` exists rather than upstream's
-        // `Table`; a cursor that renders nowhere is the same as no cursor.
+    it('keeps every silo on its own line whichever row is selected', () => {
+        // A cursor that changes nothing on screen is the same as no cursor.
+        // Where the selection SHOWS is asserted in `layout.test.tsx`, which
+        // can see the viewport; here it is enough that selecting a row does
+        // not disturb the structure around it.
         const state = stateWith({
             silos: [silo(), silo({ siloId: 'silo-b' }), silo({ siloId: 'silo-c' })]
         });
-        const out = draw(<SilosScreen state={state} cursor={1} />).split('\n');
-        const marked = out.filter((line) => line.includes('▸'));
-        expect(marked).toHaveLength(1);
-        expect(marked[0]).toContain('silo-b');
+        for (const index of [0, 1, 2]) {
+            const out = rows(<SilosScreen state={state} cursor={cursorModel(index)} />);
+            const header = out.findIndex((line) => line.includes('SILO') && line.includes('STATUS'));
+            expect(out[header + 2]).toContain('silo-a');
+            expect(out[header + 3]).toContain('silo-b');
+            expect(out[header + 4]).toContain('silo-c');
+        }
     });
 
     it('draws the grain table and the slowest methods', () => {
-        const out = draw(<GrainsScreen state={stateWith()} cursor={0} />);
+        const out = draw(<GrainsScreen state={stateWith()} cursor={cursorModel(0)} />);
         expect(out).toContain('user-42');
         expect(out).toContain('Cart#checkout');
         expect(out).toContain('slowest methods');
