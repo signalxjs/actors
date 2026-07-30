@@ -8,6 +8,7 @@ import type {
     ActorDefinition,
     ActorMethodTable,
     ActorOptions,
+    ActorReadCache,
     ActorStreamTable
 } from './types';
 
@@ -76,11 +77,104 @@ export function defineActor<
         streamNames = Object.freeze(Object.keys(table));
     }
 
+    validateReads(options, streamNames);
+
     return {
         type: options.type,
         streamNames,
         __sigxActor: options
     };
+}
+
+/**
+ * Check the `reads:` declaration.
+ *
+ * Nothing is returned and no names are stored on the definition: unlike
+ * `streamNames`, which the dispatch path branches on, the only consumer of a
+ * read's declaration needs its VALUE (the endpoint, to compose a header) and
+ * reads it from the options directly. A parallel name list would be a second
+ * source of truth for no reader.
+ *
+ * Definition-time throws in EVERY build, not just `__DEV__`: each of these is
+ * a header the endpoint would otherwise emit — a promise made to caches
+ * everywhere — and getting one wrong is not the kind of thing to discover
+ * from a production cache hit.
+ *
+ * What cannot be checked here is whether a listed name is a real method: the
+ * `methods` factory needs a live activation context, so unlike `streams` it
+ * cannot be probed. The mapped type on `reads` covers that for typed callers,
+ * and a name that matches nothing simply decorates a wrapper that 404s.
+ */
+function validateReads(
+    options: { type: string; reads?: object; use?: readonly unknown[]; methodUse?: object },
+    streamNames: readonly string[]
+): void {
+    if (!options.reads) return;
+    for (const [method, cache] of Object.entries(options.reads) as [
+        string,
+        ActorReadCache | undefined
+    ][]) {
+        const where = `[sigx actors] actor "${options.type}" read "${method}"`;
+        if (!cache) {
+            // A present key with no value is the one shape that could ship a
+            // client and server that disagree: the build stamps GET-capable
+            // names from the KEYS of this object (it cannot evaluate values),
+            // while the wrapper is marked cacheable from the VALUE. So the
+            // proxy would issue GET and the endpoint would answer 405 — for a
+            // method that looks declared in both places. Omit the key instead.
+            throw new Error(
+                `${where} has no cache declaration. Omit the key, or give it at least ` +
+                    `\`{ maxAge: <seconds> }\` — a key with no value makes the build send GET ` +
+                    `for a method the endpoint will refuse.`
+            );
+        }
+        if (streamNames.includes(method)) {
+            // A stream is a sequence, not a cacheable representation, and the
+            // endpoint refuses `__sigxGet` on one anyway (405). Better to say
+            // so at definition time than to ship a declaration that silently
+            // does nothing.
+            throw new Error(`${where} is a \`streams:\` method — a stream cannot be cached.`);
+        }
+        // `Cache-Control`'s delta-seconds are NON-NEGATIVE INTEGERS (RFC 9111
+        // §1.2.2). `max-age=0.5` is not a smaller number to an intermediary,
+        // it is a malformed directive — ignored by some, mis-parsed by others,
+        // and either way the caching this declaration exists for silently does
+        // not happen.
+        const seconds = (value: unknown): boolean =>
+            typeof value === 'number' && Number.isInteger(value) && value >= 0;
+        if (!seconds(cache.maxAge)) {
+            throw new Error(`${where} needs a \`maxAge\` of whole, non-negative seconds.`);
+        }
+        if (cache.staleWhileRevalidate !== undefined && !seconds(cache.staleWhileRevalidate)) {
+            throw new Error(
+                `${where} needs a \`staleWhileRevalidate\` of whole, non-negative seconds.`
+            );
+        }
+        if (cache.sMaxAge !== undefined && !seconds(cache.sMaxAge)) {
+            throw new Error(`${where} needs an \`sMaxAge\` of whole, non-negative seconds.`);
+        }
+        if (cache.public === true) {
+            // `public` puts the response in SHARED caches, where one caller's
+            // copy is served to the next. Core's contract for that is
+            // args-only — never cookies, auth or headers — and a guard is the
+            // one thing here that provably reads the request. There is no way
+            // to inspect what it reads, so the safe reading of "this actor has
+            // a guard" is "this response is per caller".
+            const guarded =
+                (options.use?.length ?? 0) > 0 ||
+                ((options.methodUse as Record<string, readonly unknown[]> | undefined)?.[method]
+                    ?.length ?? 0) > 0;
+            if (guarded) {
+                throw new Error(
+                    `${where} declares \`public: true\`, but the actor runs guards on it. A ` +
+                        `public read goes in SHARED caches, so its response must depend on its ` +
+                        `arguments alone — with a guard in the chain, one caller's copy can be ` +
+                        `served to the next. Drop \`public\` (the read is still cached, per ` +
+                        `client, with Vary: Cookie) or drop the guard.`
+                );
+            }
+        }
+    }
 }
 
 /** Brand check: is this value a server-side actor definition? */

@@ -4,6 +4,7 @@
  *
  *   - `type`  — must be a string LITERAL (it is the wire/storage identity)
  *   - `streams` — the returned object literal's keys (for the client proxy)
+ *   - `reads` — the cache declaration's keys (the methods the proxy GETs)
  *   - `use` / `unguarded` — for the `requireGuards` build gate
  *
  * and produces the swapped CLIENT module (`__actorRef` per actor,
@@ -20,6 +21,7 @@ export interface ExtractedActor {
     exportName: string;
     type: string;
     streams: string[];
+    reads: string[];
     guarded: boolean;
     unguarded: boolean;
     /** Offset of the defineActor call (for error locations). */
@@ -157,16 +159,40 @@ export function extractActors(
                 });
                 return;
             }
-            for (const prop of (table.properties ?? []) as Node[]) {
-                const key = prop.key?.name ?? prop.key?.value;
-                if (typeof key === 'string') streams.push(key);
+            const names = literalKeys(table, streamsProp, `streams`, exportName, errors);
+            if (names === null) return;
+            streams.push(...names);
+        }
+
+        /**
+         * The `reads:` keys — the methods whose responses are HTTP-cacheable,
+         * so the client proxy has to issue GET for them. An inline object
+         * literal like `streams`, and for the same reason: the browser bundle
+         * needs the names, and only the build can see them.
+         */
+        const reads: string[] = [];
+        const readsProp = props.get('reads');
+        if (readsProp) {
+            const table = readsProp.value as Node | undefined;
+            if (table?.type !== 'ObjectExpression') {
+                errors.push({
+                    message:
+                        `export "${exportName}": \`reads\` must be an inline object literal, so ` +
+                        `the cacheable method names are statically readable`,
+                    offset: (readsProp.start ?? 0) as number
+                });
+                return;
             }
+            const names = literalKeys(table, readsProp, `reads`, exportName, errors);
+            if (names === null) return;
+            reads.push(...names);
         }
 
         actors.push({
             exportName,
             type: typeValue.value as string,
             streams,
+            reads,
             guarded,
             unguarded,
             offset: (init.start ?? 0) as number
@@ -238,7 +264,10 @@ export function extractActors(
             lines.push(
                 `export const ${actor.exportName} = __actorRef(` +
                     `${JSON.stringify(actor.type)}, ${JSON.stringify(options.endpoint)}` +
-                    `${actor.streams.length ? `, ${JSON.stringify(actor.streams)}` : ''});`
+                    // `streams` is positional, so a reads-only actor still
+                    // has to pass an empty array through it.
+                    `${actor.streams.length || actor.reads.length ? `, ${JSON.stringify(actor.streams)}` : ''}` +
+                    `${actor.reads.length ? `, ${JSON.stringify(actor.reads)}` : ''});`
             );
         }
         for (const name of otherExports) {
@@ -250,6 +279,42 @@ export function extractActors(
     }
 
     return { actors, otherExports, errors, warnings, clientModule };
+}
+
+/**
+ * The keys of an object literal, or `null` after reporting why they cannot be
+ * read.
+ *
+ * Anything but a plain identifier or string key is REFUSED rather than guessed
+ * at. A computed key is the trap: `{ [NAME]: … }` parses with an identifier
+ * key called `NAME`, so reading `.key.name` would put the variable's own name
+ * on the wire — the client would then GET (or stream) a method that does not
+ * exist while the real one silently lost its declaration. A spread is the same
+ * problem with no name at all.
+ */
+function literalKeys(
+    table: Node,
+    prop: Node | undefined,
+    what: string,
+    exportName: string,
+    errors: { message: string; offset: number }[]
+): string[] | null {
+    const names: string[] = [];
+    for (const entry of (table.properties ?? []) as Node[]) {
+        const key = entry.computed === true ? undefined : (entry.key?.name ?? entry.key?.value);
+        if (typeof key !== 'string') {
+            errors.push({
+                message:
+                    `export "${exportName}": every \`${what}\` key must be a plain name or ` +
+                    `string literal — a computed key or spread cannot be read statically, and ` +
+                    `the browser bundle needs these names`,
+                offset: (entry.start ?? prop?.start ?? 0) as number
+            });
+            return null;
+        }
+        names.push(key);
+    }
+    return names;
 }
 
 /** The object literal a `streams:` factory returns, if statically visible. */

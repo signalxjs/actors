@@ -22,7 +22,14 @@ import { ACTOR_FOLLOW_HEADER, ACTOR_HOPS_HEADER, ACTOR_OWNER_HEADER } from '../r
 import { relayStream } from '../stream-relay';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, subscribeAll } from './live-endpoint';
-import { actorLabel, type ActorCallContext, type ActorRef, type AnyActorDefinition, type Silo } from '../types';
+import {
+    actorLabel,
+    type ActorCallContext,
+    type ActorReadCache,
+    type ActorRef,
+    type AnyActorDefinition,
+    type Silo
+} from '../types';
 
 /**
  * What this mount does with a call for a grain another silo owns.
@@ -487,8 +494,28 @@ function synthesize(
         };
     }
 
+    /**
+     * A `reads:` declaration turns the wrapper into a GET target, and core's
+     * endpoint does the rest: it accepts GET only for a wrapper carrying both
+     * flags, decodes `?args=` through the same codec and pollution-safe
+     * reviver as a body, caps the query length, emits this `Cache-Control` on
+     * a 2xx and `no-store` otherwise, and appends `Vary: Cookie` unless the
+     * declaration opted into shared caches.
+     *
+     * Nothing about the dispatch changes — same guards, same redirect check,
+     * same mailbox turn. A GET is the same call arriving another way.
+     */
+    const declared = def.__sigxActor.reads;
+    // `hasOwn`, not a plain index: `reads?.[method]` follows the prototype
+    // chain, so a method named `toString` (or `constructor`, `valueOf`, …)
+    // found a truthy "declaration" nobody wrote — and the wrapper was then
+    // stamped GET-capable with `max-age=undefined`. `validateReads` and the
+    // build both work from OWN keys; this has to agree with them.
+    const read = declared && Object.hasOwn(declared, method) ? declared[method] : undefined;
+
     return {
         __sigxName: method,
+        ...(read ? { __sigxGet: true as const, __sigxCacheControl: cacheControl(read) } : {}),
         __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
             const { key, rest, call } = await prepare(rq, args);
             try {
@@ -498,5 +525,24 @@ function synthesize(
             }
         }
     };
+}
+
+/**
+ * The `Cache-Control` a declaration means — core's composition, reproduced.
+ *
+ * It has to be reproduced rather than called: core builds the header inside
+ * `serverFn`'s options form, which an actor method never goes through, and
+ * exports the type but not the function. Kept byte-identical on purpose, so
+ * a serverFn and an actor read declaring the same cache are cached the same
+ * way by every intermediary. (Upstream ask: export the builder.)
+ */
+function cacheControl(read: ActorReadCache): string {
+    const swr =
+        read.staleWhileRevalidate === undefined
+            ? ''
+            : `, stale-while-revalidate=${read.staleWhileRevalidate}`;
+    return read.public === true
+        ? `public, max-age=${read.maxAge}, s-maxage=${read.sMaxAge ?? read.maxAge}${swr}`
+        : `private, max-age=${read.maxAge}${swr}`;
 }
 

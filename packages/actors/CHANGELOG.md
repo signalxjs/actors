@@ -4,6 +4,58 @@
 
 ### Added
 
+- **`reads:` — GET-cacheable actor reads** (#195, closing #11). A method
+  listed there is served over `GET
+  {base}/r/{token}/{Type}%23{method}?args=[key,…]` with the `Cache-Control`
+  the declaration describes, so browsers, CDNs and reverse proxies absorb
+  read traffic that would otherwise reach a grain. The vocabulary is core's
+  `ServerFnReadCache` by alias — `maxAge`, `staleWhileRevalidate`, `public`,
+  `sMaxAge` — because a second spelling of the same HTTP headers would drift
+  from the one an app already learned for serverFns.
+
+  Every moving part is core's: GET admission (only for a wrapper carrying
+  both `__sigxGet` and `__sigxCacheControl`), `?args=` decoding through the
+  same codec and pollution-safe reviver as a body, the query-length cap, the
+  header emission, `no-store` on a non-2xx, and `Vary: Cookie` on anything
+  not `public`. What is new here is the declaration, its validation, and the
+  build stamping the names onto the client ref so the proxy issues GET with
+  no call site changing — the same mechanism that already carries stream
+  names.
+
+  **The trade is explicit: a cached read bypasses mailbox ordering.** For
+  `maxAge` seconds the response an intermediary serves may be older than the
+  actor's state, and nothing on the server can pull it back — not
+  `ctx.save()`, not `useActorAction`, not `cells.invalidate()`, which reach
+  this page's cells and never a CDN's copy.
+
+  Four things are refused at definition time rather than left to be
+  discovered from a production cache hit: a non-seconds `maxAge` /
+  `sMaxAge` / `staleWhileRevalidate`; a `streams:` method (a stream is not a
+  cacheable representation, and the endpoint would 405 it anyway); and
+  `public: true` on a read the actor guards. That last one is the security
+  gate: `public` puts one caller's copy in a SHARED cache for the next
+  caller, so core's contract is args-only, and a guard is the one thing here
+  that provably reads the request — with no way to inspect *what* it reads,
+  the safe reading of "this actor has a guard" is "this response is per
+  caller". Without `public` the read is still cached, per client, with `Vary:
+  Cookie`.
+
+  Guards run on GET exactly as on POST, a rejection answers with
+  `no-store`, POST keeps working for declared reads (the declaration is on
+  the definition, not the wire), and the routing token travels in both
+  carriers so an edge routes a cacheable read like any other call. The GET
+  sends no `content-type` — it would describe a body that does not exist, and
+  it is one fewer non-safelisted header, though not a promise of no CORS
+  preflight: the routing token header ships by default and triggers one on
+  its own.
+
+  Two consequences of the carrier, documented rather than discovered: a GET
+  puts the actor key and every argument in the URL — the log-hygiene concern
+  the hashed routing token exists for, now applying to arguments as well —
+  and a long enough query is a 414. `actor(Def, key).with({ get: false })`
+  opts one call back onto POST for either reason; declared reads default to
+  GET and an explicit `get` wins.
+
 - **`useActorState(…, { live: true })` — the client half of the live layer**
   (#192, closing #10 and #14). The `$live` mount shipped in #68 and nothing
   in a browser could reach it: `ActorTransport.live?()` was declared with no

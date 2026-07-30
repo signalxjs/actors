@@ -394,6 +394,10 @@ never sees the source:
   declares neither.
 - **Stream names** in the ref must match the definition; they drive wire
   routing.
+- **Cacheable read names** likewise, as the ref's fourth argument
+  (`__actorRef(type, endpoint, streams, reads)`): they are what makes the
+  client issue GET, and a name that is in one place but not the other means
+  either a 405 or a read that quietly never caches.
 - **`type` is public API.** It is the wire, directory *and* storage key, so
   renaming it breaks deployed state. Two different actors claiming one type
   is refused at startup. Namespace it after the package (`acme/greeter`), but
@@ -414,6 +418,80 @@ calls (`ctx.actor`) are intra-system and do not re-run guards.
 
 The endpoint-level `guard` option on `handleActorRequest` remains the
 wire-only backstop, exactly like the serverFn endpoint's.
+
+## Cacheable reads (`reads:`)
+
+Declare a method a cacheable read and the endpoint accepts `GET` for it and
+emits the `Cache-Control` you asked for, so browsers, CDNs and reverse
+proxies absorb read traffic that would otherwise reach a grain:
+
+```ts
+defineActor({
+    type: 'Product',
+    unguarded: true,
+    reads: {
+        summary: { maxAge: 5 },
+        price: { maxAge: 60, public: true, staleWhileRevalidate: 30 }
+    },
+    state: () => ({ cents: 999 }),
+    methods: (ctx) => ({
+        async summary(currency: string) { … },
+        async price() { return ctx.state.cents; }
+    })
+});
+```
+
+`GET {base}/r/{token}/Product%23price?args=["p1"]` → the same envelope a POST
+returns, plus `Cache-Control: public, max-age=60, s-maxage=60,
+stale-while-revalidate=30`. The declaration is core's `ServerFnReadCache`
+vocabulary, unchanged, and the build stamps the names onto the client ref so
+the proxy issues GET on its own — nothing at the call site changes.
+
+**What you are trading, stated plainly:** a cached read **bypasses the
+mailbox ordering guarantee**. For `maxAge` seconds the response an
+intermediary serves may be older than the actor's state, and nothing on the
+server can pull it back — not `ctx.save()`, not `useActorAction`, not
+`cells.invalidate()`, which refresh this page's cells and never a CDN's copy.
+Declare it where staleness is a product decision, not where it would be a
+bug. The declaration is also a promise the runtime cannot check: a listed
+method must be side-effect-free and idempotent, exactly as with core's
+`cache` on a serverFn — a mutating method declared cacheable re-opens CSRF.
+
+The rest follows from that, and is checked:
+
+- **`public` is gated.** It puts the response in SHARED caches, where one
+  caller's copy is served to the next, so core's contract is args-only —
+  never cookies, auth or headers. A guard is the one thing here that provably
+  reads the request and nothing can inspect *what* it reads, so `public` on a
+  guarded read is a definition-time throw. Without `public` the read is still
+  cached, per client, and the endpoint adds `Vary: Cookie`.
+- **Guards still run**, on GET exactly as on POST. A rejection answers its
+  status with `Cache-Control: no-store` — a failed read is never cacheable.
+- **Streams cannot be declared**, and saying so is a definition-time throw
+  rather than a silently ignored declaration.
+- **POST keeps working** for every declared read: the declaration lives on
+  the definition, not on the wire, so a hand-built silo with no build
+  transform, an older client, or a service calling by hand all still work.
+- **Routing is unchanged** — the token travels in both carriers, and a grain
+  another silo owns is proxied as usual, with the answering silo making the
+  caching promise.
+- **No `content-type` on the GET**: it would describe a body that does not
+  exist, and it is a non-safelisted header, so leaving it off is one fewer
+  reason to preflight. Not a promise of no preflight — the routing token
+  header ships by default and triggers one on its own, so a cross-origin
+  caller who needs a genuinely simple GET wants `route: 'none'` and no custom
+  headers too. Same-origin (the usual case) never preflights either way.
+- **A GET puts the actor key and every argument in the URL**, where a POST
+  body kept them out of access logs, proxy traces and referrer headers. That
+  is the same log-hygiene concern the hashed routing token exists for, and it
+  now applies to the arguments too, in plaintext. `maxAge` values are the
+  whole non-negative seconds `Cache-Control` actually defines — a fractional
+  one is a malformed directive, so it is refused rather than emitted.
+
+Per call, `actor(Def, key).with({ get: false }).summary()` sends a declared
+read as a POST instead: no caching, but no arguments in the URL either, and
+no query-length cap (a long enough query is a 414). The endpoint accepts both
+carriers for a declared read, so this is a client-side choice.
 
 ## Persistence
 
@@ -1243,6 +1321,10 @@ guards, error masking, and codec — because `handleActorRequest` *is*
 (from `@sigx/actors/client`) points remote/native clients at another base,
 independently of `configureServerFn`.
 
+A method with a `reads:` declaration (below) also answers
+`GET {base}/r/{token}/{Type}%23{method}?args=[key,...args]`, with the same
+codec and the same envelope.
+
 ### The routing token
 
 `{token}` is a stable per-grain routing hint, mirrored into the
@@ -1872,10 +1954,12 @@ counters — see [Health & readiness](#health--readiness) above.
   other distributed backends (Cloudflare Durable Objects map naturally);
   every call already flows through them, and dev-mode `devSerializeChecks`
   verifies your arguments would survive a remote hop.
-- **String keys**; POST-only wire (no GET caching/forms); no WebSocket/SSE
-  push layer (NDJSON streams cover server→client per call); full
-  `[Reentrant]` arbitrary interleaving is not offered — `reentrant: true`
-  is call-chain re-entry only.
+- **String keys**; POST by default, with `GET` for methods that declare
+  `reads:` (no form posts / 303 PRG yet); no WebSocket/SSE push layer —
+  NDJSON covers server→client, per call (`streams:`) and multiplexed per page
+  (`useActorState(…, { live: true })`); full `[Reentrant]` arbitrary
+  interleaving is not offered — `reentrant: true` is call-chain re-entry
+  only.
 - Reserved names: actor types starting with `$sigx:` and the method name
   `$sigx:reminder`. `$sigx:silo#stats` is the cluster's ops channel and is
   answered before any definition lookup, so an actor type named `$sigx:silo`

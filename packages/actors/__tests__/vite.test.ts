@@ -56,6 +56,86 @@ describe('extractActors', () => {
         expect(result.clientModule).not.toContain('requireUser');
     });
 
+    it('reads the `reads:` keys, so the client proxy can issue GET', () => {
+        const code = `
+import { defineActor } from '@sigx/actors';
+
+export const ProductActor = defineActor({
+    type: 'Product',
+    unguarded: true,
+    reads: { summary: { maxAge: 5 }, price: { maxAge: 60, public: true } },
+    state: () => ({ cents: 1 }),
+    methods: (ctx) => ({ async summary() { return ctx.state.cents; } })
+});
+`;
+        const result = extractActors(code, 'src/product.actor.ts', opts());
+        expect(result.errors).toEqual([]);
+        expect(result.actors[0]).toMatchObject({ type: 'Product', reads: ['summary', 'price'] });
+        // `streams` is positional, so a reads-only actor passes an empty array
+        // through it rather than shifting the argument.
+        expect(result.clientModule).toContain(
+            `export const ProductActor = __actorRef("Product", "/_sigx/actor", [], ["summary","price"]);`
+        );
+    });
+
+    it('refuses a `reads:` value the build cannot read statically', () => {
+        // Same rule as `streams` and `type`: what the browser bundle needs, the
+        // build must be able to see without evaluating the module.
+        const code = `
+import { defineActor } from '@sigx/actors';
+const shared = { summary: { maxAge: 5 } };
+
+export const ProductActor = defineActor({
+    type: 'Product',
+    unguarded: true,
+    reads: shared,
+    state: () => ({}),
+    methods: () => ({ async summary() {} })
+});
+`;
+        const result = extractActors(code, 'src/product.actor.ts', opts());
+        expect(result.errors[0]?.message).toMatch(/`reads` must be an inline object literal/);
+        expect(result.clientModule).toBeNull();
+    });
+
+    it('refuses a computed key in `reads:` or `streams:` rather than guessing', () => {
+        // The trap: `{ [NAME]: … }` parses with an identifier key called
+        // `NAME`, so reading `.key.name` would put the VARIABLE's name on the
+        // wire — the client would GET a method that does not exist while the
+        // real one silently lost its declaration.
+        const reads = `
+import { defineActor } from '@sigx/actors';
+const PRICE = 'price';
+
+export const ProductActor = defineActor({
+    type: 'Product',
+    unguarded: true,
+    reads: { [PRICE]: { maxAge: 5 } },
+    state: () => ({}),
+    methods: () => ({ async price() {} })
+});
+`;
+        const readsResult = extractActors(reads, 'src/product.actor.ts', opts());
+        expect(readsResult.errors[0]?.message).toMatch(/every `reads` key must be a plain name/);
+        expect(readsResult.clientModule).toBeNull();
+
+        const streams = `
+import { defineActor } from '@sigx/actors';
+const WATCH = 'watch';
+
+export const RoomActor = defineActor({
+    type: 'Room',
+    unguarded: true,
+    state: () => ({}),
+    methods: () => ({}),
+    streams: () => ({ async *[WATCH]() { yield 1; } })
+});
+`;
+        const streamsResult = extractActors(streams, 'src/room.actor.ts', opts());
+        expect(streamsResult.errors[0]?.message).toMatch(/every `streams` key must be a plain name/);
+        expect(streamsResult.clientModule).toBeNull();
+    });
+
     it('requires a literal type', () => {
         const code = `
 import { defineActor } from '@sigx/actors';

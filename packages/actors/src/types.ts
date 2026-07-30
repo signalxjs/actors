@@ -3,7 +3,7 @@
  * shapes. Split from index.ts so the silo, wire, and client entries can
  * import types without pulling the public API module in.
  */
-import type { ServerFnGuard } from '@sigx/server';
+import type { ServerFnGuard, ServerFnReadCache } from '@sigx/server';
 import type { ActorOwnerHint } from './errors';
 
 /** Identity of one virtual actor. Serializable; never holds memory. */
@@ -580,6 +580,29 @@ export interface ActorOptions<
      */
     methods: (ctx: ActorContext<S, Ext>) => M;
     /**
+     * Methods that are HTTP-CACHEABLE READS: the endpoint accepts `GET` for
+     * them and emits the `Cache-Control` these values describe, so browser,
+     * CDN and reverse-proxy caches can absorb read traffic that would
+     * otherwise reach a grain.
+     *
+     * ```ts
+     * reads: { summary: { maxAge: 5 }, price: { maxAge: 60, public: true } }
+     * ```
+     *
+     * The declaration is a PROMISE about the method, and the runtime cannot
+     * check it: a listed method must be side-effect-free and idempotent. One
+     * that mutates re-opens CSRF completely, exactly as core's `cache`
+     * declaration does on a serverFn — same vocabulary
+     * ({@link ActorReadCache}), same contract.
+     *
+     * **It also trades away mailbox ordering for `maxAge` seconds.** A cached
+     * response can be older than the actor's state, and nothing can
+     * invalidate it — not `ctx.save()`, not `useActorAction`, not
+     * `cells.invalidate()`, which reach this page's cells and never a CDN's
+     * copy. Declare it where staleness is a product decision, not a bug.
+     */
+    reads?: { [K in keyof M & string]?: ActorReadCache };
+    /**
      * Stream-method factory. Each entry runs its body as ONE mailbox turn
      * and must return an async iterable that does NOT touch live state —
      * use `ctx.snapshot()` / `ctx.changes()`. Unlike `methods`, this
@@ -622,6 +645,17 @@ export interface ActorDefinition<
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyActorDefinition = ActorDefinition<any, any, any>;
 
+/**
+ * The cache declaration for one actor read — core's `ServerFnReadCache`,
+ * deliberately by ALIAS rather than by imitation.
+ *
+ * `maxAge` (seconds, no invented default), plus optional
+ * `staleWhileRevalidate`, `public` and `sMaxAge`. A second vocabulary for the
+ * same HTTP headers would drift from the one an app already learned for
+ * serverFns, and the endpoint composing the header is literally core's.
+ */
+export type ActorReadCache = ServerFnReadCache;
+
 /** Per-call options for `actor(...).with()`, mirroring `fn.with()`. */
 export interface ActorCallOptions {
     signal?: AbortSignal;
@@ -629,6 +663,21 @@ export interface ActorCallOptions {
     headers?: Record<string, string>;
     /** Explicit server context for in-process calls (`fn.with({ context })`). */
     context?: unknown;
+    /**
+     * Override the carrier for a method declared in `reads:`, which the client
+     * otherwise sends as a cacheable `GET`. `false` sends it as a POST — the
+     * endpoint accepts both — and the response is then not cacheable.
+     *
+     * Two reasons to reach for it, both real: arguments too large for a URL
+     * (intermediaries cap the query, and the endpoint answers 414), and
+     * arguments that should stay OUT of access logs, proxy traces and referrer
+     * headers. A GET puts the actor key and every argument in the URL, which
+     * is exactly what the hashed routing token exists to avoid for the key.
+     *
+     * Wire transport only, and inert on an undeclared method: the server
+     * accepts GET solely for declared reads.
+     */
+    get?: boolean;
 }
 
 /** What callers see: methods promise-wrapped, streams as AsyncIterable. */

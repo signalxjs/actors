@@ -101,6 +101,15 @@ export interface ActorCallInit {
      * ignores this silently defeats every router.
      */
     route?: string;
+    /**
+     * This method carries a `reads:` cache declaration, so it is an
+     * idempotent read the endpoint accepts `GET` for — the build stamps the
+     * names onto the client ref, exactly as it does stream names.
+     *
+     * A hint, never a requirement: a transport that ignores it POSTs, which
+     * the endpoint still accepts. All that is lost is the HTTP cache.
+     */
+    get?: boolean;
 }
 
 /** One actor subscription on a transport's push channel. */
@@ -191,7 +200,13 @@ async function send(
             if (key.toLowerCase() !== 'content-type') headers[key] = source[key]!;
         }
     }
-    headers['content-type'] = 'application/json';
+    // A GET carries no body, so a content-type would describe nothing — and
+    // it is a non-safelisted header, so omitting it is one fewer reason for a
+    // cross-origin request to preflight. Only one fewer, deliberately not a
+    // promise: the routing token header ships by default (`route: 'hash'`) and
+    // preflights on its own, so a caller who genuinely needs a simple
+    // cross-origin GET also wants `route: 'none'` and no custom headers.
+    if (init?.get !== true) headers['content-type'] = 'application/json';
     // The routing token: the grain's type comes from the symbol, its key is
     // wire arg 0 (the proxy splices it there). Both carriers get the SAME
     // token from one call, so a path segment and a header can never disagree.
@@ -204,13 +219,27 @@ async function send(
     // raw header beside an encoded path would route the two carriers to
     // different silos. Encoding also keeps the value valid ASCII.
     if (token !== null) headers[ACTOR_ROUTE_HEADER] = encodeRouteToken(token);
-    const request: RequestInit = {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ args: encodeWire(args) }),
-        ...(init?.signal ? { signal: init.signal } : {})
-    };
-    const url = routePath(endpointOf(config, init), token, symbol);
+    const path = routePath(endpointOf(config, init), token, symbol);
+    const signal = init?.signal ? { signal: init.signal } : {};
+    // A declared read goes out as GET with its arguments in `?args=`, which is
+    // what lets a browser, a CDN or a reverse proxy answer it without the
+    // request ever reaching a grain. Same symbol, same routing token, same
+    // codec — only the carrier differs.
+    const [url, request]: [string, RequestInit] =
+        init?.get === true
+            ? [
+                  `${path}?args=${encodeURIComponent(JSON.stringify(encodeWire(args)))}`,
+                  { method: 'GET', headers, ...signal }
+              ]
+            : [
+                  path,
+                  {
+                      method: 'POST',
+                      headers,
+                      body: JSON.stringify({ args: encodeWire(args) }),
+                      ...signal
+                  }
+              ];
     return config.fetch ? config.fetch(url, request) : fetch(url, request);
 }
 
@@ -328,15 +357,28 @@ export function currentTransport(): ActorTransport {
 export function __actorRef(
     type: string,
     endpoint: string,
-    streams: readonly string[] = []
+    streams: readonly string[] = [],
+    /**
+     * Methods carrying a `reads:` declaration, so the proxy issues GET for
+     * them and the response becomes HTTP-cacheable. Read statically by the
+     * build from the same object literal the server validates.
+     */
+    reads: readonly string[] = []
 ): object {
     const streamNames = new Set(streams);
+    const readNames = new Set(reads);
     const makeProxy = (key: string, options?: ActorCallInit): object => {
         const cache = new Map<string | symbol, unknown>();
+        // `get` is REMOVED from the shared init and re-applied only on a
+        // declared read. It is meaningful nowhere else: the endpoint accepts
+        // GET for declared reads alone, so letting a `.with({ get: true })`
+        // reach a write or a stream would turn one into a 405 — a carrier
+        // choice silently breaking calls it has no business touching.
+        const { get: carrier, ...rest } = options ?? {};
         // `ref` LAST so it is authoritative: a caller's `.with({ ref })`
         // cannot make a proxy route as some other grain.
         const init: ActorCallInit = {
-            ...options,
+            ...rest,
             endpoint: options?.endpoint ?? endpoint,
             ref: { type, key }
         };
@@ -353,6 +395,16 @@ export function __actorRef(
                 } else if (streamNames.has(prop)) {
                     member = (...args: unknown[]) =>
                         currentTransport().stream(symbol, [key, ...args], init);
+                } else if (readNames.has(prop)) {
+                    // Declared reads default to GET, and an explicit
+                    // `.with({ get: false })` WINS: the server accepts POST for
+                    // them either way, and a caller has two good reasons to
+                    // ask for it — arguments too long for a URL, and arguments
+                    // (the actor key included) that should stay out of access
+                    // logs and referrers.
+                    const readInit: ActorCallInit = { ...init, get: carrier ?? true };
+                    member = (...args: unknown[]) =>
+                        currentTransport().call(symbol, [key, ...args], readInit);
                 } else {
                     member = (...args: unknown[]) =>
                         currentTransport().call(symbol, [key, ...args], init);
