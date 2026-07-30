@@ -490,6 +490,20 @@ detached snapshot after every mutating turn (bounded buffer, drop-oldest).
   closable from outside the body. Nothing an author writes changes — the
   factory is a table constructor, not a place for per-activation state.
 
+- **A quiet stream is kept alive at the byte layer.** A stream that yields
+  nothing sends nothing, and every intermediary with an idle timeout
+  (ingress at 60 s, cloud load balancers at ~4 min, mobile NATs) closes it;
+  the client then sees a stream that "ended without a done/error
+  terminator". The endpoint therefore emits a `{"ping":1}` line after 30 s of
+  silence, which the client's reader skips. Tune or disable it with
+  `handleActorRequest({ streamPingMs })` — `0` is off.
+
+**Reading current state? Prefer `useActorState(…, { live: true })`** over a
+hand-written `streams:` body. It pushes the result of the *read you already
+declared*, multiplexes every live read on the page onto one connection, and
+reconnects on its own. `streams:` is for a feed that is not a read of current
+state: a log tail, a progress sequence, an event history.
+
 ## Tasks (long-running operations)
 
 A method call holds the mailbox until it settles — fine for milliseconds,
@@ -1146,6 +1160,66 @@ The raw `useData` recipe still works if you want it —
 `useData(['cart', id], () => actor(CartActor, id).getSummary())` — but it
 does not share keys with `useActorState`.
 
+### Live reads (`{ live: true }`)
+
+Everything above refreshes only the tab that wrote. Invalidation is local
+bookkeeping, and no request/response call tells a *second* browser that
+anything happened. `{ live: true }` is what closes that gap:
+
+```ts
+const messages = useActorState(RoomActor, room, 'recent', 20, { live: true });
+const topic = useActorState(RoomActor, room, 'topic', { live: true });
+```
+
+The actor re-runs **the read you declared** after every turn that mutated
+its state — whoever caused it — and pushes the result. That is why the feed
+is per subscription rather than a state snapshot: `topic` is a method, and
+only the actor can compute it.
+
+What it costs and what it guarantees:
+
+- **One connection for the whole page.** Every live read on the page rides a
+  single held-open NDJSON response (`$live#subscribe`), multiplexed by
+  subscription index, pinging every 30 s so proxies and mobile NATs leave it
+  alone. Twelve live components do not open twelve connections.
+- **The first paint is unchanged.** The ordinary read still seeds the cell,
+  SSR still serializes it, and hydration still costs no request. `live` is
+  additive.
+- **A set change reopens the connection.** A `fetch` POST body is not duplex,
+  so a newly mounted component cannot be pushed onto an open stream: the
+  channel coalesces set changes (~20 ms), aborts, and reopens carrying the
+  new set. Every subscription re-seeds on open, which is why a reconnect
+  needs no resume token.
+- **An unchanged value is dropped, not delivered.** Two things produce one
+  routinely: the re-seed above (one widget mounting must not look like the
+  whole page updating), and the fact that a mutating turn re-runs *every*
+  subscription on that grain — change a room's topic and its `recent(20)`
+  watch re-runs too, returning an identical list. These are views of current
+  state, not an event log, so a subscriber cannot need to know that the value
+  it already holds was recomputed.
+- **It reconnects.** A long-lived response dies for reasons that are nobody's
+  bug (a proxy timeout, a rolling restart, a laptop lid). Backoff doubles
+  1 s → 30 s with jitter and resets on any healthy frame, and the re-seed
+  doubles as the catch-up read.
+- **A dead feed degrades to "not live", never to "broken".** One
+  subscription's failure (a guard rejection, say) is delivered to that read
+  alone and leaves the rest of the page live; a read whose feed cannot be
+  established keeps working as a plain read.
+- **Nothing subscribes during SSR.** The subscription lives in `onMounted`.
+- **Security is the read's own.** A subscription runs the same guard chain as
+  a unary call, at subscribe time, so it exposes nothing a polling client
+  could not already read. There is deliberately no per-actor `live` opt-in.
+
+Cross-silo works without configuration: each subscription dispatches through
+placement, so watching an actor another silo owns rides the silo-to-silo
+transport. `$live` is never routed or redirected — one response fans out to
+many grains, so no single grain can claim it.
+
+Tuning, if you need it, is on the plugin — `actorsPlugin({ live: {
+debounceMs, retryMs, maxRetryMs, onError } })`. A transport that brings its
+own `live()` channel (a WebSocket transport, say) is used instead of this
+one, with no call site changing.
+
 ## Dev & HMR
 
 The vite plugin's dev silo lives in the SSR module runner's graph and is
@@ -1303,6 +1377,13 @@ above. `init.endpoint` carries the endpoint the build baked into the ref, so
 `configureActors({ headers })` can override headers alone without restating
 where the server is.
 
+`live()` is the one **optional** member. Leave it out and `@sigx/actors/app`
+drives the `$live` mount over your `stream()` instead, which is how the
+default transport gets live reads without carrying a line of push logic in
+`./client` (that entry's bytes ride every bundle that touches an actor).
+Implement it — as a WebSocket transport would — and the app uses yours,
+unchanged call sites either way.
+
 **Server-side**, a transport is a plugin: `PluginRegistry.route()` lets one
 contribute its own mount, which `createAppHandler` / `createFetchHandler`
 serve in dev and prod alike. (One current limit: `ActorRoute.handle` returns
@@ -1389,6 +1470,12 @@ into another's concurrent render. The plugin installs a transport on live
 clients only, tears it down on `app.unmount()`, and provides the per-app
 context the hooks resolve through. It is optional — `actor()` works without
 it, because the build bakes an endpoint into every client ref.
+
+That context carries the per-app state with a *lifetime*: the mounted-read
+registry invalidation refreshes, and the live connection `{ live: true }`
+subscribes on (closed with the app, so an unmounted page leaves nothing
+open). Both are per app because a server rendering two requests at once has
+two of them.
 
 It deliberately does **not** register codec type handlers: the actor wire
 reads core's `__SIGX_SERVERFN_CODEC__` seam directly, so one

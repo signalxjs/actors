@@ -25,10 +25,26 @@
  * into the page under the same canonical key the client then reads.
  */
 import { getCurrentInstance, onMounted, onUnmounted, useData, type AsyncState } from '@sigx/runtime-core';
+import {
+    makeUnhandledReporter,
+    matchAsyncState,
+    registerHandledAsyncOptionKeys,
+    writeBack
+} from '@sigx/runtime-core/internals';
+import { effect, signal, untrack } from '@sigx/reactivity';
 import { actor } from '../index';
 import { actorKey, type ActorKeyArg, type ActorKeyArgs } from '../actor-key';
 import { useActorsContext } from './context';
+import type { LiveChannel } from './live';
 import type { ActorArgs, ActorReadName, ActorResult, AnyActorDefinition } from '../types';
+
+/**
+ * `live` is ours, not core's. Without this the default engine's
+ * unknown-option warning fires on every live read — that warning exists to
+ * catch a missing plugin install, and a key the caller's plugin DOES handle
+ * would make it cry wolf.
+ */
+registerHandledAsyncOptionKeys('live');
 
 /** Core's falsy-key vocabulary: a falsy key parks the read in `'idle'`. */
 type Falsy = null | undefined | false | '';
@@ -64,6 +80,22 @@ function explainMissingScope(error: unknown, def: AnyActorDefinition, method: st
 export interface UseActorStateOptions {
     /** Run the read during SSR. Default true — passed through to `useData`. */
     server?: boolean;
+    /**
+     * Subscribe to server pushes for this read: the actor re-runs the method
+     * after every turn that mutated its state and the new result arrives on
+     * the page's single live connection.
+     *
+     * What it adds is *other people's* writes. Everything else in the read
+     * path only ever refreshes the tab that wrote — `useActorAction`'s
+     * invalidation is local bookkeeping, and no request/response call tells a
+     * second browser that anything happened.
+     *
+     * The first value still comes from the ordinary read (SSR-seeded and
+     * hydrated without a refetch, deduped by canonical key); this is purely
+     * additive on top of it. Client-only: a server render has nothing to push
+     * to, so it is inert there.
+     */
+    live?: boolean;
 }
 
 /** The reactive form's tuple: the actor key, the method, then its arguments. */
@@ -73,12 +105,19 @@ export type ActorCall<D, M extends ActorReadName<D>> = readonly [
     ...args: ActorKeyArgs<ActorArgs<D, M>>
 ];
 
-/** Read an actor method as component data. */
+/**
+ * Read an actor method as component data.
+ *
+ * Options come LAST, after the method's arguments — the only place a variadic
+ * signature leaves for them. Unambiguous because a key argument must be a JSON
+ * primitive (see `ActorKeyArgs`), so an object in that position can only be
+ * the option bag.
+ */
 export function useActorState<D extends AnyActorDefinition, M extends ActorReadName<D>>(
     def: D,
     key: string,
     method: M,
-    ...args: ActorKeyArgs<ActorArgs<D, M>>
+    ...args: [...ActorKeyArgs<ActorArgs<D, M>>, options?: UseActorStateOptions]
 ): AsyncState<ActorResult<D, M>>;
 /**
  * Reactive form — mirrors `useData(() => [...])`. A falsy return parks the
@@ -97,7 +136,15 @@ export function useActorState(
     ...rest: unknown[]
 ): AsyncState<unknown> {
     const reactive = typeof keyOrCall === 'function';
-    const options = (reactive ? methodOrOptions : undefined) as
+    // Positional form: a non-primitive in the trailing position can only be
+    // the option bag — key arguments are JSON primitives by contract, which is
+    // what makes this unambiguous rather than a guess. Popped before the
+    // closure below captures `rest`, so it never reaches the actor.
+    const trailing =
+        !reactive && isOptionBag(rest[rest.length - 1])
+            ? (rest.pop() as UseActorStateOptions)
+            : undefined;
+    const options = (reactive ? methodOrOptions : trailing) as
         | UseActorStateOptions
         | undefined;
     const call = reactive
@@ -149,23 +196,201 @@ export function useActorState(
     // Outside a component there is no unmount to unregister on, so skip —
     // `useActorState` is a component hook, but `getCurrentInstance()` is
     // what makes that a graceful no-op rather than a leak.
-    if (getCurrentInstance()) {
-        const registry = useActorsContext().cells;
-        let release: (() => void) | null = null;
-        onMounted(() => {
-            release = registry.add(
-                () => {
-                    const key = keyOf();
-                    return key ? JSON.stringify(key) : null;
-                },
-                () => void state.refresh()
-            );
+    const instance = getCurrentInstance();
+    if (!instance) return state;
+
+    const context = useActorsContext();
+    let release: (() => void) | null = null;
+    onMounted(() => {
+        release = context.cells.add(
+            () => {
+                const key = keyOf();
+                return key ? JSON.stringify(key) : null;
+            },
+            () => void state.refresh()
+        );
+    });
+    onUnmounted(() => {
+        release?.();
+        release = null;
+    });
+
+    return options?.live ? liveView(state, keyOf, context.live, instance) : state;
+}
+
+const OPTION_KEYS = new Set<string>(['server', 'live']);
+
+/**
+ * A trailing argument that can only be the option bag — see the overload.
+ *
+ * Narrow on purpose. "Any object" would be enough for typed callers (a key
+ * argument must be a JSON primitive), but it would make a JavaScript caller's
+ * mistake SILENT: `useActorState(D, 'k', 'at', new Date())` would swallow the
+ * date as options instead of reaching `actorKey`'s dev-time argument check,
+ * and the read would quietly address a different key than it looks like it
+ * does. So: a plain object (no `Date`, `Map`, or class instance — their
+ * prototypes fail the test) carrying only known option keys.
+ *
+ * An EMPTY plain object counts as options, which matters in the one direction
+ * types cannot help with: `{}` type-checks as `UseActorStateOptions`, so it
+ * must not throw. As an actor argument it is a type error already.
+ */
+function isOptionBag(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null) return false;
+    const proto = Object.getPrototypeOf(value) as unknown;
+    if (proto !== Object.prototype && proto !== null) return false;
+    return Object.keys(value).every((key) => OPTION_KEYS.has(key));
+}
+
+/**
+ * The pushed value, in front of the cell.
+ *
+ * A WRAPPER rather than a write into the cell, because core does not let one
+ * happen: `AsyncState` is written only by the engine that owns it, and the
+ * obvious workaround — `writeBack(key, value)` then `refresh()` — does not
+ * work, since `refresh()` invalidates the restored entry before fetching and
+ * would pay a round trip per pushed frame. (The upstream ask that deletes this
+ * function is `AsyncReadHandle.setValue`.)
+ *
+ * Two rules make the composition honest:
+ *
+ *  - **A cell settle wins.** Any time the underlying read settles, the pushed
+ *    value is dropped. It has to be: `useActorAction` invalidates on write, so
+ *    the cell refetches and holds the post-write truth, while the push for
+ *    that same mutation is still throttled (50 ms by default) somewhere behind
+ *    it. Preferring the push there would show the writer their OLD value for
+ *    exactly as long as the throttle lasts — the one case the invalidation
+ *    story exists to get right.
+ *  - **A dead feed degrades to "not live", not "broken".** A subscription
+ *    error surfaces only when the cell has nothing of its own to show; with a
+ *    value in hand the page keeps rendering it, because a silo whose placement
+ *    cannot watch (501) must not take a working read down with it.
+ */
+function liveView(
+    state: AsyncState<unknown>,
+    keyOf: () => readonly ActorKeyArg[] | null,
+    channel: LiveChannel,
+    instance: NonNullable<ReturnType<typeof getCurrentInstance>>
+): AsyncState<unknown> {
+    // One reactive cell for both, so a push and a failure notify readers the
+    // same way. `seq` is what makes an identical value re-notify.
+    const pushed = signal({ has: false, value: undefined as unknown, error: null as Error | null });
+    const report = makeUnhandledReporter(instance, 'useActorState');
+
+    let stop: (() => void) | null = null;
+    const subscribeTo = (tuple: readonly ActorKeyArg[] | null): void => {
+        stop?.();
+        stop = null;
+        if (!tuple) return; // a falsy key: nothing to watch yet
+        const [, type, key, method, ...args] = tuple as [
+            string,
+            string,
+            string,
+            string,
+            ...ActorKeyArg[]
+        ];
+        const canonical = JSON.stringify(tuple);
+        stop = channel.subscribe(
+            { type, key, method, args },
+            (value) => {
+                pushed.error = null;
+                pushed.value = value;
+                pushed.has = true;
+                // The page cache too, under the same canonical key the cell
+                // reads: a component that unmounts and remounts restores from
+                // the blob WITHOUT refetching, and the newest thing we know is
+                // this push — not whatever the last actual fetch returned.
+                writeBack(canonical, value);
+            },
+            (error) => {
+                if (__DEV__) {
+                    console.warn(
+                        `[sigx actors] live subscription for ${type}/${key}#${method} failed; ` +
+                            `this read still works, it just will not update by itself:`,
+                        error
+                    );
+                }
+                pushed.has = false;
+                pushed.error = error;
+            }
+        );
+    };
+
+    onMounted(() => {
+        let subscribed: string | null = null;
+        const runner = effect(() => {
+            const tuple = keyOf();
+            const canonical = tuple ? JSON.stringify(tuple) : null;
+            // Tracked on purpose: a settle of the cell's own is newer
+            // information than anything pushed before it (see above).
+            const settled = state.state === 'ready' || state.state === 'errored';
+            void state.value;
+            untrack(() => {
+                if (canonical !== subscribed) {
+                    subscribed = canonical;
+                    pushed.has = false;
+                    pushed.error = null;
+                    subscribeTo(tuple);
+                } else if (settled) {
+                    pushed.has = false;
+                }
+            });
         });
         onUnmounted(() => {
-            release?.();
-            release = null;
+            runner.stop();
+            stop?.();
+            stop = null;
         });
-    }
+    });
 
-    return state;
+    /**
+     * Has the underlying read produced nothing at all yet?
+     *
+     * Tested through `state.state`, NOT `state.value === null`: `null` is a
+     * value an actor read may legitimately return, and treating it as "nothing
+     * to show" would let a failed subscription blank out a read that is
+     * perfectly ready.
+     */
+    const unsettled = (): boolean => state.state === 'pending' || state.state === 'idle';
+
+    const view: AsyncState<unknown> = {
+        get state() {
+            if (pushed.has) return 'ready';
+            if (pushed.error && unsettled()) return 'errored';
+            return state.state;
+        },
+        get value() {
+            return pushed.has ? pushed.value : state.value;
+        },
+        get error() {
+            if (pushed.has) return null;
+            return state.error ?? (unsettled() ? pushed.error : null);
+        },
+        get loading() {
+            return pushed.has ? false : state.loading;
+        },
+        match(arms) {
+            return matchAsyncState(
+                {
+                    state: view.state,
+                    value: view.value,
+                    error: view.error,
+                    // The last-good value for the error arm. A pushed value is
+                    // as good as a fetched one.
+                    stale: pushed.has ? pushed.value : state.value,
+                    retry: () => void view.refresh(),
+                    onUnhandledError: report
+                },
+                arms
+            );
+        },
+        refresh() {
+            // The caller asked for a fresh READ, so the push stops standing in
+            // for one: whatever comes back is newer than what we are holding.
+            pushed.has = false;
+            pushed.error = null;
+            return state.refresh();
+        }
+    };
+    return view;
 }

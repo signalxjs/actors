@@ -62,6 +62,22 @@ export interface ActorRequestOptions
         ActorResolverOptions {
     /** The running silo — explicit, never ambient. */
     silo: Silo;
+    /**
+     * How long an NDJSON stream may go silent before the endpoint emits a
+     * keepalive `{"ping":1}` line. `0` disables it. Default 30 s, matching
+     * `$live`.
+     *
+     * A live stream is mostly quiet — that is the normal case, not the edge —
+     * and every intermediary with an idle timeout (ingress at 60 s, cloud load
+     * balancers at ~4 min, mobile NATs) closes a bytes-silent response. The
+     * client then sees a stream that "ended without a done/error terminator"
+     * and has to reconnect, paying a full catch-up read each time.
+     *
+     * Applied to every streaming actor method, including `$live` — whose own
+     * chunk-level ping predates this and stays, since it must reach the
+     * subscription multiplexer rather than only the byte layer.
+     */
+    streamPingMs?: number;
 }
 
 /** Does this request target the actor endpoint? A predicate, not a
@@ -73,19 +89,132 @@ export function matchesActorRequest(request: Request, base = '/_sigx/actor'): bo
 }
 
 /** Handle one actor RPC request. Mount beside `handleServerFnRequest`. */
-export function handleActorRequest(
+export async function handleActorRequest(
     request: Request,
     options: ActorRequestOptions
 ): Promise<Response> {
-    const { silo, onMiss, base, maxHops, ...rest } = options;
+    const { silo, onMiss, base, maxHops, streamPingMs, ...rest } = options;
     const resolverOptions: ActorResolverOptions = {
         ...(onMiss !== undefined ? { onMiss } : {}),
         ...(base !== undefined ? { base } : {}),
         ...(maxHops !== undefined ? { maxHops } : {})
     };
-    return handleServerFnRequest(request, {
+    const response = await handleServerFnRequest(request, {
         ...rest,
         resolve: resolverFor(silo, resolverOptions)
+    });
+    return withKeepalive(response, streamPingMs ?? DEFAULT_STREAM_PING_MS);
+}
+
+/** See `ActorRequestOptions.streamPingMs`. Matches `DEFAULT_LIVE_PING_MS`. */
+export const DEFAULT_STREAM_PING_MS = 30_000;
+
+const PING_LINE = new TextEncoder().encode('{"ping":1}\n');
+
+/**
+ * Re-wrap a streaming response so silence produces bytes (#178).
+ *
+ * At the BYTE layer, deliberately, rather than inside each stream generator:
+ * core owns the NDJSON envelope, the actor's generator owns the values, and
+ * neither can emit a line the other does not know about. Wrapping the body is
+ * the one place that sees "nothing has been written for a while" for every
+ * streaming method at once — including a `streams:` body parked on
+ * `ctx.changes()`, which is exactly the quiet case that breaks.
+ *
+ * A non-streaming response is returned UNTOUCHED, object identity included:
+ * unary calls are the overwhelming majority and must pay nothing.
+ */
+function withKeepalive(response: Response, pingMs: number): Response {
+    if (pingMs <= 0 || !response.body) return response;
+    if (!response.headers.get('content-type')?.includes('x-ndjson')) return response;
+
+    const reader = response.body.getReader();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sink: ReadableStreamDefaultController<Uint8Array> | null = null;
+
+    const disarm = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+    };
+
+    /**
+     * Start (or restart) the silence clock.
+     *
+     * Armed when a read begins and again after every write, so a ping means
+     * `pingMs` of actual SILENCE rather than every `pingMs` of wall clock. A
+     * stream already producing bytes needs no keepalive — that is the whole
+     * premise — so pinging it anyway would be payload and parse work for
+     * nothing. Re-arming also bounds the worst case, which a fixed interval
+     * plus a silence test does not: that combination lets up to `2 × pingMs`
+     * pass between writes, and for the 30 s default that lands exactly on the
+     * 60 s idle timeout this exists to survive.
+     *
+     * A tick that cannot write does NOT re-arm, and that is the whole
+     * lifetime story: the timer exists only while somebody is waiting for
+     * bytes. Re-arming regardless would leave an abandoned response — nobody
+     * reading, nobody cancelling — ticking for the life of the process. The
+     * next `pull` starts the clock again, and a `pull` is exactly what a
+     * consumer that resumed reading produces.
+     */
+    const arm = (): void => {
+        disarm();
+        timer = setTimeout(() => {
+            timer = undefined;
+            // `null` once the stream is closed or errored; `<= 0` while the
+            // consumer is not draining, where the socket already has bytes
+            // pending and there is no idle for a keepalive to interrupt.
+            const room = sink?.desiredSize;
+            if (room === null || room === undefined || room <= 0) return;
+            try {
+                sink!.enqueue(PING_LINE);
+                arm();
+            } catch {
+                // Lost a race with teardown. Nothing to clean up: this tick
+                // has already fired and is deliberately not re-arming.
+            }
+        }, pingMs);
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+            sink = controller;
+            arm();
+        },
+        async pull(controller) {
+            // The silence being measured starts HERE, not at the last write:
+            // this is the point where the response has nothing to send and is
+            // waiting for the actor to produce something.
+            arm();
+            try {
+                const { value, done } = await reader.read();
+                if (done) {
+                    disarm();
+                    controller.close();
+                    return;
+                }
+                controller.enqueue(value);
+                arm();
+            } catch (error) {
+                // An upstream failure (a broken source, an abrupt cancel).
+                // Without this the timer outlives the stream and goes on
+                // pinging a response nobody will ever read again.
+                disarm();
+                await reader.cancel(error).catch(() => {});
+                controller.error(error);
+            }
+        },
+        cancel(reason) {
+            disarm();
+            // Forwarded, so the actor's generator still sees the disconnect
+            // and releases its keep-alive — the #184 chain runs through here.
+            return reader.cancel(reason);
+        }
+    });
+
+    return new Response(stream, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers
     });
 }
 

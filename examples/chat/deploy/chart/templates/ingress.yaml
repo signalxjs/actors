@@ -6,13 +6,14 @@
 # *.omniaflowtest.net wildcard) — no tls block, no cert-manager annotation
 # needed for a host the wildcard covers.
 #
-# Shared annotations, load-bearing for the live streams:
-# - proxy-buffering off: actor watch() responses are long-lived NDJSON;
-#   buffered, the page silently stops being live.
-# - read/send-timeout 3600: the per-actor stream mount sends NO keepalive
-#   pings, so nginx's default 60s idle timeout would cut every quiet
-#   stream. (The client reconnect loop makes drops survivable either way;
-#   the long timeout makes them rare.)
+# Shared annotations, load-bearing for the live connection:
+# - proxy-buffering off: the `$live` subscribe response is long-lived
+#   NDJSON; buffered, the page silently stops being live.
+# - read/send-timeout 3600: belt and braces. Both stream mounts now emit a
+#   keepalive every 30s (`$live` in-band, per-actor streams at the byte
+#   layer), which is what actually keeps a quiet connection alive through
+#   hops nobody here controls; the long timeout makes a drop rarer still on
+#   the hop we do control, and the client reconnects either way.
 # - NO rewrite/regex annotations of any kind: actor symbols travel
 #   percent-encoded (/_sigx/actor/Room%23watch) and a rewriting location
 #   would decode the %23 and break routing.

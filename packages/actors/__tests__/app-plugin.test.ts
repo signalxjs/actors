@@ -85,9 +85,12 @@ describe('actorsPlugin', () => {
                 new Response(JSON.stringify({ data: 'untouched' }))
         );
         vi.stubGlobal('fetch', fetchSpy);
-        // The page-global seam was never written to.
+        // The page-global seam was never written to — and disposing the app
+        // does not write to it either (the disposables an install registers
+        // are its own state, never the seam it declined to touch).
         await expect(cart().add()).resolves.toBe('untouched');
-        expect(app._context.disposables.size).toBe(0);
+        for (const dispose of app._context.disposables) dispose();
+        await expect(cart().add()).resolves.toBe('untouched');
         vi.unstubAllGlobals();
 
         // …but the context is still provided, so the hooks resolve during SSR.
@@ -127,13 +130,43 @@ describe('actorsPlugin', () => {
         expect(getProvided(app._context.provides, ACTORS_TOKEN)?.transport).toBe(transport);
     });
 
-    it('installs nothing when no transport is given, but still provides a context', () => {
+    it('installs nothing when no transport is given, but still provides a context', async () => {
         const app = fakeApp();
+        const fetchSpy = vi.fn(
+            async (_u: RequestInfo | URL, _i?: RequestInit) =>
+                new Response(JSON.stringify({ data: 'default' }))
+        );
+        vi.stubGlobal('fetch', fetchSpy);
         install(app);
         const context = getProvided(app._context.provides, ACTORS_TOKEN);
         expect(context?.transport).toBeNull();
         expect(context?.cells).toBeDefined();
-        expect(app._context.disposables.size).toBe(0);
+        // A live channel regardless: with no `transport` option the endpoint
+        // baked into every client ref is already the right target, which is
+        // the most common configuration and must still support a live read.
+        expect(context?.live).toBeDefined();
+        // The page-global seam is untouched — calls fall through to the
+        // default fetch transport.
+        await expect(cart().add()).resolves.toBe('default');
+        vi.unstubAllGlobals();
+    });
+
+    it('closes the live channel when the app is disposed', () => {
+        const app = fakeApp();
+        install(app, { transport: stubTransport('live'), live: { debounceMs: 1 } });
+        const channel = getProvided(app._context.provides, ACTORS_TOKEN)!.live;
+
+        channel.subscribe({ type: 'Cart', key: 'k', method: 'total' }, () => {});
+        expect(channel.stats().subscriptions).toBe(1);
+
+        for (const dispose of app._context.disposables) dispose();
+
+        // Not just "forgotten": an app that unmounts must not leave a
+        // connection open, and a component racing the teardown must not be
+        // able to open a new one.
+        expect(channel.stats().subscriptions).toBe(0);
+        channel.subscribe({ type: 'Cart', key: 'k', method: 'total' }, () => {});
+        expect(channel.stats().subscriptions).toBe(0);
     });
 
     it('useActorsContext() outside any app returns a working default and warns once', () => {

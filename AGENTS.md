@@ -245,12 +245,13 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `examples/chat` — actors in a REAL sigx app, and the composition proof:
   `sigx()` + `sigxServer()` + `sigxActors()` in one Vite build, SSR-seeded
   `useActorState`, a guard running on both transports, a serverFn calling
-  an actor in-process, hydration with no refetch, and a `ctx.changes()`
-  stream driving `cells.invalidate()` so every open tab stays live. Dev and
+  an actor in-process, hydration with no refetch, and
+  `useActorState(…, { live: true })` — one multiplexed `$live` connection
+  for the page — so every open tab stays live. Dev and
   prod start the same app module. Production-shaped: `REDIS_URL` clusters
   it (redisStorage + redisCluster) behind a dual listener (public SSR/
   actor/fn surface vs internal health/ops/silo), with HMAC-signed HttpOnly
-  sessions and a reconnecting live stream; `deploy/` has the AKS chart +
+  sessions and a self-reconnecting live connection; `deploy/` has the AKS chart +
   public ingress, exercised as runbook scenario (l). Not published.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev silo, client swap, streams, file persistence, and a runnable 3-silo

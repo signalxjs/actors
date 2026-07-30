@@ -19,12 +19,14 @@
 import type { App, Plugin } from '@sigx/runtime-core';
 import {
     configureActors,
+    currentTransport,
     resolveTransport,
     type ActorTransport,
     type ActorTransportConfig
 } from '../client';
 import { ACTORS_TOKEN, isLiveClient, type ActorsContext } from './context';
 import { createCellRegistry } from './cell-registry';
+import { createLiveChannel, type LiveChannelOptions } from './live';
 import { setProvided } from '@sigx/runtime-core/internals';
 
 export interface ActorsPluginOptions {
@@ -34,6 +36,12 @@ export interface ActorsPluginOptions {
      * server `actor()` dispatches in-process and needs no transport.
      */
     transport?: ActorTransportConfig | ActorTransport;
+    /**
+     * Tuning for the live connection `useActorState(…, { live: true })` uses:
+     * the set-change debounce and the reconnect backoff. Defaults are in
+     * `./live`; there is nothing to configure for a normal app.
+     */
+    live?: LiveChannelOptions;
 }
 
 /** Page-global, like the seam it guards: last install wins. */
@@ -75,7 +83,24 @@ export function actorsPlugin(options: ActorsPluginOptions = {}): Plugin {
                 });
             }
 
-            const context: ActorsContext = { transport, cells: createCellRegistry() };
+            /**
+             * The live channel resolves its transport LAZILY, and falls back
+             * to the page-global one: `actorsPlugin()` with no `transport`
+             * option installs nothing (correctly — the endpoint is already
+             * baked into every client ref), and a live read must still work in
+             * that, the most common, configuration.
+             */
+            const channel = createLiveChannel(
+                () => (isLiveClient() ? (transport ?? currentTransport()) : null),
+                options.live ?? {}
+            );
+            app._context.disposables.add(() => channel.close());
+
+            const context: ActorsContext = {
+                transport,
+                cells: createCellRegistry(),
+                live: channel
+            };
             setProvided(app._context.provides, ACTORS_TOKEN, context);
         }
     };

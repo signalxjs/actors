@@ -42,8 +42,9 @@ Two runnable demos:
 
 [`examples/chat`](examples/chat) — actors inside a **real SignalX app**: SSR
 with `useActorState`, guards that run on both transports, a serverFn beside
-the actor endpoint, hydration with no refetch, and a `ctx.changes()` stream
-that keeps every open tab live. Open it twice and type in one.
+the actor endpoint, hydration with no refetch, and `{ live: true }` reads
+that keep every open tab live over one connection. Open it twice and type in
+one.
 
 ```sh
 pnpm install && pnpm build

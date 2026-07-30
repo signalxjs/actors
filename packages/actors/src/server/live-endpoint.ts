@@ -20,10 +20,13 @@ import { ServerFnError, type ServerFnContext } from '@sigx/server';
 import { mintCallId } from '../call-id';
 import { runGuards } from '../guards';
 import { toClientError } from './client-error';
+import { LIVE_SYMBOL, type LiveFrame, type LiveSubscription } from '../wire-shared';
 import type { AnyActorDefinition, Silo } from '../types';
 
-/** The reserved wire symbol. `defineActor` refuses `$`-prefixed types. */
-export const LIVE_SYMBOL = '$live#subscribe';
+// The wire contract itself (the symbol, the subscription record, the frame
+// shapes) lives in `../wire-shared`: the client half builds what this half
+// parses, and it must not import a server module to learn the shape.
+export { LIVE_SYMBOL, type LiveFrame, type LiveSubscription };
 
 /**
  * How often an otherwise-silent connection emits `{p:1}`.
@@ -35,24 +38,6 @@ export const LIVE_SYMBOL = '$live#subscribe';
  * common 60 s idle timeouts with room for one lost frame.
  */
 export const DEFAULT_LIVE_PING_MS = 30_000;
-
-/** One requested subscription. Short keys: this rides every reconnect. */
-export interface LiveSubscription {
-    /** Actor type. */
-    t: string;
-    /** Actor key. */
-    k: string;
-    /** Read method. */
-    m: string;
-    /** Arguments. */
-    a?: readonly unknown[];
-}
-
-/** A frame, tagged with the subscription index it belongs to. */
-export type LiveFrame =
-    | { i: number; v: unknown }
-    | { i: number; e: { message: string; status: number } }
-    | { p: 1 };
 
 function badRequest(message: string): never {
     throw new ServerFnError(400, `[sigx actors] $live: ${message}`);

@@ -35,6 +35,35 @@ export interface WireError {
     data?: unknown;
 }
 
+// ---------------------------------------------------------------------------
+// The `$live` wire contract
+//
+// Here rather than in `./server/live-endpoint` because BOTH sides speak it and
+// the client must never import the server: `./app`'s live channel builds the
+// subscription records, the mount parses them. One definition, two importers —
+// the same reason the codec and the NDJSON reader live in this module.
+
+/** The reserved wire symbol. `defineActor` refuses `$`-prefixed types. */
+export const LIVE_SYMBOL = '$live#subscribe';
+
+/** One requested subscription. Short keys: this rides every reconnect. */
+export interface LiveSubscription {
+    /** Actor type. */
+    t: string;
+    /** Actor key. */
+    k: string;
+    /** Read method. */
+    m: string;
+    /** Arguments. */
+    a?: readonly unknown[];
+}
+
+/** A frame, tagged with the subscription index it belongs to. */
+export type LiveFrame =
+    | { i: number; v: unknown }
+    | { i: number; e: { message: string; status: number } }
+    | { p: 1 };
+
 /** Re-create a wire error with the `__sigxServerFnError` brand. */
 export function wireFail(status: number, wire: WireError | undefined, message: string): Error {
     return Object.assign(new Error(wire?.message ?? message), {
@@ -45,9 +74,25 @@ export function wireFail(status: number, wire: WireError | undefined, message: s
 }
 
 /**
- * Read an OK NDJSON response body: yields revived `chunk` lines, returns on
- * the `done` terminator, re-throws in-band `error` lines branded. A body
- * that ends without a terminator (connection lost) throws.
+ * The transport-level keepalive line, emitted by the endpoint during silence.
+ *
+ * Deliberately its own line type rather than a `chunk`: a chunk is USER data
+ * on every stream method, so any sentinel value put there could collide with
+ * something an actor legitimately yields. `ping` sits beside `chunk` / `done`
+ * / `error` in the envelope vocabulary, where nothing can mistake it.
+ */
+interface NdjsonLine {
+    chunk?: unknown;
+    done?: number;
+    error?: WireError;
+    ping?: number;
+}
+
+/**
+ * Read an OK NDJSON response body: yields revived `chunk` lines, skips
+ * keepalive `ping` lines, returns on the `done` terminator, re-throws in-band
+ * `error` lines branded. A body that ends without a terminator (connection
+ * lost) throws.
  */
 export async function* readNdjson(res: Response, symbol: string): AsyncGenerator<unknown> {
     if (!res.body) {
@@ -56,8 +101,7 @@ export async function* readNdjson(res: Response, symbol: string): AsyncGenerator
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    const parseLine = (text: string): { chunk?: unknown; done?: number; error?: WireError } =>
-        JSON.parse(text, reviver) as { chunk?: unknown; done?: number; error?: WireError };
+    const parseLine = (text: string): NdjsonLine => JSON.parse(text, reviver) as NdjsonLine;
     for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -72,6 +116,8 @@ export async function* readNdjson(res: Response, symbol: string): AsyncGenerator
                 throw wireFail(500, obj.error, `[sigx actors] stream "${symbol}" failed`);
             }
             if ('done' in obj) return;
+            // Keepalive: it exists to move bytes, and carries nothing.
+            if ('ping' in obj) continue;
             yield reviveWire(obj.chunk);
         }
     }
@@ -80,7 +126,7 @@ export async function* readNdjson(res: Response, symbol: string): AsyncGenerator
     buffer += decoder.decode();
     const tail = buffer.trim();
     if (tail) {
-        let obj: { chunk?: unknown; done?: number; error?: WireError } | null = null;
+        let obj: NdjsonLine | null = null;
         try {
             obj = parseLine(tail);
         } catch {
@@ -91,7 +137,10 @@ export async function* readNdjson(res: Response, symbol: string): AsyncGenerator
                 throw wireFail(500, obj.error, `[sigx actors] stream "${symbol}" failed`);
             }
             if ('done' in obj) return;
-            yield reviveWire(obj.chunk);
+            // A final ping is still a truncated stream — fall through to the
+            // no-terminator throw below rather than yielding a keepalive as
+            // if it were the last value.
+            if (!('ping' in obj)) yield reviveWire(obj.chunk);
         }
     }
     throw new Error(

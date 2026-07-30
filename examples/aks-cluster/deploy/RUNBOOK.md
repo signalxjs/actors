@@ -329,7 +329,7 @@ The matrix — every test runs from OUTSIDE the cluster:
 | 5 | `POST /_sigx/fn/... -H 'Origin: https://evil.example'` | 403 (same-origin via x-forwarded-*) |
 | 6 | no cookie → 401; forged `user=ada.deadbeef` → 401; signed cookie → 200 | the guard chain, end to end |
 | 7 | `POST /_sigx/actor/Room%23topic` (signed) | 200 — nginx passed `%23` through untouched |
-| 8 | hold a quiet watch stream ≥ 120 s | stays open (3600 s timeouts; per-actor streams send no pings — the reconnect loop is the systemic answer) |
+| 8 | hold a quiet `$live` connection ≥ 120 s | stays open — a `{"chunk":{"p":1}}` keepalive every 30 s, plus the 3600 s ingress timeouts; the client also reconnects on its own |
 | 9 | `kubectl -n sigx-chat rollout restart deploy/chat-silo` with a tab streaming | tab reconnects by itself and resumes receiving |
 | 10 | post → `kubectl -n sigx-chat delete pod chat-redis-...` | AOF recovery, history intact |
 | 11 | WAN load from a laptop (signed cookie + correct Origin, recent+post loop) | p50/p99 vs the in-cluster curve; no 5xx |

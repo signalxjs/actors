@@ -18,7 +18,9 @@ import { defineActor } from '@sigx/actors';
 import { createSilo } from '@sigx/actors/silo';
 import { handleActorRequest } from '@sigx/actors/server';
 import { preferLocalPolicy } from '@sigx/actors/cluster';
-import { createCluster, type ClusterHarness } from './harness';
+import { createLiveChannel } from '@sigx/actors/app';
+import { fetchTransport } from '@sigx/actors/client';
+import { abortLinked, createCluster, type ClusterHarness } from './harness';
 
 let invocations = 0;
 
@@ -196,6 +198,42 @@ describe('dispatchWatch in a cluster', () => {
             expect(decoder.decode(value)).toContain('"v":2');
         } finally {
             await reader.cancel();
+        }
+    });
+
+    it('the CLIENT channel pushes a remotely placed actor, over one connection', async () => {
+        // The whole chain in one test: the page's live channel → the `$live`
+        // mount on the silo that served the page → placement → the owner on
+        // the other host → back. The client half is deliberately blind to
+        // placement (`$live` carries no routing token and is never routed),
+        // so this is what proves that blindness is safe.
+        const h = await twoSilos();
+        await h.silos[1]!.actor(Counter, 'remote-live').increment(2);
+
+        const transport = fetchTransport({
+            endpoint: 'http://silo0.test/_sigx/actor',
+            fetch: async (input, init) => {
+                const request = new Request(input, init);
+                const response = await handleActorRequest(request, {
+                    silo: h.silos[0]!,
+                    origin: false,
+                    streamPingMs: 0
+                });
+                return abortLinked(response, init?.signal);
+            }
+        });
+        const channel = createLiveChannel(() => transport, { debounceMs: 2, retryMs: 5 });
+        const seen: unknown[] = [];
+        channel.subscribe({ type: 'Counter', key: 'remote-live', method: 'read' }, (v) =>
+            seen.push(v)
+        );
+
+        try {
+            await vi.waitFor(() => expect(seen).toEqual([2]), { timeout: 2000 });
+            await h.silos[1]!.actor(Counter, 'remote-live').increment(3);
+            await vi.waitFor(() => expect(seen).toEqual([2, 5]), { timeout: 2000 });
+        } finally {
+            channel.close();
         }
     });
 

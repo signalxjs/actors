@@ -12,6 +12,7 @@ import { createToken, getProvided, type InjectionToken } from '@sigx/runtime-cor
 import { useAppContext } from '@sigx/runtime-core';
 import { currentTransport, type ActorTransport } from '../client';
 import { createCellRegistry, type ActorCellRegistry } from './cell-registry';
+import { createLiveChannel, type LiveChannel } from './live';
 
 /** What `actorsPlugin()` provides. Grows as later milestones land. */
 export interface ActorsContext {
@@ -26,6 +27,15 @@ export interface ActorsContext {
      * Per app: two concurrent SSR renders must not share one.
      */
     readonly cells: ActorCellRegistry;
+    /**
+     * Server→client push for `useActorState(…, { live: true })`.
+     *
+     * Present on both server and client: on the server it resolves no
+     * transport and every `subscribe` is a no-op, which is what lets the hook
+     * run one code path in both environments. Nothing connects until the
+     * first subscription, so an app with no live reads pays for an empty Map.
+     */
+    readonly live: LiveChannel;
 }
 
 /**
@@ -47,6 +57,8 @@ let warnedMissing = false;
  * exactly the per-app isolation the warning already says you are missing.
  */
 let fallbackCells: ActorCellRegistry | null = null;
+/** Same reasoning for the live channel: one shared connection, not one per call. */
+let fallbackLive: LiveChannel | null = null;
 
 /**
  * The actors context for the current app, or a working default.
@@ -74,7 +86,12 @@ export function useActorsContext(): ActorsContext {
         );
     }
     fallbackCells ??= createCellRegistry();
-    return { transport: isLiveClient() ? currentTransport() : null, cells: fallbackCells };
+    fallbackLive ??= createLiveChannel(() => (isLiveClient() ? currentTransport() : null));
+    return {
+        transport: isLiveClient() ? currentTransport() : null,
+        cells: fallbackCells,
+        live: fallbackLive
+    };
 }
 
 /**

@@ -2,8 +2,8 @@
 
 Actors inside a **real SignalX app** — SSR with `useActorState`, guards
 that run on both transports, serverFns beside the actor endpoint,
-hydration with no refetch, and a `ctx.changes()` stream keeping every open
-tab live. Open two tabs and type in one.
+hydration with no refetch, and `useActorState(…, { live: true })` keeping
+every open tab live over ONE connection. Open two tabs and type in one.
 
 Production-shaped: with `REDIS_URL` set the same app clusters — Redis
 membership/directory (`redisCluster`), Redis actor state (`redisStorage`),

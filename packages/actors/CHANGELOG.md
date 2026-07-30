@@ -2,7 +2,82 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`useActorState(…, { live: true })` — the client half of the live layer**
+  (#192, closing #10 and #14). The `$live` mount shipped in #68 and nothing
+  in a browser could reach it: `ActorTransport.live?()` was declared with no
+  implementation, and `examples/chat` hand-rolled the whole thing — a
+  per-actor `watch()` stream per room, a reconnect loop, and a
+  `cells.invalidate()` per frame.
+
+  What it adds is *other people's* writes. Everything else in the read path
+  refreshes only the tab that wrote: invalidation is local bookkeeping, and
+  no request/response call tells a second browser anything happened. The
+  first paint is untouched — the ordinary read still seeds the cell, SSR
+  still serializes it, hydration still costs no request.
+
+  The channel (`createLiveChannel`, `@sigx/actors/app`) holds **one**
+  connection for the page's whole subscription set, refcounted so twelve
+  components reading one actor share one watch. A set change coalesces for
+  ~20 ms, aborts, and reopens with the new set: a `fetch` POST body is not
+  duplex outside Chromium, so a late subscription cannot be pushed onto an
+  open stream, and the obvious alternative — a control POST against a
+  session — is rejected because on Workers, at an edge, or in a multi-silo
+  cluster it cannot be routed to the instance holding the open stream.
+  Reopening is safe precisely because every subscription re-seeds, which is
+  also why a reconnect needs no resume token and no server-side
+  cross-request state.
+
+  An unchanged value is dropped rather than delivered, by structural
+  equality. Two things produce one routinely: that re-seed, and the fact that
+  a mutating turn re-runs EVERY subscription on the grain — change a room's
+  topic and its `recent(20)` watch re-runs too and returns an identical list.
+  (Found by running the example, not by reading the code: the wire shows
+  three frames per topic change, the page sees one.) Safe because these are
+  views of current state and not an event log; a value that cannot be
+  fingerprinted is never suppressed.
+
+  It lives in `./app`, not `./client`, deliberately: that entry's bytes ride
+  every bundle that touches an actor and its tree-shaking guard exists to
+  keep policy out of it (`./client` is unchanged at 2.86 KB / 1.57 KB;
+  `./app` grew 3.2 → 4.7 KB). A transport that brings its own `live()` — a
+  WebSocket transport — wins over the default, with no call site changing.
+
+  The hook wraps the cell rather than writing into it, because core has no
+  way to write an `AsyncState` from outside (`writeBack` + `refresh()`
+  invalidates first and would cost a round trip per frame; the upstream ask
+  is `AsyncReadHandle.setValue`). Two rules keep that honest: **a cell
+  settle wins over an older push**, so a writer sees their own write
+  immediately rather than waiting out the watch throttle; and **a dead feed
+  degrades to "not live", never to "broken"** — one subscription's failure
+  reaches that read alone, and a read whose feed cannot be established keeps
+  working. Pushes also `writeBack` under the canonical key, so a remount
+  restores the pushed value instead of the last fetched one.
+
+  `examples/chat` now uses it, which is what the hand-written stream, the
+  reconnect loop and its `streams:` body were deleted for.
+
 ### Fixed
+
+- **A quiet per-actor stream is now kept alive** (#178). `$live` has pinged
+  since it shipped; `actor(X, k).watch()` sent nothing between yields, so a
+  quiet room's stream was bytes-silent and every intermediary with an idle
+  timeout reaped it — ingress at 60 s, cloud load balancers at ~4 min,
+  mobile NATs — leaving the client with a stream that "ended without a
+  done/error terminator" and a full catch-up read per reconnect.
+
+  `handleActorRequest({ streamPingMs })` (default 30 s, `0` disables) emits
+  a `{"ping":1}` line after that much silence, and the client's reader skips
+  it. Injected at the BYTE layer, wrapping the NDJSON body: core owns the
+  envelope and the actor's generator owns the values, so neither can emit a
+  line the other does not know about — and a wrapper is the one place that
+  sees "nothing has been written for a while" for every streaming method at
+  once, including a `streams:` body parked on `ctx.changes()`, which is the
+  quiet case that breaks. A `ping` line rather than a sentinel `chunk`,
+  because a chunk is user data on every stream method and any sentinel there
+  could collide with something an actor legitimately yields. Non-streaming
+  responses are returned untouched, object identity included.
 
 - **A disconnected stream or watch consumer now releases the activation**
   (#184). #120 fixed this inside the activation; the same trap was sitting in
