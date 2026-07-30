@@ -1,0 +1,166 @@
+# The gate that `helm lint` cannot be.
+#
+# A chart that renders perfectly can still be refused on apply: an Ingress
+# path containing `$` under `pathType: Prefix` passes `helm lint` AND
+# `helm template`, and is rejected by the ingress-nginx admission webhook.
+# That exact manifest reached main and left `examples/chat/deploy/chart`
+# unable to install (#200). The only check that catches it is a real API
+# server with the webhook in front of it, so this job stands one up.
+#
+# Cheap on purpose: a kind cluster is ~40s and nothing here deploys an
+# image or waits on a pod — every chart is rendered and then submitted as a
+# server-side dry run, which is validation plus admission and no workload.
+name: Charts
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'examples/**/deploy/**'
+      - '.github/workflows/charts.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'examples/**/deploy/**'
+      - '.github/workflows/charts.yml'
+
+concurrency:
+  group: charts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create a kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: charts
+
+      # Installed from its Helm chart, NOT the kind provider manifest: that
+      # manifest pins the controller to a node labelled `ingress-ready=true`
+      # (which kind-action does not set) and uses hostPorts, so the pod sits
+      # Pending forever and the webhook never serves. We need only the
+      # webhook, so a ClusterIP install with no node requirements is both
+      # simpler and sufficient.
+      - name: Install ingress-nginx (for its admission webhook)
+        run: |
+          set -euo pipefail
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null
+          helm repo update >/dev/null
+          helm install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ingress-nginx --create-namespace \
+            --set controller.service.type=ClusterIP \
+            --set controller.admissionWebhooks.enabled=true \
+            --wait --timeout=6m
+
+          cat > /tmp/probe.yaml <<'PROBE'
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: webhook-probe
+            namespace: default
+          spec:
+            ingressClassName: nginx
+            rules:
+              - host: probe.invalid
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: probe
+                          port:
+                            number: 80
+          PROBE
+
+          # Ready means the webhook is JUDGING requests, and accepting or
+          # denying are equally good proof of that. Only a call that never
+          # reaches it (no endpoints, cert not yet trusted) means keep
+          # waiting — conflating the two is how the first attempt at this
+          # step failed while the webhook was perfectly healthy.
+          for i in $(seq 1 30); do
+            if out=$(kubectl create -f /tmp/probe.yaml --dry-run=server 2>&1); then
+              echo "admission webhook is live (accepted the probe)"
+              exit 0
+            fi
+            if grep -qi "denied the request" <<<"$out"; then
+              echo "admission webhook is live (denied the probe, which still means it ran)"
+              exit 0
+            fi
+            echo "  waiting for the webhook: $(head -1 <<<"$out")"
+            sleep 5
+          done
+          echo "the admission webhook never judged a request — the rest of this job would prove nothing"
+          exit 1
+
+      - name: Namespaces the charts render into
+        run: |
+          kubectl create namespace sigx-actors-test
+          kubectl create namespace sigx-chat
+
+      # Every toggle is a DIFFERENT manifest, so each one is submitted. The
+      # combinations below are the ones with structural consequences: they
+      # add or remove objects, or change a path/annotation the webhook
+      # inspects.
+      - name: Lint and server-dry-run every chart shape
+        run: |
+          set -euo pipefail
+          fail=0
+
+          check() {  # check <label> <chart> <namespace> [--set …]
+            local label=$1 chart=$2 ns=$3; shift 3
+            if helm template release "$chart" -n "$ns" --set image.tag=citest "$@" 2>/tmp/render.err \
+                 | kubectl apply -n "$ns" --dry-run=server -f - >/tmp/apply.out 2>/tmp/apply.err; then
+              echo "  ✓ $label"
+            else
+              echo "  ✗ $label"
+              sed 's/^/      /' /tmp/render.err /tmp/apply.err | grep -v '^      $' || true
+              fail=1
+            fi
+          }
+
+          echo "helm lint:"
+          for chart in examples/aks-cluster/deploy/chart examples/chat/deploy/chart; do
+            helm lint "$chart" --set image.tag=citest >/dev/null && echo "  ✓ $chart"
+          done
+
+          echo "aks-cluster chart:"
+          check "defaults"            examples/aks-cluster/deploy/chart sigx-actors-test
+          check "hpa on"              examples/aks-cluster/deploy/chart sigx-actors-test --set hpa.enabled=true
+          check "membership=k8s"      examples/aks-cluster/deploy/chart sigx-actors-test --set membership=k8s
+          check "external redis"      examples/aks-cluster/deploy/chart sigx-actors-test --set redis.enabled=false --set redis.url=redis://ext:6379
+          check "loadgen job"         examples/aks-cluster/deploy/chart sigx-actors-test --set loadgen.enabled=true --set loadgen.nameSuffix=ci
+          check "required spread"     examples/aks-cluster/deploy/chart sigx-actors-test --set affinity.siloSelfSpread=required
+
+          echo "chat chart:"
+          check "defaults"            examples/chat/deploy/chart sigx-chat
+          check "locality off"        examples/chat/deploy/chart sigx-chat --set ingress.localityRouting=false
+          check "spread strict"       examples/chat/deploy/chart sigx-chat --set spread.whenUnsatisfiable=DoNotSchedule
+          check "spread off"          examples/chat/deploy/chart sigx-chat --set spread.enabled=false
+          check "no redis persistence" examples/chat/deploy/chart sigx-chat --set redis.persistence.enabled=false
+
+          # A chart that gained a values key must still render when an
+          # upgrade replays values from before that key existed (helm
+          # --reuse-values does exactly this, and a bare .Values.new.key
+          # nil-pointers the whole render).
+          echo "missing new keys (the --reuse-values case):"
+          check "chat, spread absent" examples/chat/deploy/chart sigx-chat --set spread=null
+          check "chat, ingress toggle absent" examples/chat/deploy/chart sigx-chat --set ingress.localityRouting=null
+
+          exit $fail
+
+      - name: The image tag is required
+        run: |
+          # A chart that installs with an empty tag deploys `repo:` and the
+          # pod fails with InvalidImageName in the cluster instead of here.
+          for chart in examples/aks-cluster/deploy/chart examples/chat/deploy/chart; do
+            if helm template release "$chart" >/dev/null 2>&1; then
+              echo "✗ $chart rendered with no image.tag — it must fail"
+              exit 1
+            fi
+            echo "  ✓ $chart refuses an empty image.tag"
+          done
