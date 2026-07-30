@@ -4,6 +4,68 @@
 
 ### Added
 
+- **`clusterStats()` aggregates behaviour, not just topology** (#121).
+  `SiloReport` grows three optional fields — a mergeable `metrics` digest,
+  the silo's `health`, and (under `detail`) its live `activations` — so ONE
+  call answers for the whole fleet. One reachable endpoint, one secret, and
+  it works behind an ingress where the peers are not individually reachable.
+
+  `totals` gains `metrics` (calls, failures, streams, `errors.byKind`,
+  storage operations, activation churn, per-type and per-method call counts,
+  and merged latency/queue/turn) plus a `health` tally.
+
+  **Latency is merged, not averaged.** `HistogramSnapshot` is p50/p90/p99
+  with no buckets, and the mean of two silos' p99s is not the p99 of
+  anything — so the digest carries bucket COUNTS and the cluster's
+  percentiles are re-derived from the summed distribution. Buckets travel
+  sparse (of 384, a real silo occupies a few dozen), and a peer whose bucket
+  layout differs contributes its counters while its distribution is dropped
+  rather than mixed into a different axis.
+
+  **`totals.metrics.silos` is the denominator.** A silo with no `metrics()`,
+  or one mid-rolling-deploy on an older build, contributes nothing — and
+  totals that quietly cover two thirds of the fleet look exactly like totals
+  that cover all of it. `totals.metrics` is `null` rather than zeroes when
+  nothing anywhere is instrumented, because "no instrumentation" and "no
+  traffic" are very different findings.
+
+- **`registry.reportDigest()` / `registry.digest(name)`** (#121) — the seam
+  the above rides on, mirroring `reportHealth`/`health()` and
+  `reportOps`/`ops()`. It is a SECOND seam rather than a read of the ops
+  section for two reasons: an ops section carries derived percentiles, which
+  is exactly the un-mergeable shape, and reading one from
+  `placement.report()` would re-enter that report — `cluster()` publishes it
+  AS an ops section — and recurse until the stack gave out. `digest()` walks
+  digest providers only, so that is structurally impossible.
+
+- **`Histogram` digests** (#121): `HISTOGRAM_LAYOUT`, `HistogramDigest`,
+  `mergeHistogramDigests()` and `digestSnapshot()`, exported from
+  `@sigx/actors/silo` alongside `createMetricsAccumulator()`. A client
+  merging a user-selected subset of silos needs the same arithmetic
+  `clusterStats()` uses; without these it would have to reimplement the
+  log-linear bucket layout, which is the mistake the layout tag exists to
+  catch. Foreign bucket indices are bounds-checked rather than used as
+  offsets — a digest arrives over a wire.
+
+- **`detail` on the fan-out, and `?detail` on the ops route** (#121). The
+  grain list and recent failures are opt-in, and `detail.silos` targets one
+  silo: the walk is O(activations) on every silo at once, and grain keys are
+  the one field on this wire that can be personal data. Requested limits are
+  clamped by the RESPONDER — HMAC proves who is asking, not that
+  `activations: 1e9` is a sane thing to ask for.
+
+### Changed
+
+- `ops({ cluster })` takes an optional second argument (the parsed
+  `?detail` query). Appended, so every existing
+  `(signal) => clusterStats(placement)` keeps working unchanged.
+- `SiloReport.v` stays `1`. Every new field is optional, so a peer on an
+  older build simply answers without them — a version bump would have made a
+  new collector classify every not-yet-deployed peer as `unsupported`,
+  blanking the report during exactly the deploy it exists to explain.
+
+### Added
+
 - **`reads:` — GET-cacheable actor reads** (#195, closing #11). A method
   listed there is served over `GET
   {base}/r/{token}/{Type}%23{method}?args=[key,…]` with the `Cache-Control`

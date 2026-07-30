@@ -7,7 +7,13 @@
  * just to test it would widen the package's API for no user's benefit.
  */
 import { describe, expect, it } from 'vitest';
-import { Histogram } from '../src/silo/histogram';
+import {
+    HISTOGRAM_LAYOUT,
+    Histogram,
+    digestSnapshot,
+    emptyHistogramDigest,
+    mergeHistogramDigests
+} from '../src/silo/histogram';
 
 describe('Histogram', () => {
     it('reports exact min/max/mean and plausible percentiles', () => {
@@ -77,5 +83,98 @@ describe('Histogram', () => {
         h.record(1);
         h.reset();
         expect(h.snapshot()).toMatchObject({ count: 0, minMs: 0, maxMs: 0, p99Ms: 0 });
+    });
+});
+
+describe('histogram digests', () => {
+    it('round-trips: a digest re-derives its own snapshot exactly', () => {
+        const h = new Histogram();
+        for (let i = 0; i < 1000; i++) h.record((i % 50) + 0.5);
+        // If these ever disagree, one of the two percentile walks has
+        // drifted from the other — which is how a cluster-wide p99 stops
+        // meaning the same thing as the per-silo one it generalises.
+        expect(digestSnapshot(h.digest())).toEqual(h.snapshot());
+    });
+
+    it('MERGES buckets rather than averaging percentiles', () => {
+        // The whole reason buckets are on the wire. One silo serves a
+        // thousand fast calls, the other serves a single catastrophic one.
+        const fast = new Histogram();
+        for (let i = 0; i < 999; i++) fast.record(1);
+        const slow = new Histogram();
+        slow.record(1000);
+
+        const merged = digestSnapshot(mergeHistogramDigests([fast.digest(), slow.digest()]));
+        expect(merged.count).toBe(1000);
+        // 999 of 1000 samples are at 1ms, so the cluster's p99 IS ~1ms.
+        expect(merged.p99Ms).toBeLessThan(2);
+        // What averaging the two silos' p99s would have claimed: about
+        // 500ms — a latency figure describing no call that ever happened.
+        const averaged = (fast.snapshot().p99Ms + slow.snapshot().p99Ms) / 2;
+        expect(averaged).toBeGreaterThan(400);
+        expect(Math.abs(merged.p99Ms - averaged)).toBeGreaterThan(100);
+    });
+
+    it('merges in the other direction too — a real tail is not smoothed away', () => {
+        // Half the fleet is slow: the cluster p90 must land in the SLOW
+        // band, where averaging the two p90s would put it in the middle.
+        const a = new Histogram();
+        for (let i = 0; i < 500; i++) a.record(1);
+        const b = new Histogram();
+        for (let i = 0; i < 500; i++) b.record(1000);
+        const merged = digestSnapshot(mergeHistogramDigests([a.digest(), b.digest()]));
+        expect(merged.p90Ms).toBeGreaterThan(500);
+        expect((a.snapshot().p90Ms + b.snapshot().p90Ms) / 2).toBeLessThan(600);
+    });
+
+    it('keeps the mean exact, not a mean of means', () => {
+        const many = new Histogram();
+        for (let i = 0; i < 900; i++) many.record(1);
+        const few = new Histogram();
+        for (let i = 0; i < 100; i++) few.record(11);
+        const merged = digestSnapshot(mergeHistogramDigests([many.digest(), few.digest()]));
+        // (900*1 + 100*11) / 1000 = 2. A mean of means would say 6.
+        expect(merged.meanMs).toBeCloseTo(2, 6);
+    });
+
+    it('is sparse enough to poll', () => {
+        const h = new Histogram();
+        for (let i = 0; i < 1000; i++) h.record(0.5 + (i % 20) / 10);
+        const digest = h.digest();
+        // 384 buckets exist; a real distribution occupies a handful, and
+        // this rides an internal wire once a second per silo.
+        expect(digest.idx.length).toBeLessThan(60);
+        expect(JSON.stringify(digest).length).toBeLessThan(1024);
+        expect(digest.idx).toEqual([...digest.idx].sort((x, y) => x - y));
+    });
+
+    it('ignores a hostile digest instead of indexing into it', () => {
+        const good = new Histogram();
+        for (let i = 0; i < 10; i++) good.record(1);
+        const merged = mergeHistogramDigests([
+            good.digest(),
+            // Every one of these would either throw away a write silently
+            // or reach outside the array.
+            { count: 5, sumUs: 1, minUs: 0, maxUs: 1, idx: [-1, 1e9, 2.5, Number.NaN], n: [1, 1, 1, 1] },
+            { count: 1, sumUs: 0, minUs: 0, maxUs: 0, idx: [0], n: [Number.NaN] },
+            null,
+            undefined
+        ]);
+        // The valid silo's samples survive; nothing crashed and no bucket
+        // outside the layout was written.
+        expect(merged.idx.every((i) => Number.isInteger(i) && i >= 0)).toBe(true);
+        expect(digestSnapshot(merged).p50Ms).toBeGreaterThan(0);
+    });
+
+    it('merges nothing into the empty snapshot rather than NaN', () => {
+        const merged = mergeHistogramDigests([]);
+        expect(merged).toEqual(emptyHistogramDigest());
+        expect(digestSnapshot(merged)).toMatchObject({ count: 0, meanMs: 0, p99Ms: 0 });
+        expect(digestSnapshot(null)).toMatchObject({ count: 0, p50Ms: 0 });
+        expect(digestSnapshot(new Histogram().digest())).toMatchObject({ count: 0 });
+    });
+
+    it('states the bucket layout, so two builds cannot be merged blindly', () => {
+        expect(HISTOGRAM_LAYOUT).toBe('ll-4-26');
     });
 });

@@ -27,13 +27,38 @@ export { ops, type OpsOptions, type OpsPlugin, type OpsSnapshot } from './ops';
 export {
     metrics,
     type ActorMetricsSnapshot,
+    type MetricsDigestOptions,
     type MetricsErrorKind,
     type MetricsOptions,
     type MetricsPlugin,
     type RecentActorError,
     type TypeMetrics
 } from './metrics';
-export type { HistogramSnapshot } from './histogram';
+export {
+    HISTOGRAM_LAYOUT,
+    digestSnapshot,
+    emptyHistogramDigest,
+    mergeHistogramDigests,
+    type HistogramDigest,
+    type HistogramSnapshot
+} from './histogram';
+/**
+ * The mergeable metrics shape and the folding over it.
+ *
+ * Exported because a dashboard merging a user-selected SUBSET of silos
+ * needs the same arithmetic `clusterStats()` uses. Without these it would
+ * have to reimplement the log-linear bucket layout, which is exactly the
+ * mistake `HISTOGRAM_LAYOUT` exists to catch.
+ */
+export {
+    createMetricsAccumulator,
+    foldCallDigests,
+    type CallDigest,
+    type MergedMetrics,
+    type MetricsAccumulator,
+    type MetricsDigest,
+    type MetricsFoldResult
+} from './digest';
 export { memoryStorage } from './storage-memory';
 export { timerScheduler, manualScheduler, type ManualScheduler } from './scheduler';
 export { Mailbox } from './mailbox';

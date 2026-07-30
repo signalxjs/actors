@@ -1127,13 +1127,64 @@ const report = await clusterStats(plugin.placement, { timeoutMs: 2000 });
 // {
 //   view:    { version: 12, size: 3, active: 3 },
 //   silos:   [{ siloId, address, status, stats: { activations, queued, perType },
-//               counters, reminderShards: ['p3','p7',…], uptimeMs }],
-//   totals:  { silos, activations, queued, perType, counters },
+//               counters, reminderShards: ['p3','p7',…], uptimeMs,
+//               metrics, health }],
+//   totals:  { silos, activations, queued, perType, counters, metrics, health },
 //   reminderShards: { p0: ['s.ab12'], p1: ['s.cd34'], … },
 //   unreachable: [{ siloId, address, reason: 'unreachable', message }],
 //   partial: false
 // }
 ```
+
+**Behaviour is cluster-wide too, not just topology.** Each report carries a
+mergeable metrics *digest* and that silo's readiness, so one call answers for
+the whole fleet — one reachable endpoint, one secret, and it works behind an
+ingress where the peers are not individually reachable.
+
+`totals.metrics` therefore has real cluster numbers: calls, failures,
+streams, `errors.byKind`, storage operations, activation churn, per-type and
+per-method call counts — and **latency merged properly**. A
+`HistogramSnapshot` is p50/p90/p99 with no buckets, and the average of two
+silos' p99s is not the p99 of anything, so the digest carries the bucket
+counts instead and the percentiles are re-derived from the summed
+distribution. The buckets are sparse (a few dozen of 384 are ever occupied),
+and a peer whose bucket LAYOUT differs has its counters merged and its
+distribution dropped rather than silently mixed into a different axis.
+
+```ts
+report.totals.metrics?.silos;          // how many silos actually reported
+report.totals.metrics?.turnMs?.p99Ms;  // from merged buckets, not an average
+report.totals.health;                  // { ready, notReady, fatal, unknown }
+```
+
+**`totals.metrics.silos` is the denominator, and it matters.** A silo with no
+`metrics()` attached — or one mid-rolling-deploy on a build that predates the
+digest — contributes nothing, and totals that quietly cover two thirds of the
+fleet look exactly like totals that cover all of it. It is `null`, rather than
+a wall of zeroes, when nothing anywhere is instrumented: no instrumentation
+and no traffic are very different findings.
+
+**Drill-down is opt-in.** `detail` adds each silo's live grain list and recent
+failures, which the ordinary poll deliberately omits: the walk is
+O(activations) on every silo at once, and grain keys are the one field here
+that can be personal data.
+
+```ts
+// Everything, for one silo — the shape a dashboard drill-down wants.
+await clusterStats(plugin.placement, { detail: { activations: 20, silos: [id] } });
+```
+
+Over HTTP that is `GET /_sigx/ops/cluster?detail=1&activations=20&silo=<id>`,
+behind the same bearer as the rest of `ops()`. Requested limits are clamped by
+the *responder*, not trusted from the caller: the wire is HMAC-guarded, but
+that proves who is asking, not that `activations: 1e9` is a reasonable thing
+to ask a silo with millions of grains.
+
+Adding all of this kept `SiloReport.v` at `1`. Every field is optional, so a
+peer on an older build simply answers without them — where a version bump
+would have made a new collector classify every not-yet-deployed peer as
+`unsupported`, blanking the report during exactly the deploy it exists to
+explain.
 
 It travels as a reserved symbol (`$sigx:silo#stats`) on the **existing**
 internal mount, so it inherits the per-request HMAC, the envelope, the codec

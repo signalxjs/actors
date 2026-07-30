@@ -25,7 +25,8 @@ import {
     type ClusterView,
     type MonitorSnapshot,
     type MonitorSource,
-    type SiloView
+    type SiloView,
+    type SnapshotOptions
 } from './types';
 
 export interface EmbeddedSourceOptions {
@@ -126,7 +127,7 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
         kind: 'embedded',
         label: options.module,
 
-        async snapshot(signal?: AbortSignal): Promise<MonitorSnapshot> {
+        async snapshot(signal?: AbortSignal, ask?: SnapshotOptions): Promise<MonitorSnapshot> {
             const stats = silo.stats();
             const at = Date.now();
             // `Silo` itself carries no start time — uptime lives on the ops
@@ -144,7 +145,12 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                 // Imported lazily so a single-node app never pulls the
                 // cluster bundle in just to be watched.
                 const { clusterStats } = await import('@sigx/actors/cluster');
-                const report = await clusterStats(cluster.placement, { signal });
+                const report = await clusterStats(cluster.placement, {
+                    signal,
+                    ...(ask?.detail
+                        ? { detail: ask.siloId ? { silos: [ask.siloId] } : true }
+                        : {})
+                });
                 silos = report.silos.map(siloViewFromReport);
                 partial = report.partial;
                 clusterView = {
@@ -165,7 +171,10 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                         counters: null,
                         reminderShards: [],
                         membershipVersion: null,
-                        transports: null
+                        transports: null,
+                        metrics: null,
+                        health: null,
+                        activations: null
                     }
                 ];
             }

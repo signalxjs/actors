@@ -37,9 +37,15 @@ import {
     type ClusterCounters,
     type ClusterCounterTotals
 } from './counters';
-import { SILO_STATS_METHOD, SILO_STATS_TYPE, type SiloReport } from './stats';
+import {
+    SILO_STATS_METHOD,
+    SILO_STATS_TYPE,
+    type SiloReport,
+    type SiloReportOptions
+} from './stats';
 import { httpTransport } from './transport';
-import type { ActorRoute } from '../silo/app';
+import type { ActorRoute, HealthReport } from '../silo/app';
+import type { MetricsDigest } from '../silo/digest';
 import type {
     SiloTransport,
     SiloTransportConfig,
@@ -106,6 +112,44 @@ export interface ClusterPlacementOptions extends ClusterProviders {
     retryBackoffMs?: number;
     /** Free-form placement hints published in the membership descriptor. */
     meta?: Record<string, string>;
+    /**
+     * This silo's readiness, for `SiloReport.health`.
+     *
+     * Wired by `cluster()` from `registry.health()`. A hand-rolled
+     * placement may leave it out; the field is then simply absent, which is
+     * what an older peer looks like too.
+     */
+    health?: () => HealthReport | undefined;
+    /**
+     * This silo's mergeable metrics, for `SiloReport.metrics`.
+     *
+     * Wired by `cluster()` from `registry.digest('metrics')` — a seam that
+     * only walks digest providers, so this cannot re-enter the ops section
+     * that publishes `report()` itself.
+     */
+    metrics?: (options?: unknown) => MetricsDigest | undefined;
+}
+
+/**
+ * Ceilings the RESPONDER enforces on what a peer asked for.
+ *
+ * A stats request arrives over the internal wire. HMAC proves who is
+ * asking; it says nothing about whether `activations: 1e9` is a reasonable
+ * thing to ask a silo with millions of grains to walk and serialise. So the
+ * caps live here, on the answering side, and are not negotiable.
+ */
+const MAX_REPORT_ACTIVATIONS = 200;
+const MAX_DIGEST_TYPES = 64;
+const MAX_DIGEST_METHODS = 256;
+const MAX_DIGEST_ERRORS = 32;
+/** What a digest carries when the caller expressed no preference. */
+const DIGEST_TYPES = 32;
+const DIGEST_METHODS = 32;
+
+/** A requested limit, or the default — never above the ceiling. */
+function clampRequest(value: unknown, fallback: number, ceiling: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.min(ceiling, Math.floor(value)));
 }
 
 export interface ClusterPlacement extends ActorPlacement {
@@ -166,7 +210,7 @@ export interface ClusterPlacement extends ActorPlacement {
      * and exactly what a peer's `$sigx:silo#stats` answers. Safe before
      * `start()`: reports `'joining'` and zeroes.
      */
-    report(): SiloReport;
+    report(options?: SiloReportOptions): SiloReport;
     /**
      * The HTTP mounts the configured transports need. `cluster()`
      * contributes these through `PluginRegistry.route()`; a hand-rolled
@@ -185,7 +229,14 @@ export interface ClusterPlacement extends ActorPlacement {
     peerReport(
         target: SiloDescriptor,
         timeoutMs: number,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        /**
+         * What to ask the peer to include. Appended rather than folded into
+         * an options object on purpose: `ClusterPlacement` is exported, so
+         * reshaping these parameters would break a hand-rolled placement
+         * for no gain.
+         */
+        request?: SiloReportOptions
     ): Promise<SiloReport>;
     /**
      * @internal — the internal mount reports HMAC rejections here. Optional
@@ -513,7 +564,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 // The ops channel answers before any activation lookup, and
                 // deliberately does NOT count as an inbound dispatch —
                 // reading the counters must not move them.
-                if (ref.type === SILO_STATS_TYPE) return Promise.resolve(this.report());
+                if (ref.type === SILO_STATS_TYPE) {
+                    return Promise.resolve(this.report(args[0] as SiloReportOptions | undefined));
+                }
                 return this.dispatchInbound(ref, method, args, call);
             },
             dispatchStream: (ref, method, args, call) =>
@@ -646,8 +699,21 @@ class ClusterPlacementImpl implements ClusterPlacement {
         };
     }
 
-    report(): SiloReport {
+    report(options?: SiloReportOptions): SiloReport {
         const shards = reminderShardKeys().filter((shard) => this.ownsReminderShard(shard));
+        // Clamped HERE, at the responder, not at the caller. The request
+        // arrives over a wire; `activations: 1e9` on a silo with millions
+        // of grains is a remote CPU-and-memory amplifier, and HMAC proves
+        // who is asking, not that what they asked for is sane.
+        const grains = clampRequest(options?.activations, 0, MAX_REPORT_ACTIVATIONS);
+        const digest = options?.metrics
+            ? this.#options.metrics?.({
+                  types: clampRequest(options.types, DIGEST_TYPES, MAX_DIGEST_TYPES),
+                  methods: clampRequest(options.methods, DIGEST_METHODS, MAX_DIGEST_METHODS),
+                  errors: clampRequest(options.errors, 0, MAX_DIGEST_ERRORS)
+              })
+            : undefined;
+        const health = this.#options.health?.();
         return {
             v: 1,
             siloId: this.identity.siloId,
@@ -659,7 +725,12 @@ class ClusterPlacementImpl implements ClusterPlacement {
             reminderShards: shards,
             uptimeMs: this.#startedAt === 0 ? 0 : Math.round(performance.now() - this.#startedAt),
             transports: this.#transports.map((t) => t.name),
-            ...(this.#options.meta ? { meta: this.#options.meta } : {})
+            ...(this.#options.meta ? { meta: this.#options.meta } : {}),
+            ...(digest ? { metrics: digest } : {}),
+            ...(health ? { health } : {}),
+            ...(grains > 0 && this.#silo
+                ? { activations: [...this.#silo.activations({ limit: grains, sortBy: 'queued' })] }
+                : {})
         };
     }
 
@@ -668,7 +739,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
     async peerReport(
         target: SiloDescriptor,
         timeoutMs: number,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        request?: SiloReportOptions
     ): Promise<SiloReport> {
         const timeout = AbortSignal.timeout(timeoutMs);
         const call: ActorCallContext = {
@@ -683,7 +755,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
             .dispatch(
                 { type: SILO_STATS_TYPE, key: SILO_STATS_METHOD },
                 SILO_STATS_METHOD,
-                [],
+                // A peer that predates this argument ignores it and answers
+                // the payload it always did — still `v: 1`, just without the
+                // new optional fields. That is why the version does not bump.
+                request ? [request] : [],
                 call
             )) as SiloReport | undefined;
         if (!report || report.v !== 1) {

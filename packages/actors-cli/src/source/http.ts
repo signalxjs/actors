@@ -12,7 +12,8 @@ import {
     type ClusterView,
     type MonitorSnapshot,
     type MonitorSource,
-    type SiloView
+    type SiloView,
+    type SnapshotOptions
 } from './types';
 
 export interface HttpSourceOptions {
@@ -118,7 +119,7 @@ export function httpSource(options: HttpSourceOptions): MonitorSource {
         kind: 'http',
         label: origin,
 
-        async snapshot(signal?: AbortSignal): Promise<MonitorSnapshot> {
+        async snapshot(signal?: AbortSignal, ask?: SnapshotOptions): Promise<MonitorSnapshot> {
             const body = await get<OpsBody>(base, signal);
             if (!body) {
                 throw new OpsRequestError(
@@ -129,7 +130,13 @@ export function httpSource(options: HttpSourceOptions): MonitorSource {
             // The cluster fan-out is a second, more expensive route, and its
             // absence is normal. Requested after the snapshot so a
             // single-node silo still renders instantly.
-            const cluster = await get<ClusterStatsReport>(`${base}/cluster`, signal);
+            // `?detail` is only sent while something is actually looking at
+            // a per-silo panel — otherwise every poll would make the whole
+            // cluster walk its activation table for nothing.
+            const query = ask?.detail
+                ? `?detail=1${ask.siloId ? `&silo=${encodeURIComponent(ask.siloId)}` : ''}`
+                : '';
+            const cluster = await get<ClusterStatsReport>(`${base}/cluster${query}`, signal);
 
             const local = body.ops?.cluster as SiloReport | undefined;
             const silos: SiloView[] = cluster
@@ -167,7 +174,10 @@ function selfView(body: OpsBody, local: SiloReport | undefined, origin: string):
         counters: null,
         reminderShards: [],
         membershipVersion: null,
-        transports: null
+        transports: null,
+        metrics: null,
+        health: body.health ? { ready: body.health.ready, fatal: body.health.fatal, checks: body.health.checks } : null,
+        activations: body.activations ?? null
     };
 }
 

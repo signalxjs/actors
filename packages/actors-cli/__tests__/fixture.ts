@@ -32,6 +32,25 @@ export const silo = (over: Partial<SiloView> = {}): SiloView => ({
     reminderShards: ['p0'],
     membershipVersion: 5,
     transports: ['http'],
+    // Every silo's own digest and readiness — what milestone 9 put on the
+    // wire, and what a drill-down renders.
+    metrics: {
+        v: 1,
+        layout: 'll-4-26',
+        windowMs: 142_000,
+        calls: { total: 593, failed: 26, streams: 0 },
+        latency: { count: 120, sumUs: 36_000, minUs: 60, maxUs: 900, idx: [40, 48], n: [90, 30] },
+        queue: null,
+        turn: null,
+        storageLatency: null,
+        errors: { byKind: { 'method-not-found': 68 }, recent: [] },
+        activations: { created: 40, destroyed: 8, byReason: { idle: 8 } },
+        storage: { loads: 158, saves: 2860, clears: 0, conflicts: 0 },
+        byType: { Counter: { calls: 593, failed: 26 } },
+        byMethod: { 'Counter#increment': { calls: 989, failed: 0 } }
+    },
+    health: { ready: true, fatal: false, checks: { cluster: { ready: true, detail: 'active' } } },
+    activations: null,
     ...over
 });
 
@@ -52,7 +71,15 @@ export const demoSnapshot: MonitorSnapshot = {
         silo({
             siloId: 's.ikfugf49',
             status: 'leaving',
-            stats: { ...stats, activations: 2, queued: 0 }
+            stats: { ...stats, activations: 2, queued: 0 },
+            // A draining silo answers live-200 / ready-503. Showing it as
+            // ready would make the READY column decorative.
+            health: {
+                ready: false,
+                fatal: false,
+                checks: { cluster: { ready: false, detail: 'leaving — draining, take out of rotation' } }
+            },
+            metrics: null
         })
     ],
     cluster: {
@@ -72,7 +99,28 @@ export const demoSnapshot: MonitorSnapshot = {
                 wrongHostRedirects: 3, unreachableRetries: 0, drainingRetries: 0,
                 authFailures: 0, transportFallbacks: 0, membershipChanges: 5,
                 selfFences: 0, claimed: 32, routeCacheSize: 39, locates: 44, locateRemote: 12
-            }
+            },
+            // Cluster-wide, from the merged digests — which is the whole
+            // point of milestone 9, and what the Overview must label as
+            // such rather than printing beside one silo's numbers.
+            metrics: {
+                silos: 2,
+                layoutMismatch: [],
+                calls: { total: 1186, failed: 52, streams: 0 },
+                latencyMs: hist(608 / 1000),
+                queueMs: hist(272 / 1000),
+                turnMs: hist(320 / 1000),
+                storageLatencyMs: hist(0.4),
+                errors: { byKind: { 'method-not-found': 136 } },
+                activations: { created: 80, destroyed: 16, byReason: { idle: 16 } },
+                storage: { loads: 316, saves: 5720, clears: 0, conflicts: 0 },
+                byType: { Counter: { calls: 1186, failed: 52 } },
+                byMethod: {
+                    'Counter#increment': { calls: 1978, failed: 0 },
+                    'Counter#nope': { calls: 94, failed: 94 }
+                }
+            },
+            health: { ready: 1, notReady: 1, fatal: 0, unknown: 0 }
         },
         reminderShards: Object.fromEntries(
             Array.from({ length: 16 }, (_, i) => [`p${i}`, i === 3 ? [] : ['s.2sme5hx2']])

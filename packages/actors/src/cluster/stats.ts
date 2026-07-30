@@ -14,7 +14,9 @@
  */
 import { isActorError } from '../errors';
 import { reminderShardKeys } from '../silo/reminder-shards';
-import type { SiloStats } from '../types';
+import { createMetricsAccumulator, type MergedMetrics, type MetricsDigest } from '../silo/digest';
+import type { HealthReport } from '../silo/app';
+import type { ActivationInfo, SiloStats } from '../types';
 import {
     addCounters,
     createCounters,
@@ -55,6 +57,93 @@ export interface SiloReport {
      */
     transports?: string[];
     meta?: Record<string, string>;
+    /**
+     * This silo's mergeable metrics, when it has `metrics()` attached and
+     * the collector asked for them.
+     *
+     * Absent means "no numbers from here", never "zero": a silo with no
+     * metrics plugin, or a peer on a build that predates this field, both
+     * answer without it. `totals.metrics.silos` is the denominator that
+     * makes the difference visible.
+     */
+    metrics?: MetricsDigest;
+    /**
+     * This silo's readiness, so a dashboard shows EVERY silo's health
+     * rather than only the one it happens to be polling. Absent from a peer
+     * that predates this field.
+     */
+    health?: HealthReport;
+    /**
+     * Live activations, deepest mailbox first — only under `detail`.
+     *
+     * Off by default because the walk is O(activations) on the answering
+     * silo, and because grain KEYS are the one field on this wire that can
+     * be personal data.
+     */
+    activations?: ActivationInfo[];
+}
+
+/**
+ * What a peer is ASKED to include in its report.
+ *
+ * Rides as the single argument to `$sigx:silo#stats`. ABSENT — which is
+ * what an older collector sends — means exactly the payload this endpoint
+ * answered before any of these fields existed, so upgrading the collector
+ * is what grows the traffic, not upgrading a peer.
+ *
+ * Every field is a request, not an instruction: the RESPONDER clamps them.
+ * The wire is HMAC-guarded, but `activations: 1e9` on a silo with millions
+ * of grains is a CPU and memory amplifier, and a guard that trusts the
+ * caller is not a guard.
+ */
+export interface SiloReportOptions {
+    /** Include the metrics digest. Default false. */
+    metrics?: boolean;
+    /** Actor-type rows in the digest before `'(other)'`. Default 32. */
+    types?: number;
+    /** `Type#method` rows, same fold. Default 32. */
+    methods?: number;
+    /** Recent failures to include. Default 0. */
+    errors?: number;
+    /** Live activations to list, deepest mailbox first. Default 0. */
+    activations?: number;
+}
+
+/** How much detail `clusterStats()` should ask each silo for. */
+export interface ClusterStatsDetail {
+    /**
+     * Live activations per silo. Default 20 with `detail: true`; 0 omits.
+     * Hard-capped by the responder.
+     */
+    activations?: number;
+    /** Recent failures per silo. Default 8; 0 omits. */
+    errors?: number;
+    /** Widen the digest's per-type / per-method rows. */
+    types?: number;
+    methods?: number;
+    /**
+     * Ask only these silos for the expensive parts; everyone else answers
+     * the cheap report.
+     *
+     * Drill-down is almost always ONE silo, and asking N of them for grain
+     * lists at 1 Hz is the cost that actually matters.
+     */
+    silos?: readonly string[];
+}
+
+/** Cluster-wide metrics, plus how much of the cluster they cover. */
+export interface ClusterMetricsTotals extends MergedMetrics {
+    /**
+     * Silos that CONTRIBUTED a digest — the denominator.
+     *
+     * Less than `totals.silos` means every number here is a lower bound: a
+     * silo with no `metrics()`, or one on an older build. Published rather
+     * than inferred, because totals that quietly cover half the fleet look
+     * exactly like totals that cover all of it.
+     */
+    silos: number;
+    /** Silos whose bucket layout differed: counts included, distributions not. */
+    layoutMismatch: string[];
 }
 
 export type ClusterStatsFailureReason =
@@ -93,6 +182,16 @@ export interface ClusterStatsReport {
         queued: number;
         perType: Record<string, number>;
         counters: ClusterCounterTotals;
+        /**
+         * Cluster-wide call, error, storage and latency numbers.
+         *
+         * Null when NO silo carried a digest — "there is no `metrics()`
+         * anywhere" rather than a wall of zeroes, which would read as a
+         * cluster serving no traffic.
+         */
+        metrics: ClusterMetricsTotals | null;
+        /** Readiness across the fleet. `unknown` reported no health. */
+        health: { ready: number; notReady: number; fatal: number; unknown: number };
     };
     /**
      * `p0`…`p15` → the silos CLAIMING each shard, built from the reports
@@ -108,6 +207,14 @@ export interface ClusterStatsReport {
 }
 
 export interface ClusterStatsOptions {
+    /**
+     * Ask each silo for its grain list and recent errors as well.
+     *
+     * The metrics digest is NOT behind this — cluster-wide totals are the
+     * point of the fan-out, so every poll carries it. `detail` is for the
+     * per-silo drill-down, which is expensive in a way the totals are not.
+     */
+    detail?: boolean | ClusterStatsDetail;
     /** Per-peer budget, ms. Default 2000 — a hung peer must not hang ops. */
     timeoutMs?: number;
     /** Cap on peers queried at once. Default 16, so N=100 is 7 waves. */
@@ -135,8 +242,13 @@ export async function clusterStats(
     const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
     const view = placement.view();
     const self = placement.identity.siloId;
+    const request = resolveRequest(options.detail);
+    const wanted = detailSilos(options.detail);
+    /** What one silo is asked for: everyone gets the digest, some get more. */
+    const requestFor = (siloId: string): SiloReportOptions =>
+        !wanted || wanted.has(siloId) ? request : { metrics: true };
 
-    const silos: SiloReport[] = [placement.report()];
+    const silos: SiloReport[] = [placement.report(requestFor(self))];
     const unreachable: ClusterStatsFailure[] = [];
 
     // Every status is queried, `leaving` included: a draining silo's
@@ -149,7 +261,14 @@ export async function clusterStats(
             const peer = peers[index];
             if (!peer) return;
             try {
-                silos.push(await placement.peerReport(peer, timeoutMs, options.signal));
+                silos.push(
+                    await placement.peerReport(
+                        peer,
+                        timeoutMs,
+                        options.signal,
+                        requestFor(peer.siloId)
+                    )
+                );
             } catch (error) {
                 unreachable.push(classify(peer, error));
             }
@@ -168,6 +287,10 @@ export async function clusterStats(
     let queued = 0;
     let counters = createCounters();
     const reminderShards: Record<string, string[]> = {};
+    const metrics = createMetricsAccumulator();
+    let metricsSilos = 0;
+    const layoutMismatch: string[] = [];
+    const health = { ready: 0, notReady: 0, fatal: 0, unknown: 0 };
     for (const report of silos) {
         activations += report.stats.activations;
         queued += report.stats.queued;
@@ -178,6 +301,19 @@ export async function clusterStats(
         for (const shard of report.reminderShards) {
             (reminderShards[shard] ??= []).push(report.siloId);
         }
+        // A silo with no `metrics()`, or one on a build that predates the
+        // digest, simply does not contribute — which is why the count of
+        // contributors is published rather than assumed to be all of them.
+        const folded = metrics.add(report.metrics);
+        if (folded !== 'rejected') metricsSilos++;
+        // A different bucket layout still has usable COUNTERS; only its
+        // distribution is incomparable. Dropping the silo entirely would be
+        // a worse lie than dropping its percentiles.
+        if (folded === 'counts-only') layoutMismatch.push(report.siloId);
+        if (!report.health) health.unknown++;
+        else if (report.health.fatal) health.fatal++;
+        else if (report.health.ready) health.ready++;
+        else health.notReady++;
     }
     // The FULL key space, not just the shards someone reported: a shard
     // whose only owner is unreachable has to appear as empty. A missing key
@@ -196,9 +332,46 @@ export async function clusterStats(
         silos,
         unreachable,
         partial: unreachable.length > 0,
-        totals: { silos: silos.length, activations, queued, perType, counters },
+        totals: {
+            silos: silos.length,
+            activations,
+            queued,
+            perType,
+            counters,
+            metrics:
+                metricsSilos === 0
+                    ? null
+                    : { ...metrics.totals(), silos: metricsSilos, layoutMismatch },
+            health
+        },
         reminderShards
     };
+}
+
+/** Defaults for `detail: true` — enough to drill into, cheap enough to poll. */
+const DETAIL_ACTIVATIONS = 20;
+const DETAIL_ERRORS = 8;
+
+/** Turn the caller's `detail` into one wire request. */
+function resolveRequest(detail: ClusterStatsOptions['detail']): SiloReportOptions {
+    // The digest always travels: it is what makes `totals` mean anything,
+    // and it is the cheap part.
+    const base: SiloReportOptions = { metrics: true };
+    if (!detail) return base;
+    if (detail === true) return { ...base, activations: DETAIL_ACTIVATIONS, errors: DETAIL_ERRORS };
+    return {
+        ...base,
+        activations: detail.activations ?? DETAIL_ACTIVATIONS,
+        errors: detail.errors ?? DETAIL_ERRORS,
+        ...(detail.types === undefined ? {} : { types: detail.types }),
+        ...(detail.methods === undefined ? {} : { methods: detail.methods })
+    };
+}
+
+/** Which silos get the expensive parts, or null for "all of them". */
+function detailSilos(detail: ClusterStatsOptions['detail']): Set<string> | null {
+    if (!detail || detail === true || !detail.silos) return null;
+    return new Set(detail.silos);
 }
 
 function classify(peer: SiloDescriptor, error: unknown): ClusterStatsFailure {

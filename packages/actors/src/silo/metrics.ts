@@ -21,7 +21,7 @@
  * grain is hot" — opposite problems with opposite fixes — and only the
  * activation knows both halves.
  */
-import { isActorError, isStorageConflict, type ActorErrorKind } from '../errors';
+import { isActorError, isStorageConflict } from '../errors';
 import { resolveLimit } from '../types';
 import type {
     ActorDispatcher,
@@ -31,7 +31,14 @@ import type {
     Silo,
     SiloStats
 } from '../types';
-import { Histogram, type HistogramSnapshot } from './histogram';
+import { HISTOGRAM_LAYOUT, Histogram, type HistogramSnapshot } from './histogram';
+import {
+    foldCallDigests,
+    type CallDigest,
+    type MetricsDigest,
+    type MetricsErrorKind,
+    type RecentActorError
+} from './digest';
 import type { ActorPlugin, PluginRegistry } from './app';
 
 export interface MetricsOptions {
@@ -84,25 +91,11 @@ export interface TypeMetrics {
 }
 
 /**
- * How a failure is classified: a branded `ActorError`'s own kind, or
- * `'(unknown)'` for anything an actor method threw itself.
- *
- * Named and exported rather than widened to `string` so a consumer can
- * switch over it exhaustively — the whole point of counting kinds is that
- * they mean different things and lead to different actions.
+ * Re-exported from `./digest`, which owns them so that the cluster-side
+ * aggregation can name them without importing this plugin. The entry
+ * export is unchanged, so no consumer can tell.
  */
-export type MetricsErrorKind = ActorErrorKind | '(unknown)';
-
-/** One failure, as `errors.recent` remembers it. */
-export interface RecentActorError {
-    /** Epoch-ms. Wall clock on purpose: this one is read as a timestamp. */
-    at: number;
-    type: string;
-    method: string;
-    kind: MetricsErrorKind;
-    /** The message only — never args, never state. */
-    message: string;
-}
+export type { MetricsErrorKind, RecentActorError };
 
 export interface ActorMetricsSnapshot {
     /** Wall-clock ms this window covers (since start or the last `reset()`). */
@@ -155,9 +148,29 @@ export interface ActorMetricsSnapshot {
     gauges: SiloStats | null;
 }
 
+/** What a caller may ask a digest to carry. All of it is capped. */
+export interface MetricsDigestOptions {
+    /** Actor types to name before folding the rest into `'(other)'`. */
+    types?: number;
+    /** `Type#method` pairs, same fold. */
+    methods?: number;
+    /** Recent failures to include. 0 (the default) omits them. */
+    errors?: number;
+}
+
 export interface MetricsPlugin extends ActorPlugin {
     /** Read the counters. Cheap enough to poll; allocates a fresh object. */
     snapshot(): ActorMetricsSnapshot;
+    /**
+     * The MERGEABLE view of the same counters, for `clusterStats()`.
+     *
+     * Distinct from `snapshot()` because a snapshot cannot be added up:
+     * its latency fields are percentiles, and averaging those across silos
+     * yields a number that is not the p99 of anything. A digest carries the
+     * raw bucket counts instead, so the cluster's percentiles can be
+     * re-derived from the summed distribution.
+     */
+    digest(options?: MetricsDigestOptions): MetricsDigest;
     /** Zero every counter and restart the window. */
     reset(): void;
     /** Is collection currently running? */
@@ -181,6 +194,9 @@ export interface MetricsPlugin extends ActorPlugin {
 const DEFAULT_MAX_TYPES = 64;
 const DEFAULT_MAX_METHODS = 256;
 const DEFAULT_RECENT_ERRORS = 32;
+/** Rows a digest names before folding the rest into `'(other)'`. */
+const DEFAULT_DIGEST_TYPES = 32;
+const DEFAULT_DIGEST_METHODS = 32;
 const OTHER = '(other)';
 /** What an error that is not an `ActorError` is counted as. */
 const UNKNOWN_KIND: MetricsErrorKind = '(unknown)';
@@ -459,6 +475,12 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
             // just a registration — an app with no `ops()` never calls the
             // provider, so this costs nothing but the closure.
             registry.reportOps('metrics', () => plugin.snapshot());
+            // …and the mergeable half, which `cluster()` reads to put this
+            // silo's distribution into `SiloReport`. Same "registration is
+            // free" argument: a silo with no cluster never calls it.
+            registry.reportDigest('metrics', (options) =>
+                plugin.digest(options as MetricsDigestOptions | undefined)
+            );
 
             registry.onStart((live: Silo) => {
                 silo = live;
@@ -516,6 +538,55 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                     latencyMs: storageLatency?.snapshot() ?? null
                 },
                 gauges: silo ? silo.stats() : null
+            };
+        },
+
+        digest(options: MetricsDigestOptions = {}): MetricsDigest {
+            // Capped on top of `maxTypes`/`maxMethods`, because these rows
+            // ride an internal wire once a second per silo and the totals
+            // only need counts. The fold keeps the breakdown summing to
+            // `calls.total` rather than silently under-reporting.
+            const typeLimit = resolveLimit(options.types, DEFAULT_DIGEST_TYPES);
+            const methodLimit = resolveLimit(options.methods, DEFAULT_DIGEST_METHODS);
+            const errorLimit = resolveLimit(options.errors, 0);
+
+            const counts = (bucket: TypeBucket): CallDigest => ({
+                calls: bucket.calls,
+                failed: bucket.failed
+            });
+            const byTypeOut: Record<string, CallDigest> = {};
+            for (const [name, bucket] of types) byTypeOut[name] = counts(bucket);
+            const byMethodOut: Record<string, CallDigest> = {};
+            for (const [type, byName] of methods) {
+                for (const [method, bucket] of byName) {
+                    byMethodOut[`${type}#${method}`] = counts(bucket);
+                }
+            }
+            if (methodOverflow) byMethodOut[OTHER] = counts(methodOverflow);
+
+            return {
+                v: 1,
+                layout: HISTOGRAM_LAYOUT,
+                windowMs: performance.now() - windowStart,
+                calls: { total: calls, failed, streams },
+                // Only the four TOP-LEVEL histograms travel. Per-type and
+                // per-method ones would be ~20KB a silo even sparse, for a
+                // breakdown the cluster totals only want counts for.
+                latency: latency?.digest() ?? null,
+                queue: queue?.digest() ?? null,
+                turn: turn?.digest() ?? null,
+                storageLatency: storageLatency?.digest() ?? null,
+                errors: {
+                    byKind: { ...errorsByKind },
+                    // Off by default: 32 messages is larger than the whole
+                    // rest of the digest, and it is drill-down material
+                    // rather than something a total is computed from.
+                    ...(errorLimit > 0 ? { recent: recentErrors.slice(-errorLimit) } : {})
+                },
+                activations: { created, destroyed, byReason: { ...byReason } },
+                storage: { loads, saves, clears, conflicts },
+                byType: foldCallDigests(byTypeOut, typeLimit),
+                byMethod: foldCallDigests(byMethodOut, methodLimit)
             };
         },
 

@@ -68,7 +68,7 @@ export interface OpsOptions {
      * Without it, `{base}/cluster` answers 404 — the honest code for "this
      * silo has no cluster to report on".
      */
-    cluster?: (signal: AbortSignal) => Promise<unknown>;
+    cluster?: (signal: AbortSignal, query?: OpsClusterQuery) => Promise<unknown>;
     /**
      * How many live activations to include, sorted by queue depth. Default
      * 20; 0 omits the list.
@@ -80,6 +80,19 @@ export interface OpsOptions {
      * giving up the rest of the snapshot.
      */
     activations?: number;
+}
+
+/**
+ * What `GET {base}/cluster` was asked for, parsed from the query string.
+ *
+ * Declared structurally rather than imported from `@sigx/actors/cluster`:
+ * `ops()` lives in `/silo` and must not drag the cluster bundle in to
+ * describe a query. It is assignable to `ClusterStatsOptions['detail']`, so
+ * the usual thunk — `(signal, query) => clusterStats(placement, { signal,
+ * ...query })` — type-checks without either module importing the other.
+ */
+export interface OpsClusterQuery {
+    detail?: boolean | { activations?: number; errors?: number; silos?: string[] };
 }
 
 /** What `GET {base}` answers. */
@@ -111,6 +124,41 @@ export interface OpsPlugin extends ActorPlugin {
      * tool embedded in the silo rather than polling it.
      */
     snapshot(): OpsSnapshot;
+}
+
+/**
+ * `?detail=1&activations=5&silo=a&silo=b` → what the fan-out should ask for.
+ *
+ * Detail is opted INTO explicitly: absent, off, or anything unrecognised
+ * means the cheap report. An allowlist rather than "not one of the falsy
+ * spellings", because the expensive direction must be the one you have to
+ * ask for precisely — `?detail=flase` should cost nothing, not make every
+ * silo in the fleet walk its activation table.
+ */
+const DETAIL_ON = new Set(['', '1', 'true', 'yes', 'on']);
+
+function clusterQuery(url: URL): OpsClusterQuery {
+    const detail = url.searchParams.get('detail');
+    if (detail === null || !DETAIL_ON.has(detail.toLowerCase())) return {};
+    const silos = url.searchParams.getAll('silo').filter(Boolean);
+    const number = (name: string): number | undefined => {
+        const raw = url.searchParams.get(name);
+        if (raw === null) return undefined;
+        const value = Number(raw);
+        return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+    };
+    const activations = number('activations');
+    const errors = number('errors');
+    if (silos.length === 0 && activations === undefined && errors === undefined) {
+        return { detail: true };
+    }
+    return {
+        detail: {
+            ...(activations === undefined ? {} : { activations }),
+            ...(errors === undefined ? {} : { errors }),
+            ...(silos.length > 0 ? { silos } : {})
+        }
+    };
 }
 
 const BEARER = /^Bearer (.+)$/;
@@ -247,7 +295,8 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
                     if (denied) return denied;
 
                     const head = method === 'HEAD';
-                    if (new URL(request.url).pathname === base) {
+                    const url = new URL(request.url);
+                    if (url.pathname === base) {
                         return respond(200, snapshot(), head);
                     }
                     if (!collectCluster) {
@@ -264,7 +313,11 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
                     const abort = (): void => controller.abort();
                     request.signal?.addEventListener('abort', abort);
                     try {
-                        return respond(200, await collectCluster(controller.signal), head);
+                        return respond(
+                            200,
+                            await collectCluster(controller.signal, clusterQuery(url)),
+                            head
+                        );
                     } catch (error) {
                         // `clusterStats` is documented never to throw because
                         // a PEER is sick — it classifies those into

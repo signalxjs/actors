@@ -3,6 +3,7 @@
 exports[`rendered frames > Cluster 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
+cluster · 2 silo(s)
 view                 #5  1 active of 2
 collected from       s.2sme5hx2
 route cache          84% hit  (282 lookups)
@@ -24,6 +25,7 @@ exports[`rendered frames > Cluster, cramped 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
   them
 
+cluster · 2 silo(s)
 view                 #5  1 active of 2
 collected from       s.2sme5hx2
 route cache          84% hit  (282 lookups)
@@ -45,6 +47,7 @@ p14 ● p15 ●"
 exports[`rendered frames > Grains 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
+grains on silo s.2sme5hx2
  TYPE     KEY     QUEUE    AGE   IDLE  TASKS  KEPT
  ─────────────────────────────────────────────────
  Counter  cart        0  2m47s  2m47s
@@ -77,6 +80,7 @@ slowest methods (p99 turn)
 exports[`rendered frames > Health 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
+silo s.2sme5hx2
 live         yes
 ready        yes
 uptime       4m02s
@@ -98,10 +102,11 @@ storage
 exports[`rendered frames > Overview 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
+cluster · 2 silo(s)
 silos        2
 activations  32
 queued       2
-calls        593  26 failed (4%)
+calls        1.19k  52 failed (4%)
 
 calls/s      ·██▇▅▄▆·█▇▅▄▅▇·█▆▄▅▇█·▆▄▄▆██·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
 failures/s   █▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
@@ -119,10 +124,11 @@ exports[`rendered frames > Overview, cramped 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
   them
 
+cluster · 2 silo(s)
 silos        2
 activations  32
 queued       2
-calls        593  26 failed (4%)
+calls        1.19k  52 failed (4%)
 
 calls/s      ·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
 failures/s   ▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
@@ -136,13 +142,45 @@ p99 ██████ 608µs  p99 ███░░░ 272µs  p99 ███░�
 high queue = a hot grain · high turn = a slow method"
 `;
 
+exports[`rendered frames > Silo drill-down 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+silo s.2sme5hx2
+status       active
+address      http://127.0.0.1:5391
+up           2m22s
+ready        yes
+calls        593  26 failed (4%)
+latency      p50 48µs  p99 64µs
+storage      158 loads  2.86k saves  0 conflicts
+
+checks
+  ok   cluster — active
+
+errors by kind
+  method-not-found     68
+
+grains on this silo
+ TYPE     KEY     QUEUE    AGE  IDLE  TASKS  KEPT
+ ────────────────────────────────────────────────
+ Counter  cart        3  2m47s    2s      1  yes
+ Counter  cold-0      0  2m41s    2s
+
+
+
+
+
+
+  1–2/2"
+`;
+
 exports[`rendered frames > Silos 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
- SILO        STATUS      UP  ACTS  QUEUE  VIEW  TRANSPORTS
- ─────────────────────────────────────────────────────────
-❯s.2sme5hx2  active   2m22s    30      2    #5  http
- s.ikfugf49  leaving  2m22s     2      0    #5  http
+ SILO        STATUS   READY     UP  ACTS  QUEUE  VIEW  TRANSPORTS
+ ────────────────────────────────────────────────────────────────
+❯s.2sme5hx2  active   yes    2m22s    30      2    #5  http
+ s.ikfugf49  leaving  NO     2m22s     2      0    #5  http
 
 
 

@@ -31,7 +31,10 @@ function snapshotAt(at: number, activations = 1, calls = 10): MonitorSnapshot {
                 counters: null,
                 reminderShards: [],
                 membershipVersion: null,
-                transports: null
+                transports: null,
+                metrics: null,
+                health: null,
+                activations: null
             }
         ],
         cluster: null,

@@ -41,6 +41,45 @@ export interface HistogramSnapshot {
     p99Ms: number;
 }
 
+/**
+ * Bucket layout id — the shape of `#buckets`, derived from the constants
+ * above rather than written out, because the failure it guards against is
+ * somebody editing `SUB_BITS` and forgetting a hand-maintained string.
+ *
+ * A bucket INDEX only means anything within one layout, and a digest
+ * arrives over a wire from a peer that may be running a different build. A
+ * mismatch has to be detectable, or a rolling deploy silently produces a
+ * merged distribution assembled from two different axes.
+ */
+export const HISTOGRAM_LAYOUT = `ll-${SUB_BITS}-${MAX_OCTAVE}`;
+
+/**
+ * A histogram's raw distribution, in a shape that can be SUMMED.
+ *
+ * This exists because `HistogramSnapshot` cannot be merged: averaging two
+ * silos' p99s is not the cluster's p99 and is not any other statistic
+ * either. Percentiles have to be re-derived from the combined counts, so
+ * the counts are what travels.
+ *
+ * **Sparse** — `idx` holds the occupied bucket indices ascending, `n` the
+ * counts parallel to it. Of 384 buckets a real silo occupies a few dozen,
+ * so this is several times smaller than a dense array on a payload that a
+ * dashboard polls once a second per silo.
+ *
+ * `sumUs`/`minUs`/`maxUs` are exact rather than bucketed, so a merged mean
+ * is a real mean rather than a mean of means.
+ */
+export interface HistogramDigest {
+    count: number;
+    sumUs: number;
+    minUs: number;
+    maxUs: number;
+    /** Occupied bucket indices, ascending. */
+    idx: number[];
+    /** Sample counts, parallel to `idx`. */
+    n: number[];
+}
+
 const EMPTY: HistogramSnapshot = {
     count: 0,
     minMs: 0,
@@ -115,23 +154,158 @@ export class Histogram {
 
     snapshot(): HistogramSnapshot {
         if (this.#count === 0) return EMPTY;
-        const at = (q: number): number => {
-            const target = q * this.#count;
-            let seen = 0;
-            for (let i = 0; i < BUCKETS; i++) {
-                seen += this.#buckets[i] as number;
-                if (seen >= target) return valueOf(i) / 1000;
+        return summarize(
+            (bucket) => this.#buckets[bucket] as number,
+            this.#count,
+            this.#sumUs,
+            this.#minUs,
+            this.#maxUs
+        );
+    }
+
+    /**
+     * The raw distribution, for merging across silos.
+     *
+     * Sparse, and built here rather than on `record()` — recording stays
+     * allocation-free; this is snapshot-time work.
+     */
+    digest(): HistogramDigest {
+        const idx: number[] = [];
+        const n: number[] = [];
+        for (let i = 0; i < BUCKETS; i++) {
+            const value = this.#buckets[i] as number;
+            if (value > 0) {
+                idx.push(i);
+                n.push(value);
             }
-            return this.#maxUs / 1000;
-        };
+        }
         return {
             count: this.#count,
-            minMs: this.#minUs / 1000,
-            maxMs: this.#maxUs / 1000,
-            meanMs: this.#sumUs / this.#count / 1000,
-            p50Ms: at(0.5),
-            p90Ms: at(0.9),
-            p99Ms: at(0.99)
+            sumUs: this.#sumUs,
+            minUs: this.#count === 0 ? 0 : this.#minUs,
+            maxUs: this.#maxUs,
+            idx,
+            n
         };
     }
+}
+
+/** A digest with nothing in it — the shape a merge of nothing produces. */
+export function emptyHistogramDigest(): HistogramDigest {
+    return { count: 0, sumUs: 0, minUs: 0, maxUs: 0, idx: [], n: [] };
+}
+
+/**
+ * Sum digests bucket-wise.
+ *
+ * This is the whole point of shipping buckets: the merged distribution is
+ * the cluster's real distribution, so percentiles taken from it are the
+ * cluster's real percentiles. Averaging per-silo percentiles instead — the
+ * only thing `HistogramSnapshot` allows — produces a number that is not the
+ * p99 of anything.
+ *
+ * Indices arrive over a wire, so every one of them is BOUNDS-CHECKED rather
+ * than used as an offset. A peer that is buggy, mid-upgrade or hostile must
+ * cost its own contribution and nothing else.
+ */
+export function mergeHistogramDigests(
+    digests: Iterable<HistogramDigest | null | undefined>
+): HistogramDigest {
+    const buckets = new Float64Array(BUCKETS);
+    let count = 0;
+    let sumUs = 0;
+    let minUs = Infinity;
+    let maxUs = 0;
+    let any = false;
+
+    for (const digest of digests) {
+        if (!digest || !Array.isArray(digest.idx) || !Array.isArray(digest.n)) continue;
+        if (!Number.isFinite(digest.count) || digest.count <= 0) continue;
+        any = true;
+        count += digest.count;
+        sumUs += Number.isFinite(digest.sumUs) ? digest.sumUs : 0;
+        if (Number.isFinite(digest.minUs) && digest.minUs < minUs) minUs = digest.minUs;
+        if (Number.isFinite(digest.maxUs) && digest.maxUs > maxUs) maxUs = digest.maxUs;
+        const pairs = Math.min(digest.idx.length, digest.n.length);
+        for (let i = 0; i < pairs; i++) {
+            const bucket = digest.idx[i] as number;
+            const value = digest.n[i] as number;
+            // A non-integer, negative or out-of-range index would either
+            // throw away the write silently (a fractional offset) or reach
+            // past the array; either way it must not become a data point.
+            if (!Number.isInteger(bucket) || bucket < 0 || bucket >= BUCKETS) continue;
+            if (!Number.isFinite(value) || value <= 0) continue;
+            buckets[bucket]! += value;
+        }
+    }
+
+    if (!any) return emptyHistogramDigest();
+    const idx: number[] = [];
+    const n: number[] = [];
+    for (let i = 0; i < BUCKETS; i++) {
+        const value = buckets[i] as number;
+        if (value > 0) {
+            idx.push(i);
+            n.push(value);
+        }
+    }
+    return { count, sumUs, minUs: minUs === Infinity ? 0 : minUs, maxUs, idx, n };
+}
+
+/**
+ * Percentiles re-derived from a (usually merged) distribution.
+ *
+ * The counterpart to `Histogram.snapshot()`, sharing its walk so the two
+ * can never drift: same buckets, same rounding, same answer.
+ */
+export function digestSnapshot(digest: HistogramDigest | null | undefined): HistogramSnapshot {
+    if (!digest || !Number.isFinite(digest.count) || digest.count <= 0) return EMPTY;
+    const counts = new Float64Array(BUCKETS);
+    const pairs = Math.min(digest.idx?.length ?? 0, digest.n?.length ?? 0);
+    for (let i = 0; i < pairs; i++) {
+        const bucket = digest.idx[i] as number;
+        const value = digest.n[i] as number;
+        if (!Number.isInteger(bucket) || bucket < 0 || bucket >= BUCKETS) continue;
+        if (!Number.isFinite(value) || value <= 0) continue;
+        counts[bucket]! += value;
+    }
+    return summarize(
+        (bucket) => counts[bucket] as number,
+        digest.count,
+        digest.sumUs,
+        digest.minUs,
+        digest.maxUs
+    );
+}
+
+/**
+ * The one percentile walk, shared by the live histogram and a merged
+ * digest — duplicating it is how a cluster-wide p99 quietly stops matching
+ * the per-silo one it is supposed to generalise.
+ */
+function summarize(
+    countAt: (bucket: number) => number,
+    count: number,
+    sumUs: number,
+    minUs: number,
+    maxUs: number
+): HistogramSnapshot {
+    const at = (q: number): number => {
+        const target = q * count;
+        let seen = 0;
+        for (let i = 0; i < BUCKETS; i++) {
+            seen += countAt(i);
+            if (seen >= target) return valueOf(i) / 1000;
+        }
+        return maxUs / 1000;
+    };
+    return {
+        count,
+        minMs: minUs / 1000,
+        maxMs: maxUs / 1000,
+        meanMs: sumUs / count / 1000,
+        p50Ms: at(0.5),
+        p90Ms: at(0.9),
+        p99Ms: at(0.99)
+    };
 }

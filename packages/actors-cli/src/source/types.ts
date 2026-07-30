@@ -16,9 +16,15 @@ import type {
     ActivationInfo,
     ActorMetricsSnapshot,
     HealthStatus,
+    MetricsDigest,
     SiloStats
 } from '@sigx/actors/silo';
-import type { ClusterCounterTotals, SiloReport } from '@sigx/actors/cluster';
+import type {
+    ClusterCounterTotals,
+    ClusterMetricsTotals,
+    SiloReport
+} from '@sigx/actors/cluster';
+import type { HealthReport } from '@sigx/actors/silo';
 
 /** One silo, however we reached it. */
 export interface SiloView {
@@ -40,6 +46,18 @@ export interface SiloView {
     /** Transport names in chain order; a disagreement here is a half-rolled
      *  transport deploy, which is usually the whole story. */
     transports: readonly string[] | null;
+    /**
+     * THIS silo's own metrics, when it reported them.
+     *
+     * Null is "this silo said nothing", not "this silo did nothing" — an
+     * uninstrumented silo and an idle one are different findings, and a
+     * panel that renders the first as zeroes claims the second.
+     */
+    metrics: MetricsDigest | null;
+    /** THIS silo's readiness. Null when it reported none. */
+    health: HealthReport | null;
+    /** THIS silo's live grains — only present under a detail poll. */
+    activations: readonly ActivationInfo[] | null;
 }
 
 export interface ClusterView {
@@ -52,6 +70,13 @@ export interface ClusterView {
         queued: number;
         perType: Record<string, number>;
         counters: ClusterCounterTotals;
+        /**
+         * Cluster-wide calls, errors, storage and latency — with `silos` as
+         * the denominator. Null when nothing anywhere is instrumented.
+         */
+        metrics: ClusterMetricsTotals | null;
+        /** Readiness across the fleet. */
+        health: { ready: number; notReady: number; fatal: number; unknown: number };
     };
     /** `p0`…`p15` → the silos CLAIMING each shard. Two claimants means views
      *  diverged; an empty list means nothing is ticking that shard. */
@@ -70,8 +95,14 @@ export interface MonitorSnapshot {
     silos: readonly SiloView[];
     /** Null on a single-node silo — not an error, just no cluster. */
     cluster: ClusterView | null;
-    /** Per-silo in embedded mode; the polled silo's in HTTP mode. Null when
-     *  `metrics()` is not attached, which is a real and common case. */
+    /**
+     * The POLLED silo's own metrics — not the cluster's.
+     *
+     * Kept distinct from `cluster.totals.metrics` because the two are
+     * different facts and the whole complaint behind #121 was a dashboard
+     * printing them adjacently with nothing saying which was which. Null
+     * when `metrics()` is not attached, which is real and common.
+     */
     metrics: ActorMetricsSnapshot | null;
     /** Null when the source cannot see them (`ops({ activations: 0 })`). */
     activations: readonly ActivationInfo[] | null;
@@ -87,11 +118,26 @@ export interface MonitorSnapshot {
     partial: boolean;
 }
 
+/** How much a single poll should ask for. */
+export interface SnapshotOptions {
+    /**
+     * Ask for per-silo grain lists and recent errors as well.
+     *
+     * Off for the list view and on only while a drill-down is open: the
+     * walk is O(activations) on every silo at once, so a dashboard that
+     * always asked would make the cluster pay for a panel nobody is
+     * looking at.
+     */
+    detail?: boolean;
+    /** Limit the expensive parts to one silo — what a drill-down wants. */
+    siloId?: string;
+}
+
 export interface MonitorSource {
     readonly kind: 'embedded' | 'http';
     /** Shown in the UI so it is never ambiguous WHAT is being watched. */
     readonly label: string;
-    snapshot(signal?: AbortSignal): Promise<MonitorSnapshot>;
+    snapshot(signal?: AbortSignal, options?: SnapshotOptions): Promise<MonitorSnapshot>;
     close(): Promise<void>;
 }
 
@@ -107,6 +153,9 @@ export function siloViewFromReport(report: SiloReport): SiloView {
         counters: totals,
         reminderShards: report.reminderShards,
         membershipVersion,
-        transports: report.transports ?? null
+        transports: report.transports ?? null,
+        metrics: report.metrics ?? null,
+        health: report.health ?? null,
+        activations: report.activations ?? null
     };
 }

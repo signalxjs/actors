@@ -33,6 +33,15 @@ export interface DashboardView {
     /** Epoch-ms of the last successful poll — how stale the numbers are. */
     lastOk: number;
     polls: number;
+    /**
+     * The silo a drill-down is open on, or null for the list view.
+     *
+     * Held here rather than in the screens because it changes what is
+     * REQUESTED, not just what is drawn: a detail poll makes the selected
+     * silo walk its activation table, so nobody should pay for it while the
+     * panel is closed.
+     */
+    focus: string | null;
 }
 
 export const DEFAULT_INTERVAL_MS = 1000;
@@ -70,7 +79,8 @@ export class DashboardState {
             paused: false,
             intervalMs: clampInterval(options.intervalMs ?? DEFAULT_INTERVAL_MS),
             lastOk: 0,
-            polls: 0
+            polls: 0,
+            focus: null
         });
     }
 
@@ -84,7 +94,11 @@ export class DashboardState {
         const controller = new AbortController();
         this.#inFlight = controller;
         try {
-            const next = await this.source.snapshot(controller.signal);
+            const focus = this.view.focus;
+            const next = await this.source.snapshot(
+                controller.signal,
+                focus ? { detail: true, siloId: focus } : {}
+            );
             if (this.#stopped || controller.signal.aborted) return;
             this.#record(next);
             this.view.snapshot = next;
@@ -124,6 +138,20 @@ export class DashboardState {
 
     togglePause(): void {
         this.view.paused = !this.view.paused;
+    }
+
+    /**
+     * Open or close the per-silo drill-down.
+     *
+     * Polls immediately rather than waiting for the next tick, because the
+     * detail a drill-down needs was not in the snapshot already on screen —
+     * opening one and staring at "no grains" for a second reads as a broken
+     * panel rather than a pending request.
+     */
+    focus(siloId: string | null): void {
+        if (this.view.focus === siloId) return;
+        this.view.focus = siloId;
+        if (siloId) void this.poll();
     }
 
     /** Step the interval, clamped. */

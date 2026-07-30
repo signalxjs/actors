@@ -234,11 +234,42 @@ export interface PluginRegistry {
      */
     reportOps(name: string, provider: () => unknown): void;
     /**
+     * Contribute a named DIGEST — a mergeable, wire-safe summary of this
+     * plugin's counters, for cluster-wide aggregation.
+     *
+     * The counterpart to `reportOps`, and deliberately not the same seam.
+     * An ops section is read by a human and may carry anything, including
+     * derived percentiles; a digest is read by `clusterStats()` and has to
+     * carry the raw distribution those percentiles are re-derived FROM,
+     * because averaging percentiles across silos produces a number that is
+     * not the p99 of anything. Reading the ops section instead would hand
+     * the aggregator exactly the un-mergeable shape.
+     *
+     * Same rules as `reportOps` otherwise: runs per read, must stay sync,
+     * unique non-empty name, and a throwing provider costs its own digest
+     * rather than the whole report.
+     */
+    reportDigest(name: string, provider: (options?: unknown) => unknown): void;
+    /**
      * The aggregate of every contributed section — LIVE, including providers
      * registered after this call, so `.use()` order does not matter. Hold
      * this and call it per request rather than at setup time.
      */
     ops(): OpsReport;
+    /**
+     * Read ONE named digest, live — including providers registered after
+     * this call, so `.use()` order does not matter.
+     *
+     * `undefined` when nobody publishes that name, which is the ordinary
+     * case for a silo with no `metrics()` attached rather than an error.
+     *
+     * **Never throws** — not for a missing name, not for a provider that
+     * fails, and not for one that reads its own digest. Whatever is wrong
+     * costs that digest and nothing else, because the read is usually part
+     * of an ops or cluster report, and a report that dies on a broken
+     * provider is the report you cannot get during the incident.
+     */
+    digest(name: string, options?: unknown): unknown;
     /**
      * Extra members merged onto every activation's `ctx`. Pair it with an
      * `ActorPlugin<Ext>` type argument so they are typed inside actors.
@@ -351,6 +382,7 @@ interface Contributions {
     routes: ActorRoute[];
     health: { name: string; check: () => HealthCheck; plugin: string }[];
     ops: { name: string; provider: () => unknown; plugin: string }[];
+    digests: { name: string; provider: (options?: unknown) => unknown; plugin: string }[];
     contextFactories: ((ref: ActorRef) => object | undefined)[];
 }
 
@@ -392,6 +424,50 @@ function healthReport(c: Contributions): HealthReport {
  * whose provider throws must cost its own section and nothing else. The
  * section stays present, carrying the reason.
  */
+/**
+ * Invoke ONE digest provider.
+ *
+ * Only `c.digests` is ever walked, never `c.ops` — which is what makes it
+ * structurally impossible for this to re-enter an ops provider. That
+ * matters because `cluster()` publishes `placement.report()` AS an ops
+ * section, and `report()` is the caller here: routing this through
+ * `registry.ops()` would recurse until the stack gave out.
+ *
+ * A provider that throws costs its own digest and nothing else, for the
+ * same reason a failing ops section does: the one tool that explains a
+ * broken silo must not be broken by it.
+ */
+function readDigest(c: Contributions, name: string, options?: unknown): unknown {
+    const entry = c.digests.find((candidate) => candidate.name === name);
+    if (!entry) return undefined;
+    if (reading.has(name)) {
+        // A provider that reads its own digest is a bug, but it is ITS bug.
+        // Throwing here would take out the surrounding ops or cluster read,
+        // which is the same mistake as letting a failing section 500 the
+        // endpoint that exists to explain a sick silo. Say so loudly in
+        // dev, answer `undefined` in production.
+        if (__DEV__) {
+            console.warn(
+                `[sigx actors] the "${name}" digest provider read its own digest. ` +
+                    'A digest provider must not call registry.digest() for the name it ' +
+                    'provides; the read answered undefined to break the cycle.'
+            );
+        }
+        return undefined;
+    }
+    reading.add(name);
+    try {
+        return entry.provider(options);
+    } catch {
+        return undefined;
+    } finally {
+        reading.delete(name);
+    }
+}
+
+/** Names currently being produced, so a provider cannot re-enter itself. */
+const reading = new Set<string>();
+
 function opsReport(c: Contributions): OpsReport {
     const sections: OpsReport = {};
     for (const { name, provider } of c.ops) {
@@ -489,6 +565,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             routes: [],
             health: [],
             ops: [],
+            digests: [],
             contextFactories: []
         };
         for (const plugin of this.#plugins) {
@@ -735,6 +812,26 @@ function registryFor(pluginName: string, c: Contributions): PluginRegistry {
         ops() {
             // Same call-time read as `health()`, for the same reason.
             return opsReport(c);
+        },
+        reportDigest(name, provider) {
+            if (!name.trim()) {
+                throw new Error(
+                    `[sigx actors] ${pluginName} called reportDigest() with an empty name — ` +
+                        'a digest is identified by its name.'
+                );
+            }
+            const clash = c.digests.find((entry) => entry.name === name);
+            if (clash) {
+                throw new Error(
+                    `[sigx actors] two plugins both contributed a digest named ` +
+                        `"${name}" (${clash.plugin} and ${pluginName}) — names address a ` +
+                        'digest, so give one of them a distinct name.'
+                );
+            }
+            c.digests.push({ name, provider, plugin: pluginName });
+        },
+        digest(name, options) {
+            return readDigest(c, name, options);
         },
         extendContext(factory) {
             c.contextFactories.push(factory);

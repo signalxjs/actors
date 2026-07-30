@@ -389,6 +389,82 @@ describe('ops(): the cluster fan-out route', () => {
         }
     });
 
+    it('passes ?detail through to the collector', async () => {
+        const asked: unknown[] = [];
+        const app = appWith(
+            ops({
+                secret: SECRET,
+                cluster: (_signal, query) => {
+                    asked.push(query);
+                    return Promise.resolve({});
+                }
+            })
+        );
+        const handler = createFetchHandler(app);
+        await app.start();
+        try {
+            await get(handler, '/_sigx/ops/cluster');
+            await get(handler, '/_sigx/ops/cluster?detail=1');
+            await get(handler, '/_sigx/ops/cluster?detail=1&activations=5&silo=a&silo=b');
+            // Absent means the cheap report — an upgraded COLLECTOR is what
+            // grows the traffic, never an upgraded silo.
+            expect(asked[0]).toEqual({});
+            expect(asked[1]).toEqual({ detail: true });
+            expect(asked[2]).toEqual({ detail: { activations: 5, silos: ['a', 'b'] } });
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('falls back rather than through on a nonsense query', async () => {
+        const asked: unknown[] = [];
+        const app = appWith(
+            ops({
+                secret: SECRET,
+                cluster: (_signal, query) => {
+                    asked.push(query);
+                    return Promise.resolve({});
+                }
+            })
+        );
+        const handler = createFetchHandler(app);
+        await app.start();
+        try {
+            // A typo in a query string must not silently turn a 1 Hz poll
+            // into a fleet-wide grain walk, and must not 500 either.
+            // Detail is opted INTO: anything unrecognised is off, because
+            // the expensive direction is the one you have to ask for
+            // precisely.
+            await get(handler, '/_sigx/ops/cluster?detail=0');
+            await get(handler, '/_sigx/ops/cluster?detail=banana');
+            await get(handler, '/_sigx/ops/cluster?detail=flase');
+            await get(handler, '/_sigx/ops/cluster?detail=1&activations=banana');
+            await get(handler, '/_sigx/ops/cluster?detail=TRUE');
+            expect(asked[0]).toEqual({});
+            expect(asked[1]).toEqual({});
+            expect(asked[2]).toEqual({});
+            expect(asked[3]).toEqual({ detail: true });
+            expect(asked[4]).toEqual({ detail: true });
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('still serves a collector written to the old one-argument signature', async () => {
+        // The parameter was APPENDED, so every existing
+        // `(signal) => clusterStats(placement)` keeps compiling and working.
+        const app = appWith(ops({ secret: SECRET, cluster: () => Promise.resolve({ ok: true }) }));
+        const handler = createFetchHandler(app);
+        await app.start();
+        try {
+            const response = await get(handler, '/_sigx/ops/cluster?detail=1');
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({ ok: true });
+        } finally {
+            await app.stop();
+        }
+    });
+
     it('requires the bearer on the cluster route too', async () => {
         const app = appWith(ops({ secret: SECRET, cluster: () => Promise.resolve({}) }));
         const handler = createFetchHandler(app);

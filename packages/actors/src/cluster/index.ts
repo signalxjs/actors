@@ -32,9 +32,12 @@ export {
     SILO_STATS_SYMBOL,
     type ClusterStatsFailure,
     type ClusterStatsFailureReason,
+    type ClusterMetricsTotals,
+    type ClusterStatsDetail,
     type ClusterStatsOptions,
     type ClusterStatsReport,
-    type SiloReport
+    type SiloReport,
+    type SiloReportOptions
 } from './stats';
 export type { ClusterCounters, ClusterCounterTotals } from './counters';
 export { memoryClusterHub, type MemoryClusterHub } from './memory';

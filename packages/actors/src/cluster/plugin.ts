@@ -11,7 +11,8 @@
  * gets silo-to-silo traffic for free. This is composition only — the
  * placement, endpoint and providers underneath are unchanged.
  */
-import type { ActorPlugin, PluginRegistry } from '../silo/app';
+import type { ActorPlugin, HealthReport, PluginRegistry } from '../silo/app';
+import type { MetricsDigest } from '../silo/digest';
 import { clusterPlacement, type ClusterPlacement } from './placement';
 import type { SiloTransportFactory } from './seam';
 import type { SiloEndpointOptions } from './silo-endpoint';
@@ -140,8 +141,21 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
     // keeps `migrate()`/`identity` reachable without starting the app. It is
     // also why the transport is an option here rather than its own plugin:
     // a later `.use()` could not reach this constructor.
+    // Late-bound, exactly as `ops()` late-binds its health/ops readers: the
+    // registry does not exist yet here, and reading these per REPORT rather
+    // than capturing them at setup is what makes `.use()` order irrelevant.
+    let readHealth: (() => HealthReport) | null = null;
+    let readDigest: ((options?: unknown) => unknown) | null = null;
+
     const placement = clusterPlacement({
         ...options.providers,
+        health: () => readHealth?.(),
+        // `registry.digest()` walks digest providers ONLY. Reading the ops
+        // section instead would re-enter this very report — `cluster()`
+        // publishes `placement.report()` as the `'cluster'` ops section —
+        // and would hand back percentiles, which is precisely the shape
+        // that cannot be merged across silos.
+        metrics: (digestOptions) => readDigest?.(digestOptions) as MetricsDigest | undefined,
         advertise: options.advertise,
         ...(options.publicAddress !== undefined
             ? { publicAddress: options.publicAddress }
@@ -163,6 +177,8 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
         placement,
         setup(registry: PluginRegistry): void {
             registry.setPlacement(() => placement);
+            readHealth = () => registry.health();
+            readDigest = (digestOptions) => registry.digest('metrics', digestOptions);
             // Readiness, so a `health()` endpoint drains this silo without
             // knowing clustering exists. `'leaving'` is the M4 handoff
             // window (announced BEFORE the drain, which is the whole point:
@@ -195,6 +211,10 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
             // provider is sync and must stay cheap, and the fan-out is an
             // explicit second route precisely because it costs N peer
             // round-trips.
+            // Deliberately the BARE report: no digest, no grain list. The
+            // metrics section sits right beside this one in the same
+            // snapshot, so including the digest here would ship the same
+            // numbers twice — once as percentiles and once as buckets.
             registry.reportOps('cluster', () => placement.report());
             // The internal mount is no longer special-cased: it is whatever
             // the configured transports declare. A chain of socket

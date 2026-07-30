@@ -108,11 +108,23 @@ every other sigx tool.
 |---|---|
 | `1`–`9` | switch tab |
 | `j` / `k` | move the cursor in a table |
+| `enter` | open the selected silo |
+| `h` | back to the silo list |
 | `p` | pause polling |
 | `r` | refresh now |
 | `+` / `-` | slower / faster polling |
 | `/reset` | clear the sparkline history |
 | `Ctrl+C` | quit |
+
+**Every panel says what its numbers are about.** Cluster-wide totals are
+headed `cluster · N silo(s)`; anything that is only the polled silo's says
+so. When some silos report no metrics, the coverage is stated — totals
+covering two thirds of a fleet look exactly like totals covering all of it.
+
+`enter` on the Silos tab opens that silo in full: its calls, latency,
+readiness, checks, error kinds and the grains living on it. That detail is
+requested only while the panel is open, because a detail poll makes every
+silo walk its activation table.
 
 `--interval <ms>` sets the poll rate (default 1000, clamped to 200…60000).
 

@@ -83,11 +83,56 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         }
     }
 
+    // Cluster-wide when the fan-out produced it, the polled silo's
+    // otherwise — and the heading says which. Printing one under a heading
+    // that means the other is the complaint this milestone exists to fix:
+    // `calls total 382` directly under `cluster silos 2` reads as
+    // cluster-wide when it was one silo's.
+    const clusterMetrics = snapshot.cluster?.totals.metrics ?? null;
+    const scope = clusterMetrics
+        ? `cluster-wide (${clusterMetrics.silos} of ${cluster?.totals.silos ?? '?'} silos reporting)`
+        : `silo ${cluster?.from ?? snapshot.silos[0]?.siloId ?? 'local'} ONLY`;
     const metrics = snapshot.metrics;
-    if (metrics) {
+    if (clusterMetrics) {
+        const failed = clusterMetrics.calls.failed;
         lines.push(
             '',
-            'calls',
+            `calls — ${scope}`,
+            `  total        ${count(clusterMetrics.calls.total)} (${count(failed)} failed, ${percent(failed, clusterMetrics.calls.total)})`,
+            `  streams      ${count(clusterMetrics.calls.streams)}`
+        );
+        for (const [label, snap] of [
+            ['latency', clusterMetrics.latencyMs],
+            ['queue', clusterMetrics.queueMs],
+            ['turn', clusterMetrics.turnMs]
+        ] as const) {
+            if (!snap) continue;
+            // Re-derived from the summed buckets, not an average of the
+            // silos' percentiles — which would be a figure describing no
+            // call that ever happened.
+            lines.push(
+                `  ${label.padEnd(12)} p50 ${durationMs(snap.p50Ms)}  p90 ${durationMs(snap.p90Ms)}  p99 ${durationMs(snap.p99Ms)}`
+            );
+        }
+        if (clusterMetrics.silos < (cluster?.totals.silos ?? 0)) {
+            lines.push(
+                `  ! ${clusterMetrics.silos} of ${cluster?.totals.silos} silos reported metrics — the figures above are a LOWER BOUND`
+            );
+        }
+        const kinds = Object.entries(clusterMetrics.errors.byKind);
+        if (kinds.length > 0) {
+            lines.push(
+                '',
+                `errors — ${scope}`,
+                ...kinds
+                    .sort((x, y) => (y[1] ?? 0) - (x[1] ?? 0))
+                    .map(([kind, n]) => `  ${kind.padEnd(18)} ${count(n ?? 0)}`)
+            );
+        }
+    } else if (metrics) {
+        lines.push(
+            '',
+            `calls — ${scope}`,
             `  total        ${count(metrics.calls.total)} (${count(metrics.calls.failed)} failed, ${percent(metrics.calls.failed, metrics.calls.total)})`,
             `  streams      ${count(metrics.calls.streams)}`
         );
@@ -108,7 +153,7 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         if (kinds.length > 0) {
             lines.push(
                 '',
-                'errors',
+                `errors — ${scope}`,
                 ...kinds
                     .sort((x, y) => (y[1] ?? 0) - (x[1] ?? 0))
                     .map(([kind, n]) => `  ${kind.padEnd(18)} ${count(n ?? 0)}`)
@@ -121,7 +166,7 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         if (slowest.length > 0) {
             lines.push(
                 '',
-                'slowest methods (p99 turn)',
+                `slowest methods (p99 turn) — silo ${cluster?.from ?? 'local'}`,
                 ...slowest.map(
                     ([name, m]) =>
                         `  ${name.padEnd(28)} ${durationMs(m.turnMs!.p99Ms).padStart(8)}  ${count(m.calls)} calls`
@@ -138,7 +183,7 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
     if (snapshot.activations && snapshot.activations.length > 0) {
         lines.push(
             '',
-            'hottest grains',
+            `hottest grains — silo ${cluster?.from ?? 'local'}`,
             ...snapshot.activations
                 .slice(0, 10)
                 .map(

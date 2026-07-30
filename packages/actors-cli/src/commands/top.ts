@@ -18,6 +18,7 @@ import {
     GrainsScreen,
     HealthScreen,
     OverviewScreen,
+    SiloScreen,
     SilosScreen
 } from '../dashboard/screens';
 import { count, uptime } from '../model/format';
@@ -95,7 +96,16 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
             {
                 id: SILOS_TAB,
                 label: 'Silos',
-                render: (pane: ShellPane) => SilosScreen({ state, pane, cursor: siloCursor })
+                // One tab, two views: the list, and the selected silo in
+                // full. Swapped here rather than through `pushView` because
+                // the drill-down is a different rendering of the SAME
+                // selection — `esc` returns to the list with the cursor
+                // where it was, and the tab strip does not grow a sixth
+                // entry that is only sometimes meaningful.
+                render: (pane: ShellPane) =>
+                    state.view.focus
+                        ? SiloScreen({ state, pane, siloId: state.view.focus })
+                        : SilosScreen({ state, pane, cursor: siloCursor })
             },
             {
                 id: GRAINS_TAB,
@@ -135,7 +145,31 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
             { key: '+', label: 'slower', run: () => state.nudgeInterval(2) },
             { key: '-', label: 'faster', run: () => state.nudgeInterval(0.5) },
             { key: 'j', label: 'down', run: (sh) => move(sh, 1) },
-            { key: 'k', label: 'up', run: (sh) => move(sh, -1) }
+            { key: 'k', label: 'up', run: (sh) => move(sh, -1) },
+            {
+                // The cursor now leads somewhere. Selecting a silo used to
+                // move a highlight and change nothing else, because the
+                // fan-out carried no per-silo detail to open.
+                //
+                // `'\r'` rather than `'enter'`: the shell matches a
+                // shortcut against the RAW key the terminal delivered, so a
+                // friendly name would simply never fire. Esc is not
+                // available at all — the shell takes it first, to close its
+                // palette or pop its own view stack — hence `h` for back,
+                // which also keeps the vim shape of `j`/`k`.
+                key: '\r',
+                label: 'open silo',
+                run: (sh) => {
+                    if (sh.activeTab !== SILOS_TAB || state.view.focus) return;
+                    const silo = state.view.snapshot?.silos[cursors[SILOS_TAB]!.index];
+                    if (silo) state.focus(silo.siloId);
+                }
+            },
+            {
+                key: 'h',
+                label: 'back',
+                run: () => state.focus(null)
+            }
         ],
         commands: [
             {

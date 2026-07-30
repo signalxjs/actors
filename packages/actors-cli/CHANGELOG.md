@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The cursor leads somewhere: `enter` opens a silo** (#121). Selecting a
+  row in the Silos table used to move a highlight and change nothing else,
+  because a `SiloReport` carried no metrics, no health and no grains for a
+  peer. It carries all three now, so `enter` opens that silo in full — its
+  calls, latency, readiness, checks, error kinds and the grains living on
+  it — and `h` returns to the list with the cursor where it was (the shell claims `esc` for its own palette and view stack).
+
+  The detail is requested only while the panel is open. A detail poll makes
+  every silo walk its activation table, so a dashboard that always asked
+  would make the cluster pay for a panel nobody is looking at.
+
+- **Cluster-wide numbers, labelled as such** (#121). The Overview shows the
+  merged `totals.metrics` when the fan-out produced them, headed
+  `cluster · N silo(s)`; the Grains and Health tabs are headed with the silo
+  they actually describe. `sigx actors stats` does the same —
+  `calls — cluster-wide (2 of 3 silos reporting)` versus
+  `calls — silo s.ab12 ONLY`.
+
+  This is the second half of the issue's complaint. The numbers were not
+  wrong; they were unlabelled, so one silo's `calls total 382` printed
+  directly beneath `cluster silos 2` and read as a cluster figure.
+
+- **A `READY` column on the Silos table** (#121), because every silo's
+  readiness now travels in the fan-out rather than only the polled one's.
+  `FATAL` is shown distinctly from `NO`: it means the silo cannot recover
+  and must be REPLACED, and reading it as "draining" is how a zombie pod
+  sits there forever.
+
+- **The coverage caveat** (#121). When only some silos report metrics, the
+  Overview and `stats` both say so — totals covering two thirds of a fleet
+  look exactly like totals covering all of it.
+
 ### Changed
 
 - **The component layer is upstream's now** (#121). `@sigx/terminal` 0.11

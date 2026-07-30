@@ -71,7 +71,10 @@ for (const port of PORTS) {
         .use(
             ops({
                 secret: opsSecret,
-                cluster: (signal) => clusterStats(plugin.placement, { signal })
+                // The second argument is what `?detail=1` on the ops route asked
+                // for. Spreading it is what lets a dashboard drill into ONE
+                // silo without every poll paying for a fleet-wide grain walk.
+                cluster: (signal, query) => clusterStats(plugin.placement, { signal, ...query })
             })
         );
 

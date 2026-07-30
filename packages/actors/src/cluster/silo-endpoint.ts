@@ -31,7 +31,12 @@ import type { ActorCallContext, ActorRef, AnyActorDefinition, Silo } from '../ty
 import { decodeEnvelope, verifyAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
 import type { ClusterPlacement } from './placement';
 import type { SiloCallTarget, SiloEndpointRuntime, SiloTransportRuntime } from './seam';
-import { SILO_STATS_METHOD, SILO_STATS_SYMBOL, SILO_STATS_TYPE } from './stats';
+import {
+    SILO_STATS_METHOD,
+    SILO_STATS_SYMBOL,
+    SILO_STATS_TYPE,
+    type SiloReportOptions
+} from './stats';
 import { parseWatchOptions, WATCH_SYMBOL_PREFIX } from './watch-symbol';
 import { relayStream } from '../stream-relay';
 import { toSiloWireError } from './wire-errors';
@@ -121,7 +126,9 @@ export function siloRuntime(silo: Silo, placement: ClusterPlacement): SiloTransp
             // The ops channel answers before any activation lookup, and
             // deliberately does NOT count as an inbound dispatch — reading
             // the counters must not move them.
-            if (ref.type === SILO_STATS_TYPE) return Promise.resolve(placement.report());
+            if (ref.type === SILO_STATS_TYPE) {
+                return Promise.resolve(placement.report(args[0] as SiloReportOptions | undefined));
+            }
             return placement.dispatchInbound(ref, method, args, call);
         },
         dispatchStream: (ref, method, args, call) =>
@@ -288,11 +295,15 @@ function createRuntimeResolver(
     // to route, no deadline to re-anchor and no activation to dispatch to.
     const statsFn = {
         __sigxName: SILO_STATS_METHOD,
-        __sigxFn: () =>
+        // The wire sends `[ref.key, ...args]`, so what the collector asked
+        // for is `args[1]`. Forwarded rather than dropped, which is how the
+        // caller gets to say "and the grain list, please" — the responder
+        // clamps whatever it is told.
+        __sigxFn: (_rq: unknown, _info: unknown, args: unknown[] = []) =>
             runtime.dispatch(
                 { type: SILO_STATS_TYPE, key: SILO_STATS_METHOD },
                 SILO_STATS_METHOD,
-                [],
+                args.slice(1),
                 { callChain: [], callId: SILO_STATS_METHOD }
             )
     };

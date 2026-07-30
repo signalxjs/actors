@@ -43,7 +43,10 @@ const { source } = vi.hoisted(() => {
                 counters: null,
                 reminderShards: [],
                 membershipVersion: null,
-                transports: null
+                transports: null,
+                metrics: null,
+                health: null,
+                activations: null
             }
         ],
         cluster: null,

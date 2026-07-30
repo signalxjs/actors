@@ -31,7 +31,10 @@ function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
                 counters: null,
                 reminderShards: [],
                 membershipVersion: null,
-                transports: null
+                transports: null,
+                metrics: null,
+                health: null,
+                activations: null
             }
         ],
         cluster: null,
@@ -96,7 +99,15 @@ describe('renderStats', () => {
                 cluster: {
                     from: 'silo-a',
                     view: { version: 3, size: 2, active: 2 },
-                    totals: { silos: 2, activations: 0, queued: 0, perType: {}, counters: {} as never },
+                    totals: {
+                        silos: 2,
+                        activations: 0,
+                        queued: 0,
+                        perType: {},
+                        counters: {} as never,
+                        metrics: null,
+                        health: { ready: 2, notReady: 0, fatal: 0, unknown: 0 }
+                    },
                     reminderShards: { p0: ['silo-a'], p1: [], p2: ['silo-a', 'silo-b'] },
                     unreachable: []
                 }

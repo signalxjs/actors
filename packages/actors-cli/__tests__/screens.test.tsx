@@ -23,7 +23,7 @@ import {
     SilosScreen
 } from '../src/dashboard/screens';
 import { DashboardState } from '../src/dashboard/state';
-import type { MonitorSnapshot, MonitorSource, SiloView } from '../src/source/types';
+import type { ClusterView, MonitorSnapshot, MonitorSource, SiloView } from '../src/source/types';
 
 const emptyStats = {
     activations: 3,
@@ -42,6 +42,21 @@ const silo = (over: Partial<SiloView> = {}): SiloView => ({
     reminderShards: ['p0'],
     membershipVersion: 4,
     transports: ['http'],
+    metrics: null,
+    health: { ready: true, fatal: false, checks: {} },
+    activations: null,
+    ...over
+});
+
+/** Cluster totals with the metrics/health tallies a silo build reports. */
+const clusterTotals = (over: Partial<ClusterView['totals']> = {}): ClusterView['totals'] => ({
+    silos: 2,
+    activations: 3,
+    queued: 1,
+    perType: {},
+    counters: {} as never,
+    metrics: null,
+    health: { ready: 2, notReady: 0, fatal: 0, unknown: 0 },
     ...over
 });
 
@@ -208,7 +223,7 @@ describe('screens render', () => {
             cluster: {
                 from: 'silo-a',
                 view: { version: 4, size: 2, active: 1 },
-                totals: { silos: 2, activations: 3, queued: 1, perType: {}, counters: {} as never },
+                totals: clusterTotals(),
                 reminderShards: { p0: ['silo-a'] },
                 unreachable: [
                     { siloId: 'silo-b', address: 'http://b:3000', reason: 'timeout', message: 'no answer' }
@@ -255,11 +270,7 @@ describe('screens render', () => {
             cluster: {
                 from: 'silo-a',
                 view: { version: 4, size: 2, active: 2 },
-                totals: {
-                    silos: 2,
-                    activations: 3,
-                    queued: 1,
-                    perType: {},
+                totals: clusterTotals({
                     counters: {
                         routedLocal: 10,
                         remoteDispatches: 7,
@@ -291,7 +302,7 @@ describe('screens render', () => {
                         claimed: 3,
                         routeCacheSize: 3
                     }
-                },
+                }),
                 reminderShards: { p0: ['silo-a'], p1: [], p2: ['silo-a', 'silo-b'] },
                 unreachable: []
             }

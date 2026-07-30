@@ -41,12 +41,12 @@ import {
     type Model,
     type TableColumn
 } from '@sigx/terminal';
-import type { ActivationInfo } from '@sigx/actors/silo';
+import { digestSnapshot, type ActivationInfo } from '@sigx/actors/silo';
 import { count, durationMs, gauge, percent, rate, uptime } from '../model/format';
 import { histogramScale, percentileItems, shardCells, splitShards, unclaimedShards } from '../tui/bars';
 import { wrapText } from '../tui/wrap';
 import { Line } from '../tui/components';
-import type { SiloView } from '../source/types';
+import type { MonitorSnapshot, SiloView } from '../source/types';
 import type { DashboardState } from './state';
 
 /**
@@ -202,6 +202,46 @@ function block(title: string, lines: readonly string[], pane: Pane, color = 'dim
 
 const blockHeight = (lines: readonly string[]): number => (lines.length === 0 ? 0 : lines.length + 2);
 
+
+/**
+ * What the numbers on a panel are ABOUT.
+ *
+ * Stated on every screen that shows any, because the failure this milestone
+ * exists to fix was not a wrong number — it was a right number under no
+ * label at all, sitting directly beneath one of a different scope.
+ */
+function scopeOf(snapshot: MonitorSnapshot): string {
+    const cluster = snapshot.cluster;
+    if (!cluster) return 'this silo';
+    return `cluster · ${cluster.totals.silos} silo(s)`;
+}
+
+/**
+ * Why cluster-wide totals might be a lower bound, or nothing.
+ *
+ * A silo with no `metrics()`, or one mid-rolling-deploy on an older build,
+ * contributes nothing — and totals covering two thirds of the fleet look
+ * exactly like totals covering all of it.
+ */
+/** The silo whose own numbers these are — the one being polled. */
+function polledLabel(state: DashboardState): string {
+    const from = state.view.snapshot?.cluster?.from;
+    return from ? `silo ${from}` : 'this silo';
+}
+
+function coverageNote(snapshot: MonitorSnapshot): string | null {
+    const totals = snapshot.cluster?.totals;
+    if (!totals) return null;
+    const metrics = totals.metrics;
+    if (!metrics) {
+        return snapshot.metrics
+            ? 'calls and latency below are THIS silo only — no silo reported cluster metrics'
+            : null;
+    }
+    if (metrics.silos >= totals.silos) return null;
+    return `metrics from ${metrics.silos} of ${totals.silos} silos — every figure below is a LOWER BOUND`;
+}
+
 export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     const state = props.state;
     const pane = props.pane ?? DEFAULT_PANE;
@@ -212,11 +252,16 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     const activations = totals?.activations ?? sum(snapshot.silos, (s) => s.stats.activations);
     const queued = totals?.queued ?? sum(snapshot.silos, (s) => s.stats.queued);
     const metrics = snapshot.metrics;
-    const scale = histogramScale([
-        metrics?.latencyMs ?? null,
-        metrics?.queueMs ?? null,
-        metrics?.turnMs ?? null
-    ]);
+    // Cluster-wide numbers when the fan-out produced them, this silo's
+    // otherwise — and the heading says which, because printing one under a
+    // label that means the other is the whole complaint behind #121.
+    const clusterMetrics = snapshot.cluster?.totals.metrics ?? null;
+    const clusterCalls = clusterMetrics?.calls ?? null;
+    const latencyMs = clusterMetrics?.latencyMs ?? metrics?.latencyMs ?? null;
+    const queueMs = clusterMetrics?.queueMs ?? metrics?.queueMs ?? null;
+    const turnMs = clusterMetrics?.turnMs ?? metrics?.turnMs ?? null;
+    const coverage = coverageNote(snapshot);
+    const scale = histogramScale([latencyMs, queueMs, turnMs]);
 
     // The series occupy the width the pane has, less the label column and
     // the value that trails each one — but never more than the history
@@ -232,23 +277,33 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     return (
         <Col>
             {alerts(state, pane)}
+            <Heading color="dim">{scopeOf(snapshot)}</Heading>
             <DetailList
                 labelWidth={LABEL_WIDTH}
                 rows={[
                     { label: 'silos', value: `${snapshot.silos.length}` },
                     { label: 'activations', value: count(activations) },
                     { label: 'queued', value: count(queued) },
-                    ...(metrics
+                    ...(clusterCalls
                         ? [
                               {
                                   label: 'calls',
-                                  value: `${count(metrics.calls.total)}  ${count(metrics.calls.failed)} failed (${percent(metrics.calls.failed, metrics.calls.total)})`,
-                                  tone: metrics.calls.failed > 0 ? 'warn' : undefined
+                                  value: `${count(clusterCalls.total)}  ${count(clusterCalls.failed)} failed (${percent(clusterCalls.failed, clusterCalls.total)})`,
+                                  tone: clusterCalls.failed > 0 ? 'warn' : undefined
                               }
                           ]
-                        : [])
+                        : metrics
+                          ? [
+                                {
+                                    label: 'calls',
+                                    value: `${count(metrics.calls.total)}  ${count(metrics.calls.failed)} failed (${percent(metrics.calls.failed, metrics.calls.total)})`,
+                                    tone: metrics.calls.failed > 0 ? 'warn' : undefined
+                                }
+                            ]
+                          : [])
                 ]}
             />
+            {coverage ? <Line color="warn">{fitCell(coverage, pane.width)}</Line> : null}
             <br />
             {/* Rising is not the same news for every metric, so each series
                 states its own polarity: more calls is good, more failures,
@@ -263,7 +318,7 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
             {series('failures/s', state.failures, sparkWidth, rate, 'danger')}
             {series('queued', state.queued, sparkWidth, gauge, 'warn')}
             {series('activations', state.activations, sparkWidth, gauge, 'accent')}
-            {metrics
+            {latencyMs || queueMs || turnMs
                 ? [
                       <br />,
                       /* ONE shared scale across all three: the comparison is
@@ -272,15 +327,15 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
                       <Row gap={2}>
                           <Col>
                               <Heading color="dim">latency</Heading>
-                              {percentiles(metrics.latencyMs, scale, barWidth, 'accent')}
+                              {percentiles(latencyMs, scale, barWidth, 'accent')}
                           </Col>
                           <Col>
                               <Heading color="dim">queue</Heading>
-                              {percentiles(metrics.queueMs, scale, barWidth, 'warn')}
+                              {percentiles(queueMs, scale, barWidth, 'warn')}
                           </Col>
                           <Col>
                               <Heading color="dim">turn</Heading>
-                              {percentiles(metrics.turnMs, scale, barWidth, 'accent')}
+                              {percentiles(turnMs, scale, barWidth, 'accent')}
                           </Col>
                       </Row>,
                       <Line color="dim">
@@ -346,6 +401,18 @@ function percentiles(
 const siloColumns: TableColumn<SiloView>[] = [
     { key: 'id', header: 'SILO', value: (s) => s.siloId, min: 8 },
     { key: 'status', header: 'STATUS', value: (s) => s.status },
+    {
+        // Every silo's readiness, not just the polled one's — the column
+        // that was impossible before `SiloReport` carried health. `FATAL`
+        // is not "very not ready": it means this silo cannot recover and
+        // must be REPLACED, and reading it as draining is how a zombie pod
+        // sits there forever.
+        key: 'ready',
+        header: 'READY',
+        value: (s) => (!s.health ? '—' : s.health.fatal ? 'FATAL' : s.health.ready ? 'yes' : 'NO'),
+        color: (s) =>
+            !s.health ? 'dim' : s.health.fatal ? 'danger' : s.health.ready ? undefined : 'warn'
+    },
     { key: 'up', header: 'UP', value: (s) => uptime(s.uptimeMs), align: 'right' },
     { key: 'act', header: 'ACTS', value: (s) => count(s.stats.activations), align: 'right' },
     { key: 'queued', header: 'QUEUE', value: (s) => count(s.stats.queued), align: 'right' },
@@ -440,6 +507,12 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
     return (
         <Col>
             {alerts(props.state, pane)}
+            {/* The grain list comes from the silo being POLLED, not from the
+                fan-out — so it says so, rather than sitting unlabelled under
+                a screen of cluster totals. */}
+            <Heading color="dim">
+                {fitCell(`grains on ${polledLabel(props.state)}`, pane.width)}
+            </Heading>
             {snapshot.activations ? (
                 <DataTable
                     columns={grainColumns}
@@ -457,6 +530,139 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
                 <Line color="dim">no activation list — the source reports none</Line>
             )}
             {block('slowest methods (p99 turn)', slowest, pane)}
+        </Col>
+    );
+}
+
+/**
+ * One silo, in full — the drill-down the Silos cursor now opens.
+ *
+ * Before this, selecting a row did nothing: the cursor moved and the screen
+ * did not change, because a `SiloReport` carried no metrics, no health and
+ * no grains to show. It carries all three now, so this panel is per-silo
+ * all the way down — and says so at the top, since nothing on it is a
+ * cluster total.
+ */
+export function SiloScreen(props: { state: DashboardState; siloId: string; pane?: Pane }) {
+    const pane = props.pane ?? DEFAULT_PANE;
+    const snapshot = props.state.view.snapshot;
+    if (!snapshot) return <Line color="dim">connecting…</Line>;
+    const silo = snapshot.silos.find((candidate) => candidate.siloId === props.siloId);
+    if (!silo) {
+        // It was in the last view and is not in this one. That is a fact
+        // worth stating, not an empty panel.
+        return (
+            <Col>
+                {alerts(props.state, pane)}
+                <Line color="warn">
+                    {fitCell(`${props.siloId} is no longer in the membership view`, pane.width)}
+                </Line>
+                <Line color="dim">esc — back to the silo list</Line>
+            </Col>
+        );
+    }
+
+    const digest = silo.metrics;
+    const latency = digest?.latency ? digestSnapshot(digest.latency) : null;
+    const failed = digest?.calls.failed ?? 0;
+    const checks = silo.health
+        ? Object.entries(silo.health.checks).map(
+              ([name, check]) =>
+                  `  ${check.ready ? 'ok  ' : 'FAIL'} ${name}${check.detail ? ` — ${check.detail}` : ''}`
+          )
+        : [];
+    const kinds = digest
+        ? Object.entries(digest.errors.byKind)
+              .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+              .map(([kind, n]) => `  ${kind.padEnd(20)} ${count(n ?? 0)}`)
+        : [];
+    const recent = (digest?.errors.recent ?? []).map(
+        (entry) =>
+            `  ${new Date(entry.at).toISOString().slice(11, 19)} ${entry.type}#${entry.method} ` +
+            `${entry.kind}: ${entry.message}`
+    );
+    const grains = silo.activations ?? [];
+    const spent =
+        alertHeight(props.state, pane) +
+        1 +
+        (silo.health ? 4 : 3) +
+        (digest ? 3 : 1) +
+        blockHeight(checks) +
+        blockHeight(kinds) +
+        blockHeight(recent) +
+        2;
+
+    return (
+        <Col>
+            {alerts(props.state, pane)}
+            <Heading color="accent">{fitCell(`silo ${silo.siloId}`, pane.width)}</Heading>
+            <DetailList
+                labelWidth={LABEL_WIDTH}
+                rows={[
+                    { label: 'status', value: silo.status, tone: siloTone(silo.status) },
+                    { label: 'address', value: silo.address },
+                    { label: 'up', value: uptime(silo.uptimeMs) },
+                    ...(silo.health
+                        ? [
+                              {
+                                  label: 'ready',
+                                  value: silo.health.fatal
+                                      ? 'FATAL'
+                                      : silo.health.ready
+                                        ? 'yes'
+                                        : 'NO',
+                                  tone: silo.health.fatal
+                                      ? 'danger'
+                                      : silo.health.ready
+                                        ? 'success'
+                                        : 'warn'
+                              }
+                          ]
+                        : [])
+                ]}
+            />
+            {digest ? (
+                <DetailList
+                    labelWidth={LABEL_WIDTH}
+                    rows={[
+                        {
+                            label: 'calls',
+                            value: `${count(digest.calls.total)}  ${count(failed)} failed (${percent(failed, digest.calls.total)})`,
+                            tone: failed > 0 ? 'warn' : undefined
+                        },
+                        {
+                            label: 'latency',
+                            value: latency
+                                ? `p50 ${durationMs(latency.p50Ms)}  p99 ${durationMs(latency.p99Ms)}`
+                                : 'no samples'
+                        },
+                        {
+                            label: 'storage',
+                            value: `${count(digest.storage.loads)} loads  ${count(digest.storage.saves)} saves  ${count(digest.storage.conflicts)} conflicts`
+                        }
+                    ]}
+                />
+            ) : (
+                <Line color="dim">no metrics from this silo</Line>
+            )}
+            {block('checks', checks, pane)}
+            {block('errors by kind', kinds, pane)}
+            {block('recent failures', recent, pane)}
+            <br />
+            <Heading color="dim">grains on this silo</Heading>
+            {silo.activations ? (
+                <DataTable
+                    columns={grainColumns}
+                    rows={grains}
+                    width={pane.width - TABLE_GUTTER}
+                    height={tableRows(pane, spent)}
+                    identity={(grain: ActivationInfo) => `${grain.type}/${grain.key}`}
+                    tone={(grain: ActivationInfo) => (grain.queued > 0 ? 'warn' : undefined)}
+                    emptyText="no live activations"
+                />
+            ) : (
+                <Line color="dim">  waiting for a detail poll…</Line>
+            )}
         </Col>
     );
 }
@@ -489,6 +695,7 @@ export function ClusterScreen(props: { state: DashboardState; pane?: Pane }) {
     return (
         <Col>
             {alerts(props.state, pane)}
+            <Heading color="dim">{fitCell(scopeOf(snapshot), pane.width)}</Heading>
             <DetailList
                 labelWidth={Math.min(20, pane.width - 12)}
                 rows={[
@@ -613,6 +820,11 @@ export function HealthScreen(props: { state: DashboardState; pane?: Pane }) {
     return (
         <Col>
             {alerts(props.state, pane)}
+            {/* Health here is the POLLED silo's. Every silo's readiness is
+                on the Silos tab and in its drill-down — this one used to be
+                the only one visible, which is how a fleet with a fenced
+                peer read as healthy. */}
+            <Heading color="dim">{fitCell(polledLabel(props.state), pane.width)}</Heading>
             {health
                 ? [
                       <DetailList
