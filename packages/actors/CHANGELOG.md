@@ -174,6 +174,34 @@
 
 ### Fixed
 
+- **Only DECLARED methods are callable — inherited `Object.prototype`
+  members no longer dispatch** (#198). A `methods:` factory returns an object
+  literal, and the activation resolved an incoming name by *indexing* it, so
+  the name walked up the prototype chain: `POST {Type}%23toString` answered
+  `200 {"data":"[object Undefined]"}`, `constructor` answered `200 {}`, and
+  `valueOf` / `hasOwnProperty` / `__proto__` threw a raw `TypeError` that
+  surfaced as a masked 500. On an actor carrying a `use` chain it failed even
+  earlier: the guard lookup inherited a function, whose `.length` is its
+  arity, so the empty-chain early return did not fire and the guard loop
+  iterated a function — a 500 before dispatch could answer at all.
+
+  The asymmetry was the bug. `streamNames`, the `reads:` validator and the
+  Vite extractor all work from OWN keys, while dispatch indexed — so anything
+  on the prototype was invisible to every check and visible to every call.
+  Every name lookup into a user-supplied table now agrees with them
+  (own key **and** callable): the unary and stream dispatch paths, the guard
+  chain lookup, and the `public: true` read validator. All of them are now
+  a clean 404 `method-not-found`, which is what the wire contract and its
+  build-skew hint always claimed. `tasks:` and the `reads:` lookup already
+  did this; the idiom is shared rather than copied a fourth time.
+
+  A method that *deliberately* shadows a prototype name (`methods: () => ({
+  async toString() {…} })`) is unaffected — it is an own key. The one shape
+  that stops working is a factory returning a **class instance**, whose
+  methods live on a prototype; that never fully worked (`streamNames` and the
+  build already read own keys), and `__DEV__` now warns rather than leaving
+  you with a 404 for a method you can see in the source.
+
 - **A quiet per-actor stream is now kept alive** (#178). `$live` has pinged
   since it shipped; `actor(X, k).watch()` sent nothing between yields, so a
   quiet room's stream was bytes-silent and every intermediary with an idle

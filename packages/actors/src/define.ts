@@ -11,6 +11,7 @@ import type {
     ActorReadCache,
     ActorStreamTable
 } from './types';
+import { warnIfInheritedTable } from './own-member';
 
 /**
  * Inert probe handed to the `streams` factory at definition time so its
@@ -74,6 +75,8 @@ export function defineActor<
     let streamNames: readonly string[] = [];
     if (options.streams) {
         const table = options.streams(streamProbe(options.type) as ActorContext<S>);
+        // Once here rather than per subscription, where `#streamTable` rebuilds it.
+        if (__DEV__) warnIfInheritedTable(table, 'streams', options.type);
         streamNames = Object.freeze(Object.keys(table));
     }
 
@@ -160,10 +163,17 @@ function validateReads(
             // one thing here that provably reads the request. There is no way
             // to inspect what it reads, so the safe reading of "this actor has
             // a guard" is "this response is per caller".
+            // Own keys only, like the guard pipeline itself: indexing found
+            // `Object.prototype.hasOwnProperty` for a read DECLARED as
+            // `hasOwnProperty`, whose arity of 1 read as "there is a guard".
+            const methodUse = options.methodUse as
+                | Record<string, readonly unknown[]>
+                | undefined;
             const guarded =
                 (options.use?.length ?? 0) > 0 ||
-                ((options.methodUse as Record<string, readonly unknown[]> | undefined)?.[method]
-                    ?.length ?? 0) > 0;
+                ((methodUse && Object.hasOwn(methodUse, method)
+                    ? methodUse[method]?.length
+                    : 0) ?? 0) > 0;
             if (guarded) {
                 throw new Error(
                     `${where} declares \`public: true\`, but the actor runs guards on it. A ` +

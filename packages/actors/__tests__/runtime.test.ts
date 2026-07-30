@@ -86,6 +86,79 @@ describe('activation & dispatch', () => {
         );
     });
 
+    it('a prototype member is not a method — in-process agrees with the wire', async () => {
+        // `#methods[method]` walked up to Object.prototype: `toString` and
+        // `constructor` ANSWERED, the rest threw a raw TypeError. Own keys
+        // only, and callable, or it is not a method.
+        const silo = createSilo({ actors: [counterActor()], defaults: quiet });
+        const client = silo.actor(counterActor(), 'proto') as unknown as Record<
+            string,
+            () => Promise<unknown>
+        >;
+        for (const member of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+            await expect(client[member]!()).rejects.toSatisfy(
+                (e: unknown) => isActorError(e) && e.kind === 'method-not-found'
+            );
+        }
+        await silo.stop({ timeoutMs: 1000 });
+    });
+
+    it('a prototype member is not a STREAM either', async () => {
+        // The stream table has the same shape and the same bug; the wire
+        // path is shadowed by `streamNames.includes(...)`, but a direct
+        // `dispatchStream` reaches it.
+        const ticker = defineActor({
+            type: 'Ticker',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => ({ async noop() {} }),
+            streams: () => ({
+                async *ticks() {
+                    yield 1;
+                }
+            })
+        });
+        const silo = createSilo({ actors: [ticker], defaults: quiet });
+        const iterable = silo.dispatchStream!({ type: 'Ticker', key: 'proto-s' }, 'toString', [], {
+            deadline: Date.now() + 1000,
+            callChain: [],
+            callId: 'p.sig.0'
+        });
+        await expect(
+            (async () => {
+                for await (const _ of iterable) void _;
+            })()
+        ).rejects.toSatisfy((e: unknown) => isActorError(e) && e.kind === 'method-not-found');
+        await silo.stop({ timeoutMs: 1000 });
+    });
+
+    it('warns when a methods factory returns a class instance (its members are uncallable)', async () => {
+        // Own-key resolution makes prototype methods answer "not found". That
+        // shape never fully worked — `streamNames` and the Vite extractor
+        // already read own keys — but a silent 404 for a method you can see
+        // in the source is a bad way to learn it.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        class Impl {
+            async hello() {
+                return 'hi';
+            }
+        }
+        const classy = defineActor({
+            type: 'Classy',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => new Impl() as unknown as { hello(): Promise<string> }
+        });
+        const silo = createSilo({ actors: [classy], defaults: quiet });
+        const client = silo.actor(classy, 'c');
+        await expect(client.hello()).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'method-not-found'
+        );
+        expect(warn.mock.calls.flat().join(' ')).toMatch(/Classy.*methods.*INHERITED/s);
+        warn.mockRestore();
+        await silo.stop({ timeoutMs: 1000 });
+    });
+
     it('unknown actor type rejects with a descriptive activation error', async () => {
         const silo = createSilo({ actors: [], defaults: quiet });
         const client = silo.actor(counterActor(), 'x');

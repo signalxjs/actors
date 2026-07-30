@@ -1376,6 +1376,15 @@ A method with a `reads:` declaration (below) also answers
 `GET {base}/r/{token}/{Type}%23{method}?args=[key,...args]`, with the same
 codec and the same envelope.
 
+**The callable surface is the method table's OWN keys.** A name that is not
+an own, callable key of `methods:` (or `streams:`) is a `404
+method-not-found`, and inherited `Object.prototype` members — `toString`,
+`constructor`, `valueOf`, `__proto__` — are therefore not callable. Declaring
+a method that shadows one of those names is fine; it is an own key. What does
+*not* work is a `methods:` factory returning a **class instance**, whose
+methods live on a prototype: return an object literal (`__DEV__` warns if you
+do not).
+
 ### The routing token
 
 `{token}` is a stable per-grain routing hint, mirrored into the

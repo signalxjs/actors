@@ -564,6 +564,29 @@ const methodNotFound: ConformanceCase = {
         })
 };
 
+const prototypeMemberNotFound: ConformanceCase = {
+    name: 'an inherited `Object.prototype` member is not a method either',
+    why: 'the method table is an object literal, so `toString`/`constructor` used to DISPATCH — a transport must not resurrect surface nobody declared',
+    run: (create) =>
+        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
+            await h.silos[1]!.dispatch({ type: ECHO, key: 'proto' }, 'get', [], call());
+            for (const member of ['toString', 'constructor', 'valueOf', '__proto__']) {
+                const error = await caught(() =>
+                    h.silos[0]!.dispatch({ type: ECHO, key: 'proto' }, member, [], call())
+                );
+                assert(
+                    isActorError(error),
+                    `expected an actor error for "${member}", got ${String(error)}`
+                );
+                assertEqual(
+                    (error as ActorErrorShape).kind,
+                    'method-not-found',
+                    `"${member}" kind`
+                );
+            }
+        })
+};
+
 const deadlockChain: ConformanceCase = {
     name: 'the call chain crosses hosts, so a cross-silo deadlock is detected',
     why: 'callChain is the first thing an ad-hoc frame format drops, and losing it turns a detected deadlock into a hang',
@@ -744,6 +767,7 @@ export const transportConformance: readonly ConformanceCase[] = [
     crashReplacement,
     errorRebranding,
     methodNotFound,
+    prototypeMemberNotFound,
     deadlockChain,
     opsStatsChannel,
     authRejection,

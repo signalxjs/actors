@@ -205,6 +205,74 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         expect(response.status).toBe(400);
     });
 
+    describe('a method table is its OWN keys — nothing inherited is callable', () => {
+        // `methods:` returns an object literal, so `table[method]` used to walk
+        // up to `Object.prototype` and dispatch whatever it found there.
+        // `streamNames`, `validateReads` and the Vite build all read OWN keys;
+        // dispatch and the guard lookup have to agree with them.
+        const bare = defineActor({
+            type: 'Bare',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => ({ async ping() { return 'pong'; } })
+        });
+        /** Declares a method that SHADOWS a prototype member — must still work. */
+        const shadow = defineActor({
+            type: 'Shadow',
+            unguarded: true,
+            state: () => ({}),
+            methods: () => ({ async toString() { return 'mine'; } })
+        });
+
+        const post = (silo: Silo, symbol: string, args: unknown[] = ['k']) =>
+            handleActorRequest(
+                new Request(`${ENDPOINT}/${encodeURIComponent(symbol)}`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args })
+                }),
+                { silo, origin: false }
+            );
+
+        // `toString`/`constructor` answered 200; `valueOf`/`hasOwnProperty`
+        // threw a raw TypeError (masked 500); `__proto__` resolved to a
+        // non-function and threw too. All four must be the same 404.
+        for (const member of [
+            'toString',
+            'constructor',
+            'valueOf',
+            'hasOwnProperty',
+            'propertyIsEnumerable',
+            '__proto__'
+        ]) {
+            it(`"${member}" is a 404 method-not-found, not dispatchable surface`, async () => {
+                const silo = createSilo({ actors: [bare], defaults: quiet });
+                const response = await post(silo, `Bare#${member}`);
+                expect(response.status).toBe(404);
+                const body = (await response.json()) as { error: { message: string } };
+                expect(body.error.message).toContain(member);
+            });
+        }
+
+        it('the same holds on a GUARDED actor, which failed even earlier', async () => {
+            // `opts.methodUse?.[method]` inherited `Object.prototype.toString`;
+            // its `.length` is the arity (0), so the empty-chain early return
+            // did not fire when an actor-level `use` chain existed, and the
+            // guard loop then iterated a FUNCTION → TypeError → 500.
+            const silo = createSilo({ actors: [cart], defaults: quiet });
+            const response = await post(silo, 'Cart#toString');
+            expect(response.status).toBe(404);
+        });
+
+        it('a DECLARED method whose name shadows a prototype member still works', async () => {
+            const silo = createSilo({ actors: [shadow], defaults: quiet });
+            const response = await post(silo, 'Shadow#toString');
+            expect(response.status).toBe(200);
+            const body = (await response.json()) as { data: string };
+            expect(body.data).toBe('mine');
+        });
+    });
+
     it('streams NDJSON end-to-end with rich chunk types', async () => {
         wireSilo();
         const out: { i: number; at: Date }[] = [];

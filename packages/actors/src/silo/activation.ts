@@ -6,6 +6,7 @@
 import { effectScope, signal, toRaw, watch } from '@sigx/reactivity';
 import { createSharedWatch, watchKey, type SharedWatch } from './watch';
 import { mintCallId } from '../call-id';
+import { ownFn, warnIfInheritedTable } from '../own-member';
 import type { Mailbox } from './mailbox';
 import {
     ActorActivationError,
@@ -223,6 +224,7 @@ export class Activation {
             a.#scope.run(() => {
                 a.#methods = opts.methods(a.#ctx) as Record<string, AnyFn>;
             });
+            if (__DEV__) warnIfInheritedTable(a.#methods, 'methods', ref.type);
             // The `streams:` table is built per SUBSCRIPTION, not here — see
             // `#streamTable`. Its bodies get a derived context of their own:
             // bracketing the dispatch call sites cannot work, because an async
@@ -400,7 +402,7 @@ export class Activation {
         const feeds: StreamFeeds = { subs: new Set(), closed: false };
         const setup = this.mailbox.run(async () => {
             if (this.#faulted) throw this.#faulted;
-            const fn = this.#streamTable(feeds)[method];
+            const fn = ownFn<AnyStreamFn>(this.#streamTable(feeds), method);
             if (!fn) throw new ActorMethodNotFoundError(this.ref.type, method);
             const prev = this.#currentCall;
             this.#currentCall = call;
@@ -681,7 +683,8 @@ export class Activation {
             }
             return opts.onReminder(this.#ctx, name);
         }
-        const fn = this.#methods[method];
+        // OWN keys only — see `ownFn`. A prototype member is not a method.
+        const fn = ownFn<AnyFn>(this.#methods, method);
         if (!fn) {
             if (this.def.streamNames.includes(method)) {
                 throw new ActorMethodNotFoundError(
@@ -997,8 +1000,7 @@ export class Activation {
         this.lastActivityMs = Date.now();
     }
 
-    /** Resolve `name` from a per-run `tasks:` table (own keys only —
-     *  `table[name]` would resolve prototype members into "tasks"). */
+    /** Resolve `name` from a per-run `tasks:` table (own keys only — see `ownFn`). */
     #resolveTask(name: string, run: TaskRun): AnyTaskFn | undefined {
         const opts = this.def.__sigxActor;
         if (!opts.tasks) return undefined;
@@ -1006,10 +1008,7 @@ export class Activation {
         // closes over its own derived context (its own abortSignal).
         const table = this.#scope.run(() => opts.tasks!(this.#taskContext(run)));
         if (!table) throw new SiloShutdownError();
-        const fn = Object.hasOwn(table, name)
-            ? (table as Record<string, AnyTaskFn>)[name]
-            : undefined;
-        return typeof fn === 'function' ? fn : undefined;
+        return ownFn<AnyTaskFn>(table, name);
     }
 
     /** Run an already-RESERVED task body (see #reserve). */

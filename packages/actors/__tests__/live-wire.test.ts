@@ -189,6 +189,26 @@ describe('$live over the wire', () => {
         expect(frames).toContainEqual({ i: 1, v: 0 });
     });
 
+    it('a prototype member reports 404 too — a live watch is not a back door', async () => {
+        // `openWatch` funnels through the same `#invoke`, so `Cart#toString`
+        // used to push a real VALUE onto the live channel.
+        const s = silo();
+        await s.start();
+
+        const response = await subscribe(s, [
+            { t: 'Cart', k: 'p', m: 'toString' },
+            { t: 'Cart', k: 'q', m: 'total' }
+        ]);
+        const frames = (await readFrames(response, 2)) as Array<{
+            i: number;
+            e?: { status: number };
+            v?: unknown;
+        }>;
+
+        expect(frames.find((f) => f.i === 0)?.e?.status).toBe(404);
+        expect(frames).toContainEqual({ i: 1, v: 0 });
+    });
+
     it('rejects every malformed subscription shape with a 400, never a 500', async () => {
         const s = silo();
         await s.start();

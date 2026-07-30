@@ -23,7 +23,15 @@ export async function runGuards(
 ): Promise<void> {
     const opts = def.__sigxActor;
     const actorChain = opts.use;
-    const methodChain = opts.methodUse?.[method];
+    // OWN keys only: `methodUse?.[method]` resolved `Object.prototype`
+    // members, and since a function's `.length` is its arity the
+    // empty-chain early return below did not fire — the loop then iterated
+    // a FUNCTION, so a prototype name 500'd here before dispatch could
+    // answer its honest 404.
+    const methodChain =
+        opts.methodUse && Object.hasOwn(opts.methodUse, method)
+            ? opts.methodUse[method]
+            : undefined;
     if (!actorChain?.length && !methodChain?.length) return;
     const info = guardInfo(def, method);
     if (actorChain) for (const guard of actorChain) await guard(rq, info);
