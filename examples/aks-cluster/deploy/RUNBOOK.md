@@ -45,7 +45,41 @@ az aks nodepool add \
 kubectl create namespace $NS
 ```
 
-## 1. Build + deploy
+## 1. Build + deploy — one command
+
+`testenv.mjs` owns the whole environment so a measurement is reproducible
+and a teardown is not a checklist. Every value is an env var with a default
+(`RG`, `CLUSTER`, `ACR`, `POOL`, `CHAT_HOST`, `DNS_ZONE`, `LOAD_VM_SIZE`, …),
+and `up` is idempotent:
+
+```sh
+cd examples/aks-cluster/deploy
+node testenv.mjs up       # node pool + both images + both releases + DNS
+node testenv.mjs status   # replicas, how many NODES they span, VM, endpoint
+node testenv.mjs load     # the edge ladder from a same-region VM
+node testenv.mjs down     # releases, DNS, load VM, node pool — all of it
+```
+
+`status` prints the node spread deliberately: replicas sharing a node add
+far less capacity than their count suggests (see #183), and that is
+invisible in `kubectl get deploy`. It also flags the load VM as billable,
+because an idle VM is the thing you forget.
+
+`load` mints a signed session cookie from the release's own `authSecret`,
+so the guarded endpoints are exercised the way a browser exercises them,
+and passes anything you append as ladder env — e.g.
+`node testenv.mjs load LADDER=64,128,256 MIX=0.2 DURATION_MS=60000`.
+The generator itself is [`edge-ladder.mjs`](edge-ladder.mjs): forked
+workers (one Node process is single-core for this shape), closed-loop, and
+it mints the **routing token** exactly as the client library does — without
+it an edge hash has nothing to hash and locality measurements silently
+read as no-ops.
+
+**Measure from the same region.** A laptop over the Atlantic reports
+`concurrency ÷ RTT` and nothing about the deployment: 8 workers × 71 ms is
+106 ops/s no matter how fast the cluster is.
+
+## 1b. Build + deploy by hand
 
 ```sh
 cd <repo root>
@@ -327,6 +361,9 @@ or twice before the rollout replaces them. Noisy but harmless; the new
 pods never touch Leases.
 
 ## 5. Teardown between sessions
+
+`node testenv.mjs down` does all of the below (releases, DNS record, load
+VM resource group, node pool). The manual equivalents:
 
 ```sh
 helm uninstall $RELEASE -n $NS      # the Redis PVC (actor state) survives
