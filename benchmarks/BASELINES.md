@@ -83,7 +83,8 @@ Two findings stand out:
   production call pays it.
 - **A turn through the silo costs ~4× a bare mailbox turn.** The mailbox itself
   (a promise chain, ~4 promises per turn) is not the dominant cost at this
-  layer; what sits on top of it is.
+  layer; what sits on top of it is. **Since 2026-07-31 we know what:** two
+  `async` functions whose warm path never awaits — see "Where the time goes".
 
 ### Queueing (single grain vs many)
 
@@ -112,9 +113,14 @@ the single JS thread is.
   encodes the whole state and `memoryStorage` `structuredClone`s it on the way
   in — the cost tracks state size, not the size of the change.
 - **The first change-feed subscriber costs 62% of throughput**, and it keeps
-  costing after that (16 subscribers → another 4.5×). `#snapshot()` is
+  costing after that (16 subscribers → another 4.5×). ~~`#snapshot()` is
   `revive(encode(raw))` — two full deep walks per mutating turn — plus per
-  subscriber delivery.
+  subscriber delivery.~~ **Corrected 2026-07-31 by profile:** the snapshot is
+  computed once per turn and shared across subscribers (`activation.ts:705`),
+  and `cloneState` does not appear in the profile at all. The first subscriber
+  installs a `watch(…, {deep: true})` (`activation.ts:1322` → `:771`) that
+  re-traverses state on every mutation; the 1 → 16 step is delivery cost. See
+  "Where the time goes".
 
 ### Lifecycle and background jobs
 
@@ -561,20 +567,136 @@ real NIC and a real RTT.
 
 ---
 
+## 2026-07-31 · Where the time goes — the first CPU profiles
+
+Every figure above this line is a **subtraction between ladder rungs**: it says
+what a layer costs, never which function spends it. These are the first stored
+profiles, and they move three items on the list below — two of them because the
+guess was wrong.
+
+| | |
+|---|---|
+| Machine | 12th Gen Intel Core i9-12900HK, win32/x64, 20 threads |
+| Node | v22.22.0 |
+| Build | `dist/*.prod.js` (`--conditions=production`), source-mapped back to `src/` |
+| Commit | `87f35d8` |
+| Command | `pnpm bench:profile <scenario>` (`--cpu-prof`, `--runs=1`) |
+
+Self-time percentages, resolved through the dist source maps. **The profiler
+itself inflates absolute throughput ~2×** — read the shares, not the ops/sec.
+
+### The finding that spans every profile: two async functions on a sync path
+
+`#activationFor` (`silo/local-host.ts:186`) is in the top six of **all four**
+profiles — 11.6% of `dispatch/warm-grain`, 6.0% of `streams/changes-fanout`,
+5.5% of `state/*`, 1.1% of `wire/endpoint-roundtrip`. `#checkReentrancy`
+(`:145`) and `#dispatchInner` (`:121`) add 0.7–4.9% more.
+
+Both are `async`, and **both return synchronously on the warm path** — the
+overwhelmingly common one. `#checkReentrancy` returns `null` at `:147` when the
+call chain is empty; `#activationFor` returns `slot.activation` at `:219` on a
+`Map` hit. Neither awaits anything to get there, yet each allocates a promise
+and burns a microtask tick per dispatch, and `actorId(ref)` (`types.ts:16`)
+builds the same `` `${type}\u0000${key}` `` string twice (`:146` and `:187`).
+
+That is the bulk of the **−74% between `mailbox-raw` and `warm-grain`** which
+the ladder could only attribute to "placement, reentrancy check, activation
+lookup, turn bookkeeping". It also explains the GC share: **4.3–8.9% of every
+profile is garbage collection**, and the mailbox's own 4 promises per turn are
+not the source — `silo/mailbox.ts` is only 2.8% of the dispatch profile,
+confirming item 4 below was correctly deprioritized.
+
+A synchronous fast path in both, plus computing `actorId` once, is a contained
+change with no API surface.
+
+### `wire/endpoint-roundtrip`: the 89% is almost none of it ours
+
+The rung the ladder calls "wire codec, JSON, endpoint" is dominated by request
+plumbing, not by our serialization:
+
+| what | self% |
+|---|---:|
+| `@sigx/server` `handleServerFnRequest` (`src/server/index.ts:433`) | 11.2% |
+| undici `Request` / `Response` / `HeadersList` / `extractBody` | 14.2% |
+| `node:internal/webstreams/readablestream` | 8.8% |
+| `node:internal/async_hooks` (promise hooks) | 7.1% |
+| native `JSON.parse` | 5.7% |
+| `@sigx/server` `runInScope` — the ALS request scope (`:636`) | 2.2% |
+| **all of `@sigx/actors`** | **~6%** |
+
+Two consequences. **The WinterCG object model is the cost** — constructing a
+`Request`, a `Response`, a `ReadableStream` and a `Headers` per call is ~23%,
+and the AsyncLocalStorage scope adds ~7% in promise hooks. And **`@sigx/actors`
+is a bit player on its own hottest rung**, so tuning our codec cannot move it
+much.
+
+Note also a measurement artifact: `benchmarks/src/scenarios/wire.ts:27`
+constructs `new Request(...)` **inside** the timed closure, so part of the
+undici share is the benchmark's own setup rather than the endpoint's work. The
+rung overstates the endpoint. Worth splitting before anyone optimizes against
+it.
+
+### The change-feed cliff is the deep watch, not the snapshot
+
+Item 2 below was wrong, in two ways.
+
+`#snapshot()` is already computed **once per turn and shared** — `activation.ts:705`
+does `const snap = this.#snapshot()` and pushes that same object to every
+subscriber. So the 1 → 16 subscriber fall (611 k → 136 k) is delivery and
+generator cost, **not** snapshot cost, and structural sharing would not touch it.
+
+And the first-subscriber −62% is not `revive(encode())` either. In the
+`streams/changes-fanout` profile, `cloneState` does not appear in the top 14 at
+all. What does is **`@sigx/reactivity` `watch.ts:14` at 6.5%** — the deep watch
+installed by `#ensureDeepWatch()` (`activation.ts:771`), which `#openChanges`
+turns on at `:1322` immediately before the first `#subs.add`. A `watch(…, {deep:
+true})` re-traverses state on every mutation just to bump `#version`. That is
+the cliff.
+
+### `state/*`: `structuredClone` is the cost, and it is the redundant one
+
+| what | self% |
+|---|---:|
+| `@sigx/reactivity` `watch.ts:14` (deep watch) | 13.0% |
+| `structuredClone` (all frames) | ~14.5% |
+| `#activationFor` | 5.5% |
+| `@sigx/reactivity` `signal.ts:333` `set` | 3.1% |
+| `silo/storage-memory.ts:18` `save` | 1.5% |
+
+`cloneState`'s codec round-trip is again absent from the top. The clones that
+show up are `memoryStorage`'s, on both save and load (`storage-memory.ts:18`,
+`:14`) — and on the save side it clones a value the silo has **already** encoded
+into a fresh tree at `silo.ts:230`, which nothing else aliases. Item 3 was
+right about the redundancy and wrong about which copy dominates.
+
+Caveat before acting: `ActorStorage` (`types.ts:300`) is a public seam, so the
+defensive clone is part of its contract for third-party callers even though the
+silo's own path cannot need it.
+
+---
+
 ## Things worth investigating
 
 Recorded here so the next person does not have to re-derive them. **None of
 these are known problems** — they are measurements looking for a decision.
 
+0. **`#activationFor` and `#checkReentrancy` are `async` on a synchronous
+   path** — the largest single cost in the runtime's own code, and present in
+   every profile. See the section above.
 1. **`raceDeadline` costs 38% of dispatch throughput.** A shared timer wheel, or
    skipping the race when the deadline is far away, would recover most of it.
-2. **The change feed's per-turn snapshot is two full deep walks.** Structural
-   sharing, or deferring the snapshot until a subscriber actually pulls, would
-   change the 1-subscriber cliff.
-3. **`memoryStorage` `structuredClone`s on both save and load**, on top of the
-   codec walk — three copies of the state per save.
+   (Profiled at 6.1% self in `local-host.ts:410` plus 0.9% in its inner closure
+   at `:422`, across a run where only half the scenarios enable it.)
+2. ~~**The change feed's per-turn snapshot is two full deep walks.**~~
+   **Superseded by the profile:** the snapshot is already shared across
+   subscribers, and the 1-subscriber cliff is the `{deep: true}` watch, not the
+   clone. See "The change-feed cliff is the deep watch".
+3. **`memoryStorage` `structuredClone`s on both save and load** — ~14.5% of the
+   `state/*` profile, and the save-side clone duplicates a tree `silo.ts:230`
+   just built. Bounded by the `ActorStorage` seam's contract, not by the silo.
 4. **The mailbox allocates ~4 promises per turn.** It is not the dominant cost
-   today (see the ladder), so this is lower priority than it looks.
+   today (see the ladder), so this is lower priority than it looks. **Profile
+   confirms it:** `silo/mailbox.ts` is 2.8% of the dispatch profile.
 5. **Debounce the membership subscriber** — the single highest-value cluster
    fix, and the only measured O(N²).
 6. **The 16-shard reminder ceiling** needs a decision, not a patch: raising
@@ -582,3 +704,58 @@ these are known problems** — they are measurements looking for a decision.
 7. **`consistentHashPolicy()` costs ~16 µs per decision at N=100** (63×
    worse than at N=1) because it hashes `actorId|siloId` for every silo.
    Only paid on a route-cache miss, and small next to a network hop.
+8. **Every `JSON.parse` on the wire passes a reviver** (`wire-shared.ts:29`,
+   used at `wire-shared.ts:104`, `client/index.ts:267`/`:291`,
+   `cluster/frames.ts:136`, `cluster/transport.ts:126`/`:183`). A reviver
+   disables V8's fast parser. Measured standalone on the machine above:
+
+   | payload | plain | + reviver | pre-scan then parse |
+   |---|---:|---:|---:|
+   | 17 B | 401 ns | 1 997 ns (5.0×) | 454 ns |
+   | 90 B | 1 191 ns | 10 020 ns (8.4×) | 1 390 ns |
+   | 9 KB (200 rows) | 72 µs | 773 µs (10.7×) | 90 µs |
+
+   **Size the fix against the rung, not against this table.** Native
+   `JSON.parse` is only 5.7% of `wire/endpoint-roundtrip`, because that rung is
+   dominated by undici and webstreams (above) — so the recoverable share there
+   is a few percent, not 5–10×. It is worth more on `cluster/frames.ts`, where
+   the binary transports carry no `Request`/`Response` overhead at all.
+
+---
+
+## What a native (Rust) engine could and could not do
+
+Recorded so this is decided rather than re-argued. Measured on the machine
+above, Node v22.22.0.
+
+**It cannot win the engine core.** `dispatch/mailbox-raw` is 7.50 M ops/s =
+**133 ns per turn**. A crossing out of JS and back costs **40–67 ns each way**
+even for optimized built-in intrinsics (`process.hrtime.bigint()` 40 ns,
+`Date.now()` 67 ns); a napi-rs call marshalling real arguments is 150–300 ns.
+The mailbox, the activation table and placement would spend their whole budget
+at the boundary — and every turn still ends in a JS call, because the actor
+method is JavaScript. The profiles above point the same way: the runtime's own
+hot spot is *promise allocation on a synchronous path*, which is removed by
+deleting two `async` keywords, not by changing language.
+
+**The measured ceilings are both outside such a core.** "Throughput plateaus at
+the wire, not at the runtime" — 18–19 k ops/s against a bare Node HTTP echo
+server at ~17 k/s on the same box. And fan-out across 1 000 grains does not beat
+a single grain, because the limit is one JS thread. Neither moves because the
+scheduler got faster.
+
+**Where it could genuinely win, if the JS work proves insufficient:** the
+transport plane. Terminating sockets, framing, HMAC and directory-cache
+forwarding in native code means the ~(N−1)/N of calls a silo does not own never
+enter JS at all — the one place the boundary is not crossed rather than crossed
+faster. Locality is 1/N by design, so at real cluster size that is most traffic.
+Ships as a sidecar or a Node-only optional accelerator, not as a rewrite.
+
+**The packaging cost is a project of its own, independent of the engine.** CI
+has no macOS and no arm64 leg (`.github/workflows/ci.yml`), so prebuilt binaries
+have no producer today; `pnpm-workspace.yaml`'s `onlyBuiltDependencies` allowlist
+blocks postinstall binary linking; and `scripts/publish.js` is hardcoded to a
+single package with no per-platform `optionalDependencies` fan-out. workerd
+(`packages/actors-cloudflare`, CI-tested) has no N-API at all — only WASM, which
+gives up threads and shared memory and would blow the 2–11 KB `.size-limit.json`
+budgets.
