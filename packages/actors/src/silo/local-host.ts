@@ -56,7 +56,10 @@ export class LocalHost implements ActorDispatcher {
         this.#bindings = bindings;
     }
 
-    async dispatch(
+    // Deliberately NOT `async`: `#dispatchInner` is already async, so it
+    // cannot throw synchronously and there is nothing for an outer promise to
+    // catch — it would only add an allocation and a tick to every call.
+    dispatch(
         ref: ActorRef,
         method: string,
         args: readonly unknown[],
@@ -125,9 +128,27 @@ export class LocalHost implements ActorDispatcher {
         call: ActorCallContext
     ): Promise<unknown> {
         this.#checkShutdown(call);
-        const inline = await this.#checkReentrancy(ref, call);
+        const id = actorId(ref);
+        // The warm path, which is nearly every dispatch. Both helpers below
+        // are `async`, so entering either allocates a promise and burns a
+        // microtask tick even when it returns without awaiting anything —
+        // measured at ~12% of `dispatch/warm-grain` (see BASELINES.md, "Where
+        // the time goes"). This condition is exactly the conjunction of their
+        // two early returns — `#checkReentrancy`'s chain miss and
+        // `#activationFor`'s `active` slot hit — so the outcome is identical
+        // and the slow paths below are untouched.
+        //
+        // The call-chain test is NOT optional: on a self-call the slot is
+        // `active` too, and skipping it would enqueue behind the turn that is
+        // up-stack awaiting us — a permanent hang where the runtime owes a
+        // loud `ActorDeadlockError`.
+        if (!call.callChain.includes(id)) {
+            const warm = this.#directory.get(id);
+            if (warm?.phase === 'active') return warm.activation.enqueue(method, args, call);
+        }
+        const inline = await this.#checkReentrancy(ref, call, id);
         if (inline) return inline.runInline(method, args, call);
-        const activation = await this.#activationFor(ref);
+        const activation = await this.#activationFor(ref, id);
         return activation.enqueue(method, args, call);
     }
 
@@ -142,8 +163,12 @@ export class LocalHost implements ActorDispatcher {
      * awaiting us. Reentrant: run inline against that turn. Non-reentrant:
      * throw now with the full chain (Orleans would hang until timeout).
      */
-    async #checkReentrancy(ref: ActorRef, call: ActorCallContext): Promise<Activation | null> {
-        const id = actorId(ref);
+    async #checkReentrancy(
+        ref: ActorRef,
+        call: ActorCallContext,
+        knownId?: string
+    ): Promise<Activation | null> {
+        const id = knownId ?? actorId(ref);
         if (!call.callChain.includes(id)) return null;
         const slot = this.#directory.get(id);
         const active = slot?.phase === 'active' ? slot.activation : null;
@@ -183,8 +208,8 @@ export class LocalHost implements ActorDispatcher {
         return def;
     }
 
-    async #activationFor(ref: ActorRef): Promise<Activation> {
-        const id = actorId(ref);
+    async #activationFor(ref: ActorRef, knownId?: string): Promise<Activation> {
+        const id = knownId ?? actorId(ref);
         for (;;) {
             const slot = this.#directory.get(id);
             if (!slot) {

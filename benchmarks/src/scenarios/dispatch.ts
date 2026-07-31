@@ -134,10 +134,85 @@ const fanOut: Scenario = {
     }
 };
 
+/**
+ * The dispatch ladder in COUNTS rather than seconds.
+ *
+ * Every rung above is a timing, and on a contended laptop a timing cannot
+ * settle an argument — the comparer says so itself, refusing a verdict when
+ * the probe drifts. A microtask turn is not a duration though, it is an
+ * event, and the count of them between calling `dispatch()` and its promise
+ * settling is fully deterministic: repeated samples return the same integer
+ * on a busy machine and an idle one alike.
+ *
+ * That makes it the one dispatch metric that can gate. It measures exactly
+ * what the timings cannot isolate — whether the path allocates promises it
+ * does not need — so an `async` reintroduced on a synchronous path shows up
+ * here as +1 even when throughput is buried in noise.
+ */
+const warmTurns: Scenario = {
+    name: 'dispatch/warm-turns',
+    description: 'microtask turns for ONE warm dispatch — a count, so it gates where timings cannot',
+    async run(): Promise<Metric[]> {
+        const fixture = await createBenchSilo({ actors: [Tiny] });
+        try {
+            const ref = { type: Tiny.type, key: 'warm' };
+            const call = benchCall();
+            // Warm the slot to `active` and let the tiered compiler settle;
+            // a cold or deactivating slot takes the slow path by design.
+            for (let i = 0; i < 2_000; i++) {
+                await fixture.silo.dispatch(ref, 'noop', [], call);
+            }
+
+            // Chain a self-rescheduling microtask and count how many turns
+            // drain before the dispatch settles. `done` stops the chain so
+            // the loop cannot outlive the measurement.
+            const turnsForOneDispatch = async (): Promise<number> => {
+                let turns = 0;
+                let done = false;
+                const tick = (): void => {
+                    if (done) return;
+                    turns++;
+                    queueMicrotask(tick);
+                };
+                queueMicrotask(tick);
+                await fixture.silo.dispatch(ref, 'noop', [], call);
+                done = true;
+                return turns;
+            };
+
+            const samples: number[] = [];
+            for (let i = 0; i < 15; i++) samples.push(await turnsForOneDispatch());
+            samples.sort((a, b) => a - b);
+
+            return [
+                {
+                    name: 'microtask_turns',
+                    value: samples[Math.floor(samples.length / 2)] as number,
+                    unit: 'turns',
+                    direction: 'lower'
+                },
+                {
+                    // Guards the claim that this metric is deterministic: if
+                    // the spread is ever non-zero the median above stops
+                    // being safe to gate on, and we want to see that.
+                    name: 'microtask_turns_spread',
+                    value: (samples[samples.length - 1] as number) - (samples[0] as number),
+                    unit: 'turns',
+                    direction: 'lower',
+                    noiseFloor: 0.5
+                }
+            ];
+        } finally {
+            await fixture.stop();
+        }
+    }
+};
+
 export const dispatchScenarios: Scenario[] = [
     mailboxRaw,
     warmGrain,
     warmGrainDeadline,
     viaProxy,
-    fanOut
+    fanOut,
+    warmTurns
 ];

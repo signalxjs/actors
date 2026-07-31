@@ -375,6 +375,58 @@ describe('reentrancy & deadlock', () => {
         const client = silo.actor(def!, 'a1') as unknown as { start(): Promise<string> };
         await expect(client.start()).resolves.toBe('finished:1');
     });
+
+    /**
+     * The tightest case, and the one a dispatch fast path gets wrong: the
+     * activation is ALREADY `active` in the directory, so a warm-path
+     * shortcut keyed only on slot phase would enqueue behind the turn that
+     * is up-stack awaiting it — a permanent hang instead of a loud throw.
+     * The call chain, not the slot, is what makes this a deadlock.
+     */
+    function selfSilo(reentrant: boolean): Silo {
+        const self = defineActor({
+            type: 'S',
+            unguarded: true,
+            reentrant,
+            state: () => ({ depth: 0 }),
+            methods: (ctx) => ({
+                async outer(): Promise<string> {
+                    ctx.state.depth++;
+                    return ctx.actor(self, 's1').inner();
+                },
+                async inner(): Promise<string> {
+                    return `inner:${ctx.state.depth}`;
+                }
+            })
+        });
+        return createSilo({ actors: [self], defaults: quiet });
+    }
+
+    it('S→S on a warm activation throws ActorDeadlockError, not a hang', async () => {
+        const silo = selfSilo(false);
+        const def = await silo.definition('S');
+        const client = silo.actor(def!, 's1') as unknown as {
+            inner(): Promise<string>;
+            outer(): Promise<string>;
+        };
+        // Warm it first: the slot must be `active`, so the fast path is live.
+        await expect(client.inner()).resolves.toBe('inner:0');
+        await expect(client.outer()).rejects.toMatchObject({
+            kind: 'deadlock',
+            chain: ['S\u0000s1', 'S\u0000s1']
+        });
+    });
+
+    it('S→S on a warm activation runs inline when reentrant', async () => {
+        const silo = selfSilo(true);
+        const def = await silo.definition('S');
+        const client = silo.actor(def!, 's1') as unknown as {
+            inner(): Promise<string>;
+            outer(): Promise<string>;
+        };
+        await expect(client.inner()).resolves.toBe('inner:0');
+        await expect(client.outer()).resolves.toBe('inner:1');
+    });
 });
 
 describe('lifecycle', () => {
