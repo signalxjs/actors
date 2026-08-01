@@ -21,7 +21,12 @@ export default defineConfig({
         // so `pnpm test` and CI are unaffected.
         include: [
             'packages/**/__tests__/**/*.test.{ts,tsx}',
-            'examples/**/__tests__/**/*.test.ts'
+            'examples/**/__tests__/**/*.test.ts',
+            // The benchmarks themselves are never run by vitest — they are a
+            // measurement, not an assertion. Their REPORTING is a different
+            // matter: the A/B report is what a reviewer acts on in CI without
+            // seeing the numbers behind it, so it is held to the usual bar.
+            'benchmarks/__tests__/**/*.test.ts'
         ],
         // The workers pool has its own config, its own runtime and its own
         // CI job (wrangler needs Node >= 22, this matrix includes 20). These

@@ -30,6 +30,7 @@
         "bench:infra:compare": "BENCH_INFRA=1 node --conditions=production --expose-gc benchmarks/src/main.ts infra/ --compare",
         "bench:baseline": "node --conditions=production --expose-gc benchmarks/src/main.ts --save-baseline",
         "bench:compare": "node --conditions=production --expose-gc benchmarks/src/main.ts --compare",
+    "bench:diff": "node --conditions=production benchmarks/src/compare-files.ts",
         "bench:profile": "node --conditions=production --expose-gc --enable-source-maps --cpu-prof --cpu-prof-dir=benchmarks/profiles benchmarks/src/main.ts --runs=1",
         "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules pnpm-lock.yaml",
         "publish:dry": "node scripts/publish.js --dry-run",

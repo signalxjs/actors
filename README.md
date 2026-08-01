@@ -35,7 +35,7 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors-ws`](packages/actors-ws) | The same frames over WebSocket — one port, proxy-friendly |
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — run an actor app on Workers, one DO per actor |
 | [`@sigx/actors-cli`](packages/actors-cli) | `sigx` CLI plugin — observe silos, grains and clusters from the terminal |
-| [`benchmarks`](benchmarks) | Local performance baselines — throughput, latency, heap footprint, leak detection (not published) |
+| [`benchmarks`](benchmarks) | Performance baselines — throughput, latency, heap footprint, leak detection. Run locally, and A/B'd on perf-sensitive PRs (never gating) (not published) |
 
 Full documentation lives in the [package README](packages/actors/README.md).
 Two runnable demos:

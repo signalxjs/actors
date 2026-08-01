@@ -50,6 +50,18 @@ parallel checkouts.
 | Lint | `pnpm lint` |
 | Benchmarks | `pnpm bench` (see `benchmarks/README.md`) |
 | Perf regression check | `pnpm bench:baseline` before your change, `pnpm bench:compare` after |
+| Diff two saved bench results | `pnpm bench:diff --before=a.json --after=b.json` |
+
+A PR that touches `packages/**` or `benchmarks/**` also gets a **Bench** comment:
+CI measures the base ref and your head ref back to back on one runner and posts
+the delta. Two halves, gated differently:
+
+- **Timings never fail the check** — shared runners are too noisy for that. Treat
+  them as a pointer and reproduce anything interesting locally on a quiet machine.
+- **Exact metrics do fail it.** Those are invariants (directory calls per
+  activation, microtask turns per dispatch), identical on every machine, so a red
+  Bench check means real behaviour changed. If the change is intended, say so in
+  the PR and update the expectation.
 
 ## Pre-push checklist
 

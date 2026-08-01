@@ -92,6 +92,7 @@ function aggregate(perRun: readonly Metric[][]): AggregatedMetric[] {
             spread: med === 0 ? 0 : Math.abs(dispersion / med)
         };
         if (meta.informational) aggregated.informational = true;
+        if (meta.exact) aggregated.exact = true;
         if (meta.noiseFloor !== undefined) aggregated.noiseFloor = meta.noiseFloor;
         return aggregated;
     });

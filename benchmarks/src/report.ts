@@ -31,7 +31,8 @@ export const BASELINE_PATH = fileURLToPath(new URL('../baselines/local.json', im
  */
 export const DEFAULT_THRESHOLD = 0.1;
 
-function fmt(value: number, unit: string): string {
+/** A metric value in its own unit, scaled for reading. */
+export function fmt(value: number, unit: string): string {
     if (unit === 'bytes') {
         if (Math.abs(value) >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MiB`;
         if (Math.abs(value) >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
@@ -120,7 +121,7 @@ export function loadResult(path: string): BenchResult {
 type Verdict = 'regressed' | 'improved' | 'unchanged' | 'inconclusive' | 'new';
 
 /** Informational metrics only appear as diagnostics past this much change. */
-const DIAGNOSTIC_THRESHOLD = 0.25;
+export const DIAGNOSTIC_THRESHOLD = 0.25;
 
 /**
  * Probe variation across rounds past this much means the machine was busy.
@@ -128,7 +129,7 @@ const DIAGNOSTIC_THRESHOLD = 0.25;
  * the probe routinely swings 15%+ — which is precisely the situation the
  * warning exists to name.
  */
-const MACHINE_INSTABILITY_LIMIT = 0.12;
+export const MACHINE_INSTABILITY_LIMIT = 0.12;
 
 /**
  * Probe difference against the baseline past this much invalidates it.
@@ -140,13 +141,15 @@ const MACHINE_INSTABILITY_LIMIT = 0.12;
  * identical code, which a 7% limit let through and a 5% limit correctly
  * suppresses.
  */
-const MACHINE_DRIFT_LIMIT = DEFAULT_THRESHOLD / 2;
+export const MACHINE_DRIFT_LIMIT = DEFAULT_THRESHOLD / 2;
 
-interface Comparison {
+export interface Comparison {
     scenario: string;
     metric: string;
     unit: string;
     informational?: boolean;
+    /** Compared exactly — see `Metric.exact`. Never downgraded by drift. */
+    exact?: boolean;
     baseline: number;
     current: number;
     /**
@@ -193,6 +196,19 @@ function compareMetric(
         ...(current.informational ? { informational: true } : {})
     };
 
+    // An invariant, not a measurement: no threshold, no noise gate. Both
+    // exist to absorb variance this metric does not have, and applying them
+    // would hide the one class of change a shared runner can prove.
+    if (current.exact && !current.informational) {
+        return {
+            ...base,
+            exact: true,
+            delta: baseline.value > 0 ? improvement / baseline.value : null,
+            verdict:
+                absoluteDiff === 0 ? 'unchanged' : improvement < 0 ? 'regressed' : 'improved'
+        };
+    }
+
     if (current.informational) {
         // Still compute the change so `printComparison` can surface a big
         // move as a diagnostic; it just never counts as a regression.
@@ -235,6 +251,13 @@ function compareMetric(
 export interface CompareOutcome {
     comparisons: Comparison[];
     regressions: Comparison[];
+    /**
+     * The subset of `regressions` on `exact` metrics — invariants that
+     * MOVED. Machine-independent, so unlike every other row here this one
+     * carries the same weight on a shared CI runner as on a quiet desk, and
+     * is the only thing the Bench workflow is willing to fail on.
+     */
+    exactRegressions: Comparison[];
     envWarnings: string[];
     /**
      * How much slower/faster the bare-CPU probe was than the baseline's.
@@ -283,21 +306,41 @@ export function compare(
     const untrustworthy = Math.abs(machineDelta) > MACHINE_DRIFT_LIMIT;
     if (untrustworthy) {
         for (const c of comparisons) {
+            // Exact metrics are exempt: a busy machine changes how long a
+            // dispatch takes, never how many directory calls it makes. They
+            // are precisely what stays readable when nothing else is.
+            if (c.exact) continue;
             if (c.verdict === 'regressed' || c.verdict === 'improved') c.verdict = 'inconclusive';
         }
     }
 
+    const regressions = comparisons.filter((c) => c.verdict === 'regressed');
     return {
         fatalMismatch: envWarnings.filter((w) => w.startsWith(INFRA_SHAPE_MISMATCH)),
         comparisons,
-        regressions: comparisons.filter((c) => c.verdict === 'regressed'),
+        regressions,
+        exactRegressions: regressions.filter((c) => c.exact),
         envWarnings,
         machineDelta
     };
 }
 
 export function printComparison(outcome: CompareOutcome, threshold: number): void {
-    const { comparisons, regressions, envWarnings, machineDelta } = outcome;
+    const { comparisons, regressions, exactRegressions, envWarnings, machineDelta } = outcome;
+
+    // First, and separately from everything else: these are not timings and
+    // carry no caveat. A machine cannot make a dispatch take more microtask
+    // turns — only a code change can.
+    if (exactRegressions.length > 0) {
+        console.log('');
+        console.log('EXACT METRICS MOVED — these are invariants, not measurements:');
+        for (const c of exactRegressions) {
+            console.log(
+                `  ✗ ${c.scenario} ${c.metric}: ${fmt(c.baseline, c.unit)} → ` +
+                    `${fmt(c.current, c.unit)}`
+            );
+        }
+    }
 
     if (envWarnings.length > 0) {
         console.log('');
@@ -321,6 +364,10 @@ export function printComparison(outcome: CompareOutcome, threshold: number): voi
     const interesting = comparisons.filter(
         (c) =>
             !c.informational &&
+            // Exact moves were listed above, on their own terms. Repeating
+            // them under a heading about thresholds files an invariant with
+            // the measurements.
+            !(c.exact && (c.verdict === 'regressed' || c.verdict === 'improved')) &&
             (c.verdict === 'regressed' ||
                 c.verdict === 'improved' ||
                 c.verdict === 'inconclusive')

@@ -189,7 +189,12 @@ const warmTurns: Scenario = {
                     name: 'microtask_turns',
                     value: samples[Math.floor(samples.length / 2)] as number,
                     unit: 'turns',
-                    direction: 'lower'
+                    direction: 'lower',
+                    // A count of turns through a fixed code path — the same
+                    // on any machine. An `await` added to the hot dispatch
+                    // path moves it by exactly one, which no timing metric on
+                    // a shared runner could resolve.
+                    exact: true
                 },
                 {
                     // Guards the claim that this metric is deterministic: if
@@ -199,6 +204,10 @@ const warmTurns: Scenario = {
                     value: (samples[samples.length - 1] as number) - (samples[0] as number),
                     unit: 'turns',
                     direction: 'lower',
+                    // Exact for the same reason, and it is the guard on the
+                    // claim above: the day this stops being 0, the median
+                    // stops being safe to gate on and we must hear about it.
+                    exact: true,
                     noiseFloor: 0.5
                 }
             ];

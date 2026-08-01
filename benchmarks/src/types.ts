@@ -23,6 +23,24 @@ export interface Metric {
      */
     informational?: boolean;
     /**
+     * This metric is an algorithmic INVARIANT, not a measurement: the same
+     * code produces the same value on any machine, under any load, in any
+     * process. Directory calls per activation, microtask turns per dispatch,
+     * notifications per join.
+     *
+     * Such a metric is compared EXACTLY — any difference at all is a real
+     * behavioural change, so it bypasses the threshold, the noise gate and
+     * the machine-drift downgrade, all of which exist to cope with variance
+     * it does not have. It is the only thing a shared CI runner can judge
+     * with confidence, and the Bench workflow fails on a regression in one.
+     *
+     * Set it ONLY where determinism holds by construction. A metric built on
+     * `randomPlacementPolicy()` is not a candidate however steady it looks:
+     * measured across two runs of identical code on one runner, the locality
+     * and shard-ownership ratios moved while these did not.
+     */
+    exact?: boolean;
+    /**
      * Absolute difference, in this metric's own unit, below which a change
      * is not meaningful. REQUIRED for any metric that can sit at or below
      * zero (heap slopes, retained bytes): percentage change against a

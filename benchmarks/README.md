@@ -4,8 +4,9 @@ Local performance baselines for the actor runtime: closed-loop throughput,
 latency percentiles, heap footprint and leak detection — plus the profiling
 recipes for working out *why* a number moved.
 
-Not published, not run in CI. This is a tool you run by hand before and after a
-change.
+Not published, and never a merge gate. Primarily a tool you run by hand before
+and after a change — CI also runs it on perf-sensitive PRs, but only to *report*
+(see [In CI](#in-ci)).
 
 ```sh
 pnpm bench                    # build, then run everything
@@ -18,6 +19,9 @@ pnpm bench:compare            # run again and diff against that reference
 pnpm bench:profile dispatch   # same, under --cpu-prof
 
 pnpm bench:tier2              # real sockets, a process per silo (opt-in)
+
+# diff two saved result files (neither has to be the baseline)
+pnpm bench:diff --before=a.json --after=b.json [--markdown=out.md]
 ```
 
 Requires Node ≥ 22.18 (the sources are `.ts`, run through Node's native type
@@ -162,6 +166,106 @@ back to back under the same conditions. Watch for the `THE MACHINE WAS BUSY`
 banner — a suite run on a contended machine is not evidence. On a quiet machine
 `--threshold=5 --runs=9` is reasonable for chasing something small.
 
+## In CI
+
+`.github/workflows/bench.yml` runs on any PR touching `packages/**`,
+`benchmarks/**` or the lockfile, and posts one comment (updated in place on
+each push) with a delta table.
+
+**It compares the PR's base ref against its head ref, both measured on the same
+runner** — not against `BASELINES.md` and not against a committed baseline.
+That is the only comparison a shared vCPU can support. An absolute number off
+one means nothing, and a stored baseline is worse than useless: the calibration
+probe would differ from whatever machine recorded it, and every run would come
+back "no verdict" (which is exactly what `pnpm bench:compare` correctly does if
+you hand it someone else's baseline). Two runs a few minutes apart on the *same*
+box do carry signal.
+
+The rules are the local ones — same `compare()`, same noise gate, same
+`inconclusive` band, same machine-drift downgrade. **One number differs: the
+threshold is 25% in CI against 10% locally**, and it was measured, not guessed.
+See "What a shared runner actually does" below.
+
+### Two kinds of number, gated completely differently
+
+This is the part worth internalising, and it is enforced in code
+(`Metric.exact`) rather than by this paragraph:
+
+- **Timings are informational.** Throughput, percentiles, heap bytes. A shared
+  runner cannot judge them — see the calibration below — so no timing move,
+  however large, fails anything. The comment is a pointer: reproduce it locally
+  on a quiet machine before acting on it.
+- **Exact metrics gate, at zero tolerance.** `directory_ops` per activation,
+  `microtask_turns` per dispatch, `notifications` per join. These are
+  algorithmic *invariants*, not measurements: the same code yields the same
+  value on any machine under any load. So they carry no threshold, no noise
+  gate, and no machine-drift downgrade — **and an exact regression fails the
+  Bench check.** An extra directory round-trip per activation moves
+  `directory_ops` from 2 to 3, which no timing comparison on a shared runner
+  could ever resolve, and which is exactly the kind of regression that is
+  invisible in review.
+
+Mark a metric `exact: true` only where determinism holds **by construction**.
+Anything built on `randomPlacementPolicy()` is disqualified however steady it
+looks — measured across two runs of identical code on one runner, the locality
+and shard-ownership ratios moved while the invariants did not.
+
+The rest is only honesty about what the informational half is:
+
+- A scenario that *throws* fails the step regardless — a benchmark that cannot
+  prove it did its work must not report a number.
+- **"No verdict" is a normal outcome.** Runners drift; when the probe moved
+  more than half the threshold between the two halves, everything is downgraded
+  to `inconclusive` and the comment says so. Re-run the job to draw a fresh
+  runner.
+- Tier 2 and Tier 3 stay out. The first wants spare cores, the second wants a
+  deployment.
+
+`workflow_dispatch` on the same workflow runs the suite once against the current
+ref and uploads the result JSON, for when you want a number off a Linux box
+without one to compare it to.
+
+### What a shared runner actually does
+
+The first A/B this workflow ran was the PR that added it — **no runtime change
+whatsoever**, so every delta was by definition noise. It is the cleanest
+calibration available, and worth recording:
+
+- **1 `regressed`, 4 `improved`, 10 `inconclusive`** out of 363 metrics, at the
+  local 10% threshold. The false verdicts spanned **10.1% to 18.7%**. That is
+  why CI runs at 25%: the per-metric noise gate estimates noise from the spread
+  across rounds *inside one process*, and two processes minutes apart on a
+  shared 2-vCPU runner vary by more than that. A metric that happens to be
+  steady within each half slips straight through it. A second identical-code
+  run at 25% still produced two — a p99 that swung 53%, and a zero-baseline
+  count — so **no threshold makes a timing trustworthy here**. That is the
+  finding that motivated the exact gate rather than a bigger number.
+- **148 of those 363 came back bit-identical**, across two independent
+  processes on a noisy shared box. Those are the invariants — provider-call
+  counts, microtask turns — and they are why the `exact` gate is worth more
+  than the timing table it sits above. Not all 148 qualify: many are randomized
+  ratios that merely happened to match, which is why the flag is applied by
+  hand and only where the scenario has no randomness in it.
+- **Order matters, mildly.** The head half is always measured second, and 31 of
+  41 throughput metrics came back faster on it (median +1.76%). Small, but a
+  real bias, not a coin flip — read a sub-5% "improvement" on your own PR as
+  the running order, not the code.
+- **The calibration probe did not see either effect**: it moved 1.8% between
+  the halves, well inside the drift limit, so no banner fired. The probe
+  catches a machine that is globally slower; it does not catch one scenario
+  landing in a noisy window.
+- The runner is 2 vCPU, and it is *not* slow — `dispatch/warm-grain c=1` came
+  back at 814k ops/s there against 357k on a busy developer laptop. Absolute
+  numbers from either are still meaningless; only the paired delta is not.
+
+The suite takes ~4 minutes a half on that runner including install and build,
+so the whole job is ~8–9 minutes.
+
+`pnpm bench:diff` is the comparer the workflow calls, and it works on any two
+result files — including two `benchmarks/results/<iso>.json` from your own
+machine, which is the quickest way to diff two local runs without disturbing
+the recorded baseline.
+
 ## Baselines
 
 - `benchmarks/results/<iso>.json` — every run (gitignored)
@@ -303,6 +407,12 @@ Rules worth knowing:
 - Every metric declares a `direction` (`'higher'` = bigger is better). Getting it
   wrong inverts the verdict.
 - Any metric that can be zero or negative **must** set `noiseFloor`.
+- Is it an *invariant* — a count of work the runtime does, identical on every
+  machine — rather than a measurement? Then set `exact: true` and it becomes a
+  CI gate. This is the highest-value thing a scenario can contribute, because
+  it is the only kind of number a shared runner can judge. Set it only where
+  determinism holds by construction: no `randomPlacementPolicy()`, no wall
+  clock, no heap.
 - `createBenchSilo` uses `manualScheduler()` and hour-long sweep/reminder
   intervals, so background jobs never land mid-measurement. Scenarios that
   measure those jobs drive `fixture.clock.advance(ms)` themselves.

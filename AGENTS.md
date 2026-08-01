@@ -148,6 +148,7 @@ pnpm bench       # build, then run every benchmark scenario
 pnpm bench:run <filter>   # skip the build; filter by scenario name substring
 pnpm bench:baseline       # record this machine's reference (gitignored)
 pnpm bench:compare        # run again and diff against that reference
+pnpm bench:diff --before=a.json --after=b.json   # diff two saved result files
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 pnpm bench:tier2          # Tier 2: real sockets, one process per silo (opt-in)
 pnpm test:infra           # Tier-3 assertions against a DEPLOYED environment (env-gated)
@@ -157,11 +158,35 @@ node examples/aks-cluster/deploy/testenv.mjs up|test|baseline|load|down
 
 Benchmarks measure the built `dist/*.prod.js` via `--conditions=production`,
 so `pnpm build` must be current — `pnpm bench` does it for you. They need
-Node >= 22.18 (native `.ts` type stripping) and are local-only: shared CI
-runners are too noisy to gate on. Before trusting a comparison, read the
-"Trusting the numbers" section of `benchmarks/README.md` — a contended
-machine produces false regressions, and the suite says so when it detects
-one.
+Node >= 22.18 (native `.ts` type stripping). Before trusting a comparison,
+read the "Trusting the numbers" section of `benchmarks/README.md` — a
+contended machine produces false regressions, and the suite says so when it
+detects one.
+
+**In CI they run, and the split between what gates and what does not is the
+whole design.** The `Bench` workflow (`.github/workflows/bench.yml`) fires on a
+PR touching `packages/**`, `benchmarks/**` or the lockfile and measures the base
+ref and the head ref back to back *on the same runner*, posting the delta as one
+PR comment. That is the only comparison a shared vCPU can support: absolute
+numbers off it are meaningless, and `pnpm bench:compare`'s local baseline is
+per-machine and gitignored for exactly that reason.
+
+- **Timings never gate.** Treat the comment as a pointer and reproduce anything
+  it flags locally on a quiet machine. CI compares them at **25%** rather than
+  the local 10%, and even that is not enough on its own — two identical commits
+  produced false regressions of 16%, 19% and 53%.
+- **`exact` metrics gate, at zero tolerance, and FAIL the check.** Invariants
+  rather than measurements — `directory_ops` per activation, `microtask_turns`
+  per dispatch, `notifications` per join — so a shared runner judges them as
+  well as a quiet desk. In that same identical-commit run, every one came back
+  bit-identical while 215 other metrics drifted. Adding `exact: true` to a
+  metric that is not deterministic *by construction* (anything on
+  `randomPlacementPolicy()`, a clock, or the heap) breaks the gate for
+  everyone, so read `Metric.exact` in `benchmarks/src/types.ts` first.
+- A scenario that *throws* fails the step either way.
+
+See "What a shared runner actually does" in `benchmarks/README.md` for the
+measurements all of this is calibrated against.
 
 Most scenarios are **Tier 1**: one process, zero sockets, measuring
 algorithmic shape. **Tier 2** (`cluster2/*`, `pnpm bench:tier2`) forks a
@@ -286,9 +311,13 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-grain heap footprint, leak detection, and the CPU/allocation
-  profiling recipes. Run by hand (`pnpm bench`), never in CI. See
-  `benchmarks/README.md`, and `benchmarks/BASELINES.md` for the reference
-  figures. **Tier 3** (`infra/*`, `BENCH_INFRA=1`) measures a real
+  profiling recipes. Run by hand (`pnpm bench`); also run — never gated —
+  by the `Bench` workflow, which A/Bs a PR's base ref against its head ref
+  on one runner through `benchmarks/src/compare-files.ts` and comments the
+  delta. `benchmarks/__tests__` covers that REPORT (the only part of the
+  suite a human acts on without seeing the numbers), not the measurements.
+  See `benchmarks/README.md`, and `benchmarks/BASELINES.md` for the
+  reference figures. **Tier 3** (`infra/*`, `BENCH_INFRA=1`) measures a real
   DEPLOYMENT over its public endpoint with the load driven from a
   same-region VM, and refuses to compare across deployment shapes; see
   `examples/aks-cluster/deploy/testenv.mjs`. Not published.
@@ -296,7 +325,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 Path aliases: `tsconfig.json` and `vitest.config.ts` map `@sigx/actors` and
 its subpaths to `packages/actors/src`, so tests and typecheck run against
 source, not dist. `benchmarks/src` is in the tsconfig `include` (so it IS
-typechecked and linted) but resolves `@sigx/actors` from `dist/` at runtime
+typechecked and linted, and `benchmarks/__tests__` is typechecked and run by
+vitest) but resolves `@sigx/actors` from `dist/` at runtime
 — deliberate: types come from source, measurements from the shipped build. The example resolves `@sigx/actors` from the built `dist/`
 via the workspace link — run `pnpm build` before `pnpm --filter
 counter-example dev`.

@@ -38,7 +38,8 @@
     "packages/*/src/**/*.ts",
     "packages/*/__tests__/**/*.ts",
     "packages/*/src/**/*.tsx",
-    "benchmarks/src/**/*.ts"
+    "benchmarks/src/**/*.ts",
+    "benchmarks/__tests__/**/*.ts"
   ],
   "exclude": [
     "node_modules",

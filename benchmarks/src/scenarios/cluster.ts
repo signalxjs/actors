@@ -35,6 +35,19 @@ import type { Metric, RunContext, Scenario } from '../types.ts';
  */
 const REMINDER_SHARDS = Array.from({ length: 16 }, (_v, i) => `p${i}`);
 
+/**
+ * Below this much change, a placement ratio has not moved.
+ *
+ * These ratios are quantized by the grain: over the 48-200 grains a sweep
+ * places, ONE landing on a different silo is worth 0.005-0.02. The floor was
+ * 0.02 — exactly one grain — and a CI A/B of two identical commits duly
+ * reported `local_fraction` 0.00 → 0.0208 as an improvement, clearing it by
+ * 0.0008. Placement here is `randomPlacementPolicy()`, so a couple of grains
+ * landing elsewhere is the expected behaviour of the thing being measured,
+ * not evidence about the code. 0.05 covers that.
+ */
+const PLACEMENT_RATIO_NOISE_FLOOR = 0.05;
+
 const Counted = defineActor({
     type: 'ClusterBench',
     unguarded: true,
@@ -100,6 +113,10 @@ const membershipFanout: Scenario = {
                         value: notify,
                         unit: 'count',
                         direction: 'lower',
+                        // Provider calls under `selfPolicy` — no randomness
+                        // anywhere in the path, so this is an invariant and
+                        // an O(N²) fan-out shows up as an exact failure.
+                        exact: true,
                         noiseFloor: 0.5
                     },
                     {
@@ -114,6 +131,8 @@ const membershipFanout: Scenario = {
                         value: notify * (n + 2),
                         unit: 'count',
                         direction: 'lower',
+                        // A pure function of `notifications` above.
+                        exact: true,
                         noiseFloor: 0.5
                     },
                     {
@@ -160,6 +179,12 @@ const directoryOpsPerActivation: Scenario = {
                         value: harness.counter.sum('directory.') / grains,
                         unit: 'count',
                         direction: 'lower',
+                        // The single most important scaling property, and an
+                        // invariant: a fixed grain loop under `selfPolicy`.
+                        // An extra directory round-trip per activation moves
+                        // it from 2 to 3 and fails the check — which is the
+                        // whole reason this gate exists.
+                        exact: true,
                         noiseFloor: 0.1
                     },
                     {
@@ -330,7 +355,7 @@ const locality: Scenario = {
                         value: localHits / grains,
                         unit: 'ratio',
                         direction: 'higher',
-                        noiseFloor: 0.02
+                        noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                     });
                 } finally {
                     await harness.stop();
@@ -486,7 +511,7 @@ const localityRouted: Scenario = {
                         value: placed === 0 ? 0 : localHits / placed,
                         unit: 'ratio',
                         direction: 'higher',
-                        noiseFloor: 0.02
+                        noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                     });
                 } finally {
                     await harness.stop();
@@ -627,14 +652,14 @@ const localityWarm: Scenario = {
                             value: hops / grains,
                             unit: 'ratio',
                             direction: 'lower',
-                            noiseFloor: 0.02
+                            noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                         },
                         {
                             name: `n=${n}/${label}/local_fraction`,
                             value: Math.max(0, 1 - hops / grains),
                             unit: 'ratio',
                             direction: 'higher',
-                            noiseFloor: 0.02
+                            noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                         },
                         {
                             // 1.0 is perfectly even; n is "one silo owns
