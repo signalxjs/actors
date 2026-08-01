@@ -311,11 +311,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-grain heap footprint, leak detection, and the CPU/allocation
-  profiling recipes. Run by hand (`pnpm bench`); also run — never gated —
-  by the `Bench` workflow, which A/Bs a PR's base ref against its head ref
-  on one runner through `benchmarks/src/compare-files.ts` and comments the
-  delta. `benchmarks/__tests__` covers that REPORT (the only part of the
-  suite a human acts on without seeing the numbers), not the measurements.
+  profiling recipes. Run by hand (`pnpm bench`), and by the `Bench`
+  workflow, which A/Bs a PR's base ref against its head ref on one runner
+  through `benchmarks/src/compare-files.ts` and comments the delta. **A
+  timing there never gates; an `exact` metric does and FAILS the check** —
+  see "Build, Test, Lint" above and the `Metric.exact` contract in
+  `benchmarks/src/types.ts`. `benchmarks/__tests__` covers that REPORT (the
+  only part of the suite a human acts on without seeing the numbers), not
+  the measurements.
   See `benchmarks/README.md`, and `benchmarks/BASELINES.md` for the
   reference figures. **Tier 3** (`infra/*`, `BENCH_INFRA=1`) measures a real
   DEPLOYMENT over its public endpoint with the load driven from a
