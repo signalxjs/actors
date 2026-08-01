@@ -31,23 +31,28 @@ name: Bench
 # - `bench-quick` (manual): one run of the current ref, uploaded as an
 #   artifact for a human to read.
 #
-# An exact-metric regression FAILS this workflow, so the check goes red on the
-# PR. It is not (yet) a *required* check — this repo has no ruleset — so red
-# here does not physically prevent a merge; it is a stop sign, not a lock. Two
-# things to do before promoting it to required:
+# An exact-metric regression FAILS this workflow, so the check goes red. It is
+# not yet a *required* check — this repo has no ruleset — so red is a stop sign
+# rather than a lock. It now runs on `merge_group` too, which was the blocking
+# prerequisite: a required check that never reports on the queue ref leaves the
+# PR waiting forever on a context that will not arrive, and `gh pr checks` shows
+# nothing wrong. What remains before promoting it is judgement, not plumbing —
+# give the gate a few PRs, because one that fires on noise once costs more trust
+# than a hundred green runs earn.
 #
-#   1. Add a `merge_group` trigger. A required check that never runs on the
-#      queue ref leaves the PR waiting forever on a context that will not
-#      arrive, and `gh pr checks` shows nothing wrong.
-#   2. Give it a few PRs first. The gate is only as good as the `exact` flags,
-#      and one that fires on noise once is worth more scepticism than a green
-#      one is worth trust.
+# THE QUEUE RUN IS DELIBERATELY NARROWER. `merge_group` does not support `paths`
+# filters, so it fires on every queued merge including docs-only ones. Running
+# the whole ~7-minute suite there would tax every merge to re-measure timings
+# that cannot fail anything. So the queue measures only the scenarios carrying
+# `exact` metrics — which is exactly the set that can fail — and the full A/B
+# stays on `pull_request`, where the paths filter applies and a human reads it.
 #
 # Tier 2 (`BENCH_TIER2=1`, a forked process per silo) and Tier 3
 # (`BENCH_INFRA=1`, a real deployment) stay out — the first wants a quiet
 # machine with spare cores, the second wants a cluster.
 on:
   workflow_dispatch:
+  merge_group:
   pull_request:
     branches: [main]
     paths:
@@ -93,6 +98,14 @@ env:
   # under 25%, which is the correct trade for an advisory comment: anything
   # smaller has to be reproduced locally anyway.
   BENCH_THRESHOLD: '25'
+  # The scenarios that carry `exact` metrics, and so the only ones whose
+  # outcome can fail a check. The merge queue measures these and nothing else;
+  # a `pull_request` run passes no filter and measures everything.
+  #
+  # Keep in step with the `exact: true` flags — a scenario flagged but missing
+  # here is simply not gated on the queue, silently. `pnpm bench:run --list`
+  # names them; `grep -rn 'exact: true' benchmarks/src/scenarios` is the check.
+  BENCH_GATE_SCENARIOS: 'dispatch/warm-turns cluster/membership-fanout cluster/directory-ops-per-activation cluster/locality-routed cluster/locality-warm'
 
 jobs:
   bench-quick:
@@ -134,21 +147,29 @@ jobs:
           path: ${{ runner.temp }}/bench.json
 
   bench-ab:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # `merge_group` carries no pull_request payload, so each side falls back
+      # to the queue's own shas. Exactly one of the two is ever non-empty.
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+      # NOTE: `FILTERS` is deliberately NOT computed here. The `env` context is
+      # not available inside a job-level `env:` block, so a
+      # `${{ ... env.BENCH_GATE_SCENARIOS ... }}` expression would resolve to
+      # the empty string in silence — the queue would quietly measure the whole
+      # suite and nobody would notice. The steps derive it from
+      # `$GITHUB_EVENT_NAME`, which is always defined.
     steps:
       # fetch-depth 0: the job checks the base ref out in place, so both
       # commits must be in the clone.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
 
       - uses: pnpm/action-setup@v6
 
@@ -162,15 +183,30 @@ jobs:
       # script name this PR introduces. For the same reason they pass only
       # flags the base ref already understands — main.ts throws on an unknown
       # one.
+      # On the queue, measure only what can fail; on a PR, measure everything.
+      # Unquoted on the command line so the words split into separate filters.
+      - name: Scenario filter
+        id: filter
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
+            echo "filters=$BENCH_GATE_SCENARIOS" >> "$GITHUB_OUTPUT"
+          else
+            echo "filters=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Bench the base ref
+        env:
+          FILTERS: ${{ steps.filter.outputs.filters }}
         run: |
           git checkout --detach "$BASE_SHA"
           pnpm install --frozen-lockfile
           pnpm build
           node --conditions=production --expose-gc benchmarks/src/main.ts \
-            --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/base.json"
+            $FILTERS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/base.json"
 
       - name: Bench the head ref
+        env:
+          FILTERS: ${{ steps.filter.outputs.filters }}
         run: |
           git checkout --detach "$HEAD_SHA"
           # A dist left over from the base build is not overwritten when the
@@ -180,7 +216,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           node --conditions=production --expose-gc benchmarks/src/main.ts \
-            --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/head.json"
+            $FILTERS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/head.json"
 
       # The HEAD checkout's comparer, so a PR that changes the comparison rules
       # is read by the version it ships.
@@ -204,9 +240,13 @@ jobs:
         run: cat "$RUNNER_TEMP/bench.md" >> "$GITHUB_STEP_SUMMARY"
 
       # Fork PRs get a read-only token on `pull_request`, so the comment call
-      # would 403. The job summary above still carries the report for those.
+      # would 403. The job summary above still carries the report for those,
+      # as it does for the merge queue, where there is no PR to comment on and
+      # `context.payload.pull_request` would be undefined.
       - name: Comment on the PR
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v8
         with:
           script: |

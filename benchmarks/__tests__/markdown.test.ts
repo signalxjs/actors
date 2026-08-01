@@ -9,6 +9,7 @@
  * mislead — a fabricated delta, a silent truncation, a scenario that
  * disappeared because it crashed.
  */
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { markdownComparison } from '../src/markdown.ts';
 import { compare } from '../src/report.ts';
@@ -59,6 +60,45 @@ function result(scenarios: ScenarioResult[], probe = 1000, commit = 'abc1234'): 
 
 function scenario(name: string, metrics: AggregatedMetric[]): ScenarioResult {
     return { name, description: `${name} description`, metrics };
+}
+
+/**
+ * The merge-queue gate list, and the scenarios it is supposed to describe,
+ * read out of the workflow and the scenario sources.
+ */
+function gateSets(): {
+    declared: string[];
+    scenarioNames: string[];
+    gated: Map<string, string>;
+} {
+    const workflow = readFileSync(
+        new URL('../../.github/workflows/bench.yml', import.meta.url),
+        'utf8'
+    );
+    const declared = (/^\s*BENCH_GATE_SCENARIOS:\s*'(.+)'\s*$/m.exec(workflow)?.[1] ?? '')
+        .split(/\s+/)
+        .filter(Boolean);
+
+    const dir = new URL('../src/scenarios/', import.meta.url);
+    const scenarioNames: string[] = [];
+    /** Scenario id → the file that declares it, for every gated scenario. */
+    const gated = new Map<string, string>();
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts') && f !== 'index.ts')) {
+        const src = readFileSync(new URL(file, dir), 'utf8');
+        // A scenario's id line starts its block; the next one ends it. Crude,
+        // but it attributes each `exact` flag to the scenario that emits it —
+        // which "does this FILE contain a flag?" cannot do, and `cluster.ts`
+        // holds eight scenarios of which only some gate.
+        const marks = [...src.matchAll(/^\s*name:\s*'([\w-]+\/[\w-]+)',$/gm)];
+        for (const [i, mark] of marks.entries()) {
+            const name = mark[1] as string;
+            scenarioNames.push(name);
+            const block = src.slice(mark.index, marks[i + 1]?.index ?? src.length);
+            // The literal flag, or the helper that applies it.
+            if (/exact:\s*true|exactIfDeterministic\s*\(/.test(block)) gated.set(name, file);
+        }
+    }
+    return { declared, scenarioNames, gated };
 }
 
 /** Render an A/B the way the workflow does, and hand back the markdown. */
@@ -369,6 +409,38 @@ describe('markdownComparison', () => {
                 ?.split('\n')
                 .filter((l) => l.includes('`n=1/directory_ops`'));
             expect(rows).toHaveLength(1);
+        });
+
+        it('names only real scenarios in the merge-queue gate list', () => {
+            // The queue run passes BENCH_GATE_SCENARIOS as a scenario filter,
+            // because `merge_group` supports no `paths` filter and re-measuring
+            // the whole suite on every merge would tax it to re-check timings
+            // that cannot fail anything.
+            //
+            // A filter is a SUBSTRING match, so a renamed or misspelt scenario
+            // does not error — it matches nothing, and the queue silently gates
+            // on a smaller set than anyone believes. That is the failure worth
+            // a test: it is invisible in a green run.
+            const { declared, scenarioNames } = gateSets();
+            expect(declared.length).toBeGreaterThan(0);
+            for (const name of declared) expect(scenarioNames).toContain(name);
+        });
+
+        it('covers every scenario that flags an exact metric', () => {
+            // The other direction: flag metrics in a scenario the list omits
+            // and they stop gating on the queue, again silently. Per SCENARIO,
+            // not per file — `cluster.ts` declares eight and only some gate, so
+            // a file-level check would pass while a newly flagged scenario sat
+            // outside the queue's filter.
+            const { declared, gated } = gateSets();
+            expect(gated.size).toBeGreaterThan(0);
+            for (const [name, file] of gated) {
+                expect(
+                    declared,
+                    `${name} (${file}) emits an exact metric but is not in ` +
+                        `BENCH_GATE_SCENARIOS, so it does not gate on the merge queue`
+                ).toContain(name);
+            }
         });
 
         it('leaves an unchanged invariant alone', () => {

@@ -196,19 +196,40 @@ This is the part worth internalising, and it is enforced in code
   however large, fails anything. The comment is a pointer: reproduce it locally
   on a quiet machine before acting on it.
 - **Exact metrics gate, at zero tolerance.** `directory_ops` per activation,
-  `microtask_turns` per dispatch, `notifications` per join. These are
-  algorithmic *invariants*, not measurements: the same code yields the same
-  value on any machine under any load. So they carry no threshold, no noise
-  gate, and no machine-drift downgrade — **and an exact regression fails the
-  Bench check.** An extra directory round-trip per activation moves
-  `directory_ops` from 2 to 3, which no timing comparison on a shared runner
-  could ever resolve, and which is exactly the kind of regression that is
-  invisible in review.
+  `microtask_turns` per dispatch, `notifications` per join, and the locality
+  guarantees of the `prefer-local` placement arms. These are algorithmic
+  *invariants*, not measurements: the same code yields the same value on any
+  machine under any load. So they carry no threshold, no noise gate, and no
+  machine-drift downgrade — **and an exact regression fails the Bench check.**
+  An extra directory round-trip per activation moves `directory_ops` from 2 to
+  3; a routing change that broke perfect locality moves
+  `edgehash+prefer-local/hops_per_call` off 0. Neither is resolvable by any
+  timing comparison on a shared runner, and both are invisible in review.
 
-Mark a metric `exact: true` only where determinism holds **by construction**.
-Anything built on `randomPlacementPolicy()` is disqualified however steady it
-looks — measured across two runs of identical code on one runner, the locality
-and shard-ownership ratios moved while the invariants did not.
+Mark a metric `exact: true` only where determinism holds **by construction**,
+and note that "looked stable" is not the test:
+
+- `preferLocalPolicy()` activates on the receiving silo, and every edge
+  strategy here is a pure function of an index or a key. Those arms qualify.
+- `randomPlacementPolicy()` obviously does not.
+- `consistentHashPolicy()` does not either, for a subtler reason worth
+  remembering: it is deterministic *given the silo ids*, and the ids are minted
+  per run. Steady within a run, different across two — the worst possible shape
+  for a gate.
+- `cluster/reminder-shard-ownership` at n=2 was bit-identical in four runs and
+  is still not flagged: 16 shards landing across 2 silos is *probably* even, not
+  deterministic, and it already varied at n=10.
+
+### The merge queue runs a narrower set
+
+`merge_group` supports no `paths` filter, so Bench fires on every queued merge
+including docs-only ones. Re-measuring the whole suite there would tax each
+merge to re-check timings that cannot fail anything, so the queue measures only
+the scenarios carrying `exact` metrics — `BENCH_GATE_SCENARIOS` in the workflow.
+That list and the flags are two halves of one decision living in two files, so
+`benchmarks/__tests__` asserts they agree in both directions: a filter is a
+substring match, and a renamed scenario would otherwise match nothing and shrink
+the gate in silence.
 
 The rest is only honesty about what the informational half is:
 

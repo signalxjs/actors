@@ -48,6 +48,33 @@ const REMINDER_SHARDS = Array.from({ length: 16 }, (_v, i) => `p${i}`);
  */
 const PLACEMENT_RATIO_NOISE_FLOOR = 0.05;
 
+/**
+ * `{ exact: true }` for the placement arms that are deterministic, `{}` for
+ * the rest — spread into a metric so the distinction is made once, by policy,
+ * rather than repeated per metric where it would drift.
+ *
+ * `preferLocalPolicy()` activates on whichever silo received the call, so it
+ * consults neither the RNG nor the per-run silo ids. Every edge here is a pure
+ * function too — two counters and a hash of the grain key — so an arm pairing
+ * them is reproducible anywhere, and its numbers are a statement about the
+ * ROUTING DESIGN rather than about this machine. `edgehash+prefer-local` is
+ * the one that matters most: its entire claim is `hops_per_call = 0` at every
+ * N, and a change that quietly broke perfect locality would move nothing a
+ * timing comparison can see.
+ *
+ * The other two arms are `randomPlacementPolicy()`, which is exactly what it
+ * says. Their ratios drift run to run and must never gate — measured across
+ * four runs on two machines, every `prefer-local` figure was bit-identical
+ * while the random ones moved.
+ *
+ * Not applied to `consistentHashPolicy` either, for a subtler reason: it is
+ * deterministic given the silo ids, and the ids are minted per run. Steady
+ * within a run, different across two — the worst possible shape for a gate.
+ */
+function exactIfDeterministic(label: string): { exact?: true } {
+    return label.endsWith('prefer-local') ? { exact: true } : {};
+}
+
 const Counted = defineActor({
     type: 'ClusterBench',
     unguarded: true,
@@ -511,6 +538,7 @@ const localityRouted: Scenario = {
                         value: placed === 0 ? 0 : localHits / placed,
                         unit: 'ratio',
                         direction: 'higher',
+                        ...exactIfDeterministic(label),
                         noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                     });
                 } finally {
@@ -592,6 +620,7 @@ const localityWarm: Scenario = {
                 ['skew+random', randomPlacementPolicy(), skewed],
                 ['skew+prefer-local', preferLocalPolicy(), skewed]
             ] as const) {
+                const deterministic = exactIfDeterministic(label);
                 const harness = await createCluster(n, { actors: [Counted], policy });
                 try {
                     const call = benchCall();
@@ -652,6 +681,7 @@ const localityWarm: Scenario = {
                             value: hops / grains,
                             unit: 'ratio',
                             direction: 'lower',
+                            ...deterministic,
                             noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                         },
                         {
@@ -659,6 +689,7 @@ const localityWarm: Scenario = {
                             value: Math.max(0, 1 - hops / grains),
                             unit: 'ratio',
                             direction: 'higher',
+                            ...deterministic,
                             noiseFloor: PLACEMENT_RATIO_NOISE_FLOOR
                         },
                         {
@@ -669,6 +700,7 @@ const localityWarm: Scenario = {
                             value: spread,
                             unit: 'ratio',
                             direction: 'lower',
+                            ...deterministic,
                             noiseFloor: 0.05
                         }
                     );

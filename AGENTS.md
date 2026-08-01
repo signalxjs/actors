@@ -177,12 +177,21 @@ per-machine and gitignored for exactly that reason.
   produced false regressions of 16%, 19% and 53%.
 - **`exact` metrics gate, at zero tolerance, and FAIL the check.** Invariants
   rather than measurements — `directory_ops` per activation, `microtask_turns`
-  per dispatch, `notifications` per join — so a shared runner judges them as
-  well as a quiet desk. In that same identical-commit run, every one came back
-  bit-identical while 215 other metrics drifted. Adding `exact: true` to a
-  metric that is not deterministic *by construction* (anything on
-  `randomPlacementPolicy()`, a clock, or the heap) breaks the gate for
-  everyone, so read `Metric.exact` in `benchmarks/src/types.ts` first.
+  per dispatch, `notifications` per join, the `prefer-local` locality
+  guarantees — so a shared runner judges them as well as a quiet desk. In that
+  same identical-commit run, every one came back bit-identical while 215 other
+  metrics drifted. Adding `exact: true` to a metric that is not deterministic
+  *by construction* (anything on `randomPlacementPolicy()`, on
+  `consistentHashPolicy()` — whose silo ids are minted per run — on a clock, or
+  on the heap) breaks the gate for everyone, so read `Metric.exact` in
+  `benchmarks/src/types.ts` first.
+- **The merge queue measures only the gating scenarios.** `merge_group` takes
+  no `paths` filter, so it fires on every queued merge; re-running the whole
+  suite there would tax each one to re-check timings that cannot fail.
+  `BENCH_GATE_SCENARIOS` in the workflow is that list, and
+  `benchmarks/__tests__` asserts it stays in step with the `exact` flags — a
+  scenario filter is a substring match, so a rename would otherwise shrink the
+  gate silently.
 - A scenario that *throws* fails the step either way.
 
 See "What a shared runner actually does" in `benchmarks/README.md` for the
