@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`defaults.maxActivations` — a soft LRU cap on live activations**
+  (#16, closing it). When the sweep finds more than this many active
+  (default 0 = unlimited), it deactivates the least-recently-used idle,
+  unheld ones with the new `DeactivationReason` `'capacity'` — pressure
+  relief before the heap applies its own. Deliberately soft: busy,
+  queued, or kept-alive activations are never shed, so a loaded host may
+  sit over the cap until it quiets, and correctness never depends on the
+  number — a shed actor re-activates on its next call with state intact.
+  Rides the existing sweeper (`sweepIntervalMs > 0`); shedding shows up
+  in `metrics().activations.byReason.capacity`.
+
 - **Automatic rebalancing — `cluster({ rebalance })` and
   `placement.rebalance()`** (#241, closing it). Off unless configured.
   Each host runs one round per `intervalMs` (default 60 s): probe peer

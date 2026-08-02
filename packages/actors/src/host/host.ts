@@ -62,6 +62,18 @@ export interface HostDefaults {
      * billable, so it would be one billing pin per actor.
      */
     sweepIntervalMs?: number;
+    /**
+     * SOFT cap on live activations. Default 0 = unlimited. When the sweep
+     * finds more than this many active, it deactivates the
+     * least-recently-used idle, unheld ones (reason `'capacity'`) — LRU
+     * pressure relief before memory pressure does it for us. Soft on
+     * purpose: busy, queued, or kept-alive activations are never shed, so
+     * the count can sit over the cap while the host is genuinely loaded,
+     * and correctness never depends on it — a shed actor re-activates on
+     * its next call, state intact. Rides the sweeper, so it needs
+     * `sweepIntervalMs > 0`.
+     */
+    maxActivations?: number;
     /** Reminder loop cadence, ms. Default 30s. */
     reminderTickMs?: number;
     /** __DEV__ slow-turn warning threshold, ms. Default 5s. */
@@ -131,6 +143,7 @@ interface ResolvedDefaults {
     idleAfterMs: number;
     callTimeoutMs: number;
     sweepIntervalMs: number;
+    maxActivations: number;
     reminderTickMs: number;
     slowTurnMs: number;
     taskGraceMs: number;
@@ -168,6 +181,7 @@ class HostImpl implements Host {
             idleAfterMs: options.defaults?.idleAfterMs ?? 20 * 60_000,
             callTimeoutMs: options.defaults?.callTimeoutMs ?? 30_000,
             sweepIntervalMs: options.defaults?.sweepIntervalMs ?? 60_000,
+            maxActivations: options.defaults?.maxActivations ?? 0,
             reminderTickMs: options.defaults?.reminderTickMs ?? 30_000,
             slowTurnMs: options.defaults?.slowTurnMs ?? 5_000,
             taskGraceMs: options.defaults?.taskGraceMs ?? 10_000,
@@ -591,7 +605,11 @@ class HostImpl implements Host {
         // `0` = no idle collection (see `HostDefaults.sweepIntervalMs`).
         if (this.#defaults.sweepIntervalMs > 0) {
             this.#stopSweeper = this.#scheduler.every(this.#defaults.sweepIntervalMs, () =>
-                this.#local.sweep(Date.now(), this.#defaults.idleAfterMs)
+                this.#local.sweep(
+                    Date.now(),
+                    this.#defaults.idleAfterMs,
+                    this.#defaults.maxActivations
+                )
             );
         }
         this.#started = true;

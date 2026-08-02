@@ -292,8 +292,20 @@ export class LocalHost implements ActorDispatcher {
         return drained;
     }
 
-    /** Idle sweep: deactivate every activation past its collection age. */
-    sweep(now: number, defaultIdleMs: number): void {
+    /**
+     * The sweep: idle collection, then capacity shedding.
+     *
+     * `maxActivations` is a SOFT cap (0 = unlimited): once the idle pass
+     * has run, if more than `maxActivations` activations remain active, the
+     * least-recently-used idle, unheld ones are deactivated with reason
+     * `'capacity'` — LRU pressure relief before memory pressure does it for
+     * us. Soft, deliberately: an activation that is mid-turn, has queued
+     * work, or is kept alive by a stream/watch/task is never shed, so a
+     * host where every actor is busy can sit over the cap until it quiets.
+     * Correctness never depends on the cap — a shed actor re-activates on
+     * its next call, state intact.
+     */
+    sweep(now: number, defaultIdleMs: number, maxActivations = 0): void {
         for (const [, slot] of this.#directory) {
             if (slot.phase !== 'active') continue;
             const a = slot.activation;
@@ -301,6 +313,25 @@ export class LocalHost implements ActorDispatcher {
             if (a.idle && !a.keptAlive && now - a.lastActivityMs >= idleAfter) {
                 void this.deactivate(a.ref, 'idle');
             }
+        }
+        if (maxActivations <= 0) return;
+        // Fresh scan: everything the idle pass just started deactivating has
+        // left the 'active' phase, so it neither counts nor sheds twice.
+        let active = 0;
+        const candidates: Activation[] = [];
+        for (const [, slot] of this.#directory) {
+            if (slot.phase !== 'active') continue;
+            active++;
+            const a = slot.activation;
+            if (a.idle && !a.keptAlive) candidates.push(a);
+        }
+        const excess = active - maxActivations;
+        if (excess <= 0) return;
+        // Least recently used first — the ordering that makes the cap an
+        // LRU cache rather than a random cull.
+        candidates.sort((a, b) => a.lastActivityMs - b.lastActivityMs);
+        for (const victim of candidates.slice(0, excess)) {
+            void this.deactivate(victim.ref, 'capacity');
         }
     }
 

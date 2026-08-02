@@ -826,6 +826,14 @@ not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob
 - Idle actors deactivate after `idleAfterMs` (default 20 min; per-actor
   override). `ctx.deactivate()`: finish the
   queue, then go.
+- `defaults.maxActivations` (default 0 = unlimited) is a **soft cap**: when
+  the sweep finds more active than this, it deactivates the
+  least-recently-used idle, unheld ones with reason `'capacity'` — LRU
+  pressure relief before memory pressure does it for us. Busy, queued, or
+  kept-alive activations are never shed, so a genuinely loaded host may
+  sit over the cap until it quiets; a shed actor re-activates on its next
+  call, state intact. Rides the sweeper (`sweepIntervalMs > 0`), and
+  `metrics().activations.byReason.capacity` says how often it fires.
 - `host.stop()` drains every mailbox, flushes persistence, ends open streams
   and rejects new external calls.
   `attachSignalHandlers(host, { server, onStopBegin })`

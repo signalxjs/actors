@@ -414,9 +414,19 @@ export interface TaskApi {
     list(): readonly TaskInfo[];
 }
 
-/** `'migrated'` is reserved for cluster rebalancing — not yet emitted. */
+/**
+ * Why an activation is going away. `'idle'` is the idle sweep;
+ * `'capacity'` the max-activations LRU shed (same sweeper, different
+ * pressure); `'explicit'` a `ctx.deactivate()` / `host.deactivate()`
+ * request; `'shutdown'` the host stopping; `'conflict'` a storage etag
+ * mismatch (the activation is discarded and the next call reloads the
+ * winning state); `'activation-failed'` an `onActivate` throw (nothing to
+ * tear down — `onDeactivate` is skipped); `'migrated'` a cluster handoff
+ * or rebalance — a peer will re-place the actor.
+ */
 export type DeactivationReason =
     | 'idle'
+    | 'capacity'
     | 'explicit'
     | 'shutdown'
     | 'conflict'
