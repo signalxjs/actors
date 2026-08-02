@@ -755,7 +755,9 @@ not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob
 - Calls that arrive during deactivation wait and land on a fresh activation.
 - External calls get a deadline (`callTimeoutMs`, default 30s) — on expiry
   the **caller** gets `ActorCallTimeoutError`; the turn itself always runs
-  to completion.
+  to completion. Enforcement is never early but coarse when far: a deadline
+  ≥ 10 s away shares one registry tick and may fire up to ~2 s late, while
+  a short budget (a wire hop arriving nearly spent) gets an exact timer.
 
 ### Seeing which grains are live
 

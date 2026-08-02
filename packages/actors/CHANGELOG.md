@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Far call deadlines are enforced by a shared registry, not a timer per
+  call** (#230). With a non-zero `callTimeoutMs`, every dispatch used to
+  allocate a `setTimeout`/`clearTimeout` pair, a `Promise.race` and an
+  `async` wrapper to race the caller's deadline — measured at 38% of
+  dispatch throughput, and paid by every production call since the default
+  is 30 s. Deadlines ≥ 10 s away now share one recurring unref'd 1 s tick
+  (`CallDeadlines`); short budgets (e.g. a wire hop arriving nearly spent)
+  keep an exact per-call timer. Observable change: a far deadline may fire
+  up to ~2 s **late**, never early — the `deadline` value crossing hops is
+  unchanged, so cross-silo budgets are unaffected. Gated by the new
+  `dispatch/warm-turns-deadline` exact benchmark (12 → 11 microtask turns,
+  1000 → 0 host timers per 1000 dispatches).
+
+### Fixed
+
+- A call arriving with an already-expired deadline no longer leaks an
+  unhandled rejection when its (still-enqueued, never killed) turn itself
+  rejects — the turn promise now gets a rejection handler on every branch
+  (#230).
+
 ### Added
 
 - **`clusterStats()` aggregates behaviour, not just topology** (#121).

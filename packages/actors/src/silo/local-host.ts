@@ -6,7 +6,6 @@
  */
 import {
     ActorActivationError,
-    ActorCallTimeoutError,
     ActorDeadlockError,
     ActorError,
     SiloShutdownError
@@ -26,6 +25,7 @@ import {
     type SiloStats
 } from '../types';
 import { Activation, type ActivationHost } from './activation';
+import { CallDeadlines } from './deadlines';
 import { Mailbox } from './mailbox';
 
 /** Bounded low: this is a "top N" view, and the walk is O(activations). */
@@ -38,6 +38,7 @@ type Slot =
 
 export class LocalHost implements ActorDispatcher {
     #directory = new Map<string, Slot>();
+    #deadlines = new CallDeadlines();
     #host: ActivationHost;
     #resolveDefinition: (type: string) => AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
     #shuttingDown = false;
@@ -68,7 +69,7 @@ export class LocalHost implements ActorDispatcher {
         const work = this.#dispatchInner(ref, method, args, call);
         return call.deadline === undefined
             ? work
-            : raceDeadline(work, call.deadline, ref, method);
+            : this.#deadlines.race(work, call.deadline, ref, method);
     }
 
     dispatchStream(
@@ -359,6 +360,7 @@ export class LocalHost implements ActorDispatcher {
                 this.#directory.delete(id);
             }
         }
+        this.#deadlines.dispose();
     }
 
     stats(): SiloStats {
@@ -431,30 +433,3 @@ export class LocalHost implements ActorDispatcher {
     }
 }
 
-/** Race a dispatch against the caller's deadline. The turn is never killed. */
-async function raceDeadline(
-    work: Promise<unknown>,
-    deadline: number,
-    ref: ActorRef,
-    method: string
-): Promise<unknown> {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new ActorCallTimeoutError(actorLabel(ref), method, 0);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-        return await Promise.race([
-            work,
-            new Promise((_r, reject) => {
-                timer = setTimeout(
-                    () => reject(new ActorCallTimeoutError(actorLabel(ref), method, remaining)),
-                    remaining
-                );
-                (timer as { unref?: () => void }).unref?.();
-            })
-        ]);
-    } finally {
-        clearTimeout(timer);
-        // The losing work promise must not surface as unhandled.
-        work.catch(() => {});
-    }
-}

@@ -49,7 +49,7 @@ what you want is the gap, not the absolute number:
 ```
 dispatch/mailbox-raw          the promise-chain turn queue, no actor
 dispatch/warm-grain           + placement, reentrancy check, directory, turn
-dispatch/warm-grain-deadline  + raceDeadline (the production default)
+dispatch/warm-grain-deadline  + the call-deadline machinery (the production default)
 dispatch/via-proxy            + client proxy and a minted call id
 wire/endpoint-roundtrip       + wire codec, JSON, endpoint (no socket)
 ```
@@ -310,7 +310,7 @@ pnpm bench:profile dispatch/warm-grain
 ```
 
 **Allocation.** Sampled allocation-by-call-site — the direct way to confirm or
-refute a suspicion about the promise-chain mailbox or `raceDeadline`:
+refute a suspicion about the promise-chain mailbox or `CallDeadlines`:
 
 ```sh
 node --conditions=production --expose-gc --enable-source-maps \
@@ -437,7 +437,7 @@ Rules worth knowing:
 - `createBenchSilo` uses `manualScheduler()` and hour-long sweep/reminder
   intervals, so background jobs never land mid-measurement. Scenarios that
   measure those jobs drive `fixture.clock.advance(ms)` themselves.
-- `callTimeoutMs` defaults to `0` (no `raceDeadline` on the measured path). Pass
+- `callTimeoutMs` defaults to `0` (no deadline machinery on the measured path). Pass
   `PRODUCTION_CALL_TIMEOUT_MS` to measure the default configuration.
 - Comparing two actor definitions? Make them **identical except for the variable**.
   The guard benchmark first compared against `Tiny`, which also carries a stream

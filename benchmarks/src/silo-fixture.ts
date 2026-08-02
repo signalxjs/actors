@@ -10,10 +10,10 @@
  *    manual clock explicitly instead.
  *
  * 2. `callTimeoutMs` is a parameter, not a constant. The production default
- *    is 30s, and a non-zero deadline makes every dispatch allocate a promise
- *    and a `setTimeout` in `raceDeadline`. Benchmarking only the `0` case
- *    would flatter the runtime; benchmarking only the default would hide
- *    what the deadline costs. So the dispatch scenarios run both.
+ *    is 30s, and a non-zero deadline routes every dispatch through the
+ *    call-deadline registry (`CallDeadlines`). Benchmarking only the `0`
+ *    case would flatter the runtime; benchmarking only the default would
+ *    hide what the deadline costs. So the dispatch scenarios run both.
  */
 import { createSilo, manualScheduler, memoryStorage } from '@sigx/actors/silo';
 import type {
@@ -39,7 +39,7 @@ export interface SiloFixture {
 export interface SiloFixtureOptions {
     actors: readonly AnyActorDefinition[];
     storage?: ActorStorage;
-    /** Defaults to 0 — no `raceDeadline` allocation on the measured path. */
+    /** Defaults to 0 — no deadline machinery on the measured path. */
     callTimeoutMs?: number;
     defaults?: SiloDefaults;
 }

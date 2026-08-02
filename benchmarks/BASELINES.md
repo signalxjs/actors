@@ -80,7 +80,8 @@ Two findings stand out:
 - **The default call deadline costs ~38% of dispatch throughput.** Every
   dispatch with a non-zero `callTimeoutMs` allocates a promise and a
   `setTimeout` in `raceDeadline`. The default is 30 s, so essentially every
-  production call pays it.
+  production call pays it. **Fixed since (#230):** far deadlines now share
+  one coarse registry tick (`silo/deadlines.ts`) — see item 1 below.
 - **A turn through the silo costs ~4× a bare mailbox turn.** The mailbox itself
   (a promise chain, ~4 promises per turn) is not the dominant cost at this
   layer; what sits on top of it is. **Since 2026-07-31 we know what:** two
@@ -683,10 +684,20 @@ these are known problems** — they are measurements looking for a decision.
 0. **`#activationFor` and `#checkReentrancy` are `async` on a synchronous
    path** — the largest single cost in the runtime's own code, and present in
    every profile. See the section above.
-1. **`raceDeadline` costs 38% of dispatch throughput.** A shared timer wheel, or
+1. ~~**`raceDeadline` costs 38% of dispatch throughput.** A shared timer wheel, or
    skipping the race when the deadline is far away, would recover most of it.
    (Profiled at 6.1% self in `local-host.ts:410` plus 0.9% in its inner closure
-   at `:422`, across a run where only half the scenarios enable it.)
+   at `:422`, across a run where only half the scenarios enable it.)~~
+   **Fixed (#230):** `CallDeadlines` (`silo/deadlines.ts`) gives far
+   deadlines (≥ 10 s remaining — the production default) one shared unref'd
+   1 s registry tick over ceil'd buckets; near deadlines keep the exact
+   per-call timer. `dispatch/warm-turns-deadline` gates the path exactly:
+   12 → 11 microtask turns and 1000 → 0 host timers per 1000 dispatches
+   (`dispatch/warm-turns` unchanged at 10). A far deadline now fires up to
+   ~2 s late, never early; the `deadline` field crossing hops is untouched.
+   Remaining per-call cost is the wrapper promise plus the two settle
+   closures — de-asyncing the dispatch frames (see #215's pattern) is the
+   next rung, not deadline machinery.
 2. ~~**The change feed's per-turn snapshot is two full deep walks.**~~
    **Superseded by the profile:** the snapshot is already shared across
    subscribers, and the 1-subscriber cliff is the `{deep: true}` watch, not the

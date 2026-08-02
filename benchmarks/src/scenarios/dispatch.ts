@@ -6,7 +6,7 @@
  *
  *   mailbox-raw          promise-chain turn serialization, no actor at all
  *   warm-grain           + placement, reentrancy check, activation lookup, turn
- *   warm-grain-deadline  + raceDeadline (the production default)
+ *   warm-grain-deadline  + the call-deadline machinery (the production default)
  *   via-proxy            + the client proxy and a freshly minted call context
  *   fan-out-grains       warm-grain across N activations (directory + parallelism)
  *
@@ -68,7 +68,7 @@ const warmGrain: Scenario = {
 
 const warmGrainDeadline: Scenario = {
     name: 'dispatch/warm-grain-deadline',
-    description: `same call with the PRODUCTION callTimeoutMs (${PRODUCTION_CALL_TIMEOUT_MS}ms) — the raceDeadline tax`,
+    description: `same call with the PRODUCTION callTimeoutMs (${PRODUCTION_CALL_TIMEOUT_MS}ms) — the call-deadline tax`,
     async run(ctx: RunContext): Promise<Metric[]> {
         const fixture = await createBenchSilo({
             actors: [Tiny],
@@ -217,11 +217,102 @@ const warmTurns: Scenario = {
     }
 };
 
+/**
+ * The same count with the PRODUCTION deadline enabled — the rung that pays
+ * the deadline machinery. Gates for the same reason `warm-turns` does: a
+ * promise added to (or removed from) the deadline path moves the integer,
+ * which no timing on a shared runner could resolve.
+ *
+ * The timer count rides along as informational rather than exact: whether a
+ * shared registry's idle tick lands inside the counted window depends on
+ * wall time, so the value is not deterministic by construction — but the
+ * order of magnitude (per-call timers vs amortized-zero) is the finding.
+ */
+const warmTurnsDeadline: Scenario = {
+    name: 'dispatch/warm-turns-deadline',
+    description: 'microtask turns for ONE warm dispatch with the production deadline — the deadline path, as a count',
+    async run(): Promise<Metric[]> {
+        const fixture = await createBenchSilo({
+            actors: [Tiny],
+            callTimeoutMs: PRODUCTION_CALL_TIMEOUT_MS
+        });
+        try {
+            const ref = { type: Tiny.type, key: 'warm' };
+            const call = benchCall();
+            for (let i = 0; i < 2_000; i++) {
+                await fixture.silo.dispatch(ref, 'noop', [], call);
+            }
+
+            const turnsForOneDispatch = async (): Promise<number> => {
+                let turns = 0;
+                let done = false;
+                const tick = (): void => {
+                    if (done) return;
+                    turns++;
+                    queueMicrotask(tick);
+                };
+                queueMicrotask(tick);
+                await fixture.silo.dispatch(ref, 'noop', [], call);
+                done = true;
+                return turns;
+            };
+
+            const samples: number[] = [];
+            for (let i = 0; i < 15; i++) samples.push(await turnsForOneDispatch());
+            samples.sort((a, b) => a - b);
+
+            // Count host timers created by 1000 sequential dispatches.
+            const realSetTimeout = globalThis.setTimeout;
+            let timers = 0;
+            globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+                timers++;
+                return realSetTimeout(...args);
+            }) as typeof setTimeout;
+            try {
+                for (let i = 0; i < 1_000; i++) {
+                    await fixture.silo.dispatch(ref, 'noop', [], call);
+                }
+            } finally {
+                globalThis.setTimeout = realSetTimeout;
+            }
+
+            return [
+                {
+                    name: 'microtask_turns',
+                    value: samples[Math.floor(samples.length / 2)] as number,
+                    unit: 'turns',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: 'microtask_turns_spread',
+                    value: (samples[samples.length - 1] as number) - (samples[0] as number),
+                    unit: 'turns',
+                    direction: 'lower',
+                    exact: true,
+                    noiseFloor: 0.5
+                },
+                {
+                    name: 'timers_per_1000_dispatches',
+                    value: timers,
+                    unit: 'timers',
+                    direction: 'lower',
+                    informational: true,
+                    noiseFloor: 2
+                }
+            ];
+        } finally {
+            await fixture.stop();
+        }
+    }
+};
+
 export const dispatchScenarios: Scenario[] = [
     mailboxRaw,
     warmGrain,
     warmGrainDeadline,
     viaProxy,
     fanOut,
-    warmTurns
+    warmTurns,
+    warmTurnsDeadline
 ];
