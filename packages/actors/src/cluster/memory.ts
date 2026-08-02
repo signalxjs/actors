@@ -1,7 +1,7 @@
 /**
  * In-process cluster providers — the `memoryStorage()` of clustering. One
- * hub is shared by every silo in the process (the test topology); each
- * silo takes its own `providers()` handle. No heartbeats or TTLs: a silo
+ * hub is shared by every host in the process (the test topology); each
+ * host takes its own `providers()` handle. No heartbeats or TTLs: a host
  * is live iff it joined and neither left nor was `kill()`ed. `kill()`
  * simulates a crash — the member vanishes without releasing anything and
  * its own membership handle fires `onSelfSuspect`.
@@ -12,27 +12,27 @@ import type {
     ClusterProviders,
     DirectoryEntry,
     MembershipView,
-    SiloDescriptor,
-    SiloStatus
+    HostDescriptor,
+    HostStatus
 } from './types';
 
 export interface MemoryClusterHub {
-    /** A fresh provider set for ONE silo — call once per `clusterPlacement`. */
+    /** A fresh provider set for ONE host — call once per `clusterPlacement`. */
     providers(): ClusterProviders;
     /** Simulate a crash: drop the member without cleanup, fire its self-suspect. */
-    kill(siloId: string): void;
+    kill(hostId: string): void;
     /** Test handle on the shared directory (seed/poison entries). */
     readonly directory: ActorDirectory;
 }
 
 export function memoryClusterHub(): MemoryClusterHub {
     let version = 0;
-    const members = new Map<string, SiloDescriptor>();
+    const members = new Map<string, HostDescriptor>();
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Map<string, Set<() => void>>();
     const entries = new Map<string, DirectoryEntry>();
 
-    const view = (): MembershipView => ({ version, silos: [...members.values()] });
+    const view = (): MembershipView => ({ version, hosts: [...members.values()] });
     const bump = (): void => {
         version++;
         const snapshot = view();
@@ -61,10 +61,10 @@ export function memoryClusterHub(): MemoryClusterHub {
             }
             return false;
         },
-        async evictSilo(siloId) {
+        async evictHost(hostId) {
             let removed = 0;
             for (const [actorId, entry] of entries) {
-                if (entry.siloId === siloId) {
+                if (entry.hostId === hostId) {
                     entries.delete(actorId);
                     removed++;
                 }
@@ -78,15 +78,15 @@ export function memoryClusterHub(): MemoryClusterHub {
         const selfSuspect = new Set<() => void>();
         return {
             async join(self) {
-                selfId = self.siloId;
-                members.set(self.siloId, self);
-                suspectCbs.set(self.siloId, selfSuspect);
+                selfId = self.hostId;
+                members.set(self.hostId, self);
+                suspectCbs.set(self.hostId, selfSuspect);
                 bump();
             },
-            async setStatus(status: SiloStatus) {
+            async setStatus(status: HostStatus) {
                 const current = selfId ? members.get(selfId) : undefined;
                 if (!current) return;
-                members.set(current.siloId, { ...current, status });
+                members.set(current.hostId, { ...current, status });
                 bump();
             },
             async leave() {
@@ -98,8 +98,8 @@ export function memoryClusterHub(): MemoryClusterHub {
             async refresh() {
                 return view();
             },
-            async isAlive(siloId) {
-                return members.has(siloId);
+            async isAlive(hostId) {
+                return members.has(hostId);
             },
             onChange(cb) {
                 changeCbs.add(cb);
@@ -117,11 +117,11 @@ export function memoryClusterHub(): MemoryClusterHub {
             membership: membershipFor(),
             directory
         }),
-        kill(siloId) {
-            if (!members.delete(siloId)) return;
+        kill(hostId) {
+            if (!members.delete(hostId)) return;
             bump();
-            const cbs = suspectCbs.get(siloId);
-            suspectCbs.delete(siloId);
+            const cbs = suspectCbs.get(hostId);
+            suspectCbs.delete(hostId);
             for (const cb of cbs ?? []) cb();
         },
         directory

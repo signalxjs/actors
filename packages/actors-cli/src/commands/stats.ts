@@ -29,7 +29,7 @@ export async function runStats(ctx: ActorsCommandContext): Promise<void> {
     }
 }
 
-/** Pure, so it is testable without a terminal or a running silo. */
+/** Pure, so it is testable without a terminal or a running host. */
 export function renderStats(snapshot: MonitorSnapshot, label: string): string[] {
     const lines: string[] = [`${label}  ${new Date(snapshot.at).toISOString()}`];
 
@@ -38,7 +38,7 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         // every total below is a lower bound, and they still look plausible.
         lines.push(
             '',
-            '! PARTIAL — a silo did not answer, so every total below is a LOWER BOUND'
+            '! PARTIAL — a host did not answer, so every total below is a LOWER BOUND'
         );
     }
 
@@ -47,14 +47,14 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         lines.push(
             '',
             'cluster',
-            `  silos        ${cluster.totals.silos} (${cluster.view.active} active of ${cluster.view.size}, view #${cluster.view.version})`,
+            `  hosts        ${cluster.totals.hosts} (${cluster.view.active} active of ${cluster.view.size}, view #${cluster.view.version})`,
             `  activations  ${count(cluster.totals.activations)}`,
             `  queued       ${count(cluster.totals.queued)}`
         );
         if (cluster.unreachable.length > 0) {
             lines.push(`  unreachable  ${cluster.unreachable.length}`);
             for (const failure of cluster.unreachable) {
-                lines.push(`    ${failure.siloId} ${failure.address} — ${failure.reason}`);
+                lines.push(`    ${failure.hostId} ${failure.address} — ${failure.reason}`);
             }
         }
         const empty = Object.entries(cluster.reminderShards).filter(([, s]) => s.length === 0);
@@ -69,29 +69,29 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         }
     }
 
-    lines.push('', 'silos');
-    for (const silo of snapshot.silos) {
-        const marker = silo.status === 'active' || silo.status === 'unknown' ? ' ' : '!';
+    lines.push('', 'hosts');
+    for (const host of snapshot.hosts) {
+        const marker = host.status === 'active' || host.status === 'unknown' ? ' ' : '!';
         lines.push(
-            `  ${marker} ${silo.siloId}  ${silo.status}  up ${uptime(silo.uptimeMs)}  ` +
-                `${count(silo.stats.activations)} act  ${count(silo.stats.queued)} queued` +
-                (silo.membershipVersion !== null ? `  view #${silo.membershipVersion}` : '')
+            `  ${marker} ${host.hostId}  ${host.status}  up ${uptime(host.uptimeMs)}  ` +
+                `${count(host.stats.activations)} act  ${count(host.stats.queued)} queued` +
+                (host.membershipVersion !== null ? `  view #${host.membershipVersion}` : '')
         );
-        const { activating, deactivating } = silo.stats.transitional;
+        const { activating, deactivating } = host.stats.transitional;
         if (activating > 0 || deactivating > 0) {
             lines.push(`      in flight: ${activating} activating, ${deactivating} deactivating`);
         }
     }
 
-    // Cluster-wide when the fan-out produced it, the polled silo's
+    // Cluster-wide when the fan-out produced it, the polled host's
     // otherwise — and the heading says which. Printing one under a heading
     // that means the other is the complaint this milestone exists to fix:
-    // `calls total 382` directly under `cluster silos 2` reads as
-    // cluster-wide when it was one silo's.
+    // `calls total 382` directly under `cluster hosts 2` reads as
+    // cluster-wide when it was one host's.
     const clusterMetrics = snapshot.cluster?.totals.metrics ?? null;
     const scope = clusterMetrics
-        ? `cluster-wide (${clusterMetrics.silos} of ${cluster?.totals.silos ?? '?'} silos reporting)`
-        : `silo ${cluster?.from ?? snapshot.silos[0]?.siloId ?? 'local'} ONLY`;
+        ? `cluster-wide (${clusterMetrics.hosts} of ${cluster?.totals.hosts ?? '?'} hosts reporting)`
+        : `host ${cluster?.from ?? snapshot.hosts[0]?.hostId ?? 'local'} ONLY`;
     const metrics = snapshot.metrics;
     if (clusterMetrics) {
         const failed = clusterMetrics.calls.failed;
@@ -108,15 +108,15 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         ] as const) {
             if (!snap) continue;
             // Re-derived from the summed buckets, not an average of the
-            // silos' percentiles — which would be a figure describing no
+            // hosts' percentiles — which would be a figure describing no
             // call that ever happened.
             lines.push(
                 `  ${label.padEnd(12)} p50 ${durationMs(snap.p50Ms)}  p90 ${durationMs(snap.p90Ms)}  p99 ${durationMs(snap.p99Ms)}`
             );
         }
-        if (clusterMetrics.silos < (cluster?.totals.silos ?? 0)) {
+        if (clusterMetrics.hosts < (cluster?.totals.hosts ?? 0)) {
             lines.push(
-                `  ! ${clusterMetrics.silos} of ${cluster?.totals.silos} silos reported metrics — the figures above are a LOWER BOUND`
+                `  ! ${clusterMetrics.hosts} of ${cluster?.totals.hosts} hosts reported metrics — the figures above are a LOWER BOUND`
             );
         }
         const kinds = Object.entries(clusterMetrics.errors.byKind);
@@ -142,7 +142,7 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
             );
         }
         // Side by side, because the comparison is the whole point: a high
-        // queue means a hot grain, a high turn means a slow method.
+        // queue means a hot actor, a high turn means a slow method.
         if (metrics.queueMs && metrics.turnMs) {
             lines.push(
                 `  queue        p50 ${durationMs(metrics.queueMs.p50Ms)}  p90 ${durationMs(metrics.queueMs.p90Ms)}  p99 ${durationMs(metrics.queueMs.p99Ms)}`,
@@ -166,7 +166,7 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         if (slowest.length > 0) {
             lines.push(
                 '',
-                `slowest methods (p99 turn) — silo ${cluster?.from ?? 'local'}`,
+                `slowest methods (p99 turn) — host ${cluster?.from ?? 'local'}`,
                 ...slowest.map(
                     ([name, m]) =>
                         `  ${name.padEnd(28)} ${durationMs(m.turnMs!.p99Ms).padStart(8)}  ${count(m.calls)} calls`
@@ -183,13 +183,13 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
     if (snapshot.activations && snapshot.activations.length > 0) {
         lines.push(
             '',
-            `hottest grains — silo ${cluster?.from ?? 'local'}`,
+            `hottest actors — host ${cluster?.from ?? 'local'}`,
             ...snapshot.activations
                 .slice(0, 10)
                 .map(
-                    (grain) =>
-                        `  ${`${grain.type}/${grain.key}`.padEnd(36)} ${String(grain.queued).padStart(5)} queued  ` +
-                        `age ${uptime(grain.ageMs)}  idle ${uptime(grain.idleMs)}`
+                    (actor) =>
+                        `  ${`${actor.type}/${actor.key}`.padEnd(36)} ${String(actor.queued).padStart(5)} queued  ` +
+                        `age ${uptime(actor.ageMs)}  idle ${uptime(actor.idleMs)}`
                 )
         );
     }

@@ -24,7 +24,7 @@ WORKDIR /app
 COPY --from=build /out ./
 # Prove the deployed tree resolves the runtime under the prod condition —
 # a broken pnpm-deploy layout should fail the image build, not the pod.
-RUN node --conditions=production -e "await import('@sigx/actors/silo'); await import('@sigx/actors-redis'); await import('@sigx/actors-k8s');"
+RUN node --conditions=production -e "await import('@sigx/actors/host'); await import('@sigx/actors-redis'); await import('@sigx/actors-k8s');"
 USER node
 EXPOSE 7311
 # --conditions=production selects dist/*.prod.js in every @sigx package

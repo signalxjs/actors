@@ -19,13 +19,13 @@ export function toClientError(error: unknown): unknown {
             return new ServerFnError(404, error.message, { kind: error.kind });
         case 'state-conflict':
             return new ServerFnError(409, error.message, { kind: error.kind });
-        case 'silo-shutdown':
+        case 'host-shutdown':
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'call-timeout':
             return new ServerFnError(504, error.message, { kind: error.kind });
         case 'wrong-host':
         case 'unreachable':
-            // Cluster routing errors are resolved silo-to-silo and should
+            // Cluster routing errors are resolved host-to-host and should
             // never surface here; if one does, it's retryable — 503.
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'deadlock':

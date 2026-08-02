@@ -1,5 +1,5 @@
-# A Deployment, NOT a StatefulSet: silo identity is minted per start (a
-# restart is a NEW silo by design), so pods need no stable names — only a
+# A Deployment, NOT a StatefulSet: host identity is minted per start (a
+# restart is a NEW host by design), so pods need no stable names — only a
 # pod-reachable advertise address, which the downward API provides.
 {{- if not .Values.image.tag }}
 {{- fail "image.tag is required (immutable git-sha tags; the chart never deploys :latest)" }}
@@ -7,10 +7,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "chart.fullname" . }}-silo
+  name: {{ include "chart.fullname" . }}-host
   labels:
     {{- include "chart.labels" . | nindent 4 }}
-    app.kubernetes.io/component: silo
+    app.kubernetes.io/component: host
 spec:
   {{- if not .Values.hpa.enabled }}
   # Omitted when the HPA is on: the HPA owns .spec.replicas via the scale
@@ -21,26 +21,26 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "chart.siloSelector" . | nindent 6 }}
+      {{- include "chart.hostSelector" . | nindent 6 }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      # Surge first, drain second: the new silo joins membership before
-      # any old silo announces 'leaving' — the zero-drop rolling deploy.
+      # Surge first, drain second: the new host joins membership before
+      # any old host announces 'leaving' — the zero-drop rolling deploy.
       maxSurge: 1
       maxUnavailable: 0
   template:
     metadata:
       labels:
         {{- include "chart.labels" . | nindent 8 }}
-        app.kubernetes.io/component: silo
+        app.kubernetes.io/component: host
     spec:
       # Always rendered, never omitted: under server-side apply an omitted
       # field is RELINQUISHED, not removed, so switching membership k8s ->
-      # redis used to strand `serviceAccountName: <release>-silo` on the
+      # redis used to strand `serviceAccountName: <release>-host` on the
       # template while deleting the ServiceAccount itself — token mounts
       # fail and the rollout wedges (#154).
-      serviceAccountName: {{ if eq .Values.membership "k8s" }}{{ include "chart.fullname" . }}-silo{{ else }}default{{ end }}
+      serviceAccountName: {{ if eq .Values.membership "k8s" }}{{ include "chart.fullname" . }}-host{{ else }}default{{ end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -52,23 +52,23 @@ spec:
       {{- end }}
       affinity:
         podAntiAffinity:
-          {{- if eq .Values.affinity.siloAntiRedis "required" }}
+          {{- if eq .Values.affinity.hostAntiRedis "required" }}
           requiredDuringSchedulingIgnoredDuringExecution:
             - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "redis") | nindent 14 }}
           {{- end }}
-          {{- if eq .Values.affinity.siloSelfSpread "required" }}
-          {{- if ne .Values.affinity.siloAntiRedis "required" }}
+          {{- if eq .Values.affinity.hostSelfSpread "required" }}
+          {{- if ne .Values.affinity.hostAntiRedis "required" }}
           requiredDuringSchedulingIgnoredDuringExecution:
           {{- end }}
-            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "silo") | nindent 14 }}
+            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "host") | nindent 14 }}
           {{- else }}
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
-                {{- include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "silo") | nindent 16 }}
+                {{- include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "host") | nindent 16 }}
           {{- end }}
       containers:
-        - name: silo
+        - name: host
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:

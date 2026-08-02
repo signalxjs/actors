@@ -18,7 +18,7 @@ import { createLiveChannel, type LiveChannel } from './live';
 export interface ActorsContext {
     /**
      * The transport actor calls resolve at call time. Null on the server,
-     * where `actor()` dispatches in-process through the silo seam and never
+     * where `actor()` dispatches in-process through the host seam and never
      * touches a transport at all.
      */
     readonly transport: ActorTransport | null;

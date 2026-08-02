@@ -4,7 +4,7 @@
  *
  * Deliberately files, not SQLite: zero dependencies, no Node-version or
  * native-module constraints, and the concurrency SQLite buys is what a
- * single silo doesn't need (saves are serialized per actor by the mailbox;
+ * single host doesn't need (saves are serialized per actor by the mailbox;
  * an in-process chain serializes same-file access here). Production storage
  * belongs in real providers implementing the same three methods.
  *

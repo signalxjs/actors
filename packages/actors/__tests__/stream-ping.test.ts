@@ -2,7 +2,7 @@
  * Keepalive on the per-actor stream path (#178).
  *
  * `$live` has pinged since it shipped, because a page's live connection is
- * mostly quiet and every intermediary between a browser and a silo reaps an
+ * mostly quiet and every intermediary between a browser and a host reaps an
  * idle response. `actor(X, k).watch()` is the same shape and had nothing: a
  * quiet room's stream is bytes-silent until the next mutation, so ingress
  * (60 s by default), cloud load balancers (~4 min) and mobile NATs all close
@@ -15,7 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { actor, defineActor } from '@sigx/actors';
-import { createSilo, type Silo } from '@sigx/actors/silo';
+import { createHost, type Host } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { __actorRef, configureActors } from '@sigx/actors/client';
 
@@ -51,16 +51,16 @@ const Room = defineActor({
 });
 
 const RoomRef = __actorRef('Room', ENDPOINT, ['watch', 'chatter']) as typeof Room;
-const running: Silo[] = [];
+const running: Host[] = [];
 
-function silo(): Silo {
-    const s = createSilo({ actors: [Room], defaults: quiet });
+function host(): Host {
+    const s = createHost({ actors: [Room], defaults: quiet });
     running.push(s);
     return s;
 }
 
 /** Open the stream through the real endpoint and return the raw response. */
-async function open(s: Silo, streamPingMs?: number, signal?: AbortSignal): Promise<Response> {
+async function open(s: Host, streamPingMs?: number, signal?: AbortSignal): Promise<Response> {
     return handleActorRequest(
         new Request(`${ENDPOINT}/${encodeURIComponent('Room#watch')}`, {
             method: 'POST',
@@ -68,7 +68,7 @@ async function open(s: Silo, streamPingMs?: number, signal?: AbortSignal): Promi
             body: JSON.stringify({ args: ['r1'] }),
             ...(signal ? { signal } : {})
         }),
-        { silo: s, origin: false, ...(streamPingMs !== undefined ? { streamPingMs } : {}) }
+        { host: s, origin: false, ...(streamPingMs !== undefined ? { streamPingMs } : {}) }
     );
 }
 
@@ -103,7 +103,7 @@ afterEach(async () => {
 
 describe('per-actor stream keepalive', () => {
     it('pings a quiet stream so it survives an idle proxy', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await open(s, 20);
@@ -116,7 +116,7 @@ describe('per-actor stream keepalive', () => {
     });
 
     it('sends no ping when the option is 0', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await open(s, 0);
@@ -133,7 +133,7 @@ describe('per-actor stream keepalive', () => {
         // The ping marks SILENCE, not wall clock. A stream sending values
         // faster than the interval is demonstrably alive, so pinging it too
         // would be payload and parse work for nothing.
-        const s = createSilo({ actors: [Room], defaults: quiet });
+        const s = createHost({ actors: [Room], defaults: quiet });
         running.push(s);
         await s.start();
 
@@ -143,7 +143,7 @@ describe('per-actor stream keepalive', () => {
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: ['r2'] })
             }),
-            { silo: s, origin: false, streamPingMs: 25 }
+            { host: s, origin: false, streamPingMs: 25 }
         );
         // `chatter` yields every 5 ms, so eight lines span ~40 ms — well past
         // the interval a wall-clock ping would have fired on.
@@ -159,7 +159,7 @@ describe('per-actor stream keepalive', () => {
         // by one line per interval for as long as the stall lasts. It is also
         // pointless — bytes are already pending on the socket, so there is no
         // idle for a ping to interrupt.
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await open(s, 10);
@@ -198,7 +198,7 @@ describe('per-actor stream keepalive', () => {
         // ever runs) keeps a timer alive for the life of the process. The next
         // `pull` starts the clock again, which is exactly what a consumer that
         // resumed reading produces.
-        const s = silo();
+        const s = host();
         await s.start();
         const arming = vi.spyOn(globalThis, 'setTimeout');
         const PING = 13; // distinctive, so only this option's timers are counted
@@ -214,14 +214,14 @@ describe('per-actor stream keepalive', () => {
     });
 
     it('the reader skips pings, so they are invisible to the consumer', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
                 const response = await handleActorRequest(request, {
-                    silo: s,
+                    host: s,
                     origin: false,
                     streamPingMs: 10
                 });

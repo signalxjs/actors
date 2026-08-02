@@ -55,7 +55,7 @@ lerna-debug.log*
 # Testing
 coverage/
 
-# Runtime data (fileStorage of running examples/dev silos)
+# Runtime data (fileStorage of running examples/dev hosts)
 .actors/
 
 # Benchmark output. Results and the local baseline are machine-specific —

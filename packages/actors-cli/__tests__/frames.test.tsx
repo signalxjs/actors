@@ -23,8 +23,8 @@ import {
     GrainsScreen,
     HealthScreen,
     OverviewScreen,
-    SiloScreen,
-    SilosScreen
+    HostScreen,
+    HostsScreen
 } from '../src/dashboard/screens';
 import { PANES, cursorModel, demoState } from './fixture';
 
@@ -44,13 +44,13 @@ describe('rendered frames', () => {
         expect(frame(<OverviewScreen state={state} pane={PANES.wide} />)).toMatchSnapshot();
     });
 
-    it('Silos', () => {
+    it('Hosts', () => {
         expect(
-            frame(<SilosScreen state={state} pane={PANES.wide} cursor={cursorModel(0)} />)
+            frame(<HostsScreen state={state} pane={PANES.wide} cursor={cursorModel(0)} />)
         ).toMatchSnapshot();
     });
 
-    it('Grains', () => {
+    it('Actors', () => {
         expect(
             frame(<GrainsScreen state={state} pane={PANES.wide} cursor={cursorModel(1)} />)
         ).toMatchSnapshot();
@@ -74,28 +74,28 @@ describe('rendered frames', () => {
         expect(frame(<ClusterScreen state={state} pane={PANES.narrow} />)).toMatchSnapshot();
     });
 
-    it('Silo drill-down', () => {
-        // What selecting a row in the Silos table now opens. Before #121 it
-        // could not exist: a `SiloReport` carried no metrics, no health and
-        // no grains for a peer, so the cursor moved and nothing changed.
+    it('Host drill-down', () => {
+        // What selecting a row in the Hosts table now opens. Before #121 it
+        // could not exist: a `HostReport` carried no metrics, no health and
+        // no actors for a peer, so the cursor moved and nothing changed.
         const focused = demoState();
         focused.view.focus = 's.2sme5hx2';
         focused.view.snapshot = {
             ...focused.view.snapshot!,
-            silos: focused.view.snapshot!.silos.map((silo, i) =>
+            hosts: focused.view.snapshot!.hosts.map((host, i) =>
                 i === 0
                     ? {
-                          ...silo,
+                          ...host,
                           activations: [
                               { type: 'Counter', key: 'cart', queued: 3, ageMs: 167_000, idleMs: 2000, keptAlive: true, tasks: 1 },
                               { type: 'Counter', key: 'cold-0', queued: 0, ageMs: 161_000, idleMs: 2000, keptAlive: false, tasks: 0 }
                           ]
                       }
-                    : silo
+                    : host
             )
         };
         expect(
-            frame(<SiloScreen state={focused} pane={PANES.wide} siloId="s.2sme5hx2" />)
+            frame(<HostScreen state={focused} pane={PANES.wide} hostId="s.2sme5hx2" />)
         ).toMatchSnapshot();
     });
 });

@@ -8,7 +8,7 @@
  *   node testenv.mjs down          # delete everything this script created
  *
  * Why a script and not a README section: every measurement in scenario (l)
- * of the RUNBOOK depends on a specific shape (silos spread one-per-node, a
+ * of the RUNBOOK depends on a specific shape (hosts spread one-per-node, a
  * load client in the same region, an ingress that does not buffer), and a
  * shape assembled by hand is a shape nobody can reproduce or bill
  * correctly. `down` is as important as `up` — this pool costs money idle.
@@ -181,8 +181,8 @@ async function up() {
     ]);
 
     step('waiting for rollouts');
-    kube(['-n', cfg.actorsNs, 'rollout', 'status', 'deploy/sigx-silo', '--timeout=420s']);
-    kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-silo', '--timeout=420s']);
+    kube(['-n', cfg.actorsNs, 'rollout', 'status', 'deploy/sigx-host', '--timeout=420s']);
+    kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
     ensureDns(ingressIp());
     await status();
     log(`\n✓ up. https://${cfg.chatHost} — tear down with: node ${'testenv.mjs'} down`);
@@ -193,12 +193,12 @@ async function status() {
     const nodes = kube(['get', 'nodes', '-l', `workload=${cfg.workload}`, '--no-headers'],
         { quiet: true, allowFail: true }) ?? '';
     log(`  pool nodes: ${nodes ? nodes.split('\n').length : 0}`);
-    for (const [ns, dep] of [[cfg.actorsNs, 'sigx-silo'], [cfg.chatNs, 'chat-silo']]) {
+    for (const [ns, dep] of [[cfg.actorsNs, 'sigx-host'], [cfg.chatNs, 'chat-host']]) {
         const ready = kube(['-n', ns, 'get', 'deploy', dep, '-o',
             'jsonpath={.status.readyReplicas}/{.spec.replicas}'], { quiet: true, allowFail: true });
         log(`  ${ns}/${dep}: ${ready ?? '(absent)'}`);
         // Spread is the difference between N replicas and N× capacity.
-        const spread = kube(['-n', ns, 'get', 'pods', '-l', 'app.kubernetes.io/component=silo',
+        const spread = kube(['-n', ns, 'get', 'pods', '-l', 'app.kubernetes.io/component=host',
             '-o', 'jsonpath={range .items[*]}{.spec.nodeName}{"\\n"}{end}'], { quiet: true, allowFail: true });
         if (spread) {
             const distinct = new Set(spread.split('\n').filter(Boolean)).size;
@@ -264,12 +264,12 @@ ${env}
  * cannot tell the two apart (#183).
  */
 function infraShape() {
-    const replicas = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-silo',
+    const replicas = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-host',
         '-o', 'jsonpath={.spec.replicas}'], { quiet: true });
-    const nodes = kube(['-n', cfg.chatNs, 'get', 'pods', '-l', 'app.kubernetes.io/component=silo',
+    const nodes = kube(['-n', cfg.chatNs, 'get', 'pods', '-l', 'app.kubernetes.io/component=host',
         '-o', 'jsonpath={range .items[*]}{.spec.nodeName}{"\\n"}{end}'], { quiet: true });
     const distinct = new Set(nodes.split('\n').filter(Boolean)).size;
-    const image = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-silo',
+    const image = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-host',
         '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
     return `replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}`;
 }
@@ -307,7 +307,7 @@ async function test(args) {
     // routable from outside — so do what an operator does: port-forward it.
     const forwardPort = Number(process.env.INFRA_OPS_PORT ?? 7399);
     const forward = spawn('kubectl', ['--context', cfg.cluster, '-n', cfg.chatNs,
-        'port-forward', `svc/${'chat'}-silo`, `${forwardPort}:${cfg.ports.internal}`],
+        'port-forward', `svc/${'chat'}-host`, `${forwardPort}:${cfg.ports.internal}`],
         { stdio: 'ignore' });
     await new Promise((r) => setTimeout(r, 3_000));
     const env = {

@@ -1,17 +1,17 @@
 /**
- * `embeddedSource` — against a REAL silo, not a fake.
+ * `embeddedSource` — against a REAL host, not a fake.
  *
  * The point of this mode is that it sees more than the wire can, so a fake
  * would test nothing: the assertions worth making are that it reads the
  * actual `metrics()` handle and the actual activation directory.
  *
  * The behaviour with teeth is lifecycle ownership. A monitor that stops a
- * silo it merely attached to would drain someone else's activations on
+ * host it merely attached to would drain someone else's activations on
  * Ctrl+C.
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, health, memoryStorage, metrics, ops } from '@sigx/actors/silo';
+import { defineActorApp, health, memoryStorage, metrics, ops } from '@sigx/actors/host';
 import { embeddedSource, EmbeddedSourceError } from '@sigx/actors-cli/source';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
@@ -52,16 +52,16 @@ describe('embeddedSource', () => {
         const { app, load } = moduleWith();
         const source = await embeddedSource({ module: 'test://app', load });
         try {
-            const silo = app.silo!;
-            await silo.actor(Counter, 'a').increment(1);
-            await silo.actor(Counter, 'b').increment(1);
-            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            const host = app.host!;
+            await host.actor(Counter, 'a').increment(1);
+            await host.actor(Counter, 'b').increment(1);
+            await expect(host.actor(Counter, 'a').boom()).rejects.toThrow();
 
             const snapshot = await source.snapshot();
             expect(source.kind).toBe('embedded');
             expect(snapshot.cluster).toBeNull();
-            expect(snapshot.silos).toHaveLength(1);
-            expect(snapshot.silos[0]!.stats.activations).toBe(2);
+            expect(snapshot.hosts).toHaveLength(1);
+            expect(snapshot.hosts[0]!.stats.activations).toBe(2);
             // The full in-process snapshot, histograms and all — this is
             // what the mode exists for.
             expect(snapshot.metrics?.calls.total).toBe(3);
@@ -77,9 +77,9 @@ describe('embeddedSource', () => {
     it('stops the app it started', async () => {
         const { app, load } = moduleWith();
         const source = await embeddedSource({ module: 'test://app', load });
-        expect(app.silo).not.toBeNull();
+        expect(app.host).not.toBeNull();
         await source.close();
-        expect(app.silo).toBeNull();
+        expect(app.host).toBeNull();
     });
 
     it('leaves an ALREADY-running app running', async () => {
@@ -87,13 +87,13 @@ describe('embeddedSource', () => {
         await app.start();
         const source = await embeddedSource({ module: 'test://app', load });
         try {
-            expect((await source.snapshot()).silos).toHaveLength(1);
+            expect((await source.snapshot()).hosts).toHaveLength(1);
         } finally {
             await source.close();
         }
-        // Attaching is not owning: closing the monitor must not drain a silo
+        // Attaching is not owning: closing the monitor must not drain a host
         // somebody else is running.
-        expect(app.silo).not.toBeNull();
+        expect(app.host).not.toBeNull();
         await app.stop();
     });
 
@@ -133,7 +133,7 @@ describe('embeddedSource', () => {
             activations: Number.NaN
         });
         try {
-            await app.silo!.actor(Counter, 'a').increment(1);
+            await app.host!.actor(Counter, 'a').increment(1);
             // NaN would defeat the `=== 0` check and reach the walk as a
             // bound that is not one — the same hole core just closed.
             expect((await source.snapshot()).activations).toHaveLength(1);
@@ -148,12 +148,12 @@ describe('embeddedSource', () => {
         try {
             await new Promise((resolve) => setTimeout(resolve, 25));
             const snapshot = await source.snapshot();
-            // A single-node view has no SiloReport to take uptime from, so
+            // A single-node view has no HostReport to take uptime from, so
             // it comes off the ops/health plugin. Reporting 0 forever made
             // `up 0s` a permanent fixture of the output.
-            expect(snapshot.silos[0]!.uptimeMs).toBeGreaterThan(0);
-            expect(snapshot.silos[0]!.uptimeMs).toBe(snapshot.health!.uptimeMs);
-            expect(app.silo).not.toBeNull();
+            expect(snapshot.hosts[0]!.uptimeMs).toBeGreaterThan(0);
+            expect(snapshot.hosts[0]!.uptimeMs).toBe(snapshot.health!.uptimeMs);
+            expect(app.host).not.toBeNull();
         } finally {
             await source.close();
         }
@@ -170,9 +170,9 @@ describe('embeddedSource', () => {
             load: () => Promise.resolve({ app } as Record<string, unknown>)
         });
         try {
-            // `Silo` carries no start time; timing from when the CLI
+            // `Host` carries no start time; timing from when the CLI
             // attached would be a different number wearing uptime's label.
-            expect((await source.snapshot()).silos[0]!.uptimeMs).toBe(0);
+            expect((await source.snapshot()).hosts[0]!.uptimeMs).toBe(0);
         } finally {
             await source.close();
         }
@@ -194,7 +194,7 @@ describe('embeddedSource', () => {
             const snapshot = await source.snapshot();
             expect(snapshot.metrics).toBeNull();
             expect(snapshot.health).toBeNull();
-            expect(snapshot.silos[0]!.stats.activations).toBe(0);
+            expect(snapshot.hosts[0]!.stats.activations).toBe(0);
         } finally {
             await source.close();
         }

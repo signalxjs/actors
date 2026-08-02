@@ -4,7 +4,7 @@
  *
  * It exists because `env` only exists inside `fetch`. The app therefore has
  * to be built lazily and memoized, and `createFetchHandler` answers 503 while
- * `app.silo` is null — so `app.start()` must be awaited before delegating.
+ * `app.host` is null — so `app.start()` must be awaited before delegating.
  * That is enough boilerplate, with enough ways to get it subtly wrong, to be
  * worth owning.
  */
@@ -13,17 +13,17 @@ import {
     defineActorApp,
     type ActorApp,
     type ActorAppOptions
-} from '@sigx/actors/silo';
+} from '@sigx/actors/host';
 import { createFetchHandler, type FetchHandlerOptions } from '@sigx/actors/server';
 import { durableObjects, type DurableObjectPlacementOptions } from './placement';
 import type { DurableObjectNamespaceLike } from './types';
 
 /**
- * Storage for a silo that never activates anything.
+ * Storage for a host that never activates anything.
  *
- * The Worker's silo routes every ref to a Durable Object, so it holds no
+ * The Worker's host routes every ref to a Durable Object, so it holds no
  * state — and in-memory storage there would be a silent lie, with
- * `createSilo`'s "state dies with the process" dev warning pointing at a
+ * `createHost`'s "state dies with the process" dev warning pointing at a
  * problem that does not exist while hiding one that would.
  */
 export function unhostedStorage(): ActorStorage {
@@ -32,7 +32,7 @@ export function unhostedStorage(): ActorStorage {
     // before it has one to attach to.
     const refuse = async (): Promise<never> => {
         throw new Error(
-            '[sigx actors-cloudflare] the Worker silo tried to read or write actor state, ' +
+            '[sigx actors-cloudflare] the Worker host tried to read or write actor state, ' +
                 'but it never hosts an activation — every actor lives in a Durable Object. ' +
                 'Reaching this means a call was dispatched locally instead of to an object: ' +
                 'check that the Durable Object namespace binding in wrangler.jsonc matches ' +
@@ -93,7 +93,7 @@ export function createWorkerHandler<Env = unknown>(
                 namespace: options.namespace(env),
                 // No `isSelf`: the Worker hosts nothing, so every ref is
                 // somebody else's object.
-                siloId: 'cf-worker',
+                hostId: 'cf-worker',
                 ...options.placement
             })
         );

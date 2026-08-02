@@ -8,7 +8,7 @@ import {
     type ActorStorage,
     type PlacementBindings
 } from '@sigx/actors';
-import { createSilo, memoryStorage, type Silo } from '@sigx/actors/silo';
+import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -48,37 +48,37 @@ function counterActor(events: string[] = []) {
 describe('activation & dispatch', () => {
     it('activates lazily on first call and reuses the activation', async () => {
         const events: string[] = [];
-        const silo = createSilo({ actors: [counterActor(events)], defaults: quiet });
+        const host = createHost({ actors: [counterActor(events)], defaults: quiet });
         const def = counterActor();
-        expect(silo.stats().activations).toBe(0);
+        expect(host.stats().activations).toBe(0);
         // definitions are compared by type — use the registered instance
-        const client = silo.actor(def, 'a');
+        const client = host.actor(def, 'a');
         await expect(client.increment(2)).resolves.toBe(2);
         await expect(client.increment(3)).resolves.toBe(5);
         expect(events.filter((e) => e.startsWith('activate'))).toEqual(['activate:a']);
-        expect(silo.stats()).toMatchObject({ activations: 1, perType: { Counter: 1 } });
+        expect(host.stats()).toMatchObject({ activations: 1, perType: { Counter: 1 } });
     });
 
     it('two racing first calls join one activation (single-activation invariant)', async () => {
         const events: string[] = [];
-        const silo = createSilo({ actors: [counterActor(events)], defaults: quiet });
-        const client = silo.actor(counterActor(), 'race');
+        const host = createHost({ actors: [counterActor(events)], defaults: quiet });
+        const client = host.actor(counterActor(), 'race');
         const [a, b] = await Promise.all([client.increment(1), client.increment(1)]);
         expect([a, b].sort()).toEqual([1, 2]);
         expect(events.filter((e) => e.startsWith('activate'))).toEqual(['activate:race']);
     });
 
     it('turns are serialized: no interleaving even across awaits', async () => {
-        const silo = createSilo({ actors: [counterActor()], defaults: quiet });
-        const client = silo.actor(counterActor(), 'serial');
+        const host = createHost({ actors: [counterActor()], defaults: quiet });
+        const client = host.actor(counterActor(), 'serial');
         const results = await Promise.all([client.slow(20), client.slow(1), client.slow(1)]);
         // Each turn saw the previous one fully committed.
         expect(results).toEqual([1, 2, 3]);
     });
 
     it('unknown method rejects with the method-not-found brand', async () => {
-        const silo = createSilo({ actors: [counterActor()], defaults: quiet });
-        const client = silo.actor(counterActor(), 'x') as unknown as {
+        const host = createHost({ actors: [counterActor()], defaults: quiet });
+        const client = host.actor(counterActor(), 'x') as unknown as {
             nope(): Promise<unknown>;
         };
         await expect(client.nope()).rejects.toSatisfy(
@@ -90,8 +90,8 @@ describe('activation & dispatch', () => {
         // `#methods[method]` walked up to Object.prototype: `toString` and
         // `constructor` ANSWERED, the rest threw a raw TypeError. Own keys
         // only, and callable, or it is not a method.
-        const silo = createSilo({ actors: [counterActor()], defaults: quiet });
-        const client = silo.actor(counterActor(), 'proto') as unknown as Record<
+        const host = createHost({ actors: [counterActor()], defaults: quiet });
+        const client = host.actor(counterActor(), 'proto') as unknown as Record<
             string,
             () => Promise<unknown>
         >;
@@ -100,7 +100,7 @@ describe('activation & dispatch', () => {
                 (e: unknown) => isActorError(e) && e.kind === 'method-not-found'
             );
         }
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('a prototype member is not a STREAM either', async () => {
@@ -118,8 +118,8 @@ describe('activation & dispatch', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [ticker], defaults: quiet });
-        const iterable = silo.dispatchStream!({ type: 'Ticker', key: 'proto-s' }, 'toString', [], {
+        const host = createHost({ actors: [ticker], defaults: quiet });
+        const iterable = host.dispatchStream!({ type: 'Ticker', key: 'proto-s' }, 'toString', [], {
             deadline: Date.now() + 1000,
             callChain: [],
             callId: 'p.sig.0'
@@ -129,7 +129,7 @@ describe('activation & dispatch', () => {
                 for await (const _ of iterable) void _;
             })()
         ).rejects.toSatisfy((e: unknown) => isActorError(e) && e.kind === 'method-not-found');
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('warns when a methods factory returns a class instance (its members are uncallable)', async () => {
@@ -149,19 +149,19 @@ describe('activation & dispatch', () => {
             state: () => ({}),
             methods: () => new Impl() as unknown as { hello(): Promise<string> }
         });
-        const silo = createSilo({ actors: [classy], defaults: quiet });
-        const client = silo.actor(classy, 'c');
+        const host = createHost({ actors: [classy], defaults: quiet });
+        const client = host.actor(classy, 'c');
         await expect(client.hello()).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'method-not-found'
         );
         expect(warn.mock.calls.flat().join(' ')).toMatch(/Classy.*methods.*INHERITED/s);
         warn.mockRestore();
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('unknown actor type rejects with a descriptive activation error', async () => {
-        const silo = createSilo({ actors: [], defaults: quiet });
-        const client = silo.actor(counterActor(), 'x');
+        const host = createHost({ actors: [], defaults: quiet });
+        const client = host.actor(counterActor(), 'x');
         await expect(client.get()).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'activation'
         );
@@ -183,8 +183,8 @@ describe('activation & dispatch', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [flaky], defaults: quiet });
-        const client = silo.actor(flaky, 'k');
+        const host = createHost({ actors: [flaky], defaults: quiet });
+        const client = host.actor(flaky, 'k');
         const [r1, r2] = await Promise.allSettled([client.ping(), client.ping()]);
         expect(r1.status).toBe('rejected');
         expect(r2.status).toBe('rejected');
@@ -198,11 +198,11 @@ describe('activation & dispatch', () => {
 describe('persistence', () => {
     it('state survives deactivation via storage (save → deactivate → reload)', async () => {
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [counterActor()], storage, defaults: quiet });
-        const client = silo.actor(counterActor(), 'p');
+        const host = createHost({ actors: [counterActor()], storage, defaults: quiet });
+        const client = host.actor(counterActor(), 'p');
         await client.increment(7);
-        await silo.deactivateType('Counter');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Counter');
+        expect(host.stats().activations).toBe(0);
         await expect(client.get()).resolves.toBe(7);
     });
 
@@ -228,10 +228,10 @@ describe('persistence', () => {
             })
         });
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [rich], storage, defaults: quiet });
-        const client = silo.actor(rich, 'r');
+        const host = createHost({ actors: [rich], storage, defaults: quiet });
+        const client = host.actor(rich, 'r');
         await client.stamp();
-        await silo.deactivateType('Rich');
+        await host.deactivateType('Rich');
         await expect(client.read()).resolves.toEqual({
             isDate: true,
             ms: 1234567890000,
@@ -242,8 +242,8 @@ describe('persistence', () => {
 
     it('etag conflict rejects the turn, fails queued turns, and reloads fresh state', async () => {
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [counterActor()], storage, defaults: quiet });
-        const client = silo.actor(counterActor(), 'c');
+        const host = createHost({ actors: [counterActor()], storage, defaults: quiet });
+        const client = host.actor(counterActor(), 'c');
         await client.increment(1); // etag now "1"
         // A second writer clobbers the record behind the activation's back.
         const record = await storage.load('Counter', 'c');
@@ -275,8 +275,8 @@ describe('persistence', () => {
             })
         });
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [wb], storage, defaults: quiet });
-        await silo.actor(wb, 'w').bump();
+        const host = createHost({ actors: [wb], storage, defaults: quiet });
+        await host.actor(wb, 'w').bump();
         await vi.waitFor(async () => {
             const record = await storage.load('WB', 'w');
             expect(record).not.toBeNull();
@@ -297,9 +297,9 @@ describe('persistence', () => {
             })
         });
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [wb], storage, defaults: quiet });
-        await silo.actor(wb, 'w').bump();
-        await silo.deactivateType('WB2');
+        const host = createHost({ actors: [wb], storage, defaults: quiet });
+        await host.actor(wb, 'w').bump();
+        await host.deactivateType('WB2');
         const record = await storage.load('WB2', 'w');
         expect((record?.state as { n: number }).n).toBe(1);
     });
@@ -321,8 +321,8 @@ describe('persistence', () => {
             })
         });
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [clearing], storage, defaults: quiet });
-        const client = silo.actor(clearing, 'k');
+        const host = createHost({ actors: [clearing], storage, defaults: quiet });
+        const client = host.actor(clearing, 'k');
         await client.set(7);
         await expect(client.wipe()).resolves.toBe(42);
         expect(await storage.load('Clearing', 'k')).toBeNull();
@@ -330,7 +330,7 @@ describe('persistence', () => {
 });
 
 describe('reentrancy & deadlock', () => {
-    function pairSilo(reentrant: boolean): Silo {
+    function pairHost(reentrant: boolean): Host {
         const a = defineActor({
             type: 'A',
             unguarded: true,
@@ -356,13 +356,13 @@ describe('reentrancy & deadlock', () => {
                 }
             })
         });
-        return createSilo({ actors: [a, b], defaults: quiet });
+        return createHost({ actors: [a, b], defaults: quiet });
     }
 
     it('A→B→A throws ActorDeadlockError with the full chain when non-reentrant', async () => {
-        const silo = pairSilo(false);
-        const def = await silo.definition('A');
-        const client = silo.actor(def!, 'a1') as unknown as { start(): Promise<string> };
+        const host = pairHost(false);
+        const def = await host.definition('A');
+        const client = host.actor(def!, 'a1') as unknown as { start(): Promise<string> };
         await expect(client.start()).rejects.toMatchObject({
             kind: 'deadlock',
             chain: ['A\u0000a1', 'B\u0000b1', 'A\u0000a1']
@@ -370,9 +370,9 @@ describe('reentrancy & deadlock', () => {
     });
 
     it('A→B→A runs inline when A is reentrant', async () => {
-        const silo = pairSilo(true);
-        const def = await silo.definition('A');
-        const client = silo.actor(def!, 'a1') as unknown as { start(): Promise<string> };
+        const host = pairHost(true);
+        const def = await host.definition('A');
+        const client = host.actor(def!, 'a1') as unknown as { start(): Promise<string> };
         await expect(client.start()).resolves.toBe('finished:1');
     });
 
@@ -383,7 +383,7 @@ describe('reentrancy & deadlock', () => {
      * is up-stack awaiting it — a permanent hang instead of a loud throw.
      * The call chain, not the slot, is what makes this a deadlock.
      */
-    function selfSilo(reentrant: boolean): Silo {
+    function selfHost(reentrant: boolean): Host {
         const self = defineActor({
             type: 'S',
             unguarded: true,
@@ -399,13 +399,13 @@ describe('reentrancy & deadlock', () => {
                 }
             })
         });
-        return createSilo({ actors: [self], defaults: quiet });
+        return createHost({ actors: [self], defaults: quiet });
     }
 
     it('S→S on a warm activation throws ActorDeadlockError, not a hang', async () => {
-        const silo = selfSilo(false);
-        const def = await silo.definition('S');
-        const client = silo.actor(def!, 's1') as unknown as {
+        const host = selfHost(false);
+        const def = await host.definition('S');
+        const client = host.actor(def!, 's1') as unknown as {
             inner(): Promise<string>;
             outer(): Promise<string>;
         };
@@ -418,9 +418,9 @@ describe('reentrancy & deadlock', () => {
     });
 
     it('S→S on a warm activation runs inline when reentrant', async () => {
-        const silo = selfSilo(true);
-        const def = await silo.definition('S');
-        const client = silo.actor(def!, 's1') as unknown as {
+        const host = selfHost(true);
+        const def = await host.definition('S');
+        const client = host.actor(def!, 's1') as unknown as {
             inner(): Promise<string>;
             outer(): Promise<string>;
         };
@@ -432,25 +432,25 @@ describe('reentrancy & deadlock', () => {
 describe('lifecycle', () => {
     it('ctx.deactivate() finishes queued work first, then deactivates', async () => {
         const events: string[] = [];
-        const silo = createSilo({ actors: [counterActor(events)], defaults: quiet });
-        const client = silo.actor(counterActor(), 'd');
+        const host = createHost({ actors: [counterActor(events)], defaults: quiet });
+        const client = host.actor(counterActor(), 'd');
         const bye = client.bye();
         const after = client.increment(1); // queued behind bye — must still run
         await expect(bye).resolves.toBe('bye');
         await expect(after).resolves.toBe(1);
         await vi.waitFor(() => {
             expect(events).toContain('deactivate:d:explicit');
-            expect(silo.stats().activations).toBe(0);
+            expect(host.stats().activations).toBe(0);
         });
     });
 
     it('a call during deactivation waits and lands on a fresh activation', async () => {
         const events: string[] = [];
         const storage = memoryStorage();
-        const silo = createSilo({ actors: [counterActor(events)], storage, defaults: quiet });
-        const client = silo.actor(counterActor(), 'w');
+        const host = createHost({ actors: [counterActor(events)], storage, defaults: quiet });
+        const client = host.actor(counterActor(), 'w');
         await client.increment(5);
-        const drain = silo.deactivateType('Counter');
+        const drain = host.deactivateType('Counter');
         const during = client.get(); // dispatched while deactivating
         await drain;
         await expect(during).resolves.toBe(5);
@@ -460,27 +460,27 @@ describe('lifecycle', () => {
         ]);
     });
 
-    it('silo.stop() drains activations and rejects new external calls', async () => {
+    it('host.stop() drains activations and rejects new external calls', async () => {
         const events: string[] = [];
-        const silo = createSilo({ actors: [counterActor(events)], defaults: quiet });
-        const client = silo.actor(counterActor(), 's');
+        const host = createHost({ actors: [counterActor(events)], defaults: quiet });
+        const client = host.actor(counterActor(), 's');
         await client.increment(1);
-        await silo.stop();
+        await host.stop();
         expect(events).toContain('deactivate:s:shutdown');
         await expect(client.get()).rejects.toSatisfy(
-            (e: unknown) => isActorError(e) && e.kind === 'silo-shutdown'
+            (e: unknown) => isActorError(e) && e.kind === 'host-shutdown'
         );
     });
 
     it('idle sweep deactivates past the collection age', async () => {
         const events: string[] = [];
-        const silo = createSilo({
+        const host = createHost({
             actors: [counterActor(events)],
             defaults: { ...quiet, idleAfterMs: 30, sweepIntervalMs: 10 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(counterActor(), 'idle').increment(1);
+            await host.actor(counterActor(), 'idle').increment(1);
             await vi.waitFor(
                 () => {
                     expect(events).toContain('deactivate:idle:idle');
@@ -488,16 +488,16 @@ describe('lifecycle', () => {
                 { timeout: 2000 }
             );
         } finally {
-            await silo.stop();
+            await host.stop();
         }
     });
 
     it('caller deadline rejects the caller without killing the turn', async () => {
-        const silo = createSilo({
+        const host = createHost({
             actors: [counterActor()],
             defaults: { ...quiet, callTimeoutMs: 30 }
         });
-        const client = silo.actor(counterActor(), 't');
+        const client = host.actor(counterActor(), 't');
         await expect(client.slow(200)).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'call-timeout'
         );
@@ -531,11 +531,11 @@ describe('timers', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [ticking], defaults: quiet });
-        const client = silo.actor(ticking, 'k');
+        const host = createHost({ actors: [ticking], defaults: quiet });
+        const client = host.actor(ticking, 'k');
         await client.n();
         await vi.waitFor(() => expect(ticks.length).toBeGreaterThanOrEqual(2));
-        await silo.deactivateType('Ticking');
+        await host.deactivateType('Ticking');
         const settled = ticks.length;
         await new Promise((r) => setTimeout(r, 30));
         expect(ticks.length).toBe(settled); // timers died with the activation
@@ -543,25 +543,25 @@ describe('timers', () => {
 });
 
 describe('placement bindings (the cluster seam)', () => {
-    function boundPlacement(bindings: PlacementBindings, out: { local?: ActorDispatcher; silo?: Silo } = {}) {
+    function boundPlacement(bindings: PlacementBindings, out: { local?: ActorDispatcher; host?: Host } = {}) {
         const placement: ActorPlacement = {
             dispatcherFor: () => out.local!,
-            bind(local, silo) {
+            bind(local, host) {
                 out.local = local;
-                out.silo = silo;
+                out.host = host;
                 return bindings;
             }
         };
         return { placement, out };
     }
 
-    it('bind() receives the local dispatcher and the silo before any dispatch', async () => {
+    it('bind() receives the local dispatcher and the host before any dispatch', async () => {
         const { placement, out } = boundPlacement({});
-        const silo = createSilo({ actors: [counterActor()], placement, defaults: quiet });
+        const host = createHost({ actors: [counterActor()], placement, defaults: quiet });
         expect(out.local).toBeDefined();
-        expect(out.silo).toBe(silo);
+        expect(out.host).toBe(host);
         // The captured local dispatcher is what dispatcherFor answers with.
-        await expect(silo.actor(counterActor(), 'b1').increment(1)).resolves.toBe(1);
+        await expect(host.actor(counterActor(), 'b1').increment(1)).resolves.toBe(1);
     });
 
     it('beforeActivate claims before activation; afterDeactivate releases with the reason', async () => {
@@ -575,12 +575,12 @@ describe('placement bindings (the cluster seam)', () => {
                 log.push(`release:${ref.key}:${reason}`);
             }
         });
-        const silo = createSilo({ actors: [counterActor(events)], placement, defaults: quiet });
-        await silo.actor(counterActor(), 'b2').increment(1);
+        const host = createHost({ actors: [counterActor(events)], placement, defaults: quiet });
+        await host.actor(counterActor(), 'b2').increment(1);
         expect(log).toEqual(['claim:b2']);
         // The claim ran before the activation lifecycle, not after.
         expect(events[0]).toBe('activate:b2');
-        await silo.deactivateType('Counter');
+        await host.deactivateType('Counter');
         expect(log).toEqual(['claim:b2', 'release:b2:explicit']);
     });
 
@@ -589,11 +589,11 @@ describe('placement bindings (the cluster seam)', () => {
         const events: string[] = [];
         const { placement } = boundPlacement({
             beforeActivate(ref) {
-                if (refuse) throw new ActorWrongHostError(`${ref.type}/${ref.key}`, { siloId: 's.other' });
+                if (refuse) throw new ActorWrongHostError(`${ref.type}/${ref.key}`, { hostId: 's.other' });
             }
         });
-        const silo = createSilo({ actors: [counterActor(events)], placement, defaults: quiet });
-        const client = silo.actor(counterActor(), 'b3');
+        const host = createHost({ actors: [counterActor(events)], placement, defaults: quiet });
+        const client = host.actor(counterActor(), 'b3');
         await expect(client.increment(1)).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'wrong-host'
         );
@@ -618,14 +618,14 @@ describe('placement bindings (the cluster seam)', () => {
         const forged = { callChain: ['Re\u0000k'], callId: 'test' };
 
         // Single-node posture: chain-hit + no slot falls back to a dispatch.
-        const loose = createSilo({ actors: [reentrant], defaults: quiet });
+        const loose = createHost({ actors: [reentrant], defaults: quiet });
         await expect(loose.dispatch({ type: 'Re', key: 'k' }, 'ping', [], forged)).resolves.toBe(
             'pong'
         );
 
         // Cluster posture: the turn provably runs elsewhere — loud error.
         const { placement } = boundPlacement({ strictChainPresence: true });
-        const strict = createSilo({ actors: [reentrant], placement, defaults: quiet });
+        const strict = createHost({ actors: [reentrant], placement, defaults: quiet });
         await expect(
             strict.dispatch({ type: 'Re', key: 'k' }, 'ping', [], forged)
         ).rejects.toSatisfy(
@@ -651,11 +651,11 @@ describe('placement stop lifecycle', () => {
             };
             return { placement };
         })();
-        const silo = createSilo({ actors: [counterActor(events)], placement, defaults: quiet });
-        await silo.actor(counterActor(), 'bs1').increment(1);
-        await silo.stop({ timeoutMs: 1000 }); // must not reject
+        const host = createHost({ actors: [counterActor(events)], placement, defaults: quiet });
+        await host.actor(counterActor(), 'bs1').increment(1);
+        await host.stop({ timeoutMs: 1000 }); // must not reject
         expect(events).toContain('deactivate:bs1:shutdown');
-        expect(silo.stats().activations).toBe(0);
+        expect(host.stats().activations).toBe(0);
     });
 });
 
@@ -674,8 +674,8 @@ describe('storage conflict brand across module copies', () => {
             },
             async clear() {}
         };
-        const silo = createSilo({ actors: [counterActor()], storage: conflicting, defaults: quiet });
-        const client = silo.actor(counterActor(), 'f');
+        const host = createHost({ actors: [counterActor()], storage: conflicting, defaults: quiet });
+        const client = host.actor(counterActor(), 'f');
         await expect(client.increment(1)).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
         );

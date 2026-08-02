@@ -14,7 +14,7 @@ export type ActorErrorKind =
     | 'activation'
     | 'state-conflict'
     | 'method-not-found'
-    | 'silo-shutdown'
+    | 'host-shutdown'
     | 'call-timeout'
     | 'wrong-host'
     | 'unreachable';
@@ -46,8 +46,7 @@ export function isActorError(error: unknown): error is ActorErrorShape {
 
 /**
  * A → B → A into a non-reentrant actor. Thrown at DISPATCH time with the
- * full chain — the single-process advantage over Orleans, where the same
- * cycle hangs until a timeout.
+ * full chain — the cycle fails fast instead of hanging until a timeout.
  */
 export class ActorDeadlockError extends ActorError {
     /** `type/key` hops from the external caller to the cycle, inclusive. */
@@ -81,7 +80,7 @@ export class ActorActivationError extends ActorError {
  * `ctx.save()` found the stored etag ahead of this activation's — someone
  * else wrote this actor's state. The activation is stale: the current turn
  * and every queued turn reject with this, the activation is forgotten, and
- * the next call loads the winning state (Orleans InconsistentStateException).
+ * the next call loads the winning state.
  */
 export class ActorStateConflictError extends ActorError {
     constructor(ref: string) {
@@ -101,10 +100,10 @@ export class ActorMethodNotFoundError extends ActorError {
     }
 }
 
-export class SiloShutdownError extends ActorError {
+export class HostShutdownError extends ActorError {
     constructor() {
-        super('silo-shutdown', '[sigx actors] the silo is shutting down; new calls are rejected.');
-        this.name = 'SiloShutdownError';
+        super('host-shutdown', '[sigx actors] the host is shutting down; new calls are rejected.');
+        this.name = 'HostShutdownError';
     }
 }
 
@@ -122,10 +121,10 @@ export class ActorCallTimeoutError extends ActorError {
 
 /** The owner hint a wrong-host error carries — enough to re-route. */
 export interface ActorOwnerHint {
-    readonly siloId: string;
+    readonly hostId: string;
     /**
      * INTERNAL origin — the peer-reachable address of the owner's
-     * silo-to-silo endpoint, typically a private pod IP.
+     * host-to-host endpoint, typically a private pod IP.
      *
      * Never send this to a client. It is unreachable from outside the
      * cluster, and publishing it hands out internal topology to anyone who
@@ -135,7 +134,7 @@ export interface ActorOwnerHint {
     readonly address?: string;
     /**
      * PUBLIC origin — where a client can reach the owner's actor mount,
-     * e.g. `https://silo-3.example.com`. Set from `cluster({ publicAddress })`,
+     * e.g. `https://host-3.example.com`. Set from `cluster({ publicAddress })`,
      * absent unless an operator configured it.
      *
      * Absent means "do not redirect": guessing from `address` would be a
@@ -148,7 +147,7 @@ export interface ActorOwnerHint {
 /**
  * This host is not (or no longer) the actor's owner — a distributed
  * placement answers a misdirected dispatch with this instead of proxying.
- * Internal to silo-to-silo traffic: the calling placement consumes the
+ * Internal to host-to-host traffic: the calling placement consumes the
  * `owner` hint and re-dispatches; it should never reach an application.
  */
 export class ActorWrongHostError extends ActorError {
@@ -159,7 +158,7 @@ export class ActorWrongHostError extends ActorError {
         super(
             'wrong-host',
             `[sigx actors] ${ref} is not placed on this host` +
-                (owner ? ` (owner: ${owner.siloId})` : '') +
+                (owner ? ` (owner: ${owner.hostId})` : '') +
                 `; the caller should re-resolve placement and retry.`
         );
         this.name = 'ActorWrongHostError';
@@ -167,12 +166,12 @@ export class ActorWrongHostError extends ActorError {
     }
 }
 
-/** A peer silo's address did not respond. Retryable by the caller. */
+/** A peer host's address did not respond. Retryable by the caller. */
 export class ActorUnreachableError extends ActorError {
     constructor(target: string, options?: { cause?: unknown }) {
         super(
             'unreachable',
-            `[sigx actors] silo ${target} is unreachable; the call may be retried.`,
+            `[sigx actors] host ${target} is unreachable; the call may be retried.`,
             options
         );
         this.name = 'ActorUnreachableError';

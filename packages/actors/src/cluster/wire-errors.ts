@@ -1,12 +1,12 @@
 /**
- * The error contract across a silo hop, in one place because "the error is
+ * The error contract across a host hop, in one place because "the error is
  * the same error" is a conformance requirement rather than a nicety: a
  * caller must not be able to tell a remote hop from a local dispatch, so a
  * remote `state-conflict` has to satisfy `isActorError` and carry its
  * `kind` exactly like a local one.
  *
  * Both directions live here so a transport in another package gets them
- * from `SiloTransportConfig` instead of re-deriving them — the kind list
+ * from `HostTransportConfig` instead of re-deriving them — the kind list
  * and the status mapping are versioned, and a transport that invents its
  * own drifts silently.
  */
@@ -17,7 +17,7 @@ import {
     type ActorWrongHostError
 } from '../errors';
 import { encodeWire, reviveWire, reviver, wireFail } from '../wire-shared';
-import type { SiloWireCodec, SiloWireError } from './seam';
+import type { HostWireCodec, HostWireError } from './seam';
 
 /**
  * Actor kinds that travel with their brand. A kind NOT in this set comes
@@ -30,7 +30,7 @@ const ACTOR_ERROR_KINDS = new Set<string>([
     'activation',
     'state-conflict',
     'method-not-found',
-    'silo-shutdown',
+    'host-shutdown',
     'call-timeout',
     'wrong-host',
     'unreachable'
@@ -38,8 +38,8 @@ const ACTOR_ERROR_KINDS = new Set<string>([
 
 /**
  * Map an actor error for a TRUSTED peer: every kind travels with its `kind`
- * (and `owner` for wrong-host) so the calling silo re-creates the exact
- * branded error — no prod masking between silos. The public endpoint still
+ * (and `owner` for wrong-host) so the calling host re-creates the exact
+ * branded error — no prod masking between hosts. The public endpoint still
  * masks whatever ultimately reaches a browser.
  *
  * The status is HTTP-shaped even off HTTP, because `clusterStats`
@@ -47,7 +47,7 @@ const ACTOR_ERROR_KINDS = new Set<string>([
  * `unsupported`); a transport that drops the number degrades every auth
  * failure to a bare `'error'` in the ops surface.
  */
-export function toSiloWireError(error: unknown): SiloWireError {
+export function toHostWireError(error: unknown): HostWireError {
     if (!isActorError(error)) {
         const status = (error as { status?: number }).status;
         return {
@@ -62,7 +62,7 @@ export function toSiloWireError(error: unknown): SiloWireError {
               ? 404
               : error.kind === 'state-conflict'
                 ? 409
-                : error.kind === 'silo-shutdown' || error.kind === 'unreachable'
+                : error.kind === 'host-shutdown' || error.kind === 'unreachable'
                   ? 503
                   : error.kind === 'call-timeout'
                     ? 504
@@ -80,9 +80,9 @@ export function toSiloWireError(error: unknown): SiloWireError {
  * (a remote state-conflict must satisfy `isActorError` exactly like a local
  * one); anything else keeps the serverFn wire brand.
  */
-export function fromSiloWireError(
+export function fromHostWireError(
     status: number,
-    wire: SiloWireError | undefined,
+    wire: HostWireError | undefined,
     fallback: string
 ): Error {
     const data = wire?.data as { kind?: string; owner?: ActorOwnerHint } | undefined;
@@ -103,10 +103,10 @@ export function fromSiloWireError(
 /**
  * THE codec the public wire uses — never a bare `JSON.stringify`. Exported
  * alongside the two mappers above because that trio is exactly what a
- * transport package needs to build a `SiloTransportConfig` by hand in its
+ * transport package needs to build a `HostTransportConfig` by hand in its
  * own tests.
  */
-export const siloWireCodec: SiloWireCodec = {
+export const hostWireCodec: HostWireCodec = {
     encode: encodeWire,
     decode: reviveWire,
     reviver

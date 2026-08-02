@@ -1,6 +1,6 @@
 /**
  * `health()` — liveness and readiness endpoints, built from the readiness
- * seam rather than from any knowledge of what a silo is attached to.
+ * seam rather than from any knowledge of what a host is attached to.
  *
  * The plugin itself knows nothing about clustering. It serves the aggregate
  * of every `registry.reportHealth()` contribution, and `cluster()` registers
@@ -14,11 +14,11 @@
  *   readiness  should it be receiving traffic?     -> drain if it fails
  *
  * Conflating them is how a rolling deploy turns into an outage: a draining
- * silo (M4's `beginStop` announces `leaving` BEFORE the drain) is perfectly
+ * host (M4's `beginStop` announces `leaving` BEFORE the drain) is perfectly
  * alive and must not be restarted — it must stop receiving new calls while
  * it hands its activations off.
  */
-import type { Silo } from '../types';
+import type { Host } from '../types';
 import type { ActorPlugin, HealthReport, PluginRegistry } from './app';
 
 export interface HealthOptions {
@@ -28,7 +28,7 @@ export interface HealthOptions {
      */
     base?: string;
     /**
-     * Include the per-check `checks` map and the silo gauges in the response
+     * Include the per-check `checks` map and the host gauges in the response
      * body. Default `__DEV__`. The status code and a minimal
      * `{ status, uptimeMs }` body are always returned; this only controls
      * the diagnostic extras.
@@ -41,7 +41,7 @@ export interface HealthOptions {
     detail?: boolean;
 }
 
-/** Deliberately NOT `SiloStats`: `perType` names your actor types, and this
+/** Deliberately NOT `HostStats`: `perType` names your actor types, and this
  *  endpoint cannot be authenticated. Totals only. */
 export interface HealthGauges {
     activations: number;
@@ -49,7 +49,7 @@ export interface HealthGauges {
 }
 
 export interface HealthStatus {
-    /** The silo is running. */
+    /** The host is running. */
     live: boolean;
     /** Every contributed check passed. */
     ready: boolean;
@@ -59,7 +59,7 @@ export interface HealthStatus {
     uptimeMs: number;
     checks: HealthReport['checks'];
     /** Activation totals — null before start. Never a per-type breakdown. */
-    silo: HealthGauges | null;
+    host: HealthGauges | null;
 }
 
 export interface HealthPlugin extends ActorPlugin {
@@ -83,7 +83,7 @@ export function health(options: HealthOptions = {}): HealthPlugin {
     const livePath = base.endsWith('/') ? base.slice(0, -1) : base;
     const detail = options.detail ?? __DEV__;
 
-    let silo: Silo | null = null;
+    let host: Host | null = null;
     let startedAt = 0;
     // Captured in setup() and called per REQUEST: the aggregate must include
     // plugins registered after this one.
@@ -91,16 +91,16 @@ export function health(options: HealthOptions = {}): HealthPlugin {
 
     const status = (): HealthStatus => {
         const health = report?.() ?? { ready: true, fatal: false, checks: {} };
-        const stats = silo?.stats();
+        const stats = host?.stats();
         return {
-            live: silo !== null,
-            ready: silo !== null && health.ready,
+            live: host !== null,
+            ready: host !== null && health.ready,
             fatal: health.fatal,
             uptimeMs: startedAt === 0 ? 0 : Math.round(performance.now() - startedAt),
             checks: health.checks,
             // Totals only — `perType` would publish your actor type names on
             // an endpoint that cannot be authenticated.
-            silo: stats ? { activations: stats.activations, queued: stats.queued } : null
+            host: stats ? { activations: stats.activations, queued: stats.queued } : null
         };
     };
 
@@ -109,7 +109,7 @@ export function health(options: HealthOptions = {}): HealthPlugin {
             status,
             headers: {
                 'content-type': 'application/json',
-                // A cached readiness answer is a drained silo still taking
+                // A cached readiness answer is a drained host still taking
                 // traffic, or a healthy one still out of rotation.
                 'cache-control': 'no-store'
             }
@@ -122,11 +122,11 @@ export function health(options: HealthOptions = {}): HealthPlugin {
         setup(registry: PluginRegistry): void {
             report = () => registry.health();
             registry.onStart((started) => {
-                silo = started;
+                host = started;
                 startedAt = performance.now();
             });
             registry.onStop(() => {
-                silo = null;
+                host = null;
                 startedAt = 0;
             });
             registry.route({
@@ -160,9 +160,9 @@ export function health(options: HealthOptions = {}): HealthPlugin {
                     const head = method === 'HEAD';
                     const current = status();
                     // Liveness asks only one thing of the checks: is any of
-                    // them FATAL? A draining silo is not ready but very much
+                    // them FATAL? A draining host is not ready but very much
                     // alive (restarting it would abort the handoff) — while
-                    // a fatal state (a fenced silo) is unrecoverable for
+                    // a fatal state (a fenced host) is unrecoverable for
                     // this process, and a restart is exactly the medicine
                     // the orchestrator holds. Without this, a fenced pod is
                     // a zombie forever: live 200, ready 503, restarts 0.
@@ -188,7 +188,7 @@ export function health(options: HealthOptions = {}): HealthPlugin {
                         respond(
                             current.ready ? 200 : 503,
                             detail
-                                ? { ...body, checks: current.checks, silo: current.silo }
+                                ? { ...body, checks: current.checks, host: current.host }
                                 : body,
                             head
                         )

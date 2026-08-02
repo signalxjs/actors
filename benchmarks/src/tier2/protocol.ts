@@ -12,7 +12,7 @@
  */
 import type { MembershipView } from '@sigx/actors/cluster';
 
-/** Every cluster-store operation a silo can ask of the parent. */
+/** Every cluster-store operation a host can ask of the parent. */
 export type StoreOp =
     | 'membership.join'
     | 'membership.setStatus'
@@ -23,7 +23,7 @@ export type StoreOp =
     | 'directory.claim'
     | 'directory.release'
     | 'directory.evict'
-    | 'directory.evictSilo';
+    | 'directory.evictHost';
 
 export interface DriveRequest {
     /** Actor refs to call, round-robined across the loop. */
@@ -36,8 +36,8 @@ export interface DriveRequest {
 }
 
 export interface ChildStats {
-    siloId: string;
-    /** Connections this silo ACCEPTED. Every accept is a peer's open, which
+    hostId: string;
+    /** Connections this host ACCEPTED. Every accept is a peer's open, which
      *  is how outbound sockets get counted without hooking the transport. */
     accepted: number;
     /** Highest simultaneous accepted connections. */
@@ -47,7 +47,7 @@ export interface ChildStats {
     /** Bytes read/written across every accepted connection, headers included. */
     bytesIn: number;
     bytesOut: number;
-    /** Requests served on the internal silo mount. */
+    /** Requests served on the internal host mount. */
     inboundRequests: number;
     /** Store RPCs this child made — the "did we measure the store?" guard. */
     storeOps: number;
@@ -61,7 +61,7 @@ export interface ChildStats {
 // --- parent → child --------------------------------------------------------
 
 /**
- * Which outbound HTTP client the silo dispatches with.
+ * Which outbound HTTP client the host dispatches with.
  *
  * `default` is what ships today: the global `fetch`, whose undici agent has
  * `connections: null` (unbounded) and `pipelining: 1`. `bounded` and `h2`
@@ -98,7 +98,7 @@ export type ToChild =
 
 export type ToParent =
     | { t: 'ready'; index: number; port: number }
-    | { t: 'started'; siloId: string }
+    | { t: 'started'; hostId: string }
     | { t: 'store'; id: number; op: StoreOp; args: readonly unknown[] }
     | { t: 'drove'; id: number; ops: number; opsPerSec: number; percentiles?: unknown }
     | { t: 'warmed'; id: number }

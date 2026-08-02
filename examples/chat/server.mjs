@@ -7,14 +7,14 @@
  *   /_sigx/actor/*  actor endpoint      (default same-origin policy)
  *   /_sigx/fn/*     serverFn endpoint
  *   /assets/*       built client assets
- *   /_sigx/<else>   HARD 404 — health/ops/silo must not be publicly
+ *   /_sigx/<else>   HARD 404 — health/ops/host must not be publicly
  *                   reachable, and must never fall through to the document
  *                   handler (which would 200 them as HTML)
  *   everything else the SSR document
  *
  * INTERNAL (INTERNAL_PORT, default 7311) — pod-network only: the full
  * `createAppHandler` with every plugin route (health for kubelet probes,
- * ops for `kubectl port-forward`, the cluster's silo-to-silo mount, and
+ * ops for `kubectl port-forward`, the cluster's host-to-host mount, and
  * the actor endpoint peers proxy misplaced calls through). `origin: false`
  * here — probes and peers are Node clients with no Origin header.
  *
@@ -38,7 +38,7 @@ import {
     createAppHandler,
     attachSignalHandlers
 } from '@sigx/actors/node';
-import { health, metrics, ops } from '@sigx/actors/silo';
+import { health, metrics, ops } from '@sigx/actors/host';
 import { cluster, clusterStats, preferLocalPolicy } from '@sigx/actors/cluster';
 import { redisCluster } from '@sigx/actors-redis';
 
@@ -79,10 +79,10 @@ if (REDIS_URL) {
         secret: need('CLUSTER_SECRET'),
         // Half of the locality pair (the other half is the edge hashing
         // `x-sigx-actor-route` — see the chart's actor Ingress). The LB
-        // sends every call for a room to the same silo; this makes that
-        // silo ACTIVATE the room, so the two agree without either knowing
-        // the other's algorithm. Measured before this: 213k cross-silo
-        // hops per 250k public requests, and adding silos bought +7%
+        // sends every call for a room to the same host; this makes that
+        // host ACTIVATE the room, so the two agree without either knowing
+        // the other's algorithm. Measured before this: 213k cross-host
+        // hops per 250k public requests, and adding hosts bought +7%
         // throughput for +60% CPU. Neither half works alone.
         policy: preferLocalPolicy(),
         fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
@@ -92,7 +92,7 @@ if (REDIS_URL) {
             secret: need('OPS_SECRET'),
             // The second argument is what `?detail=1` on the ops route asked
                 // for. Spreading it is what lets a dashboard drill into ONE
-                // silo without every poll paying for a fleet-wide grain walk.
+                // host without every poll paying for a fleet-wide actor walk.
                 cluster: (signal, query) => clusterStats(plugin.placement, { signal, ...query })
         })
     );
@@ -108,7 +108,7 @@ const internal = createServer((req, res) => {
 });
 await new Promise((r) => internal.listen(INTERNAL_PORT, r));
 
-const silo = await composed.start();
+const host = await composed.start();
 
 // Vite rewrote the built template's <script>/<link> tags to the hashed
 // asset names, so it needs no `document.assets` — that option is for
@@ -119,13 +119,13 @@ const template = await readFile(join(clientDir, 'index.html'), 'utf8');
 // routes stay internal), with the DEFAULT same-origin policy. The ingress
 // forwards x-forwarded-proto/host, which @sigx/server honours, so the
 // browser's `Origin: https://chat...` compares like with like.
-const publicActor = createActorHandler({ silo });
+const publicActor = createActorHandler({ host });
 const fns = createServerFnHandler({ functions: serverFns });
 const document = createRequestHandler({ template, app: (url) => createApp(url) });
 
 // Everything under /_sigx (including the bare prefix) that is not the
 // actor or fn endpoint is 404 on the public side — no health, no ops, no
-// silo mount, and no SSR fallthrough.
+// host mount, and no SSR fallthrough.
 const RESERVED = /^\/_sigx(?:\/(?!actor(?:\/|$)|fn(?:\/|$))|$)/;
 
 const MIME = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' };
@@ -210,7 +210,7 @@ const shutdown = async () => {
     stopping = true;
     let code = 0;
     try {
-        await silo.stop({ timeoutMs: 30_000 });
+        await host.stop({ timeoutMs: 30_000 });
     } catch (error) {
         console.error('[chat] drain failed:', error);
         code = 1;
@@ -227,7 +227,7 @@ process.once('SIGINT', () => void shutdown());
 console.log(
     `[chat] public :${PORT}  internal :${INTERNAL_PORT}  ` +
         (plugin
-            ? `silo ${plugin.placement.identity.siloId} clustered via redis  `
+            ? `host ${plugin.placement.identity.hostId} clustered via redis  `
             : 'single-node (no REDIS_URL)  ') +
         `NODE_ENV=${process.env.NODE_ENV ?? '(unset)'}`
 );

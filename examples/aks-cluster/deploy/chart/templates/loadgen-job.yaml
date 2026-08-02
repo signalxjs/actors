@@ -45,7 +45,7 @@ spec:
           command: ["node", "--conditions=production", "loadgen.mjs"]
           env:
             - name: TARGET_URL
-              value: {{ .Values.loadgen.targetUrl | default (printf "http://%s-silo:%v" (include "chart.fullname" .) .Values.port) | quote }}
+              value: {{ .Values.loadgen.targetUrl | default (printf "http://%s-host:%v" (include "chart.fullname" .) .Values.port) | quote }}
             - name: MODE
               value: {{ .Values.loadgen.mode | quote }}
             - name: CONCURRENCY

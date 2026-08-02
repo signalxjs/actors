@@ -1,7 +1,7 @@
 /**
  * `defineActor` — the actor definition API. Pure declaration: no activation
- * machinery lives here (that is `./silo`), so importing a `*.actor.ts`
- * module on the server costs nothing until the silo activates a key.
+ * machinery lives here (that is `./host`), so importing a `*.actor.ts`
+ * module on the server costs nothing until the host activates a key.
  */
 import type {
     ActorContext,

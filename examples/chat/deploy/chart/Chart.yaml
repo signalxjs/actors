@@ -1,7 +1,7 @@
 apiVersion: v2
 name: sigx-chat
 description: >-
-  The chat example, publicly exposed: N clustered silos (SSR + browser
+  The chat example, publicly exposed: N clustered hosts (SSR + browser
   client + guarded actors + live NDJSON streams) behind an ingress, with a
   small Redis for membership, directory and room state.
 type: application

@@ -41,7 +41,7 @@ export default defineConfig({
     },
     resolve: {
         alias: {
-            '@sigx/actors/silo': resolve(__dirname, 'packages/actors/src/silo/index.ts'),
+            '@sigx/actors/host': resolve(__dirname, 'packages/actors/src/host/index.ts'),
             '@sigx/actors/server': resolve(__dirname, 'packages/actors/src/server/index.ts'),
             '@sigx/actors/node': resolve(__dirname, 'packages/actors/src/node/index.ts'),
             '@sigx/actors/client': resolve(__dirname, 'packages/actors/src/client/index.ts'),

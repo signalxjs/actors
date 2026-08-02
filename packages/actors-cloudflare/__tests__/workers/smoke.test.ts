@@ -2,8 +2,8 @@
  * Does any of this run on workerd at all?
  *
  * The most boring assertions in the repo and, until now, the only completely
- * unverified ones: that `@sigx/actors/silo` and this package LOAD on the
- * platform, that a silo boots inside a Durable Object, and that a call
+ * unverified ones: that `@sigx/actors/host` and this package LOAD on the
+ * platform, that a host boots inside a Durable Object, and that a call
  * survives the public wire.
  */
 import { env, SELF } from 'cloudflare:test';

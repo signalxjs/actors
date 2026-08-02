@@ -20,7 +20,7 @@ broke, the failure is included — those are the parts worth reading.
 `wrangler.jsonc` uses:
 
 ```jsonc
-"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ActorSilo"] }]
+"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ActorHost"] }]
 ```
 
 **`new_classes` is a one-way door.** It creates the legacy key-value backed
@@ -66,7 +66,7 @@ Without `compatibility_flags: ["nodejs_compat"]` the Worker deploys fine, the
 edge answers, and **every actor call fails**:
 
 ```json
-{"error":{"message":"[sigx actors] silo do:Counter/a (https://sigx.invalid) is unreachable; the call may be retried.","status":503,"data":{"kind":"unreachable"}}}
+{"error":{"message":"[sigx actors] host do:Counter/a (https://sigx.invalid) is unreachable; the call may be retried.","status":503,"data":{"kind":"unreachable"}}}
 ```
 
 The message points at the stub fetch, but the cause is upstream: the Durable
@@ -103,7 +103,7 @@ curl -s -X POST "$U/_sigx/actor/Ticker%23ticks" \
 ```
 
 No request reached that object between arming and checking. The platform woke
-it from its alarm, the silo booted cold, and the reminder table's persisted
+it from its alarm, the host booted cold, and the reminder table's persisted
 owner ref is what told it whom to deliver to. That last part is why the owner
 rides alongside the entries in storage rather than in memory.
 
@@ -167,7 +167,10 @@ behind, so the name is stable and predictable on purpose — check with
 `npx wrangler deployments list` if unsure.
 
 To remove one class but keep the Worker, use a `deleted_classes` migration
-rather than editing the binding out.
+rather than editing the binding out. Likewise, renaming an exported class on
+a deployed Worker needs a `renamed_classes` migration (`{ "tag": "v2",
+"renamed_classes": [{ "from": "OldName", "to": "NewName" }] }`) — editing
+`class_name` in place strands the old objects and their state.
 
 ## What this example cannot show you
 
@@ -180,6 +183,6 @@ rather than editing the binding out.
   `alarm()`; the runtime persists the advanced due time before delivering, so a
   retry skips rather than double-fires — proven by construction and in the
   workerd suite, not here.
-- **`sigx actors top`.** The dashboard polls `ops()` on a long-lived silo. A
+- **`sigx actors top`.** The dashboard polls `ops()` on a long-lived host. A
   Worker has none, and a Durable Object is evicted between calls, so the
   dashboard does not apply to this backend.

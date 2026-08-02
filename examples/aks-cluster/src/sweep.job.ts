@@ -1,8 +1,8 @@
 // The long-running worker under test: a durable job that walks N steps,
 // checkpointing every one (a Redis CAS each) — so a crash mid-run must
-// resume from the last completed step on whichever silo picks the grain
+// resume from the last completed step on whichever host picks the actor
 // up, and observed progress may regress at most one step per resume.
-// Scenario (k) of the runbook kills silos under a fleet of these.
+// Scenario (k) of the runbook kills hosts under a fleet of these.
 import { defineJob } from '@sigx/actors/job';
 
 export interface SweepInput {
@@ -24,7 +24,7 @@ export const SweepJob = defineJob<SweepInput, SweepResult, SweepCheckpoint>({
     type: 'SweepJob',
     // Public on purpose, like the Counter: the load generator drives it bare.
     unguarded: true,
-    // Generous: scenario (k) kills silos repeatedly and every kill that
+    // Generous: scenario (k) kills hosts repeatedly and every kill that
     // lands on a running sweep costs an attempt.
     maxAttempts: 10,
     // Keep terminal records long enough for the verify pass, then forget.

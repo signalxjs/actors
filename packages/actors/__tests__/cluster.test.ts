@@ -1,7 +1,7 @@
 /**
- * The clustering integration suite: N real silos in one process, wired
+ * The clustering integration suite: N real hosts in one process, wired
  * through the in-memory pipe (real public + internal endpoints, zero
- * sockets). Pins the M1 invariants: single activation across silos,
+ * sockets). Pins the M1 invariants: single activation across hosts,
  * callChain/deadline propagation, wrong-host redirect convergence, guards
  * running exactly once, cross-host streams with keep-alive release, and
  * exactly-once reminders under the leader lease.
@@ -17,11 +17,11 @@ import {
     preferLocalPolicy,
     signAuth,
     verifyAuth,
-    SILO_CALL_HEADER,
+    HOST_CALL_HEADER,
     type ClusterMembership,
-    type SiloDescriptor
+    type HostDescriptor
 } from '@sigx/actors/cluster';
-import { createSilo } from '@sigx/actors/silo';
+import { createHost } from '@sigx/actors/host';
 import { __actorRef, configureActors } from '@sigx/actors/client';
 import { createCluster, quiet, selfPolicy, type ClusterHarness } from './harness';
 
@@ -102,20 +102,20 @@ describe('envelope', () => {
 });
 
 describe('cluster: activation & routing', () => {
-    it('one activation per key across silos — racing front doors join one owner', async () => {
+    it('one activation per key across hosts — racing front doors join one owner', async () => {
         const events: string[] = [];
         const cluster = await createCluster(2, { actors: [counterActor(events)] });
         running = cluster;
         const def = counterActor();
         const [a, b] = await Promise.all([
-            cluster.silos[0]!.actor(def, 'shared').increment(1),
-            cluster.silos[1]!.actor(def, 'shared').increment(1)
+            cluster.hosts[0]!.actor(def, 'shared').increment(1),
+            cluster.hosts[1]!.actor(def, 'shared').increment(1)
         ]);
         expect([a, b].sort()).toEqual([1, 2]);
         expect(events.filter((e) => e === 'activate:shared')).toHaveLength(1);
-        // Both silos read the same state wherever it lives.
-        await expect(cluster.silos[0]!.actor(def, 'shared').get()).resolves.toBe(2);
-        await expect(cluster.silos[1]!.actor(def, 'shared').get()).resolves.toBe(2);
+        // Both hosts read the same state wherever it lives.
+        await expect(cluster.hosts[0]!.actor(def, 'shared').get()).resolves.toBe(2);
+        await expect(cluster.hosts[1]!.actor(def, 'shared').get()).resolves.toBe(2);
     });
 
     it('a misdirected internal call answers 421 wrong-host and the caller converges', async () => {
@@ -126,42 +126,42 @@ describe('cluster: activation & routing', () => {
         });
         running = cluster;
         const def = counterActor();
-        // Owner: silo 2 (selfPolicy pins new activations locally).
-        await cluster.silos[2]!.actor(def, 'k').increment(5);
+        // Owner: host 2 (selfPolicy pins new activations locally).
+        await cluster.hosts[2]!.actor(def, 'k').increment(5);
 
-        // Misdirect: hit silo 1's INTERNAL endpoint for silo 2's actor,
+        // Misdirect: hit host 1's INTERNAL endpoint for host 2's actor,
         // with a correctly signed per-request HMAC.
-        const misdirected = await cluster.fetch('http://silo1.test/_sigx/silo/Counter%23get', {
+        const misdirected = await cluster.fetch('http://host1.test/_sigx/host/Counter%23get', {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
                 'x-sigx-cluster-auth': await signAuth('test-secret', 'Counter#get', 'c.t'),
-                [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.test')
+                [HOST_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.test')
             },
             body: JSON.stringify({ args: ['k'] })
         });
         expect(misdirected.status).toBe(421);
         const parsed = (await misdirected.json()) as {
-            error: { data: { kind: string; owner: { siloId: string } } };
+            error: { data: { kind: string; owner: { hostId: string } } };
         };
         expect(parsed.error.data.kind).toBe('wrong-host');
-        expect(parsed.error.data.owner.siloId).toBe(cluster.placements[2]!.identity.siloId);
+        expect(parsed.error.data.owner.hostId).toBe(cluster.placements[2]!.identity.hostId);
 
-        // Routing-level convergence: silo 0 has no claim and no cache; the
+        // Routing-level convergence: host 0 has no claim and no cache; the
         // directory sends it straight to the owner.
-        await expect(cluster.silos[0]!.actor(def, 'k').get()).resolves.toBe(5);
+        await expect(cluster.hosts[0]!.actor(def, 'k').get()).resolves.toBe(5);
         expect(events.filter((e) => e === 'activate:k')).toHaveLength(1);
     });
 
     it('the internal mount rejects a bad cluster secret', async () => {
         const cluster = await createCluster(1, { actors: [counterActor()] });
         running = cluster;
-        const res = await cluster.fetch('http://silo0.test/_sigx/silo/Counter%23get', {
+        const res = await cluster.fetch('http://host0.test/_sigx/host/Counter%23get', {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
                 'x-sigx-cluster-auth': 'wrong',
-                [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.test')
+                [HOST_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.test')
             },
             body: JSON.stringify({ args: ['k'] })
         });
@@ -205,15 +205,15 @@ describe('cluster: call-chain & deadline propagation', () => {
         return { alpha, beta };
     }
 
-    it('a cross-silo cycle into a non-reentrant actor throws deadlock with the full chain', async () => {
+    it('a cross-host cycle into a non-reentrant actor throws deadlock with the full chain', async () => {
         const { alpha, beta } = pingPong(false);
         const cluster = await createCluster(2, { actors: [alpha, beta], policy: selfPolicy });
         running = cluster;
-        // Alpha/a lives on silo 0, Beta/b on silo 1.
-        await cluster.silos[0]!.actor(alpha, 'a').warm();
-        await cluster.silos[1]!.actor(beta, 'b').warm();
+        // Alpha/a lives on host 0, Beta/b on host 1.
+        await cluster.hosts[0]!.actor(alpha, 'a').warm();
+        await cluster.hosts[1]!.actor(beta, 'b').warm();
 
-        await expect(cluster.silos[0]!.actor(alpha, 'a').poke()).rejects.toSatisfy(
+        await expect(cluster.hosts[0]!.actor(alpha, 'a').poke()).rejects.toSatisfy(
             (e: unknown) =>
                 isActorError(e) &&
                 e.kind === 'deadlock' &&
@@ -222,13 +222,13 @@ describe('cluster: call-chain & deadline propagation', () => {
         );
     });
 
-    it('a cross-silo cycle into a REENTRANT actor runs inline and succeeds', async () => {
+    it('a cross-host cycle into a REENTRANT actor runs inline and succeeds', async () => {
         const { alpha, beta } = pingPong(true);
         const cluster = await createCluster(2, { actors: [alpha, beta], policy: selfPolicy });
         running = cluster;
-        await cluster.silos[0]!.actor(alpha, 'a').warm();
-        await cluster.silos[1]!.actor(beta, 'b').warm();
-        await expect(cluster.silos[0]!.actor(alpha, 'a').poke()).resolves.toBe('alpha-back');
+        await cluster.hosts[0]!.actor(alpha, 'a').warm();
+        await cluster.hosts[1]!.actor(beta, 'b').warm();
+        await expect(cluster.hosts[0]!.actor(alpha, 'a').poke()).resolves.toBe('alpha-back');
     });
 
     it('the caller deadline crosses the hop as remaining-ms and times out remotely', async () => {
@@ -239,9 +239,9 @@ describe('cluster: call-chain & deadline propagation', () => {
         });
         running = cluster;
         const def = counterActor();
-        // Owner: silo 1. Call from silo 0 → one hop.
-        await cluster.silos[1]!.actor(def, 'slowpoke').get();
-        await expect(cluster.silos[0]!.actor(def, 'slowpoke').slow(500)).rejects.toSatisfy(
+        // Owner: host 1. Call from host 0 → one hop.
+        await cluster.hosts[1]!.actor(def, 'slowpoke').get();
+        await expect(cluster.hosts[0]!.actor(def, 'slowpoke').slow(500)).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'call-timeout'
         );
     });
@@ -266,8 +266,8 @@ describe('cluster: guards, streams, reminders, failover', () => {
         });
         const cluster = await createCluster(2, { actors: [guarded], policy: selfPolicy });
         running = cluster;
-        // Owner: silo 1. Public wire call lands on silo 0 → internal hop.
-        await cluster.silos[1]!.actor(guarded, 'g').hello();
+        // Owner: host 1. Public wire call lands on host 0 → internal hop.
+        await cluster.hosts[1]!.actor(guarded, 'g').hello();
         guardLog.length = 0;
 
         configureActors({ endpoint: cluster.endpointOf(0), fetch: cluster.fetch });
@@ -305,25 +305,25 @@ describe('cluster: guards, streams, reminders, failover', () => {
         });
         const cluster = await createCluster(2, { actors: [streamer], policy: selfPolicy });
         running = cluster;
-        // Owner: silo 1; consume from silo 0 across the internal hop.
-        await cluster.silos[1]!.actor(streamer, 's').warm();
+        // Owner: host 1; consume from host 0 across the internal hop.
+        await cluster.hosts[1]!.actor(streamer, 's').warm();
 
         const finite: number[] = [];
-        for await (const chunk of cluster.silos[0]!.actor(streamer, 's').countTo(3)) {
+        for await (const chunk of cluster.hosts[0]!.actor(streamer, 's').countTo(3)) {
             finite.push(chunk as number);
         }
         expect(finite).toEqual([1, 2, 3]);
 
-        for await (const chunk of cluster.silos[0]!.actor(streamer, 's').forever()) {
+        for await (const chunk of cluster.hosts[0]!.actor(streamer, 's').forever()) {
             if ((chunk as number) >= 2) break;
         }
         await vi.waitFor(() => expect(cleanupLog).toContain('forever:finally'));
         // Keep-alive released on the owner: the activation can deactivate.
-        await cluster.silos[1]!.deactivateType('Streamer');
-        expect(cluster.silos[1]!.stats().activations).toBe(0);
+        await cluster.hosts[1]!.deactivateType('Streamer');
+        expect(cluster.hosts[1]!.stats().activations).toBe(0);
     });
 
-    it('reminders fire exactly once across silos (rendezvous shard ownership)', async () => {
+    it('reminders fire exactly once across hosts (rendezvous shard ownership)', async () => {
         const events: string[] = [];
         const waking = defineActor({
             type: 'Waking',
@@ -343,10 +343,10 @@ describe('cluster: guards, streams, reminders, failover', () => {
             defaults: { reminderTickMs: 25 }
         });
         running = cluster;
-        // Register through silo 1 (a non-leader mutation is fine).
-        await cluster.silos[1]!.actor(waking, 'r1').wakeMeIn(0);
+        // Register through host 1 (a non-leader mutation is fine).
+        await cluster.hosts[1]!.actor(waking, 'r1').wakeMeIn(0);
         await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
-        // Both silos tick fast; several windows must not double-fire.
+        // Both hosts tick fast; several windows must not double-fire.
         await new Promise((r) => setTimeout(r, 150));
         expect(events.filter((e) => e === 'reminder:wake')).toHaveLength(1);
     });
@@ -358,7 +358,7 @@ describe('cluster: guards, streams, reminders, failover', () => {
             const owners = cluster.placements.filter((pl) => pl.ownsReminderShard(`p${i}`));
             expect(owners).toHaveLength(1);
         }
-        // Both survivors re-cover the dead silo's shards deterministically.
+        // Both survivors re-cover the dead host's shards deterministically.
         cluster.crash(0);
         for (let i = 0; i < 16; i++) {
             const owners = cluster.placements
@@ -376,40 +376,40 @@ describe('cluster: guards, streams, reminders, failover', () => {
         });
         running = cluster;
         const def = counterActor();
-        // Owner: silo 0, with persisted state.
-        await cluster.silos[0]!.actor(def, 'phoenix').increment(41);
+        // Owner: host 0, with persisted state.
+        await cluster.hosts[0]!.actor(def, 'phoenix').increment(41);
 
         cluster.crash(0);
-        // Self-fence: the crashed silo dropped its activations.
-        await vi.waitFor(() => expect(cluster.silos[0]!.stats().activations).toBe(0));
+        // Self-fence: the crashed host dropped its activations.
+        await vi.waitFor(() => expect(cluster.hosts[0]!.stats().activations).toBe(0));
 
         // The survivor takes over: dead-owner entry evicted, fresh
         // activation from shared storage — state survives the crash.
-        await expect(cluster.silos[1]!.actor(def, 'phoenix').increment(1)).resolves.toBe(42);
+        await expect(cluster.hosts[1]!.actor(def, 'phoenix').increment(1)).resolves.toBe(42);
         expect(events.filter((e) => e === 'activate:phoenix')).toHaveLength(2);
     });
 });
 
 describe('cluster: milestone 2 — failover & directory hygiene', () => {
-    it('survivors proactively evict a dead silo’s directory entries (no call needed)', async () => {
+    it('survivors proactively evict a dead host’s directory entries (no call needed)', async () => {
         const cluster = await createCluster(2, { actors: [counterActor()] });
         running = cluster;
-        // A phantom third silo joins, claims two actors, then crashes
+        // A phantom third host joins, claims two actors, then crashes
         // WITHOUT any self-cleanup (a real dead process runs nothing).
         const phantom = cluster.hub.providers();
         await phantom.membership.join({
-            siloId: 's.phantom',
+            hostId: 's.phantom',
             epoch: 1,
             address: 'http://phantom.test',
             status: 'active'
         });
         const key = (k: string) => ['Counter', k].join(String.fromCharCode(0));
         await cluster.hub.directory.claim(key('lost1'), {
-            siloId: 's.phantom',
+            hostId: 's.phantom',
             activationId: 's.phantom/1/1'
         });
         await cluster.hub.directory.claim(key('lost2'), {
-            siloId: 's.phantom',
+            hostId: 's.phantom',
             activationId: 's.phantom/1/2'
         });
 
@@ -422,7 +422,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         });
     });
 
-    it('a transient view drop does not forget a silo — the sweep retries on the next change', async () => {
+    it('a transient view drop does not forget a host — the sweep retries on the next change', async () => {
         const hub = memoryClusterHub();
         const providers = hub.providers();
         // A membership whose store answer diverges from the view once:
@@ -444,19 +444,19 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
             directory: providers.directory,
             advertise: 'http://self.test'
         });
-        const silo = createSilo({ actors: [counterActor()], placement, defaults: quiet });
-        await silo.start();
+        const host = createHost({ actors: [counterActor()], placement, defaults: quiet });
+        await host.start();
         try {
             const phantom = hub.providers();
             await phantom.membership.join({
-                siloId: 's.phantom',
+                hostId: 's.phantom',
                 epoch: 1,
                 address: 'http://phantom.test',
                 status: 'active'
             });
             const key = ['Counter', 'ghost'].join(String.fromCharCode(0));
             await hub.directory.claim(key, {
-                siloId: 's.phantom',
+                hostId: 's.phantom',
                 activationId: 's.phantom/1/1'
             });
 
@@ -470,7 +470,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
             // tells the truth and the sweep completes.
             const late = hub.providers();
             await late.membership.join({
-                siloId: 's.late',
+                hostId: 's.late',
                 epoch: 1,
                 address: 'http://late.test',
                 status: 'active'
@@ -479,7 +479,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
                 await expect(hub.directory.lookup(key)).resolves.toBeNull();
             });
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
@@ -494,23 +494,23 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         });
         running = cluster;
         const def = counterActor();
-        // Owner: silo 1, with saved state.
-        await cluster.silos[1]!.actor(def, 'flaky').increment(7);
+        // Owner: host 1, with saved state.
+        await cluster.hosts[1]!.actor(def, 'flaky').increment(7);
 
         // Kill only the ADDRESS (network partition) — membership stays alive.
         cluster.unbind(1);
         urls.length = 0;
         const before = Date.now();
-        await expect(cluster.silos[0]!.actor(def, 'flaky').get()).rejects.toSatisfy(
+        await expect(cluster.hosts[0]!.actor(def, 'flaky').get()).rejects.toSatisfy(
             (e: unknown) => isActorError(e) && e.kind === 'activation'
         );
         // Bounded: retries+1 attempts at the dead address, spaced by backoff.
-        expect(urls.filter((u) => u.includes('silo1.test'))).toHaveLength(3);
+        expect(urls.filter((u) => u.includes('host1.test'))).toHaveLength(3);
         expect(Date.now() - before).toBeGreaterThanOrEqual(15 + 30);
 
-        // The silo then actually dies: survivors evict and re-place.
-        cluster.hub.kill(cluster.placements[1]!.identity.siloId);
-        await expect(cluster.silos[0]!.actor(def, 'flaky').get()).resolves.toBe(7);
+        // The host then actually dies: survivors evict and re-place.
+        cluster.hub.kill(cluster.placements[1]!.identity.hostId);
+        await expect(cluster.hosts[0]!.actor(def, 'flaky').get()).resolves.toBe(7);
     });
 
     it('a mid-call owner crash makes chain re-entry a loud retryable error (migrated guard, for real)', async () => {
@@ -544,7 +544,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
             methods: (ctx: ActorContext<object>) => ({
                 async poke() {
                     betaEntered();
-                    await gate; // the test crashes alpha's silo here
+                    await gate; // the test crashes alpha's host here
                     try {
                         return await (
                             ctx.actor(alpha, 'a') as { back(): Promise<string> }
@@ -564,12 +564,12 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
 
         const cluster = await createCluster(2, { actors: [alpha, beta], policy: selfPolicy });
         running = cluster;
-        await cluster.silos[0]!.actor(alpha, 'a').warm(); // Alpha/a on silo 0
-        await cluster.silos[1]!.actor(beta, 'b').warm(); // Beta/b on silo 1
+        await cluster.hosts[0]!.actor(alpha, 'a').warm(); // Alpha/a on host 0
+        await cluster.hosts[1]!.actor(beta, 'b').warm(); // Beta/b on host 1
 
-        const call = cluster.silos[0]!.actor(alpha, 'a').poke();
+        const call = cluster.hosts[0]!.actor(alpha, 'a').poke();
         await entered;
-        // Alpha's silo dies while its turn is up-stack awaiting beta. The
+        // Alpha's host dies while its turn is up-stack awaiting beta. The
         // chain re-entering "alpha" now finds no activation anywhere it can
         // legally run inline — a second copy would break single-activation.
         cluster.crash(0);
@@ -592,12 +592,12 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         running = cluster;
         const def = counterActor();
         const keys = ['h1', 'h2', 'h3'];
-        for (const key of keys) await cluster.silos[0]!.actor(def, key).increment(1);
+        for (const key of keys) await cluster.hosts[0]!.actor(def, key).increment(1);
 
-        // Stop silo 0 while traffic keeps arriving through silo 1.
-        const stopping = cluster.silos[0]!.stop({ timeoutMs: 2000 });
+        // Stop host 0 while traffic keeps arriving through host 1.
+        const stopping = cluster.hosts[0]!.stop({ timeoutMs: 2000 });
         const results = await Promise.all(
-            keys.map((key) => cluster.silos[1]!.actor(def, key).increment(1))
+            keys.map((key) => cluster.hosts[1]!.actor(def, key).increment(1))
         );
         await stopping;
 
@@ -606,7 +606,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
             expect(events).toContain(`deactivate:${key}:migrated`);
             expect(events.filter((e) => e === `activate:${key}`)).toHaveLength(2);
         }
-        expect(cluster.silos[1]!.stats().activations).toBe(3);
+        expect(cluster.hosts[1]!.stats().activations).toBe(3);
     });
 
     it('the leaver announces `leaving` BEFORE the drain, so peers stop placing there', async () => {
@@ -624,46 +624,46 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         const cluster = await createCluster(2, { actors: [slow], policy: selfPolicy });
         running = cluster;
         const viewer = cluster.hub.providers().membership; // shared hub view
-        const leaverId = cluster.placements[0]!.identity.siloId;
+        const leaverId = cluster.placements[0]!.identity.hostId;
 
         // A turn in flight holds the drain open…
-        const napping = cluster.silos[0]!.actor(slow, 'z').nap(150);
+        const napping = cluster.hosts[0]!.actor(slow, 'z').nap(150);
         await new Promise((r) => setTimeout(r, 20));
-        const stopping = cluster.silos[0]!.stop({ timeoutMs: 2000 });
+        const stopping = cluster.hosts[0]!.stop({ timeoutMs: 2000 });
 
         // …and while it drains, the view already says leaving — peers'
         // placement policies (which filter on 'active') skip it.
         await vi.waitFor(() => {
-            const member = viewer.view().silos.find((m) => m.siloId === leaverId);
+            const member = viewer.view().hosts.find((m) => m.hostId === leaverId);
             expect(member?.status).toBe('leaving');
         });
         await expect(napping).resolves.toBe('rested'); // in-flight turn completed
         await stopping;
         // Fully left after the drain.
-        expect(viewer.view().silos.find((m) => m.siloId === leaverId)).toBeUndefined();
+        expect(viewer.view().hosts.find((m) => m.hostId === leaverId)).toBeUndefined();
     });
 
-    it('consistentHashPolicy: all silos agree on the target; keys spread across silos', () => {
-        const silos: SiloDescriptor[] = ['s.aaa', 's.bbb', 's.ccc'].map((siloId, i) => ({
-            siloId,
+    it('consistentHashPolicy: all hosts agree on the target; keys spread across hosts', () => {
+        const hosts: HostDescriptor[] = ['s.aaa', 's.bbb', 's.ccc'].map((hostId, i) => ({
+            hostId,
             epoch: 1,
             address: `http://${i}.test`,
             status: 'active' as const
         }));
         const policy = consistentHashPolicy();
-        const perSilo = new Map<string, number>();
+        const perHost = new Map<string, number>();
         for (let k = 0; k < 100; k++) {
             const ref = { type: 'Counter', key: `k${k}` };
-            const targets = silos.map(
-                (self) => policy.choose(ref, { version: 1, silos }, self).siloId
+            const targets = hosts.map(
+                (self) => policy.choose(ref, { version: 1, hosts }, self).hostId
             );
-            // Every silo picks the SAME owner, whatever its own identity.
+            // Every host picks the SAME owner, whatever its own identity.
             expect(new Set(targets).size).toBe(1);
-            perSilo.set(targets[0]!, (perSilo.get(targets[0]!) ?? 0) + 1);
+            perHost.set(targets[0]!, (perHost.get(targets[0]!) ?? 0) + 1);
         }
         // …and the keys spread over all three.
-        expect(perSilo.size).toBe(3);
-        for (const count of perSilo.values()) expect(count).toBeGreaterThan(10);
+        expect(perHost.size).toBe(3);
+        for (const count of perHost.values()) expect(count).toBeGreaterThan(10);
     });
 
     it('typePolicies pin selected types local while the default policy handles the rest', async () => {
@@ -682,14 +682,14 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
             typePolicies: { Sticky: preferLocalPolicy() }
         });
         running = cluster;
-        await cluster.silos[1]!.actor(sticky, 'a').ping();
-        await cluster.silos[1]!.actor(sticky, 'b').ping();
-        expect(cluster.silos[1]!.stats().perType['Sticky']).toBe(2);
-        expect(cluster.silos[0]!.stats().activations).toBe(0);
+        await cluster.hosts[1]!.actor(sticky, 'a').ping();
+        await cluster.hosts[1]!.actor(sticky, 'b').ping();
+        expect(cluster.hosts[1]!.stats().perType['Sticky']).toBe(2);
+        expect(cluster.hosts[0]!.stats().activations).toBe(0);
     });
 
     it('defineActor({ placement }) routes the type and beats typePolicies', async () => {
-        // Orleans's placement attribute: the strategy rides the actor.
+        // The placement attribute form: the strategy rides the actor.
         const pinned = defineActor({
             type: 'Pinned',
             unguarded: true,
@@ -703,16 +703,16 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         });
         const cluster = await createCluster(2, {
             actors: [pinned],
-            // Both of these would send it to silo 0; the declaration wins.
-            policy: { name: 'pin-zero', choose: (_r, view) => view.silos[0]! },
-            typePolicies: { Pinned: { name: 'pin-zero', choose: (_r, view) => view.silos[0]! } }
+            // Both of these would send it to host 0; the declaration wins.
+            policy: { name: 'pin-zero', choose: (_r, view) => view.hosts[0]! },
+            typePolicies: { Pinned: { name: 'pin-zero', choose: (_r, view) => view.hosts[0]! } }
         });
         running = cluster;
 
-        // Called through silo 1 — prefer-local keeps it there.
-        await cluster.silos[1]!.actor(pinned, 'a').ping();
-        expect(cluster.silos[1]!.stats().perType['Pinned']).toBe(1);
-        expect(cluster.silos[0]!.stats().activations).toBe(0);
+        // Called through host 1 — prefer-local keeps it there.
+        await cluster.hosts[1]!.actor(pinned, 'a').ping();
+        expect(cluster.hosts[1]!.stats().perType['Pinned']).toBe(1);
+        expect(cluster.hosts[0]!.stats().activations).toBe(0);
     });
 
     it('ignores a strategy TAGGED for another backend, silently', async () => {
@@ -737,9 +737,9 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         const cluster = await createCluster(2, { actors: [odd], policy: selfPolicy });
         running = cluster;
         try {
-            await expect(cluster.silos[1]!.actor(odd, 'a').ping()).resolves.toBe('pong');
-            // Narrowed to placement warnings: the multi-silo harness emits
-            // its own unrelated "second silo started" notice.
+            await expect(cluster.hosts[1]!.actor(odd, 'a').ping()).resolves.toBe('pong');
+            // Narrowed to placement warnings: the multi-host harness emits
+            // its own unrelated "second host started" notice.
             const placementWarnings = warn.mock.calls
                 .map((c) => String(c[0]))
                 .filter((line) => line.includes('placement') || line.includes('backend'));
@@ -775,14 +775,14 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         });
         const cluster = await createCluster(2, { actors: [foreign], policy: selfPolicy });
         running = cluster;
-        await expect(cluster.silos[1]!.actor(foreign, 'a').ping()).resolves.toBe('pong');
+        await expect(cluster.hosts[1]!.actor(foreign, 'a').ping()).resolves.toBe('pong');
         expect(called).toBe(false);
     });
 
-    it('REFUSES an untagged strategy it cannot use, rather than misplacing the grain', async () => {
+    it('REFUSES an untagged strategy it cannot use, rather than misplacing the actor', async () => {
         // The bug this replaces: with no backend tag and no choose(), the
         // runtime could not tell "someone else's" from "broken", so it
-        // ignored both with a dev-only warning — and in production the grain
+        // ignored both with a dev-only warning — and in production the actor
         // was quietly placed somewhere other than where the author declared,
         // with nothing pointing at the cause.
         const broken = defineActor({
@@ -798,7 +798,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         });
         const cluster = await createCluster(2, { actors: [broken], policy: selfPolicy });
         running = cluster;
-        await expect(cluster.silos[1]!.actor(broken, 'a').ping()).rejects.toThrow(
+        await expect(cluster.hosts[1]!.actor(broken, 'a').ping()).rejects.toThrow(
             /not a usable cluster PlacementPolicy/
         );
     });
@@ -812,21 +812,21 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         running = cluster;
         const def = counterActor();
         const ref = { type: 'Counter', key: 'mover' };
-        await cluster.silos[0]!.actor(def, 'mover').increment(5);
+        await cluster.hosts[0]!.actor(def, 'mover').increment(5);
 
         await cluster.placements[0]!.migrate(ref);
         expect(events).toContain('deactivate:mover:migrated');
-        expect(cluster.silos[0]!.stats().activations).toBe(0);
+        expect(cluster.hosts[0]!.stats().activations).toBe(0);
         const key = ['Counter', 'mover'].join(String.fromCharCode(0));
         await expect(cluster.hub.directory.lookup(key)).resolves.toBeNull();
 
-        // Re-placed where the next call lands (selfPolicy → silo 1).
-        await expect(cluster.silos[1]!.actor(def, 'mover').increment(1)).resolves.toBe(6);
-        expect(cluster.silos[1]!.stats().perType['Counter']).toBe(1);
+        // Re-placed where the next call lands (selfPolicy → host 1).
+        await expect(cluster.hosts[1]!.actor(def, 'mover').increment(1)).resolves.toBe(6);
+        expect(cluster.hosts[1]!.stats().perType['Counter']).toBe(1);
 
         // migrate() on a non-owner is a harmless no-op.
         await cluster.placements[0]!.migrate(ref);
-        await expect(cluster.silos[1]!.actor(def, 'mover').get()).resolves.toBe(6);
+        await expect(cluster.hosts[1]!.actor(def, 'mover').get()).resolves.toBe(6);
     });
 });
 
@@ -835,12 +835,12 @@ describe('cluster: milestone 5 — per-request HMAC auth', () => {
         const cluster = await createCluster(1, { actors: [counterActor()] });
         running = cluster;
         const send = (auth: string) =>
-            cluster.fetch('http://silo0.test/_sigx/silo/Counter%23get', {
+            cluster.fetch('http://host0.test/_sigx/host/Counter%23get', {
                 method: 'POST',
                 headers: {
                     'content-type': 'application/json',
                     'x-sigx-cluster-auth': auth,
-                    [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.x')
+                    [HOST_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.x')
                 },
                 body: JSON.stringify({ args: ['k'] })
             });
@@ -871,12 +871,12 @@ describe('cluster: milestone 5 — per-request HMAC auth', () => {
         // Malformed percent-encoding in the path: 403, never a crash.
         const cluster = await createCluster(1, { actors: [counterActor()] });
         running = cluster;
-        const res = await cluster.fetch('http://silo0.test/_sigx/silo/%E0%A4%A', {
+        const res = await cluster.fetch('http://host0.test/_sigx/host/%E0%A4%A', {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
                 'x-sigx-cluster-auth': good,
-                [SILO_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.1' }, 's.x')
+                [HOST_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.1' }, 's.x')
             },
             body: JSON.stringify({ args: ['k'] })
         });

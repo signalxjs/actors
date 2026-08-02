@@ -4,7 +4,7 @@
  *
  * **One placement runs on BOTH sides**, distinguished only by `isSelf`.
  *
- * That is the load-bearing decision. Giving the object's own silo the plain
+ * That is the load-bearing decision. Giving the object's own host the plain
  * local host instead looks obvious and corrupts state: `ctx.actor(Cart, 'x')`
  * called from `Counter/alice` would resolve through `LocalHost` and activate
  * `Cart/x` INSIDE `Counter/alice`'s Durable Object, writing that actor's
@@ -21,21 +21,21 @@
  * its own header says "riding a route rather than its own socket is exactly
  * why this one works on Cloudflare Workers". Re-deriving it would mean
  * re-deriving the envelope (with its skew-proof remaining-ms deadline), the
- * NDJSON reader, the abort linking, and `fromSiloWireError`'s branded
+ * NDJSON reader, the abort linking, and `fromHostWireError`'s branded
  * re-creation — and that last one is a conformance requirement, not a
  * nicety: a forked wire is how a remote `state-conflict` quietly stops
  * satisfying `isActorError` and the runtime stops discarding stale
  * activations.
  */
-import type { ActorDispatcher, ActorPlacement, ActorRef, Silo } from '@sigx/actors';
+import type { ActorDispatcher, ActorPlacement, ActorRef, Host } from '@sigx/actors';
 import {
-    fromSiloWireError,
+    fromHostWireError,
     httpTransport,
-    siloWireCodec,
-    toSiloWireError,
-    type SiloTransportConfig
+    hostWireCodec,
+    toHostWireError,
+    type HostTransportConfig
 } from '@sigx/actors/cluster';
-import type { ActorPlugin } from '@sigx/actors/silo';
+import type { ActorPlugin } from '@sigx/actors/host';
 import type { DurableObjectNamespaceLike, DurableObjectStubLike } from './types';
 
 /**
@@ -54,13 +54,13 @@ export interface DurableObjectPlacementOptions {
     /**
      * The Durable Object namespace binding. A function form covers a
      * per-type class (different classes need different migrations), and
-     * must answer for every type the silo can reach.
+     * must answer for every type the host can reach.
      */
     namespace:
         | DurableObjectNamespaceLike
         | ((ref: ActorRef) => DurableObjectNamespaceLike | undefined);
     /**
-     * True when THIS silo hosts `ref` — i.e. we are the Durable Object that
+     * True when THIS host hosts `ref` — i.e. we are the Durable Object that
      * owns it. Absent (the Worker) means nothing is local and every call is
      * a stub fetch.
      *
@@ -93,7 +93,7 @@ export interface DurableObjectPlacementOptions {
     /** Path prefix of the object's internal mount. Default `/_sigx/do`. */
     base?: string;
     /** Identity stamped into the envelope's `from`. Default `cf`. */
-    siloId?: string;
+    hostId?: string;
 }
 
 /**
@@ -123,17 +123,17 @@ export function durableObjectPlacement(
         );
     }
     const objectName = options.objectName ?? durableObjectName;
-    const config: SiloTransportConfig = {
-        siloId: options.siloId ?? 'cf',
+    const config: HostTransportConfig = {
+        hostId: options.hostId ?? 'cf',
         epoch: 0,
         // No `secret`: a stub is not network-reachable, and the only way to
         // obtain one is to hold the namespace binding — a Worker-level
         // capability grant. Guards therefore run ONCE, at the public edge,
         // where the request still carries real client headers.
         internalBase: base,
-        codec: siloWireCodec,
-        toWireError: toSiloWireError,
-        fromWireError: fromSiloWireError
+        codec: hostWireCodec,
+        toWireError: toHostWireError,
+        fromWireError: fromHostWireError
     };
 
     let local: ActorDispatcher | null = null;
@@ -188,14 +188,14 @@ export function durableObjectPlacement(
         })(config);
         const dispatcher = transport.dispatcherFor({
             // Diagnostics only — this rides error messages, and an actor
-            // label reads better there than a synthetic silo id.
-            siloId: `do:${ref.type}/${ref.key}`,
+            // label reads better there than a synthetic host id.
+            hostId: `do:${ref.type}/${ref.key}`,
             epoch: 0,
             address: SYNTHETIC_ORIGIN,
             status: 'active'
         });
         if (!dispatcher) {
-            // `SiloTransport.dispatcherFor` is nullable so a transport can
+            // `HostTransport.dispatcherFor` is nullable so a transport can
             // decline a peer it cannot reach and fall through a chain. HTTP
             // never declines — every descriptor carries an address, which is
             // why it is only ever valid last in such a chain — and there is
@@ -215,7 +215,7 @@ export function durableObjectPlacement(
          * IS the directory), no reminder shard to own (a DO holds one
          * actor), and a present call chain inside a DO is genuinely local.
          */
-        bind(dispatcher: ActorDispatcher, _silo: Silo): void {
+        bind(dispatcher: ActorDispatcher, _host: Host): void {
             local = dispatcher;
         },
 
@@ -224,7 +224,7 @@ export function durableObjectPlacement(
                 if (!local) {
                     throw new Error(
                         '[sigx actors-cloudflare] the placement has no local dispatcher yet — ' +
-                            'createSilo() binds it, so this ran before the silo was built.'
+                            'createHost() binds it, so this ran before the host was built.'
                     );
                 }
                 return local;

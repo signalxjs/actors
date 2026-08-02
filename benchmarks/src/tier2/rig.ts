@@ -1,5 +1,5 @@
 /**
- * The Tier-2 rig: N silos as real forked processes, talking over real
+ * The Tier-2 rig: N hosts as real forked processes, talking over real
  * loopback sockets.
  *
  * `fork` rather than `spawn` because it inherits `execArgv` — so
@@ -34,7 +34,7 @@ const CHILD_URL = new URL('./child.ts', import.meta.url);
 const REPLY_TIMEOUT_MS = 30_000;
 
 export interface RigOptions {
-    silos: number;
+    hosts: number;
     /** `null` runs the cluster unauthenticated — the HMAC-off arm. */
     secret: string | null;
     /** Outbound HTTP client. Default `'default'` = the global fetch, i.e.
@@ -54,16 +54,16 @@ interface Member {
     index: number;
     child: ChildProcess;
     port: number;
-    siloId: string;
+    hostId: string;
     providers: ReturnType<ReturnType<typeof memoryClusterHub>['providers']>;
     /** Keyed `<replyType>:<id>`, or the bare type for id-less replies. */
     waiters: Map<string, { resolve(m: ToParent): void; reject(e: Error): void }>;
 }
 
 export interface Rig {
-    readonly members: readonly { index: number; siloId: string; port: number }[];
-    /** Activate `keys` on the silo that will OWN them, so a later drive from
-     *  another silo is guaranteed to cross the wire. */
+    readonly members: readonly { index: number; hostId: string; port: number }[];
+    /** Activate `keys` on the host that will OWN them, so a later drive from
+     *  another host is guaranteed to cross the wire. */
     warm(index: number, targets: readonly { type: string; key: string }[]): Promise<void>;
     drive(index: number, request: DriveRequest): Promise<DriveOutcome>;
     stats(index: number): Promise<ChildStats>;
@@ -100,11 +100,11 @@ export async function startRig(options: RigOptions): Promise<Rig> {
     process.once('SIGINT', onSigint);
 
     try {
-        for (let index = 0; index < options.silos; index++) {
+        for (let index = 0; index < options.hosts; index++) {
             members.push(await startChild(index));
         }
         // Push the joined view to everyone once the whole cluster is up, so
-        // no silo starts routing against a half-formed membership.
+        // no host starts routing against a half-formed membership.
         broadcastView();
         return rig();
     } catch (error) {
@@ -123,7 +123,7 @@ export async function startRig(options: RigOptions): Promise<Rig> {
             index,
             child,
             port: 0,
-            siloId: '',
+            hostId: '',
             providers,
             waiters: new Map()
         };
@@ -132,7 +132,7 @@ export async function startRig(options: RigOptions): Promise<Rig> {
         // Throwing from an event handler only produces an uncaught
         // exception, which strands the run instead of failing it.
         const abort = (reason: string): void => {
-            const error = new Error(`[tier2] silo ${index} ${reason}`);
+            const error = new Error(`[tier2] host ${index} ${reason}`);
             for (const waiter of member.waiters.values()) waiter.reject(error);
             member.waiters.clear();
         };
@@ -164,8 +164,8 @@ export async function startRig(options: RigOptions): Promise<Rig> {
             'ready'
         )) as { port: number };
         member.port = ready.port;
-        const started = (await request(member, { t: 'start' }, 'started')) as { siloId: string };
-        member.siloId = started.siloId;
+        const started = (await request(member, { t: 'start' }, 'started')) as { hostId: string };
+        member.hostId = started.hostId;
         // Each child's membership handle lives here; the child's `join` RPC
         // has already run through it by the time `started` comes back.
         broadcastView();
@@ -186,7 +186,7 @@ export async function startRig(options: RigOptions): Promise<Rig> {
                 member.child.kill('SIGKILL');
                 reject(
                     new Error(
-                        `[tier2] silo ${member.index} did not answer "${expect}" in ` +
+                        `[tier2] host ${member.index} did not answer "${expect}" in ` +
                             `${REPLY_TIMEOUT_MS}ms — killed`
                     )
                 );
@@ -217,7 +217,7 @@ export async function startRig(options: RigOptions): Promise<Rig> {
             const value = await invoke(member, op, args);
             const reply: ToChild = { t: 'storeReply', id, ok: true, value };
             child.send(reply);
-            // Membership mutations change what every OTHER silo can see.
+            // Membership mutations change what every OTHER host can see.
             if (op.startsWith('membership.')) broadcastView();
         } catch (error) {
             const reply: ToChild = {
@@ -251,8 +251,8 @@ export async function startRig(options: RigOptions): Promise<Rig> {
                 return directory.release(args[0] as string, args[1] as never);
             case 'directory.evict':
                 return directory.evict(args[0] as string, args[1] as never);
-            case 'directory.evictSilo':
-                return Promise.resolve(directory.evictSilo?.(args[0] as string) ?? 0);
+            case 'directory.evictHost':
+                return Promise.resolve(directory.evictHost?.(args[0] as string) ?? 0);
         }
     }
 
@@ -270,7 +270,7 @@ export async function startRig(options: RigOptions): Promise<Rig> {
     function rig(): Rig {
         let nextId = 1;
         return {
-            members: members.map((m) => ({ index: m.index, siloId: m.siloId, port: m.port })),
+            members: members.map((m) => ({ index: m.index, hostId: m.hostId, port: m.port })),
             async warm(index, targets) {
                 await request(members[index]!, { t: 'warm', id: nextId++, targets }, 'warmed');
             },

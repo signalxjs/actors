@@ -1,24 +1,24 @@
 /**
- * Shared test harness: an N-silo in-process cluster with zero sockets.
- * Every silo gets a fake origin (`http://silo<i>.test`); the shared
- * `pipeFetch` routes silo-to-silo and public wire requests straight into
- * the target silo's real handlers, re-creating fetch's body-cancel-on-abort
+ * Shared test harness: an N-host in-process cluster with zero sockets.
+ * Every host gets a fake origin (`http://host<i>.test`); the shared
+ * `pipeFetch` routes host-to-host and public wire requests straight into
+ * the target host's real handlers, re-creating fetch's body-cancel-on-abort
  * link so stream cancellation behaves like production.
  *
- * HAZARD: `silo.start()` stamps the LAST-WINS `__SIGX_ACTOR_SILO__` global,
- * so multi-silo tests must always dispatch through `silo.actor()` /
+ * HAZARD: `host.start()` stamps the LAST-WINS `__SIGX_ACTOR_HOST__` global,
+ * so multi-host tests must always dispatch through `host.actor()` /
  * `configureActors({ fetch })` pipes — never the ambient `actor()` on the
  * server path.
  */
 import { expect } from 'vitest';
-import type { ActorStorage, AnyActorDefinition, Silo } from '@sigx/actors';
+import type { ActorStorage, AnyActorDefinition, Host } from '@sigx/actors';
 import {
     defineActorApp,
     memoryStorage,
     type ActorApp,
     type ActorPlugin,
-    type SiloDefaults
-} from '@sigx/actors/silo';
+    type HostDefaults
+} from '@sigx/actors/host';
 import {
     handleActorRequest,
     matchesActorRequest,
@@ -26,17 +26,17 @@ import {
 } from '@sigx/actors/server';
 import {
     cluster,
-    matchesSiloRequest,
+    matchesHostRequest,
     memoryClusterHub,
     type ClusterPlacement,
     type MemoryClusterHub,
     type PlacementPolicy
 } from '@sigx/actors/cluster';
 
-/** Deterministic silo defaults — no background churn, no call deadlines. */
+/** Deterministic host defaults — no background churn, no call deadlines. */
 export const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
-/** Deterministic placement: every silo activates its own new actors. */
+/** Deterministic placement: every host activates its own new actors. */
 export const selfPolicy: PlacementPolicy = {
     choose: (_ref, _view, self) => self
 };
@@ -66,7 +66,7 @@ export function abortLinked(response: Response, signal: AbortSignal | null | und
 export interface ClusterOptions {
     actors: readonly AnyActorDefinition[];
     storage?: ActorStorage;
-    defaults?: SiloDefaults;
+    defaults?: HostDefaults;
     policy?: PlacementPolicy;
     typePolicies?: Record<string, PlacementPolicy>;
     /** `null` builds an UNAUTHENTICATED cluster; omitted uses the default. */
@@ -77,10 +77,10 @@ export interface ClusterOptions {
     onRequest?: (url: string) => void;
     /** Miss policy for the PUBLIC actor mount. Default `'proxy'`. */
     onMiss?: ActorMissPolicy;
-    /** Client-reachable origin of silo `i`. The pipe already resolves
-     *  `silo<i>.test`, so a redirect is genuinely followable in-process. */
+    /** Client-reachable origin of host `i`. The pipe already resolves
+     *  `host<i>.test`, so a redirect is genuinely followable in-process. */
     publicAddress?: (index: number) => string;
-    /** Extra plugins for silo `i` — e.g. `health()`, `metrics()`. */
+    /** Extra plugins for host `i` — e.g. `health()`, `metrics()`. */
     plugins?: (index: number) => readonly ActorPlugin[];
     /** Wrap the shared pipe: stall a peer, rewrite a response, count
      *  concurrency. Applied around `pipeFetch`, so it sees every hop. */
@@ -88,20 +88,20 @@ export interface ClusterOptions {
 }
 
 export interface ClusterHarness {
-    silos: Silo[];
-    /** The apps behind the silos — for probing contributed routes. */
+    hosts: Host[];
+    /** The apps behind the hosts — for probing contributed routes. */
     apps: ActorApp[];
     placements: ClusterPlacement[];
     hub: MemoryClusterHub;
     storage: ActorStorage;
     /** The shared pipe — pass as `fetch` to `configureActors`. */
     fetch: typeof globalThis.fetch;
-    /** Public actor endpoint of silo `i` (for `configureActors`). */
+    /** Public actor endpoint of host `i` (for `configureActors`). */
     endpointOf(i: number): string;
-    /** Simulate a crash of silo `i`: membership drops it AND its address
+    /** Simulate a crash of host `i`: membership drops it AND its address
      *  stops resolving (fetch → unreachable). No cleanup runs. */
     crash(i: number): void;
-    /** Simulate a network partition: silo `i`'s address stops resolving
+    /** Simulate a network partition: host `i`'s address stops resolving
      *  but its membership heartbeat stays alive. */
     unbind(i: number): void;
     stop(): Promise<void>;
@@ -111,7 +111,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const hub = memoryClusterHub();
     const storage = options.storage ?? memoryStorage();
     const secret = options.secret === null ? undefined : (options.secret ?? 'test-secret');
-    const registry = new Map<string, { app: ActorApp; silo: Silo }>();
+    const registry = new Map<string, { app: ActorApp; host: Host }>();
 
     const rawFetch: typeof globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
@@ -125,24 +125,24 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         // existing suite exercises the cluster() wiring end to end.
         const route = member.app.routes.find((candidate) => candidate.match(request));
         const response = route
-            ? await route.handle(request, member.silo)
+            ? await route.handle(request, member.host)
             : await handleActorRequest(request, {
-                  silo: member.silo,
+                  host: member.host,
                   origin: false,
                   ...(options.onMiss !== undefined ? { onMiss: options.onMiss } : {})
               });
-        expect(matchesSiloRequest(request) || matchesActorRequest(request)).toBe(true);
+        expect(matchesHostRequest(request) || matchesActorRequest(request)).toBe(true);
         return abortLinked(response, init?.signal ?? request.signal);
     };
     const pipeFetch = options.wrapFetch ? options.wrapFetch(rawFetch) : rawFetch;
 
-    const silos: Silo[] = [];
+    const hosts: Host[] = [];
     const placements: ClusterPlacement[] = [];
     const apps: ActorApp[] = [];
     for (let i = 0; i < n; i++) {
         const plugin = cluster({
             providers: hub.providers(),
-            advertise: `http://silo${i}.test`,
+            advertise: `http://host${i}.test`,
             ...(options.publicAddress ? { publicAddress: options.publicAddress(i) } : {}),
             ...(secret !== undefined ? { secret } : {}),
             fetch: pipeFetch,
@@ -159,27 +159,27 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             defaults: { ...quiet, ...options.defaults }
         }).use(plugin);
         for (const extra of options.plugins?.(i) ?? []) app = app.use(extra);
-        const silo = await app.start();
-        registry.set(`silo${i}.test`, { app, silo });
-        silos.push(silo);
+        const host = await app.start();
+        registry.set(`host${i}.test`, { app, host });
+        hosts.push(host);
         placements.push(plugin.placement);
         apps.push(app);
     }
 
     return {
-        silos,
+        hosts,
         apps,
         placements,
         hub,
         storage,
         fetch: pipeFetch,
-        endpointOf: (i) => `http://silo${i}.test/_sigx/actor`,
+        endpointOf: (i) => `http://host${i}.test/_sigx/actor`,
         crash: (i) => {
-            registry.delete(`silo${i}.test`);
-            hub.kill(placements[i]!.identity.siloId);
+            registry.delete(`host${i}.test`);
+            hub.kill(placements[i]!.identity.hostId);
         },
         unbind: (i) => {
-            registry.delete(`silo${i}.test`);
+            registry.delete(`host${i}.test`);
         },
         stop: async () => {
             await Promise.allSettled(apps.map((a) => a.stop({ timeoutMs: 1000 })));

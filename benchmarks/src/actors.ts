@@ -107,7 +107,7 @@ export const Large = defineActor({
 
 /**
  * Guarded vs unguarded, for the wire path only — guards run OUTSIDE the
- * mailbox and are not on `silo.dispatch`, so `silo.actor()` never sees
+ * mailbox and are not on `host.dispatch`, so `host.actor()` never sees
  * them. Comparing these two over `handleActorRequest` is what prices the
  * guard chain, and it needs no new runtime seam.
  *

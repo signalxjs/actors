@@ -10,7 +10,7 @@ image:
 replicaCount: 3
 port: 7311
 
-# redis | k8s — k8s swaps silo liveness onto coordination.k8s.io Leases
+# redis | k8s — k8s swaps host liveness onto coordination.k8s.io Leases
 # (adds the ServiceAccount + Lease RBAC below); the directory and actor
 # state stay in Redis either way.
 membership: redis
@@ -18,7 +18,7 @@ membership: redis
 env:
   # Redis key namespace (cluster + storage + reminders).
   sigxNamespace: sigx
-  # undici pool size per peer origin for silo-to-silo fetch.
+  # undici pool size per peer origin for host-to-host fetch.
   fetchConnections: 64
 
 secrets:
@@ -76,15 +76,15 @@ tolerations:
     effect: NoSchedule
 
 affinity:
-  # Redis and silos must never share a node: Redis carries the actor state
-  # and colocation both skews silo perf numbers and lets silos starve
-  # Redis. Both directions are required, so scale-out never lands a silo
+  # Redis and hosts must never share a node: Redis carries the actor state
+  # and colocation both skews host perf numbers and lets hosts starve
+  # Redis. Both directions are required, so scale-out never lands a host
   # on the Redis node.
-  siloAntiRedis: required
-  redisAntiSilo: required
-  # silo-vs-silo spread: preferred packs within the pool; set to required
+  hostAntiRedis: required
+  redisAntiHost: required
+  # host-vs-host spread: preferred packs within the pool; set to required
   # to force one-per-node (the cluster-autoscaler scenario).
-  siloSelfSpread: preferred
+  hostSelfSpread: preferred
 
 redis:
   enabled: true
@@ -128,7 +128,7 @@ loadgen:
   sweep: ""
   crunchIters: 200
   crunchPayload: 1024
-  # Default: the silo service in-namespace.
+  # Default: the host service in-namespace.
   targetUrl: ""
   resources:
     requests:

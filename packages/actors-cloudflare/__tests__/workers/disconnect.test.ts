@@ -36,8 +36,8 @@ function stubFor(key: string) {
 /** `keptAlive` for the actor this object hosts, read from inside it. */
 async function keptAlive(key: string): Promise<boolean | undefined> {
     return runInDurableObject(stubFor(key), async (instance) => {
-        const silo = await (instance as { silo(): Promise<import('@sigx/actors').Silo> }).silo();
-        return silo.activations().find((a) => a.key === key)?.keptAlive;
+        const host = await (instance as { host(): Promise<import('@sigx/actors').Host> }).host();
+        return host.activations().find((a) => a.key === key)?.keptAlive;
     });
 }
 

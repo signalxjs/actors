@@ -1,5 +1,5 @@
 /**
- * `ClusterMembership` on Kubernetes primitives. Liveness is this silo's
+ * `ClusterMembership` on Kubernetes primitives. Liveness is this host's
  * own Lease, renewed every `heartbeatMs`; peers arrive through the
  * label-selected Lease watch and count as live while their `renewTime` is
  * within their declared duration. The membership view is materialized
@@ -12,7 +12,7 @@
  * clears the latch. Watch health never fences — a broken watch is stale
  * peers, not lost membership.
  */
-import type { ClusterMembership, MembershipView, SiloDescriptor } from '@sigx/actors/cluster';
+import type { ClusterMembership, MembershipView, HostDescriptor } from '@sigx/actors/cluster';
 import { kubeClient, type KubeClientOptions } from './client';
 import {
     buildLease,
@@ -26,12 +26,12 @@ import {
 import { listWatchLoop, type ListWatchLoop } from './watch';
 
 export interface K8sMembershipOptions extends KubeClientOptions {
-    /** Extra labels stamped on this silo's Lease AND selecting peers. */
+    /** Extra labels stamped on this host's Lease AND selecting peers. */
     labels?: Record<string, string>;
     /** Value of the `sigx.dev/cluster` label — two clusters can share a
      *  namespace. Default `default`. */
     clusterName?: string;
-    /** Lease names are `${leasePrefix}-${siloId}`. Default `sigx`. */
+    /** Lease names are `${leasePrefix}-${hostId}`. Default `sigx`. */
     leasePrefix?: string;
     /** Lease renewal cadence, ms. Default 5000. */
     heartbeatMs?: number;
@@ -81,11 +81,11 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
         .join(',');
     const client = kubeClient(options);
 
-    let self: SiloDescriptor | null = null;
+    let self: HostDescriptor | null = null;
     let selfLease = '';
     /** Descriptor changed but not yet on the wire — next renewal carries it. */
     let descriptorDirty = false;
-    let cached: MembershipView = { version: 0, silos: [] };
+    let cached: MembershipView = { version: 0, hosts: [] };
     let fingerprint = '';
     let loop: ListWatchLoop | null = null;
     let beat: Timer | null = null;
@@ -99,21 +99,21 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
 
     // The view is a pure function of the lease map and the clock; a version
     // bump means the DESCRIPTOR SET changed. Renewals move renewTime, which
-    // is deliberately outside the fingerprint — n silos heartbeating
+    // is deliberately outside the fingerprint — n hosts heartbeating
     // produce n² watch events and zero onChange storms.
     const materialize = (): void => {
         const now = Date.now();
-        const silos: SiloDescriptor[] = [];
+        const hosts: HostDescriptor[] = [];
         for (const lease of leases.values()) {
             if (!isFresh(lease, now, clockSkewMs)) continue;
             const descriptor = parseLease(lease);
-            if (descriptor) silos.push(descriptor);
+            if (descriptor) hosts.push(descriptor);
         }
-        silos.sort((a, b) => (a.siloId < b.siloId ? -1 : a.siloId > b.siloId ? 1 : 0));
-        const next = JSON.stringify(silos);
+        hosts.sort((a, b) => (a.hostId < b.hostId ? -1 : a.hostId > b.hostId ? 1 : 0));
+        const next = JSON.stringify(hosts);
         if (next === fingerprint) return;
         fingerprint = next;
-        cached = { version: cached.version + 1, silos };
+        cached = { version: cached.version + 1, hosts };
         for (const cb of changeCbs) cb(cached);
     };
 
@@ -155,10 +155,10 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
     return {
         async join(descriptor) {
             self = descriptor;
-            selfLease = leaseName(leasePrefix, descriptor.siloId);
+            selfLease = leaseName(leasePrefix, descriptor.hostId);
             const res = drain(await client.create(selfLeaseBody()));
             if (res.status === 409) {
-                // A predecessor left its Lease behind (siloIds are minted per
+                // A predecessor left its Lease behind (hostIds are minted per
                 // start, so this is ours to take over) — replace it wholesale.
                 const replaced = drain(await client.replace(selfLease, selfLeaseBody()));
                 if (!replaced.ok) throw new Error(`lease takeover failed: HTTP ${replaced.status}`);
@@ -229,8 +229,8 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
             if (loop) await loop.relist();
             return cached;
         },
-        async isAlive(siloId) {
-            const res = await client.get(leaseName(leasePrefix, siloId));
+        async isAlive(hostId) {
+            const res = await client.get(leaseName(leasePrefix, hostId));
             if (res.status === 404) {
                 drain(res);
                 return false;

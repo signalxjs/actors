@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **silo → host** (#233): membership registry keys moved from
+  `{ns}:silos` / `{ns}:silo:{id}` to `{ns}:hosts` / `{ns}:host:{id}`,
+  and exported types follow `@sigx/actors` (`HostDescriptor`, …).
+  Existing dev data is not migrated. The directory key format
+  (`{ns}:dir:{actorId}`) is unchanged.
+
 ### Added
 
 - `redisStorage({ client | url, namespace })` — a Redis-backed
@@ -15,7 +23,7 @@
   instead of waiting out the poll interval; the poll remains the safety
   net for missed messages.
 
-- `redisDirectory` implements `evictSilo(siloId)` — a cursor `SCAN` over
+- `redisDirectory` implements `evictHost(hostId)` — a cursor `SCAN` over
   the directory prefix with a per-key owner-checked Lua delete (assumes a
   single logical Redis; on Redis Cluster run per node).
 

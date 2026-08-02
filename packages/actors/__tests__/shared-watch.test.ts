@@ -3,11 +3,11 @@
  *
  * The teardown contract is what needs a unit test rather than an end-to-end
  * one: whether the loop unsubscribes from the change feed is invisible from
- * outside a silo — an orphaned `ctx.changes()` subscriber costs a queued
+ * outside a host — an orphaned `ctx.changes()` subscriber costs a queued
  * snapshot per later turn and shows up nowhere until the heap does.
  */
 import { describe, expect, it } from 'vitest';
-import { createSharedWatch } from '../src/silo/watch';
+import { createSharedWatch } from '../src/host/watch';
 import type { ActorScheduler } from '@sigx/actors';
 
 /** Resolves immediately — these tests assert teardown, not timing. */

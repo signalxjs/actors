@@ -3,15 +3,15 @@
  *
  * Two different questions, and they need different methods:
  *
- *  - FOOTPRINT: what does one live grain cost? Settle the heap, activate N,
+ *  - FOOTPRINT: what does one live actor cost? Settle the heap, activate N,
  *    settle again, divide the delta. The answer bounds how many actors a
- *    silo can hold, which is the number people actually plan capacity on.
+ *    host can hold, which is the number people actually plan capacity on.
  *
  *  - LEAK: does a completed cycle give everything back? Activate N,
  *    deactivate all, settle, compare to the starting heap — repeated, so a
- *    single noisy cycle cannot pass or fail it alone. `retained_per_grain`
+ *    single noisy cycle cannot pass or fail it alone. `retained_per_actor`
  *    is the gate: it should be ~0, and a steady positive number is a leak
- *    regardless of how small it looks per grain.
+ *    regardless of how small it looks per actor.
  *
  * The leak metrics straddle zero (a settled heap drifts both ways), so they
  * all carry a `noiseFloor` and are compared on ABSOLUTE difference. A
@@ -26,15 +26,15 @@ import { Timered, Tiny, Large } from '../actors.ts';
 import { heapSlopeBytesPerSample, heapUsed, maybeHeapSnapshot, settleGc } from '../memory.ts';
 import {
     benchCall,
-    createBenchSilo,
+    createBenchHost,
     refsFor,
     requireStreamDispatch,
     warmActivations
-} from '../silo-fixture.ts';
+} from '../host-fixture.ts';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 const perGrainFootprint: Scenario = {
-    name: 'mem/per-grain-footprint',
+    name: 'mem/per-actor-footprint',
     description: 'heapUsed delta per live activation, tiny vs ~200-row state',
     async run(ctx: RunContext): Promise<Metric[]> {
         const count = ctx.quick ? 1000 : 20_000;
@@ -43,21 +43,21 @@ const perGrainFootprint: Scenario = {
             ['tiny', Tiny],
             ['large', Large]
         ] as const) {
-            const fixture = await createBenchSilo({ actors: [def] });
+            const fixture = await createBenchHost({ actors: [def] });
             try {
                 await settleGc();
                 const before = heapUsed();
-                await warmActivations(fixture.silo, refsFor(def.type, count));
+                await warmActivations(fixture.host, refsFor(def.type, count));
                 await settleGc();
                 const after = heapUsed();
                 metrics.push({
-                    name: `${label}/bytes_per_grain`,
+                    name: `${label}/bytes_per_actor`,
                     value: (after - before) / count,
                     unit: 'bytes',
                     direction: 'lower'
                 });
-                // Guard against measuring an empty silo by accident.
-                const live = fixture.silo.stats().activations;
+                // Guard against measuring an empty host by accident.
+                const live = fixture.host.stats().activations;
                 if (live !== count) {
                     throw new Error(`expected ${count} activations, found ${live}`);
                 }
@@ -80,24 +80,24 @@ const activateDeactivateLeak: Scenario = {
     async run(ctx: RunContext): Promise<Metric[]> {
         const count = ctx.quick ? 500 : 5000;
         const cycles = 3;
-        const fixture = await createBenchSilo({ actors: [Tiny] });
+        const fixture = await createBenchHost({ actors: [Tiny] });
         try {
             const refs = refsFor(Tiny.type, count);
             // One untimed cycle first: lazy module init and the storage
             // map's own growth are one-off costs, not per-cycle retention.
-            await warmActivations(fixture.silo, refs);
-            for (const ref of refs) await fixture.silo.deactivate(ref);
+            await warmActivations(fixture.host, refs);
+            for (const ref of refs) await fixture.host.deactivate(ref);
             await settleGc();
 
             const readings: number[] = [heapUsed()];
             for (let c = 0; c < cycles; c++) {
-                await warmActivations(fixture.silo, refs);
-                for (const ref of refs) await fixture.silo.deactivate(ref);
+                await warmActivations(fixture.host, refs);
+                for (const ref of refs) await fixture.host.deactivate(ref);
                 await settleGc();
                 readings.push(heapUsed());
             }
 
-            const live = fixture.silo.stats().activations;
+            const live = fixture.host.stats().activations;
             if (live !== 0) throw new Error(`expected 0 activations after teardown, found ${live}`);
             maybeHeapSnapshot('leak-activate-deactivate');
 
@@ -112,10 +112,10 @@ const activateDeactivateLeak: Scenario = {
                     informational: true
                 },
                 // The gate. A clean cycle lands within a few bytes per
-                // grain; a planted leak measured 626 B/grain, so 64 B is
+                // actor; a planted leak measured 626 B/actor, so 64 B is
                 // comfortably between "GC scheduling jitter" and "leak".
                 {
-                    name: 'retained_per_grain',
+                    name: 'retained_per_actor',
                     value: retainedPerCycle / count,
                     unit: 'bytes',
                     direction: 'lower',
@@ -139,13 +139,13 @@ const streamLeak: Scenario = {
     async run(ctx: RunContext): Promise<Metric[]> {
         const streams = ctx.quick ? 50 : 500;
         const cycles = 3;
-        const fixture = await createBenchSilo({ actors: [Tiny] });
+        const fixture = await createBenchHost({ actors: [Tiny] });
         try {
             const ref = { type: Tiny.type, key: 'watched' };
             const call = benchCall();
-            await fixture.silo.dispatch(ref, 'increment', [1], call);
+            await fixture.host.dispatch(ref, 'increment', [1], call);
 
-            const openStream = requireStreamDispatch(fixture.silo);
+            const openStream = requireStreamDispatch(fixture.host);
             const cycle = async (): Promise<void> => {
                 const controller = new AbortController();
                 const drains: Promise<void>[] = [];
@@ -201,12 +201,12 @@ const timerLeak: Scenario = {
     async run(ctx: RunContext): Promise<Metric[]> {
         const count = ctx.quick ? 200 : 2000;
         const cycles = 3;
-        const fixture = await createBenchSilo({ actors: [Timered] });
+        const fixture = await createBenchHost({ actors: [Timered] });
         try {
             const refs = refsFor(Timered.type, count);
             const cycle = async (): Promise<void> => {
-                await warmActivations(fixture.silo, refs, 'current');
-                for (const ref of refs) await fixture.silo.deactivate(ref);
+                await warmActivations(fixture.host, refs, 'current');
+                for (const ref of refs) await fixture.host.deactivate(ref);
             };
             await cycle();
             await settleGc();
@@ -237,26 +237,26 @@ const timerLeak: Scenario = {
  */
 const soak: Scenario = {
     name: 'mem/soak-steady-state',
-    description: 'mixed workload over a fixed grain set — heap slope per sample (want ~0)',
+    description: 'mixed workload over a fixed actor set — heap slope per sample (want ~0)',
     async run(ctx: RunContext): Promise<Metric[]> {
-        const grains = ctx.quick ? 50 : 500;
+        const actors = ctx.quick ? 50 : 500;
         const samples = ctx.quick ? 4 : 10;
         const perSample = ctx.quick ? 2000 : 20_000;
-        const fixture = await createBenchSilo({ actors: [Tiny] });
+        const fixture = await createBenchHost({ actors: [Tiny] });
         try {
-            const refs = refsFor(Tiny.type, grains);
+            const refs = refsFor(Tiny.type, actors);
             const call = benchCall();
-            await warmActivations(fixture.silo, refs);
+            await warmActivations(fixture.host, refs);
 
             const readings: number[] = [];
             let i = 0;
             for (let s = 0; s < samples; s++) {
                 for (let op = 0; op < perSample; op++) {
-                    const ref = refs[i++ % grains] as (typeof refs)[number];
+                    const ref = refs[i++ % actors] as (typeof refs)[number];
                     // Mix the paths that allocate differently: a bare turn,
                     // a mutating turn, and a full codec walk.
                     const method = op % 3 === 0 ? 'noop' : op % 3 === 1 ? 'increment' : 'snapshot';
-                    await fixture.silo.dispatch(ref, method, method === 'increment' ? [1] : [], call);
+                    await fixture.host.dispatch(ref, method, method === 'increment' ? [1] : [], call);
                 }
                 await settleGc();
                 readings.push(heapUsed());

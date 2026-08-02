@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import {
-    createSilo,
+    createHost,
     memoryStorage,
     REMINDER_TYPE,
     TASKS_TYPE,
     TASK_REMINDER,
-    type Silo,
+    type Host,
     type TaskLedger
-} from '@sigx/actors/silo';
-import { reminderShardOf } from '../src/silo/reminder-shards';
+} from '@sigx/actors/host';
+import { reminderShardOf } from '../src/host/reminder-shards';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -41,7 +41,7 @@ async function until(cond: () => boolean | Promise<boolean>, ms = 3000): Promise
     }
 }
 
-let running: Silo | null = null;
+let running: Host | null = null;
 afterEach(async () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -83,9 +83,9 @@ describe('task durability', () => {
         const starts: never[] = [];
         const storage = memoryStorage();
         const def = parkingWorker(starts);
-        const silo = createSilo({ actors: [def], storage, defaults: quiet });
-        running = silo;
-        const client = silo.actor(def, 'a');
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(def, 'a');
         await client.begin({ label: 'sync', since: SINCE });
 
         const record = await storage.load(TASKS_TYPE, ID);
@@ -118,9 +118,9 @@ describe('task durability', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [def], storage, defaults: quiet });
-        running = silo;
-        const client = silo.actor(def, 'a');
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(def, 'a');
         await client.beginTwice();
         expect(entries).toHaveLength(1);
         expect(await client.running()).toHaveLength(1);
@@ -146,9 +146,9 @@ describe('task durability', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [def], storage, defaults: quiet });
-        running = silo;
-        const client = silo.actor(def, 'a');
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(def, 'a');
         await client.begin();
         await within(done.opened, 1000);
         await until(async () => (await storage.load(TASKS_TYPE, ID)) === null);
@@ -159,16 +159,16 @@ describe('task durability', () => {
         const starts: { label: string }[] = [];
         const storage = memoryStorage();
         const def = parkingWorker(starts as never);
-        const siloA = createSilo({ actors: [def], storage, defaults: quiet });
-        const a = siloA.actor(def, 'a');
+        const hostA = createHost({ actors: [def], storage, defaults: quiet });
+        const a = hostA.actor(def, 'a');
         await a.begin({ label: 'sync', since: SINCE });
         await a.cancel();
         await until(async () => (await storage.load(TASKS_TYPE, ID)) === null);
-        await siloA.stop({ timeoutMs: 1000 });
+        await hostA.stop({ timeoutMs: 1000 });
 
-        const siloB = createSilo({ actors: [def], storage, defaults: quiet });
-        running = siloB;
-        expect(await siloB.actor(def, 'a').running()).toEqual([]);
+        const hostB = createHost({ actors: [def], storage, defaults: quiet });
+        running = hostB;
+        expect(await hostB.actor(def, 'a').running()).toEqual([]);
         expect(starts).toHaveLength(1); // the original start only
     });
 
@@ -189,32 +189,32 @@ describe('task durability', () => {
                 }
             })
         });
-        const siloA = createSilo({ actors: [def], storage, defaults: quiet });
-        await siloA.actor(def, 'a').begin();
+        const hostA = createHost({ actors: [def], storage, defaults: quiet });
+        await hostA.actor(def, 'a').begin();
         await until(async () => (await storage.load(TASKS_TYPE, ID)) === null);
-        await siloA.stop({ timeoutMs: 1000 });
+        await hostA.stop({ timeoutMs: 1000 });
 
-        const siloB = createSilo({ actors: [def], storage, defaults: quiet });
-        running = siloB;
-        expect(await siloB.actor(def, 'a').running()).toEqual([]);
+        const hostB = createHost({ actors: [def], storage, defaults: quiet });
+        running = hostB;
+        expect(await hostB.actor(def, 'a').running()).toEqual([]);
     });
 
     it('a shutdown-interrupted run keeps its entry and resumes on the next activation', async () => {
         const starts: { label: string; sinceIso: string; restarts: number }[] = [];
         const storage = memoryStorage();
         const def = parkingWorker(starts);
-        const siloA = createSilo({ actors: [def], storage, defaults: quiet });
-        await siloA.actor(def, 'a').begin({ label: 'sync', since: SINCE });
+        const hostA = createHost({ actors: [def], storage, defaults: quiet });
+        await hostA.actor(def, 'a').begin({ label: 'sync', since: SINCE });
         await until(() => starts.length === 1);
-        await within(siloA.stop({ timeoutMs: 5000 }), 2000);
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
 
         // Interrupted, not finished: the entry survived the stop.
         expect(await storage.load(TASKS_TYPE, ID)).not.toBeNull();
 
-        const siloB = createSilo({ actors: [def], storage, defaults: quiet });
-        running = siloB;
+        const hostB = createHost({ actors: [def], storage, defaults: quiet });
+        running = hostB;
         // ANY dispatch re-activates — activation itself restarts the run.
-        const info = await siloB.actor(def, 'a').running();
+        const info = await hostB.actor(def, 'a').running();
         await until(() => starts.length === 2);
         expect(starts[1]).toEqual({
             label: 'sync',
@@ -224,29 +224,29 @@ describe('task durability', () => {
         expect(info.find((t) => t.name === 'run')?.restarts).toBe(1);
     });
 
-    it('the liveness reminder resumes a dead silo\'s task with NO client call', async () => {
+    it('the liveness reminder resumes a dead host\'s task with NO client call', async () => {
         const starts: { label: string; restarts: number }[] = [];
         const storage = memoryStorage();
         const def = parkingWorker(starts as never);
-        const siloA = createSilo({ actors: [def], storage, defaults: quiet });
-        await siloA.start();
-        await siloA.actor(def, 'a').begin({ label: 'sync', since: SINCE });
+        const hostA = createHost({ actors: [def], storage, defaults: quiet });
+        await hostA.start();
+        await hostA.actor(def, 'a').begin({ label: 'sync', since: SINCE });
         await until(() => starts.length === 1);
-        await within(siloA.stop({ timeoutMs: 5000 }), 2000);
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
 
         // Fake only Date (setTimeout stays real): jump past the reminder's
-        // 60s due, then let silo B's real 25ms tick find it due.
+        // 60s due, then let host B's real 25ms tick find it due.
         vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 61_000 });
-        const siloB = createSilo({
+        const hostB = createHost({
             actors: [def],
             storage,
             defaults: { ...quiet, reminderTickMs: 25 }
         });
-        running = siloB;
-        await siloB.start();
+        running = hostB;
+        await hostB.start();
         await until(() => starts.length === 2, 5000);
         expect(starts[1]!.restarts).toBe(1);
-        expect(siloB.stats().activations).toBe(1); // reminder woke the grain
+        expect(hostB.stats().activations).toBe(1); // reminder woke the actor
     });
 
     it('a stale liveness reminder with no ledger self-clears', async () => {
@@ -260,13 +260,13 @@ describe('task durability', () => {
             { [ID]: { [TASK_REMINDER]: { nextDue: Date.now() - 1000, period: 60_000 } } },
             null
         );
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             storage,
             defaults: { ...quiet, reminderTickMs: 25 }
         });
-        running = silo;
-        await silo.start();
+        running = host;
+        await host.start();
         // The tick delivers, the interception finds nothing, and disarms.
         await until(async () => {
             const record = await storage.load(REMINDER_TYPE, shard);
@@ -274,6 +274,6 @@ describe('task durability', () => {
             return !table[ID] || !(TASK_REMINDER in table[ID]);
         }, 5000);
         // And it never invented a run.
-        expect(await silo.actor(def, 'a').running()).toEqual([]);
+        expect(await host.actor(def, 'a').running()).toEqual([]);
     });
 });

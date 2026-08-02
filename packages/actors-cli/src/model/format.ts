@@ -69,7 +69,7 @@ export function percent(numerator: number, denominator: number): string {
 /**
  * Truncate to `width` CODE POINTS, marking the cut with an ellipsis.
  *
- * Grain keys are user data and can be long; a table that reflows because
+ * Actor keys are user data and can be long; a table that reflows because
  * one key is a UUID is unreadable, and silently cutting hides that the key
  * continues.
  *

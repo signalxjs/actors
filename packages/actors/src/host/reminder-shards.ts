@@ -1,6 +1,6 @@
 /**
  * Reminder-table sharding — shared by the reminder service (which shard a
- * reminder lives in) and the cluster placement (which silo owns a shard).
+ * reminder lives in) and the cluster placement (which host owns a shard).
  *
  * COMPAT-CRITICAL: the shard count and the hash are storage identity. An
  * actorId must map to the same shard forever, or reminders silently vanish

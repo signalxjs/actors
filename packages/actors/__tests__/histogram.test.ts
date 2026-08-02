@@ -13,7 +13,7 @@ import {
     digestSnapshot,
     emptyHistogramDigest,
     mergeHistogramDigests
-} from '../src/silo/histogram';
+} from '../src/host/histogram';
 
 describe('Histogram', () => {
     it('reports exact min/max/mean and plausible percentiles', () => {
@@ -92,12 +92,12 @@ describe('histogram digests', () => {
         for (let i = 0; i < 1000; i++) h.record((i % 50) + 0.5);
         // If these ever disagree, one of the two percentile walks has
         // drifted from the other — which is how a cluster-wide p99 stops
-        // meaning the same thing as the per-silo one it generalises.
+        // meaning the same thing as the per-host one it generalises.
         expect(digestSnapshot(h.digest())).toEqual(h.snapshot());
     });
 
     it('MERGES buckets rather than averaging percentiles', () => {
-        // The whole reason buckets are on the wire. One silo serves a
+        // The whole reason buckets are on the wire. One host serves a
         // thousand fast calls, the other serves a single catastrophic one.
         const fast = new Histogram();
         for (let i = 0; i < 999; i++) fast.record(1);
@@ -108,7 +108,7 @@ describe('histogram digests', () => {
         expect(merged.count).toBe(1000);
         // 999 of 1000 samples are at 1ms, so the cluster's p99 IS ~1ms.
         expect(merged.p99Ms).toBeLessThan(2);
-        // What averaging the two silos' p99s would have claimed: about
+        // What averaging the two hosts' p99s would have claimed: about
         // 500ms — a latency figure describing no call that ever happened.
         const averaged = (fast.snapshot().p99Ms + slow.snapshot().p99Ms) / 2;
         expect(averaged).toBeGreaterThan(400);
@@ -142,7 +142,7 @@ describe('histogram digests', () => {
         for (let i = 0; i < 1000; i++) h.record(0.5 + (i % 20) / 10);
         const digest = h.digest();
         // 384 buckets exist; a real distribution occupies a handful, and
-        // this rides an internal wire once a second per silo.
+        // this rides an internal wire once a second per host.
         expect(digest.idx.length).toBeLessThan(60);
         expect(JSON.stringify(digest).length).toBeLessThan(1024);
         expect(digest.idx).toEqual([...digest.idx].sort((x, y) => x - y));
@@ -160,7 +160,7 @@ describe('histogram digests', () => {
             null,
             undefined
         ]);
-        // The valid silo's samples survive; nothing crashed and no bucket
+        // The valid host's samples survive; nothing crashed and no bucket
         // outside the layout was written.
         expect(merged.idx.every((i) => Number.isInteger(i) && i >= 0)).toBe(true);
         expect(digestSnapshot(merged).p50Ms).toBeGreaterThan(0);

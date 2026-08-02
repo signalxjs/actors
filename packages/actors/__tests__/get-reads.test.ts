@@ -1,7 +1,7 @@
 /**
  * GET-cacheable actor reads (#11) — the `reads:` declaration, end to end.
  *
- * The point is traffic that never reaches a grain: a declared read answers
+ * The point is traffic that never reaches an actor: a declared read answers
  * from a browser, CDN or reverse-proxy cache, which no amount of mailbox
  * throughput can compete with. The price is explicit and permanent — for
  * `maxAge` seconds the response may be older than the actor's state, and
@@ -14,8 +14,8 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ServerFnError } from '@sigx/server';
-import { actor, defineActor, type Silo } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { actor, defineActor, type Host } from '@sigx/actors';
+import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { preferLocalPolicy } from '@sigx/actors/cluster';
 import {
@@ -87,18 +87,18 @@ const Cart = defineActor({
 const ProductRef = __actorRef('Product', ENDPOINT, ['feed'], ['summary', 'price']) as unknown as
     typeof Product;
 
-const running: Silo[] = [];
+const running: Host[] = [];
 
-async function startSilo(): Promise<Silo> {
-    const silo = createSilo({ actors: [Product, Cart], defaults: quiet });
-    await silo.start();
-    running.push(silo);
-    return silo;
+async function startHost(): Promise<Host> {
+    const host = createHost({ actors: [Product, Cart], defaults: quiet });
+    await host.start();
+    running.push(host);
+    return host;
 }
 
 /** A GET straight into the endpoint, args in the query like the proxy sends. */
 function get(
-    silo: Silo,
+    host: Host,
     symbol: string,
     args: readonly unknown[],
     headers?: Record<string, string>
@@ -109,13 +109,13 @@ function get(
             method: 'GET',
             ...(headers ? { headers } : {})
         }),
-        { silo, origin: false }
+        { host, origin: false }
     );
 }
 
 afterEach(async () => {
     configureActors(null);
-    for (const silo of running.splice(0)) await silo.stop({ timeoutMs: 1000 });
+    for (const host of running.splice(0)) await host.stop({ timeoutMs: 1000 });
 });
 
 describe('the reads: declaration', () => {
@@ -231,9 +231,9 @@ describe('the reads: declaration', () => {
 
 describe('a declared read over GET', () => {
     it('answers, and emits exactly the declared Cache-Control', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
 
-        const response = await get(silo, 'Product#price', ['p1']);
+        const response = await get(host, 'Product#price', ['p1']);
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ data: 999 });
         expect(response.headers.get('cache-control')).toBe(
@@ -245,9 +245,9 @@ describe('a declared read over GET', () => {
     });
 
     it('keeps a private read out of shared caches', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
 
-        const response = await get(silo, 'Cart#total', ['c1'], { authorization: 'Bearer x' });
+        const response = await get(host, 'Cart#total', ['c1'], { authorization: 'Bearer x' });
         expect(response.status).toBe(200);
         expect(response.headers.get('cache-control')).toBe('private, max-age=10');
         // The header that makes a per-client cache safe: without it a shared
@@ -256,19 +256,19 @@ describe('a declared read over GET', () => {
     });
 
     it('runs the guard chain — a cacheable read is not an unguarded one', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
 
-        const refused = await get(silo, 'Cart#total', ['c1']); // no session
+        const refused = await get(host, 'Cart#total', ['c1']); // no session
         expect(refused.status).toBe(401);
         // A failed read must never be cached, whatever the declaration says.
         expect(refused.headers.get('cache-control')).toBe('no-store');
     });
 
     it('decodes arguments from the query through the same codec as a body', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         const at = new Date(1700000000000);
 
-        const response = await get(silo, 'Product#summary', [
+        const response = await get(host, 'Product#summary', [
             'p1',
             'EUR',
             { $date: at.getTime() }
@@ -282,15 +282,15 @@ describe('a declared read over GET', () => {
     });
 
     it('405s a method with no declaration, and a stream', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
 
-        const undeclared = await get(silo, 'Product#views', ['p1']);
+        const undeclared = await get(host, 'Product#views', ['p1']);
         expect(undeclared.status).toBe(405);
         expect(undeclared.headers.get('allow')).toBe('POST');
 
         // A stream cannot be GET even though `reads` would refuse to name one:
         // the endpoint checks `__sigxStream` independently.
-        const stream = await get(silo, 'Product#feed', ['p1']);
+        const stream = await get(host, 'Product#feed', ['p1']);
         expect(stream.status).toBe(405);
     });
 
@@ -299,18 +299,18 @@ describe('a declared read over GET', () => {
         // named `toString` (or `constructor`, `valueOf`, …) found a truthy
         // "declaration" nobody wrote: the wrapper was stamped GET-capable with
         // `max-age=undefined`, and the endpoint then ADMITTED a GET for it.
-        const silo = await startSilo();
+        const host = await startHost();
 
-        const response = await get(silo, 'Product#toString', ['p1']);
+        const response = await get(host, 'Product#toString', ['p1']);
         expect(response.status).toBe(405);
         expect(response.headers.get('cache-control')).not.toContain('undefined');
     });
 
     it('still accepts POST for a declared read', async () => {
         // The declaration lives on the definition, not on the wire: an old
-        // client, a hand-built silo with no build transform, or a service
+        // client, a hand-built host with no build transform, or a service
         // calling by hand all keep POSTing, and must keep working.
-        const silo = await startSilo();
+        const host = await startHost();
 
         const response = await handleActorRequest(
             new Request(`${ENDPOINT}/${encodeURIComponent('Product#price')}`, {
@@ -318,7 +318,7 @@ describe('a declared read over GET', () => {
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: ['p1'] })
             }),
-            { silo, origin: false }
+            { host, origin: false }
         );
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ data: 999 });
@@ -330,21 +330,21 @@ describe('a declared read over GET', () => {
 
 describe('a cacheable read in a cluster', () => {
     it('proxies to the owner and still answers with the cache headers', async () => {
-        // A GET is decoded at whichever silo the edge picked, then dispatched
-        // like any other call — so a grain another silo owns is reached over
-        // the internal transport, and the caching promise is made by the silo
+        // A GET is decoded at whichever host the edge picked, then dispatched
+        // like any other call — so an actor another host owns is reached over
+        // the internal transport, and the caching promise is made by the host
         // that answered. Nothing about the hop is cache-visible.
         const cluster = await createCluster(2, { actors: [Product], policy: preferLocalPolicy() });
         try {
-            await cluster.silos[1]!.actor(Product, 'remote').setPrice(1234);
+            await cluster.hosts[1]!.actor(Product, 'remote').setPrice(1234);
 
             const query = encodeURIComponent(JSON.stringify(['remote']));
             const response = await handleActorRequest(
                 new Request(
-                    `http://silo0.test/_sigx/actor/${encodeURIComponent('Product#price')}?args=${query}`,
+                    `http://host0.test/_sigx/actor/${encodeURIComponent('Product#price')}?args=${query}`,
                     { method: 'GET' }
                 ),
-                { silo: cluster.silos[0]!, origin: false }
+                { host: cluster.hosts[0]!, origin: false }
             );
 
             expect(response.status).toBe(200);
@@ -360,7 +360,7 @@ describe('a cacheable read in a cluster', () => {
 
 describe('the client proxy', () => {
     it('GETs a declared read and POSTs everything else, token intact', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         const seen: { method: string; url: string; route: string | null }[] = [];
         configureActors({
             endpoint: ENDPOINT,
@@ -371,7 +371,7 @@ describe('the client proxy', () => {
                     url: request.url,
                     route: request.headers.get(ACTOR_ROUTE_HEADER)
                 });
-                return handleActorRequest(request, { silo, origin: false });
+                return handleActorRequest(request, { host, origin: false });
             }
         });
 
@@ -389,11 +389,11 @@ describe('the client proxy', () => {
     });
 
     it('round-trips rich arguments and results through the query', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) =>
-                handleActorRequest(new Request(input, init), { silo, origin: false })
+                handleActorRequest(new Request(input, init), { host, origin: false })
         });
 
         const at = new Date(1700000000000);
@@ -413,14 +413,14 @@ describe('the client proxy', () => {
         // URL (intermediaries cap the query), and arguments — the actor key
         // among them — that should stay out of access logs and referrers. The
         // endpoint accepts POST for a declared read either way.
-        const silo = await startSilo();
+        const host = await startHost();
         const methods: string[] = [];
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
                 methods.push(request.method);
-                return handleActorRequest(request, { silo, origin: false });
+                return handleActorRequest(request, { host, origin: false });
             }
         });
 
@@ -434,14 +434,14 @@ describe('the client proxy', () => {
         // `get` is a carrier choice for a DECLARED read. Forwarded anywhere
         // else it would turn a working write (or a stream) into a 405, so the
         // proxy drops it rather than passing a caller's mistake to the wire.
-        const silo = await startSilo();
+        const host = await startHost();
         const methods: string[] = [];
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
                 methods.push(`${request.method} ${new URL(request.url).pathname.split('/').pop()!}`);
-                return handleActorRequest(request, { silo, origin: false });
+                return handleActorRequest(request, { host, origin: false });
             }
         });
 
@@ -463,14 +463,14 @@ describe('the client proxy', () => {
         // Also one fewer non-safelisted header, so one fewer reason for a
         // cross-origin request to preflight. Only one fewer: the routing token
         // header ships by default and preflights on its own.
-        const silo = await startSilo();
+        const host = await startHost();
         let contentType: string | null = 'unset';
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
                 contentType = request.headers.get('content-type');
-                return handleActorRequest(request, { silo, origin: false });
+                return handleActorRequest(request, { host, origin: false });
             }
         });
 

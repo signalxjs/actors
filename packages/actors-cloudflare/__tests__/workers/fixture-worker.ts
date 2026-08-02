@@ -1,11 +1,11 @@
 /**
  * The Worker and Durable Object under test, assembled the way a user would.
  *
- * Everything here is shipped code — `createSiloDurableObject`,
- * `createWorkerHandler`, the placement, the silo — running on real workerd.
+ * Everything here is shipped code — `createHostDurableObject`,
+ * `createWorkerHandler`, the placement, the host — running on real workerd.
  */
 import { defineActor } from '@sigx/actors';
-import { createSiloDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
+import { createHostDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
 
 export interface Env {
     ACTORS: DurableObjectNamespace;
@@ -66,7 +66,7 @@ export const Counter = defineActor({
     })
 });
 
-export class TestSilo extends createSiloDurableObject<Env>({
+export class TestHost extends createHostDurableObject<Env>({
     actors: [Counter],
     namespace: (env) => env.ACTORS
 }) {}

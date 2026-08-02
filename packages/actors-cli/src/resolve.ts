@@ -26,7 +26,7 @@ const APP_CANDIDATES = [
  * `--url` wins; otherwise load the project's app in-process.
  *
  * The precedence is deliberate and not merely first-match: passing a URL is
- * an explicit statement about WHICH silo you mean, and silently preferring
+ * an explicit statement about WHICH host you mean, and silently preferring
  * a local module over it would monitor the wrong process while looking
  * correct.
  */
@@ -67,7 +67,7 @@ export function resolveAppModule(cwd: string, app?: string): string {
     throw new Error(
         '[sigx actors] no actor app module found. Looked for ' +
             `${APP_CANDIDATES.join(', ')} under ${cwd}.\n` +
-            'Pass --app <path> to name it, or --url <origin> to watch a running silo ' +
+            'Pass --app <path> to name it, or --url <origin> to watch a running host ' +
             'over its ops endpoint instead.'
     );
 }

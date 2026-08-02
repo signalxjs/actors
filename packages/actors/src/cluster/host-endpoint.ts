@@ -1,5 +1,5 @@
 /**
- * The INTERNAL silo-to-silo endpoint — a sibling of `@sigx/actors/server`
+ * The INTERNAL host-to-host endpoint — a sibling of `@sigx/actors/server`
  * riding the same `handleServerFnRequest` machinery (codec, body caps,
  * NDJSON, cancellation) with three deliberate differences:
  *
@@ -11,81 +11,81 @@
  *     with the owner hint (redirect-not-proxy), never forwarded onward.
  *
  * This is HTTP's receiving half, contributed by `httpTransport()` as an
- * ordinary route. It is expressed against `SiloEndpointRuntime` rather than
+ * ordinary route. It is expressed against `HostEndpointRuntime` rather than
  * the placement directly, so the symbol-resolution rules — the 404 case, the
- * `$sigx:silo` shadowing guard — are the ones every transport shares rather
+ * `$sigx:host` shadowing guard — are the ones every transport shares rather
  * than HTTP's private habits. That runtime is the INBOUND half only: a
  * single-host runtime with no membership (a Durable Object) serves the mount
- * through `siloEndpointRuntime(silo)`, while a cluster passes the wider
- * `SiloTransportRuntime` its sending side also needs.
+ * through `hostEndpointRuntime(host)`, while a cluster passes the wider
+ * `HostTransportRuntime` its sending side also needs.
  *
  * Mount beside the public endpoint on the same listener:
- * `matchesSiloRequest(req) ? handleSiloRequest(req, {...}) : ...`
+ * `matchesHostRequest(req) ? handleHostRequest(req, {...}) : ...`
  */
 import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
 import {
     handleServerFnRequest,
     type ServerFnRequestOptions
 } from '@sigx/server/server';
-import type { ActorCallContext, ActorRef, AnyActorDefinition, Silo } from '../types';
-import { decodeEnvelope, verifyAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
+import type { ActorCallContext, ActorRef, AnyActorDefinition, Host } from '../types';
+import { decodeEnvelope, verifyAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from './envelope';
 import type { ClusterPlacement } from './placement';
-import type { SiloCallTarget, SiloEndpointRuntime, SiloTransportRuntime } from './seam';
+import type { HostCallTarget, HostEndpointRuntime, HostTransportRuntime } from './seam';
 import {
-    SILO_STATS_METHOD,
-    SILO_STATS_SYMBOL,
-    SILO_STATS_TYPE,
-    type SiloReportOptions
+    HOST_STATS_METHOD,
+    HOST_STATS_SYMBOL,
+    HOST_STATS_TYPE,
+    type HostReportOptions
 } from './stats';
 import { parseWatchOptions, WATCH_SYMBOL_PREFIX } from './watch-symbol';
 import { relayStream } from '../stream-relay';
-import { toSiloWireError } from './wire-errors';
+import { toHostWireError } from './wire-errors';
 
 /** Endpoint knobs a transport may forward: body caps, `onError`, timeouts. */
-export type SiloEndpointOptions = Omit<
+export type HostEndpointOptions = Omit<
     ServerFnRequestOptions,
     'resolve' | 'renderBoundaries' | 'origin' | 'guard'
 >;
 
-export interface SiloRequestOptions extends SiloEndpointOptions {
-    silo: Silo;
+export interface HostRequestOptions extends HostEndpointOptions {
+    host: Host;
     placement: ClusterPlacement;
     /** Shared cluster secret; when set, requests without it are 403'd. */
     secret?: string;
 }
 
 /** The runtime-shaped form `httpTransport()` uses. */
-export interface SiloRuntimeRequestOptions extends SiloEndpointOptions {
+export interface HostRuntimeRequestOptions extends HostEndpointOptions {
     /**
      * Only the INBOUND half is required. A clustered transport passes its
-     * `SiloTransportRuntime` (which extends this); a single-host runtime
+     * `HostTransportRuntime` (which extends this); a single-host runtime
      * with no membership — a Durable Object — passes
-     * `siloEndpointRuntime(silo)`.
+     * `hostEndpointRuntime(host)`.
      */
-    runtime: SiloEndpointRuntime;
+    runtime: HostEndpointRuntime;
     secret?: string;
 }
 
-export function matchesSiloRequest(request: Request, base = '/_sigx/silo'): boolean {
+export function matchesHostRequest(request: Request, base = '/_sigx/host'): boolean {
     const prefix = base.endsWith('/') ? base : `${base}/`;
     return new URL(request.url).pathname.startsWith(prefix);
 }
 
 /**
- * Resolve an inbound wire symbol against a silo — THE rule, shared by every
+ * Resolve an inbound wire symbol against a host — THE rule, shared by every
  * transport rather than reimplemented per wire.
  *
  * The reserved ops symbol is answered BEFORE any definition lookup, so an
- * actor type literally named `$sigx:silo` cannot shadow it. That is the
- * safe direction: such an actor becomes uncallable cross-silo, which is
+ * actor type literally named `$sigx:host` cannot shadow it. That is the
+ * safe direction: such an actor becomes uncallable cross-host, which is
  * loud and testable, rather than silently taking over the channel.
  */
-export function resolveSiloSymbol(
-    silo: Silo,
+export function resolveHostSymbol(
+    host: Host,
     symbol: string
-): SiloCallTarget | null | Promise<SiloCallTarget | null> {
-    if (symbol === SILO_STATS_SYMBOL) {
-        return { type: SILO_STATS_TYPE, method: SILO_STATS_METHOD, mode: 'unary' };
+): HostCallTarget | null | Promise<HostCallTarget | null> {
+    if (symbol === HOST_STATS_SYMBOL) {
+        return { type: HOST_STATS_TYPE, method: HOST_STATS_METHOD, mode: 'unary' };
     }
     // A watch is an ordinary read asked for in watch mode, so the intent
     // rides on the symbol — the one caller-supplied field the per-call HMAC
@@ -98,9 +98,9 @@ export function resolveSiloSymbol(
     if (hash <= 0 || hash === bare.length - 1) return null;
     const type = bare.slice(0, hash);
     const method = bare.slice(hash + 1);
-    const def = silo.definition(type);
+    const def = host.definition(type);
     if (!def) return null;
-    const resolve = (d: AnyActorDefinition): SiloCallTarget | null => {
+    const resolve = (d: AnyActorDefinition): HostCallTarget | null => {
         const stream = d.streamNames.includes(method);
         // Watching a `streams:` method is not a thing: a watch re-invokes a
         // read and yields its RESULT, and a generator has none. 404 rather
@@ -113,21 +113,21 @@ export function resolveSiloSymbol(
 }
 
 /**
- * Adapt a silo + placement to the transport runtime. It lives here rather
- * than on the placement so `handleSiloRequest`'s published
- * `(silo, placement)` shape keeps working for hand-rolled mounts.
+ * Adapt a host + placement to the transport runtime. It lives here rather
+ * than on the placement so `handleHostRequest`'s published
+ * `(host, placement)` shape keeps working for hand-rolled mounts.
  */
-export function siloRuntime(silo: Silo, placement: ClusterPlacement): SiloTransportRuntime {
+export function hostRuntime(host: Host, placement: ClusterPlacement): HostTransportRuntime {
     return {
         descriptor: () => placement.descriptor(),
         view: () => placement.view(),
-        resolve: (symbol) => resolveSiloSymbol(silo, symbol),
+        resolve: (symbol) => resolveHostSymbol(host, symbol),
         dispatch: (ref, method, args, call) => {
             // The ops channel answers before any activation lookup, and
             // deliberately does NOT count as an inbound dispatch — reading
             // the counters must not move them.
-            if (ref.type === SILO_STATS_TYPE) {
-                return Promise.resolve(placement.report(args[0] as SiloReportOptions | undefined));
+            if (ref.type === HOST_STATS_TYPE) {
+                return Promise.resolve(placement.report(args[0] as HostReportOptions | undefined));
             }
             return placement.dispatchInbound(ref, method, args, call);
         },
@@ -140,7 +140,7 @@ export function siloRuntime(silo: Silo, placement: ClusterPlacement): SiloTransp
 }
 
 /**
- * Adapt a PLAIN silo to the inbound endpoint — no cluster, no membership.
+ * Adapt a PLAIN host to the inbound endpoint — no cluster, no membership.
  *
  * This is what lets a single-host runtime serve the internal mount. A
  * Cloudflare Durable Object is the motivating case: it holds one actor, the
@@ -148,54 +148,54 @@ export function siloRuntime(silo: Silo, placement: ClusterPlacement): SiloTransp
  * claim or peer to redirect to — so the endpoint's machinery is wanted but
  * `descriptor()`/`view()` have no honest answer.
  *
- * Dispatch goes through the silo itself rather than a placement's
+ * Dispatch goes through the host itself rather than a placement's
  * `dispatchInbound`, so the app's `useDispatch` middleware still runs. Only
  * a cluster needs the raw path, and only because an inbound hop there has
- * already been counted by the originating silo.
+ * already been counted by the originating host.
  *
- * `$sigx:silo#stats` deliberately resolves to `null` (→ method-not-found):
- * `SiloReport` is a cluster identity — siloId, epoch, address, owned
+ * `$sigx:host#stats` deliberately resolves to `null` (→ method-not-found):
+ * `HostReport` is a cluster identity — hostId, epoch, address, owned
  * reminder shards — and fabricating one for a host that has no cluster
  * would put fiction on the ops channel.
  */
-export function siloEndpointRuntime(silo: Silo): SiloEndpointRuntime {
+export function hostEndpointRuntime(host: Host): HostEndpointRuntime {
     // `dispatchStream`/`dispatchWatch` are optional on `ActorDispatcher` so a
-    // transport that cannot stream may omit them; the silo itself always has
+    // transport that cannot stream may omit them; the host itself always has
     // both. Fail with the reason rather than `undefined is not a function`.
     const missing = (name: string): never => {
         throw new Error(
-            `[sigx actors] this silo has no ${name}() — the internal endpoint cannot ` +
+            `[sigx actors] this host has no ${name}() — the internal endpoint cannot ` +
                 `serve that call.`
         );
     };
 
     return {
         resolve: (symbol) =>
-            symbol === SILO_STATS_SYMBOL ? null : resolveSiloSymbol(silo, symbol),
-        dispatch: (ref, method, args, call) => silo.dispatch(ref, method, args, call),
+            symbol === HOST_STATS_SYMBOL ? null : resolveHostSymbol(host, symbol),
+        dispatch: (ref, method, args, call) => host.dispatch(ref, method, args, call),
         dispatchStream: (ref, method, args, call) =>
-            silo.dispatchStream?.(ref, method, args, call) ?? missing('dispatchStream'),
+            host.dispatchStream?.(ref, method, args, call) ?? missing('dispatchStream'),
         dispatchWatch: (ref, method, args, call, options) =>
-            silo.dispatchWatch?.(ref, method, args, call, options) ?? missing('dispatchWatch')
+            host.dispatchWatch?.(ref, method, args, call, options) ?? missing('dispatchWatch')
         // No `noteAuthFailure`: with no shared secret nothing is ever
         // refused, so there is nothing to count.
     };
 }
 
-export function handleSiloRequest(
+export function handleHostRequest(
     request: Request,
-    options: SiloRequestOptions
+    options: HostRequestOptions
 ): Promise<Response> {
-    const { silo, placement, ...rest } = options;
-    return handleSiloRequestForRuntime(request, {
+    const { host, placement, ...rest } = options;
+    return handleHostRequestForRuntime(request, {
         ...rest,
-        runtime: siloRuntime(silo, placement)
+        runtime: hostRuntime(host, placement)
     });
 }
 
-export function handleSiloRequestForRuntime(
+export function handleHostRequestForRuntime(
     request: Request,
-    options: SiloRuntimeRequestOptions
+    options: HostRuntimeRequestOptions
 ): Promise<Response> {
     const { runtime, secret, ...rest } = options;
     // Malformed percent-encoding would throw inside the core endpoint's
@@ -226,7 +226,7 @@ export function handleSiloRequestForRuntime(
                 runtime.noteAuthFailure?.();
                 throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
             }
-            const callHeader = rq.request.headers.get(SILO_CALL_HEADER);
+            const callHeader = rq.request.headers.get(HOST_CALL_HEADER);
             let callId = '';
             try {
                 callId = callHeader ? decodeEnvelope(callHeader).call.callId : '';
@@ -237,7 +237,7 @@ export function handleSiloRequestForRuntime(
                 callId !== '' &&
                 (await verifyAuth(
                     secret,
-                    rq.request.headers.get(SILO_AUTH_HEADER),
+                    rq.request.headers.get(HOST_AUTH_HEADER),
                     symbol,
                     callId
                 ));
@@ -263,12 +263,12 @@ function authFailed(): Response {
 }
 
 const resolvers = new WeakMap<
-    SiloEndpointRuntime,
+    HostEndpointRuntime,
     (symbol: string) => unknown | Promise<unknown>
 >();
 
 function resolverFor(
-    runtime: SiloEndpointRuntime
+    runtime: HostEndpointRuntime
 ): (symbol: string) => unknown | Promise<unknown> {
     let resolver = resolvers.get(runtime);
     if (!resolver) {
@@ -279,38 +279,38 @@ function resolverFor(
 }
 
 /** symbol (`Cart#addItem`) → synthesized wrapper, memoized per method. */
-export function createSiloResolver(
-    silo: Silo,
+export function createHostResolver(
+    host: Host,
     placement: ClusterPlacement
 ): (symbol: string) => unknown | Promise<unknown> {
-    return createRuntimeResolver(siloRuntime(silo, placement));
+    return createRuntimeResolver(hostRuntime(host, placement));
 }
 
 function createRuntimeResolver(
-    runtime: SiloEndpointRuntime
+    runtime: HostEndpointRuntime
 ): (symbol: string) => unknown | Promise<unknown> {
     const cache = new Map<string, unknown>();
     // The ops channel. Synthesized once, and answered WITHOUT a `prepare()`:
     // the guard already authenticated symbol + callId, and there is no ref
     // to route, no deadline to re-anchor and no activation to dispatch to.
     const statsFn = {
-        __sigxName: SILO_STATS_METHOD,
+        __sigxName: HOST_STATS_METHOD,
         // The wire sends `[ref.key, ...args]`, so what the collector asked
         // for is `args[1]`. Forwarded rather than dropped, which is how the
-        // caller gets to say "and the grain list, please" — the responder
+        // caller gets to say "and the actor list, please" — the responder
         // clamps whatever it is told.
         __sigxFn: (_rq: unknown, _info: unknown, args: unknown[] = []) =>
             runtime.dispatch(
-                { type: SILO_STATS_TYPE, key: SILO_STATS_METHOD },
-                SILO_STATS_METHOD,
+                { type: HOST_STATS_TYPE, key: HOST_STATS_METHOD },
+                HOST_STATS_METHOD,
                 args.slice(1),
-                { callChain: [], callId: SILO_STATS_METHOD }
+                { callChain: [], callId: HOST_STATS_METHOD }
             )
     };
     return (symbol: string) => {
-        if (symbol === SILO_STATS_SYMBOL) {
+        if (symbol === HOST_STATS_SYMBOL) {
             // Still the RUNTIME's call whether it offers the ops channel.
-            // A cluster's `resolveSiloSymbol` always answers it, so this is
+            // A cluster's `resolveHostSymbol` always answers it, so this is
             // unchanged there; a single-host runtime with no cluster
             // identity to report answers `null` and the symbol 404s like
             // any other unknown one.
@@ -341,8 +341,8 @@ function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
 }
 
 function synthesize(
-    runtime: SiloEndpointRuntime,
-    target: SiloCallTarget,
+    runtime: HostEndpointRuntime,
+    target: HostCallTarget,
     symbol: string
 ): unknown {
     const { type, method, mode } = target;
@@ -355,14 +355,14 @@ function synthesize(
         if (typeof key !== 'string' || key.length === 0) {
             throw new ServerFnError(
                 400,
-                `silo call "${symbol}" needs a non-empty string key as its first argument`
+                `host call "${symbol}" needs a non-empty string key as its first argument`
             );
         }
-        const header = rq.request.headers.get(SILO_CALL_HEADER);
+        const header = rq.request.headers.get(HOST_CALL_HEADER);
         if (!header) {
             throw new ServerFnError(
                 400,
-                `silo call "${symbol}" is missing the ${SILO_CALL_HEADER} envelope header`
+                `host call "${symbol}" is missing the ${HOST_CALL_HEADER} envelope header`
             );
         }
         let decoded;
@@ -440,7 +440,7 @@ function watchOptions(raw: unknown, symbol: string): { throttleMs?: number } | u
  * untouched for the core endpoint to handle.
  */
 function toServerFnError(error: unknown): unknown {
-    const wire = toSiloWireError(error);
+    const wire = toHostWireError(error);
     if (wire.data === undefined) return error;
     return new ServerFnError(wire.status ?? 500, wire.message ?? 'error', wire.data);
 }

@@ -2,7 +2,7 @@
  * One realistic dashboard state, shared by everything that renders a frame.
  *
  * Modelled on what `pnpm --filter counter-example cluster:serve` actually
- * produces — two silos with one draining, a hot grain, an unclaimed
+ * produces — two hosts with one draining, a hot actor, an unclaimed
  * reminder shard, and a method that does not exist being called one time in
  * seven. A fixture of zeroes would make every screen look fine, which is
  * precisely the failure mode this suite exists to catch.
@@ -12,7 +12,7 @@
  */
 import { createModel, signal, type Model } from '@sigx/terminal';
 import { DashboardState } from '../src/dashboard/state';
-import type { MonitorSnapshot, MonitorSource, SiloView } from '../src/source/types';
+import type { MonitorSnapshot, MonitorSource, HostView } from '../src/source/types';
 import type { Pane } from '../src/dashboard/screens';
 
 const stats = {
@@ -22,8 +22,8 @@ const stats = {
     transitional: { activating: 0, deactivating: 0 }
 };
 
-export const silo = (over: Partial<SiloView> = {}): SiloView => ({
-    siloId: 's.2sme5hx2',
+export const host = (over: Partial<HostView> = {}): HostView => ({
+    hostId: 's.2sme5hx2',
     address: 'http://127.0.0.1:5391',
     status: 'active',
     uptimeMs: 142_000,
@@ -32,7 +32,7 @@ export const silo = (over: Partial<SiloView> = {}): SiloView => ({
     reminderShards: ['p0'],
     membershipVersion: 5,
     transports: ['http'],
-    // Every silo's own digest and readiness — what milestone 9 put on the
+    // Every host's own digest and readiness — what milestone 9 put on the
     // wire, and what a drill-down renders.
     metrics: {
         v: 1,
@@ -66,13 +66,13 @@ const hist = (p99: number) => ({
 
 export const demoSnapshot: MonitorSnapshot = {
     at: 1_700_000_000_000,
-    silos: [
-        silo(),
-        silo({
-            siloId: 's.ikfugf49',
+    hosts: [
+        host(),
+        host({
+            hostId: 's.ikfugf49',
             status: 'leaving',
             stats: { ...stats, activations: 2, queued: 0 },
-            // A draining silo answers live-200 / ready-503. Showing it as
+            // A draining host answers live-200 / ready-503. Showing it as
             // ready would make the READY column decorative.
             health: {
                 ready: false,
@@ -86,7 +86,7 @@ export const demoSnapshot: MonitorSnapshot = {
         from: 's.2sme5hx2',
         view: { version: 5, size: 2, active: 1 },
         totals: {
-            silos: 2,
+            hosts: 2,
             activations: 32,
             queued: 2,
             perType: { Counter: 32 },
@@ -95,16 +95,16 @@ export const demoSnapshot: MonitorSnapshot = {
                 routingFailures: 0, inboundDispatches: 1280, inboundStreams: 0, inboundWatches: 0,
                 routeCacheHits: 238, routeCacheMisses: 44, directoryLookups: 44,
                 directoryClaims: 37, claimConflicts: 4, directoryReleases: 0,
-                directoryEvictions: 0, siloSweeps: 2, sweptEntries: 4,
+                directoryEvictions: 0, hostSweeps: 2, sweptEntries: 4,
                 wrongHostRedirects: 3, unreachableRetries: 0, drainingRetries: 0,
                 authFailures: 0, transportFallbacks: 0, membershipChanges: 5,
                 selfFences: 0, claimed: 32, routeCacheSize: 39, locates: 44, locateRemote: 12
             },
             // Cluster-wide, from the merged digests — which is the whole
             // point of milestone 9, and what the Overview must label as
-            // such rather than printing beside one silo's numbers.
+            // such rather than printing beside one host's numbers.
             metrics: {
-                silos: 2,
+                hosts: 2,
                 layoutMismatch: [],
                 calls: { total: 1186, failed: 52, streams: 0 },
                 latencyMs: hist(608 / 1000),
@@ -165,7 +165,7 @@ export const demoSnapshot: MonitorSnapshot = {
         fatal: false,
         uptimeMs: 242_000,
         checks: { cluster: { ready: true, detail: 'active' } },
-        silo: null
+        host: null
     },
     partial: false
 };

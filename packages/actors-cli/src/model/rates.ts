@@ -8,7 +8,7 @@
  * snapshots — and it is fiddly enough that every consumer should not.
  *
  * The fiddly part is that a counter going DOWN is not an anomaly to clamp.
- * It means `metrics().reset()` ran, or the silo restarted, or (in a cluster
+ * It means `metrics().reset()` ran, or the host restarted, or (in a cluster
  * view) a peer dropped out of the fan-out. In every case the correct answer
  * is "no rate for this interval", not a negative one and not a huge positive
  * one from treating the new value as the delta.
@@ -71,7 +71,7 @@ export class RateTracker {
         return previous !== undefined && at > previous.at && value < previous.value;
     }
 
-    /** Forget a series — e.g. a silo that left the cluster. */
+    /** Forget a series — e.g. a host that left the cluster. */
     forget(series: string): void {
         this.#previous.delete(series);
     }

@@ -25,7 +25,7 @@ describe('wrapText', () => {
     });
 
     it('cuts a single over-long word rather than overflowing', () => {
-        // A grain key or a URL has no space to break at, and running off
+        // An actor key or a URL has no space to break at, and running off
         // the right edge is the failure this whole module exists to stop.
         const lines = wrapText('short aaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10);
         for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(10);

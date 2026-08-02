@@ -18,14 +18,14 @@ import {
     GrainsScreen,
     HealthScreen,
     OverviewScreen,
-    SiloScreen,
-    SilosScreen
+    HostScreen,
+    HostsScreen
 } from '../dashboard/screens';
 import { count, uptime } from '../model/format';
 
 /** The tabs that own a cursor. */
-const SILOS_TAB = 'silos';
-const GRAINS_TAB = 'grains';
+const HOSTS_TAB = 'hosts';
+const ACTORS_TAB = 'actors';
 
 export async function runTop(ctx: ActorsCommandContext): Promise<void> {
     const source = await resolveSource(ctx.cwd, ctx.args);
@@ -43,21 +43,21 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
     // keeps meaning refresh rather than the table's reverse-sort, and we do
     // not depend on focus routing inside a shell we do not own.
     const cursors: Record<string, { index: number }> = {
-        [SILOS_TAB]: signal({ index: 0 }),
-        [GRAINS_TAB]: signal({ index: 0 })
+        [HOSTS_TAB]: signal({ index: 0 }),
+        [ACTORS_TAB]: signal({ index: 0 })
     };
     const modelFor = (tab: string): Model<number> =>
         createModel<number>([cursors[tab]!, 'index'], (value) => {
             cursors[tab]!.index = value;
         });
-    const siloCursor = modelFor(SILOS_TAB);
-    const grainCursor = modelFor(GRAINS_TAB);
+    const hostCursor = modelFor(HOSTS_TAB);
+    const grainCursor = modelFor(ACTORS_TAB);
 
     /** Rows the tab's table currently holds — the clamp for its cursor. */
     const lengthOf = (tab: string): number => {
         const snapshot = state.view.snapshot;
-        if (tab === GRAINS_TAB) return snapshot?.activations?.length ?? 0;
-        return snapshot?.silos.length ?? 0;
+        if (tab === ACTORS_TAB) return snapshot?.activations?.length ?? 0;
+        return snapshot?.hosts.length ?? 0;
     };
 
     /**
@@ -94,9 +94,9 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
                 render: (pane: ShellPane) => OverviewScreen({ state, pane })
             },
             {
-                id: SILOS_TAB,
-                label: 'Silos',
-                // One tab, two views: the list, and the selected silo in
+                id: HOSTS_TAB,
+                label: 'Hosts',
+                // One tab, two views: the list, and the selected host in
                 // full. Swapped here rather than through `pushView` because
                 // the drill-down is a different rendering of the SAME
                 // selection — `esc` returns to the list with the cursor
@@ -104,12 +104,12 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
                 // entry that is only sometimes meaningful.
                 render: (pane: ShellPane) =>
                     state.view.focus
-                        ? SiloScreen({ state, pane, siloId: state.view.focus })
-                        : SilosScreen({ state, pane, cursor: siloCursor })
+                        ? HostScreen({ state, pane, hostId: state.view.focus })
+                        : HostsScreen({ state, pane, cursor: hostCursor })
             },
             {
-                id: GRAINS_TAB,
-                label: 'Grains',
+                id: ACTORS_TAB,
+                label: 'Actors',
                 render: (pane: ShellPane) => GrainsScreen({ state, pane, cursor: grainCursor })
             },
             {
@@ -147,9 +147,9 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
             { key: 'j', label: 'down', run: (sh) => move(sh, 1) },
             { key: 'k', label: 'up', run: (sh) => move(sh, -1) },
             {
-                // The cursor now leads somewhere. Selecting a silo used to
+                // The cursor now leads somewhere. Selecting a host used to
                 // move a highlight and change nothing else, because the
-                // fan-out carried no per-silo detail to open.
+                // fan-out carried no per-host detail to open.
                 //
                 // `'\r'` rather than `'enter'`: the shell matches a
                 // shortcut against the RAW key the terminal delivered, so a
@@ -158,11 +158,11 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
                 // palette or pop its own view stack — hence `h` for back,
                 // which also keeps the vim shape of `j`/`k`.
                 key: '\r',
-                label: 'open silo',
+                label: 'open host',
                 run: (sh) => {
-                    if (sh.activeTab !== SILOS_TAB || state.view.focus) return;
-                    const silo = state.view.snapshot?.silos[cursors[SILOS_TAB]!.index];
-                    if (silo) state.focus(silo.siloId);
+                    if (sh.activeTab !== HOSTS_TAB || state.view.focus) return;
+                    const host = state.view.snapshot?.hosts[cursors[HOSTS_TAB]!.index];
+                    if (host) state.focus(host.hostId);
                 }
             },
             {
@@ -208,11 +208,11 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
         if (view.error) ctx.logger.error(view.error);
         else if (snapshot) {
             out(
-                `${source.label}  ${snapshot.silos.length} silo(s), ` +
-                    `${count(snapshot.silos.reduce((n, s) => n + s.stats.activations, 0))} activations`
+                `${source.label}  ${snapshot.hosts.length} host(s), ` +
+                    `${count(snapshot.hosts.reduce((n, s) => n + s.stats.activations, 0))} activations`
             );
         }
-        // Non-zero when we could not read the silo. Exiting 0 after logging
+        // Non-zero when we could not read the host. Exiting 0 after logging
         // an error would make a piped or CI invocation treat a connection
         // failure as success — the one thing an exit code is FOR. A missing
         // snapshot counts too: no error and no data still means we learned

@@ -125,7 +125,7 @@ export interface SharedWatch {
      *
      * It has to be honoured here rather than left to the consumer calling
      * `return()`, because the consumer is often in no position to. A cross-
-     * silo watch is served by a generator parked at `await next()`, and an
+     * host watch is served by a generator parked at `await next()`, and an
      * async generator suspended at an `await` cannot observe `return()` —
      * the spec queues it until the generator next yields, which on a quiet
      * actor is never. The abort is then the ONLY signal that reaches the

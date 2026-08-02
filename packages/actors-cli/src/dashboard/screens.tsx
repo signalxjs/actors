@@ -41,12 +41,12 @@ import {
     type Model,
     type TableColumn
 } from '@sigx/terminal';
-import { digestSnapshot, type ActivationInfo } from '@sigx/actors/silo';
+import { digestSnapshot, type ActivationInfo } from '@sigx/actors/host';
 import { count, durationMs, gauge, percent, rate, uptime } from '../model/format';
 import { histogramScale, percentileItems, shardCells, splitShards, unclaimedShards } from '../tui/bars';
 import { wrapText } from '../tui/wrap';
 import { Line } from '../tui/components';
-import type { MonitorSnapshot, SiloView } from '../source/types';
+import type { MonitorSnapshot, HostView } from '../source/types';
 import type { DashboardState } from './state';
 
 /**
@@ -79,7 +79,7 @@ const TABLE_GUTTER = 1;
 const LABEL_WIDTH = 12;
 
 /** Status tones. `fenced` and `leaving` must never look like `active`. */
-function siloTone(status: string): string | undefined {
+function hostTone(status: string): string | undefined {
     if (status === 'active' || status === 'unknown') return undefined;
     if (status === 'fenced') return 'danger';
     if (status === 'leaving') return 'warn';
@@ -110,7 +110,7 @@ export function alertLines(state: DashboardState): Alert[] {
     if (paused) lines.push({ text: 'PAUSED — press p to resume', tone: 'warn' });
     if (snapshot?.partial) {
         lines.push({
-            text: 'PARTIAL — a silo did not answer, so every total is a LOWER BOUND',
+            text: 'PARTIAL — a host did not answer, so every total is a LOWER BOUND',
             tone: 'warn'
         });
     }
@@ -131,19 +131,19 @@ export function alertLines(state: DashboardState): Alert[] {
             });
         }
     }
-    const fenced = snapshot?.silos.filter((s) => s.status === 'fenced') ?? [];
+    const fenced = snapshot?.hosts.filter((s) => s.status === 'fenced') ?? [];
     if (fenced.length > 0) {
-        // The one a load balancer cannot see: a fenced silo still publishes
+        // The one a load balancer cannot see: a fenced host still publishes
         // `active` while refusing every activation.
         lines.push({
-            text: `${fenced.length} silo(s) FENCED — refusing activations while still published as active`,
+            text: `${fenced.length} host(s) FENCED — refusing activations while still published as active`,
             tone: 'danger'
         });
     }
-    const auth = totalCounter(snapshot?.silos ?? [], 'authFailures');
+    const auth = totalCounter(snapshot?.hosts ?? [], 'authFailures');
     if (auth > 0) {
         lines.push({
-            text: `${count(auth)} cluster auth failure(s) — a secret rotation has not reached every silo`,
+            text: `${count(auth)} cluster auth failure(s) — a secret rotation has not reached every host`,
             tone: 'danger'
         });
     }
@@ -177,9 +177,9 @@ function alertHeight(state: DashboardState, pane: Pane): number {
     return lines === 0 ? 0 : lines + 1;
 }
 
-function totalCounter(silos: readonly SiloView[], key: 'authFailures'): number {
+function totalCounter(hosts: readonly HostView[], key: 'authFailures'): number {
     let total = 0;
-    for (const silo of silos) total += silo.counters?.[key] ?? 0;
+    for (const host of hosts) total += host.counters?.[key] ?? 0;
     return total;
 }
 
@@ -212,21 +212,21 @@ const blockHeight = (lines: readonly string[]): number => (lines.length === 0 ? 
  */
 function scopeOf(snapshot: MonitorSnapshot): string {
     const cluster = snapshot.cluster;
-    if (!cluster) return 'this silo';
-    return `cluster · ${cluster.totals.silos} silo(s)`;
+    if (!cluster) return 'this host';
+    return `cluster · ${cluster.totals.hosts} host(s)`;
 }
 
 /**
  * Why cluster-wide totals might be a lower bound, or nothing.
  *
- * A silo with no `metrics()`, or one mid-rolling-deploy on an older build,
+ * A host with no `metrics()`, or one mid-rolling-deploy on an older build,
  * contributes nothing — and totals covering two thirds of the fleet look
  * exactly like totals covering all of it.
  */
-/** The silo whose own numbers these are — the one being polled. */
+/** The host whose own numbers these are — the one being polled. */
 function polledLabel(state: DashboardState): string {
     const from = state.view.snapshot?.cluster?.from;
-    return from ? `silo ${from}` : 'this silo';
+    return from ? `host ${from}` : 'this host';
 }
 
 function coverageNote(snapshot: MonitorSnapshot): string | null {
@@ -235,11 +235,11 @@ function coverageNote(snapshot: MonitorSnapshot): string | null {
     const metrics = totals.metrics;
     if (!metrics) {
         return snapshot.metrics
-            ? 'calls and latency below are THIS silo only — no silo reported cluster metrics'
+            ? 'calls and latency below are THIS host only — no host reported cluster metrics'
             : null;
     }
-    if (metrics.silos >= totals.silos) return null;
-    return `metrics from ${metrics.silos} of ${totals.silos} silos — every figure below is a LOWER BOUND`;
+    if (metrics.hosts >= totals.hosts) return null;
+    return `metrics from ${metrics.hosts} of ${totals.hosts} hosts — every figure below is a LOWER BOUND`;
 }
 
 export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
@@ -249,10 +249,10 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     if (!snapshot) return <Line color="dim">connecting…</Line>;
 
     const totals = snapshot.cluster?.totals;
-    const activations = totals?.activations ?? sum(snapshot.silos, (s) => s.stats.activations);
-    const queued = totals?.queued ?? sum(snapshot.silos, (s) => s.stats.queued);
+    const activations = totals?.activations ?? sum(snapshot.hosts, (s) => s.stats.activations);
+    const queued = totals?.queued ?? sum(snapshot.hosts, (s) => s.stats.queued);
     const metrics = snapshot.metrics;
-    // Cluster-wide numbers when the fan-out produced them, this silo's
+    // Cluster-wide numbers when the fan-out produced them, this host's
     // otherwise — and the heading says which, because printing one under a
     // label that means the other is the whole complaint behind #121.
     const clusterMetrics = snapshot.cluster?.totals.metrics ?? null;
@@ -281,7 +281,7 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
             <DetailList
                 labelWidth={LABEL_WIDTH}
                 rows={[
-                    { label: 'silos', value: `${snapshot.silos.length}` },
+                    { label: 'hosts', value: `${snapshot.hosts.length}` },
                     { label: 'activations', value: count(activations) },
                     { label: 'queued', value: count(queued) },
                     ...(clusterCalls
@@ -339,7 +339,7 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
                           </Col>
                       </Row>,
                       <Line color="dim">
-                          {fitCell('high queue = a hot grain · high turn = a slow method', pane.width)}
+                          {fitCell('high queue = a hot actor · high turn = a slow method', pane.width)}
                       </Line>
                   ]
                 : [<Line color="dim">no metrics — add .use(metrics()) to see calls, latency and errors</Line>]}
@@ -398,13 +398,13 @@ function percentiles(
     );
 }
 
-const siloColumns: TableColumn<SiloView>[] = [
-    { key: 'id', header: 'SILO', value: (s) => s.siloId, min: 8 },
+const hostColumns: TableColumn<HostView>[] = [
+    { key: 'id', header: 'HOST', value: (s) => s.hostId, min: 8 },
     { key: 'status', header: 'STATUS', value: (s) => s.status },
     {
-        // Every silo's readiness, not just the polled one's — the column
-        // that was impossible before `SiloReport` carried health. `FATAL`
-        // is not "very not ready": it means this silo cannot recover and
+        // Every host's readiness, not just the polled one's — the column
+        // that was impossible before `HostReport` carried health. `FATAL`
+        // is not "very not ready": it means this host cannot recover and
         // must be REPLACED, and reading it as draining is how a zombie pod
         // sits there forever.
         key: 'ready',
@@ -447,26 +447,26 @@ function selectionTone<T>(
     };
 }
 
-export function SilosScreen(props: { state: DashboardState; cursor?: Model<number>; pane?: Pane }) {
+export function HostsScreen(props: { state: DashboardState; cursor?: Model<number>; pane?: Pane }) {
     const pane = props.pane ?? DEFAULT_PANE;
     const snapshot = props.state.view.snapshot;
     if (!snapshot) return <Line color="dim">connecting…</Line>;
     const unreachable = (snapshot.cluster?.unreachable ?? []).map(
-        (failure) => `  ${failure.siloId}  ${failure.address}  ${failure.reason} — ${failure.message}`
+        (failure) => `  ${failure.hostId}  ${failure.address}  ${failure.reason} — ${failure.message}`
     );
     const spent = alertHeight(props.state, pane) + blockHeight(unreachable);
     return (
         <Col>
             {alerts(props.state, pane)}
             <DataTable
-                columns={siloColumns}
-                rows={snapshot.silos}
+                columns={hostColumns}
+                rows={snapshot.hosts}
                 model={props.cursor}
                 width={pane.width - TABLE_GUTTER}
                 height={tableRows(pane, spent)}
-                identity={(silo: SiloView) => silo.siloId}
-                tone={selectionTone(snapshot.silos, props.cursor, (silo: SiloView) => siloTone(silo.status))}
-                emptyText="no silos"
+                identity={(host: HostView) => host.hostId}
+                tone={selectionTone(snapshot.hosts, props.cursor, (host: HostView) => hostTone(host.status))}
+                emptyText="no hosts"
             />
             {block('unreachable', unreachable, pane, 'danger')}
         </Col>
@@ -475,7 +475,7 @@ export function SilosScreen(props: { state: DashboardState; cursor?: Model<numbe
 
 const grainColumns: TableColumn<ActivationInfo>[] = [
     { key: 'type', header: 'TYPE', value: (g) => g.type },
-    // Grain keys are user data and open-ended, so this is the column that
+    // Actor keys are user data and open-ended, so this is the column that
     // matters most and the one `DataTable` protects: it shrinks from the
     // RIGHT, so `KEPT` and `TASKS` give up cells before an identity does.
     { key: 'key', header: 'KEY', value: (g) => g.key, min: 10 },
@@ -491,7 +491,7 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
     const snapshot = props.state.view.snapshot;
     if (!snapshot) return <Line color="dim">connecting…</Line>;
     const metrics = snapshot.metrics;
-    const grains = snapshot.activations ?? [];
+    const actors = snapshot.activations ?? [];
     const slowest = metrics
         ? Object.entries(metrics.byMethod)
               .sort((a, b) => (b[1].turnMs?.p99Ms ?? 0) - (a[1].turnMs?.p99Ms ?? 0))
@@ -507,22 +507,22 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
     return (
         <Col>
             {alerts(props.state, pane)}
-            {/* The grain list comes from the silo being POLLED, not from the
+            {/* The actor list comes from the host being POLLED, not from the
                 fan-out — so it says so, rather than sitting unlabelled under
                 a screen of cluster totals. */}
             <Heading color="dim">
-                {fitCell(`grains on ${polledLabel(props.state)}`, pane.width)}
+                {fitCell(`actors on ${polledLabel(props.state)}`, pane.width)}
             </Heading>
             {snapshot.activations ? (
                 <DataTable
                     columns={grainColumns}
-                    rows={grains}
+                    rows={actors}
                     model={props.cursor}
                     width={pane.width - TABLE_GUTTER}
                     height={tableRows(pane, spent)}
-                    identity={(grain: ActivationInfo) => `${grain.type}/${grain.key}`}
-                    tone={selectionTone(grains, props.cursor, (grain: ActivationInfo) =>
-                        grain.queued > 0 ? 'warn' : undefined
+                    identity={(actor: ActivationInfo) => `${actor.type}/${actor.key}`}
+                    tone={selectionTone(actors, props.cursor, (actor: ActivationInfo) =>
+                        actor.queued > 0 ? 'warn' : undefined
                     )}
                     emptyText="no live activations"
                 />
@@ -535,38 +535,38 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
 }
 
 /**
- * One silo, in full — the drill-down the Silos cursor now opens.
+ * One host, in full — the drill-down the Hosts cursor now opens.
  *
  * Before this, selecting a row did nothing: the cursor moved and the screen
- * did not change, because a `SiloReport` carried no metrics, no health and
- * no grains to show. It carries all three now, so this panel is per-silo
+ * did not change, because a `HostReport` carried no metrics, no health and
+ * no actors to show. It carries all three now, so this panel is per-host
  * all the way down — and says so at the top, since nothing on it is a
  * cluster total.
  */
-export function SiloScreen(props: { state: DashboardState; siloId: string; pane?: Pane }) {
+export function HostScreen(props: { state: DashboardState; hostId: string; pane?: Pane }) {
     const pane = props.pane ?? DEFAULT_PANE;
     const snapshot = props.state.view.snapshot;
     if (!snapshot) return <Line color="dim">connecting…</Line>;
-    const silo = snapshot.silos.find((candidate) => candidate.siloId === props.siloId);
-    if (!silo) {
+    const host = snapshot.hosts.find((candidate) => candidate.hostId === props.hostId);
+    if (!host) {
         // It was in the last view and is not in this one. That is a fact
         // worth stating, not an empty panel.
         return (
             <Col>
                 {alerts(props.state, pane)}
                 <Line color="warn">
-                    {fitCell(`${props.siloId} is no longer in the membership view`, pane.width)}
+                    {fitCell(`${props.hostId} is no longer in the membership view`, pane.width)}
                 </Line>
-                <Line color="dim">esc — back to the silo list</Line>
+                <Line color="dim">esc — back to the host list</Line>
             </Col>
         );
     }
 
-    const digest = silo.metrics;
+    const digest = host.metrics;
     const latency = digest?.latency ? digestSnapshot(digest.latency) : null;
     const failed = digest?.calls.failed ?? 0;
-    const checks = silo.health
-        ? Object.entries(silo.health.checks).map(
+    const checks = host.health
+        ? Object.entries(host.health.checks).map(
               ([name, check]) =>
                   `  ${check.ready ? 'ok  ' : 'FAIL'} ${name}${check.detail ? ` — ${check.detail}` : ''}`
           )
@@ -581,11 +581,11 @@ export function SiloScreen(props: { state: DashboardState; siloId: string; pane?
             `  ${new Date(entry.at).toISOString().slice(11, 19)} ${entry.type}#${entry.method} ` +
             `${entry.kind}: ${entry.message}`
     );
-    const grains = silo.activations ?? [];
+    const actors = host.activations ?? [];
     const spent =
         alertHeight(props.state, pane) +
         1 +
-        (silo.health ? 4 : 3) +
+        (host.health ? 4 : 3) +
         (digest ? 3 : 1) +
         blockHeight(checks) +
         blockHeight(kinds) +
@@ -595,25 +595,25 @@ export function SiloScreen(props: { state: DashboardState; siloId: string; pane?
     return (
         <Col>
             {alerts(props.state, pane)}
-            <Heading color="accent">{fitCell(`silo ${silo.siloId}`, pane.width)}</Heading>
+            <Heading color="accent">{fitCell(`host ${host.hostId}`, pane.width)}</Heading>
             <DetailList
                 labelWidth={LABEL_WIDTH}
                 rows={[
-                    { label: 'status', value: silo.status, tone: siloTone(silo.status) },
-                    { label: 'address', value: silo.address },
-                    { label: 'up', value: uptime(silo.uptimeMs) },
-                    ...(silo.health
+                    { label: 'status', value: host.status, tone: hostTone(host.status) },
+                    { label: 'address', value: host.address },
+                    { label: 'up', value: uptime(host.uptimeMs) },
+                    ...(host.health
                         ? [
                               {
                                   label: 'ready',
-                                  value: silo.health.fatal
+                                  value: host.health.fatal
                                       ? 'FATAL'
-                                      : silo.health.ready
+                                      : host.health.ready
                                         ? 'yes'
                                         : 'NO',
-                                  tone: silo.health.fatal
+                                  tone: host.health.fatal
                                       ? 'danger'
-                                      : silo.health.ready
+                                      : host.health.ready
                                         ? 'success'
                                         : 'warn'
                               }
@@ -643,21 +643,21 @@ export function SiloScreen(props: { state: DashboardState; siloId: string; pane?
                     ]}
                 />
             ) : (
-                <Line color="dim">no metrics from this silo</Line>
+                <Line color="dim">no metrics from this host</Line>
             )}
             {block('checks', checks, pane)}
             {block('errors by kind', kinds, pane)}
             {block('recent failures', recent, pane)}
             <br />
-            <Heading color="dim">grains on this silo</Heading>
-            {silo.activations ? (
+            <Heading color="dim">actors on this host</Heading>
+            {host.activations ? (
                 <DataTable
                     columns={grainColumns}
-                    rows={grains}
+                    rows={actors}
                     width={pane.width - TABLE_GUTTER}
                     height={tableRows(pane, spent)}
-                    identity={(grain: ActivationInfo) => `${grain.type}/${grain.key}`}
-                    tone={(grain: ActivationInfo) => (grain.queued > 0 ? 'warn' : undefined)}
+                    identity={(actor: ActivationInfo) => `${actor.type}/${actor.key}`}
+                    tone={(actor: ActivationInfo) => (actor.queued > 0 ? 'warn' : undefined)}
                     emptyText="no live activations"
                 />
             ) : (
@@ -790,7 +790,7 @@ export function HealthScreen(props: { state: DashboardState; pane?: Pane }) {
 
     // The banner under the gauges: `fatal` and drain are mutually exclusive.
     const verdict = health?.fatal
-        ? 'FATAL — this silo cannot recover; replace it, draining will not help'
+        ? 'FATAL — this host cannot recover; replace it, draining will not help'
         : health && health.live && !health.ready
           ? 'ALIVE but out of rotation — drain it, do not restart it'
           : null;
@@ -820,8 +820,8 @@ export function HealthScreen(props: { state: DashboardState; pane?: Pane }) {
     return (
         <Col>
             {alerts(props.state, pane)}
-            {/* Health here is the POLLED silo's. Every silo's readiness is
-                on the Silos tab and in its drill-down — this one used to be
+            {/* Health here is the POLLED host's. Every host's readiness is
+                on the Hosts tab and in its drill-down — this one used to be
                 the only one visible, which is how a fleet with a fenced
                 peer read as healthy. */}
             <Heading color="dim">{fitCell(polledLabel(props.state), pane.width)}</Heading>
@@ -831,9 +831,9 @@ export function HealthScreen(props: { state: DashboardState; pane?: Pane }) {
                           labelWidth={LABEL_WIDTH}
                           rows={[
                               // `fatal` is not "very not ready": it says this
-                              // silo identity is unrecoverable, so liveness
+                              // host identity is unrecoverable, so liveness
                               // fails and the pod is meant to be REPLACED.
-                              // Without it, a fenced silo reads as merely
+                              // Without it, a fenced host reads as merely
                               // draining and sits there forever.
                               {
                                   label: 'live',

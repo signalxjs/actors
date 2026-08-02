@@ -10,8 +10,8 @@
  * keeping the activation alive.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { defineActor, type Silo } from '@sigx/actors';
-import { createSilo, manualScheduler } from '@sigx/actors/silo';
+import { defineActor, type Host } from '@sigx/actors';
+import { createHost, manualScheduler } from '@sigx/actors/host';
 
 let invocations = 0;
 
@@ -45,11 +45,11 @@ const Cart = defineActor({
     })
 });
 
-const running: Silo[] = [];
+const running: Host[] = [];
 
 /** No throttle by default: these assert emissions, not timing. */
-function silo(defaults: Record<string, unknown> = {}): Silo {
-    const s = createSilo({
+function host(defaults: Record<string, unknown> = {}): Host {
+    const s = createHost({
         actors: [Cart],
         defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0, ...defaults }
     });
@@ -85,7 +85,7 @@ afterEach(async () => {
 
 describe('dispatchWatch', () => {
     it('emits the current result immediately, then one per mutating turn', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const watching = s.dispatchWatch!({ type: 'Cart', key: 'w1' }, 'total', [], {
@@ -100,7 +100,7 @@ describe('dispatchWatch', () => {
     });
 
     it('re-runs the READ, not the state — the result is derived by the actor', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         await s.actor(Cart, 'w2').add('a');
         await s.actor(Cart, 'w2').add('b');
@@ -119,7 +119,7 @@ describe('dispatchWatch', () => {
     });
 
     it('a non-mutating turn emits nothing', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const iterator = s
@@ -147,7 +147,7 @@ describe('dispatchWatch', () => {
     });
 
     it('DEDUPES: two identical watches run the method once per turn', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         await s.actor(Cart, 'w4').add('seed');
         invocations = 0;
@@ -171,7 +171,7 @@ describe('dispatchWatch', () => {
     });
 
     it('different args are different watches', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         await s.actor(Cart, 'w5').add('a');
         invocations = 0;
@@ -193,7 +193,7 @@ describe('dispatchWatch', () => {
         // merely waste a turn — it serves one subscriber the result of the
         // OTHER's arguments. `JSON.stringify` folds NaN onto null, so these
         // two shared a loop and `nan` was answered `'null'`.
-        const s = silo();
+        const s = host();
         await s.start();
         await s.actor(Cart, 'w6').add('a');
         invocations = 0;
@@ -215,7 +215,7 @@ describe('dispatchWatch', () => {
         // `JSON.stringify(10n)` THROWS, so a bigint argument — which the
         // codec carries perfectly well over the wire — used to make the
         // subscription itself fail.
-        const s = silo();
+        const s = host();
         await s.start();
 
         const watching = s.dispatchWatch!({ type: 'Cart', key: 'w7' }, 'echo', [10n], {
@@ -228,7 +228,7 @@ describe('dispatchWatch', () => {
     });
 
     it('shares one loop for equal args written in a different key order', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         invocations = 0;
 
@@ -249,7 +249,7 @@ describe('dispatchWatch', () => {
         // The sweeper is what keep-alive guards — `deactivateType` is an
         // explicit dev/HMR hook and deactivates regardless, by design.
         const clock = manualScheduler();
-        const s = createSilo({
+        const s = createHost({
             actors: [Cart],
             scheduler: clock,
             defaults: { idleAfterMs: 1, sweepIntervalMs: 1000, reminderTickMs: 60_000 }
@@ -280,7 +280,7 @@ describe('dispatchWatch', () => {
     });
 
     it('the last subscriber leaving stops the loop', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const ref = { type: 'Cart', key: 'w7' };
@@ -303,7 +303,7 @@ describe('dispatchWatch', () => {
 
     it('trailing-throttles a burst into ONE read', async () => {
         const clock = manualScheduler();
-        const s = createSilo({
+        const s = createHost({
             actors: [Cart],
             scheduler: clock,
             defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 }
@@ -352,7 +352,7 @@ describe('dispatchWatch', () => {
     });
 
     it('return() wakes a parked next() rather than hanging it', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const iterator = s

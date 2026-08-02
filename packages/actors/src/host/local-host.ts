@@ -8,7 +8,7 @@ import {
     ActorActivationError,
     ActorDeadlockError,
     ActorError,
-    SiloShutdownError
+    HostShutdownError
 } from '../errors';
 import {
     actorId,
@@ -22,7 +22,7 @@ import {
     type AnyActorDefinition,
     type DeactivationReason,
     type PlacementBindings,
-    type SiloStats
+    type HostStats
 } from '../types';
 import { Activation, type ActivationHost } from './activation';
 import { CallDeadlines } from './deadlines';
@@ -133,7 +133,7 @@ export class LocalHost implements ActorDispatcher {
         // The warm path, which is nearly every dispatch. Both helpers below
         // are `async`, so entering either allocates a promise and burns a
         // microtask tick even when it returns without awaiting anything —
-        // measured at ~12% of `dispatch/warm-grain` (see BASELINES.md, "Where
+        // measured at ~12% of `dispatch/warm-actor` (see BASELINES.md, "Where
         // the time goes"). This condition is exactly the conjunction of their
         // two early returns — `#checkReentrancy`'s chain miss and
         // `#activationFor`'s `active` slot hit — so the outcome is identical
@@ -156,13 +156,13 @@ export class LocalHost implements ActorDispatcher {
     #checkShutdown(call: ActorCallContext): void {
         // In-chain dispatches still pass — a draining turn must be able to
         // finish its actor-to-actor calls.
-        if (this.#shuttingDown && call.callChain.length === 0) throw new SiloShutdownError();
+        if (this.#shuttingDown && call.callChain.length === 0) throw new HostShutdownError();
     }
 
     /**
      * The target is already in this call chain → its turn is up-stack
      * awaiting us. Reentrant: run inline against that turn. Non-reentrant:
-     * throw now with the full chain (Orleans would hang until timeout).
+     * throw now with the full chain instead of hanging until a timeout.
      */
     async #checkReentrancy(
         ref: ActorRef,
@@ -202,7 +202,7 @@ export class LocalHost implements ActorDispatcher {
         if (!def) {
             throw new ActorActivationError(`${type}/?`, {
                 cause: new Error(
-                    `[sigx actors] unknown actor type "${type}" — is it registered with createSilo({ actors })?`
+                    `[sigx actors] unknown actor type "${type}" — is it registered with createHost({ actors })?`
                 )
             });
         }
@@ -244,13 +244,13 @@ export class LocalHost implements ActorDispatcher {
             if (slot.phase === 'activating') return slot.promise;
             if (slot.phase === 'active') return slot.activation;
             // Deactivating: park until drained, then re-activate fresh
-            // (Orleans behavior — calls during deactivation wait, not fail).
+            // (calls during deactivation wait, not fail).
             await slot.drained;
         }
     }
 
     // -----------------------------------------------------------------------
-    // Lifecycle orchestration (silo-facing)
+    // Lifecycle orchestration (host-facing)
 
     /** Begin (or join) graceful deactivation of one activation. */
     deactivate(ref: ActorRef, reason: DeactivationReason): Promise<void> {
@@ -363,7 +363,7 @@ export class LocalHost implements ActorDispatcher {
         this.#deadlines.dispose();
     }
 
-    stats(): SiloStats {
+    stats(): HostStats {
         let activations = 0;
         let queued = 0;
         let activating = 0;
@@ -372,7 +372,7 @@ export class LocalHost implements ActorDispatcher {
         for (const [, slot] of this.#directory) {
             // A slot mid-transition has no Activation to read, but it is
             // very much work in progress — counted separately rather than
-            // skipped, so an activation storm does not read as an idle silo.
+            // skipped, so an activation storm does not read as an idle host.
             if (slot.phase === 'activating') {
                 activating++;
                 continue;
@@ -407,7 +407,7 @@ export class LocalHost implements ActorDispatcher {
                 queued: activation.mailbox.depth,
                 ageMs: Math.max(0, Math.round(nowMonotonic - activation.startedMs)),
                 // Clamped: `lastActivityMs` is wall-clock, so an NTP step
-                // backwards mid-activation would otherwise report a grain
+                // backwards mid-activation would otherwise report an actor
                 // that was last used in the future.
                 idleMs: Math.max(0, now - activation.lastActivityMs),
                 keptAlive: activation.keptAlive,

@@ -17,24 +17,24 @@ import {
     type TransportConformanceFactory,
     type TransportConformanceHarness
 } from '@sigx/actors/cluster/testing';
-import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/host';
 import { createAppHandler } from '@sigx/actors/node';
 import {
     cluster,
     memoryClusterHub,
     type ClusterPlacement,
-    type SiloDescriptor
+    type HostDescriptor
 } from '@sigx/actors/cluster';
-import type { Silo } from '@sigx/actors';
+import type { Host } from '@sigx/actors';
 import { WebSocketServer } from 'ws';
 import { wsTransport, WS_TRANSPORT_NAME } from '../src/index.ts';
 
-/** Deterministic: every silo activates its own new actors. */
-const selfPolicy = { name: 'ws-conformance-self', choose: (_r: unknown, _v: unknown, self: SiloDescriptor) => self };
+/** Deterministic: every host activates its own new actors. */
+const selfPolicy = { name: 'ws-conformance-self', choose: (_r: unknown, _v: unknown, self: HostDescriptor) => self };
 
 interface Member {
     app: ActorApp;
-    silo: Silo;
+    host: Host;
     placement: ClusterPlacement;
     server: Server;
     detach?: () => void;
@@ -42,8 +42,8 @@ interface Member {
 }
 
 /**
- * A real N-silo cluster: one HTTP listener per silo, carrying both the public
- * wire and — through an `upgrade` handler — every silo-to-silo call. One port,
+ * A real N-host cluster: one HTTP listener per host, carrying both the public
+ * wire and — through an `upgrade` handler — every host-to-host call. One port,
  * which is the whole reason to pick this transport over raw TCP.
  */
 const createWsCluster: TransportConformanceFactory = async (
@@ -54,7 +54,7 @@ const createWsCluster: TransportConformanceFactory = async (
     const members: Member[] = [];
     const secret = options.secret === null ? undefined : (options.secret ?? 'ws-conformance');
 
-    for (let i = 0; i < options.silos; i++) {
+    for (let i = 0; i < options.hosts; i++) {
         // Bind the HTTP listener first so `advertise` is a real address, the
         // same ordering the seam requires of the TCP listener itself.
         const server = createServer();
@@ -64,7 +64,7 @@ const createWsCluster: TransportConformanceFactory = async (
         const captured: { openLinks?(): number; stop?(): void | Promise<void> } = {};
         const handle = wsTransport({
             keepAliveMs: 0,
-            advertiseUrl: () => `ws://127.0.0.1:${httpPort}/_sigx/silo-ws`,
+            advertiseUrl: () => `ws://127.0.0.1:${httpPort}/_sigx/host-ws`,
             // `ws`'s client, not the global: it is the peer dep anyway, and
             // this keeps the test off whatever the runtime happens to ship.
             connect: (url) => new WebSocket(url) as never
@@ -74,7 +74,7 @@ const createWsCluster: TransportConformanceFactory = async (
             advertise: `http://127.0.0.1:${httpPort}`,
             policy: (options.policy ?? selfPolicy) as never,
             // WEBSOCKET ONLY — no HTTP fallback in the chain, so every
-            // cross-silo call in the suite is genuinely carried by this
+            // cross-host call in the suite is genuinely carried by this
             // package rather than quietly falling back.
             transport: (config) => {
                 const t = handle(config);
@@ -104,19 +104,19 @@ const createWsCluster: TransportConformanceFactory = async (
         const detach = await handle.attach(server, {
             wss: new WebSocketServer({ noServer: true }) as never
         });
-        const silo = await app.start();
-        members.push({ app, silo, placement: plugin.placement, server, detach, transport: captured });
+        const host = await app.start();
+        members.push({ app, host, placement: plugin.placement, server, detach, transport: captured });
     }
 
     const severed = new Set<number>();
 
     return {
         placements: members.map((m) => m.placement),
-        silos: members.map((m) => m.silo),
-        /** Wire-level unreachable while membership still lists the silo. */
+        hosts: members.map((m) => m.host),
+        /** Wire-level unreachable while membership still lists the host. */
         unbind: (i) => {
             members[i]!.detach?.();
-            // Wire-level unreachable while membership STILL lists the silo.
+            // Wire-level unreachable while membership STILL lists the host.
             // Only the transport is torn down; the placement keeps its
             // heartbeat, so peers must classify this as `unreachable` rather
             // than quietly re-placing the actor somewhere else.
@@ -128,7 +128,7 @@ const createWsCluster: TransportConformanceFactory = async (
             // Membership drops it AND the listeners die. No cleanup runs.
             severed.add(i);
             members[i]!.detach?.();
-            hub.kill(members[i]!.placement.identity.siloId);
+            hub.kill(members[i]!.placement.identity.hostId);
             void members[i]!.transport.stop?.();
             members[i]!.server.closeAllConnections?.();
             members[i]!.server.close();
@@ -136,9 +136,9 @@ const createWsCluster: TransportConformanceFactory = async (
         /** Membership only — every socket stays up, so the reaping case can
          *  isolate the membership path from a socket simply closing. */
         dropMembership: (i) => {
-            hub.kill(members[i]!.placement.identity.siloId);
+            hub.kill(members[i]!.placement.identity.hostId);
         },
-        impostor: async (target: SiloDescriptor) => {
+        impostor: async (target: HostDescriptor) => {
             // Speak the real frame protocol with the WRONG secret.
             const { encodeFrameBody, decodeFrameBody, FrameType } = await import(
                 '@sigx/actors/cluster/frames'

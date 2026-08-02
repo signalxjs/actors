@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors-redis",
     "version": "0.1.0",
-    "description": "Redis cluster providers for @sigx/actors \u2014 silo membership and the distributed actor directory",
+    "description": "Redis cluster providers for @sigx/actors \u2014 host membership and the distributed actor directory",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -26,8 +26,7 @@
         "actors",
         "virtual-actors",
         "cluster",
-        "redis",
-        "orleans"
+        "redis"
     ],
     "author": "Andreas Ekdahl",
     "license": "MIT",

@@ -1,5 +1,5 @@
 // The CPU-bound workload: a sha256 hash-chain burns a controllable amount
-// of processor per call. This is what pushes silo CPU past the HPA
+// of processor per call. This is what pushes host CPU past the HPA
 // threshold in the autoscaling scenario — the Counter's Redis round-trips
 // barely warm a core.
 import { createHash } from 'node:crypto';

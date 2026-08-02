@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { encodeEnvelope, SILO_CALL_HEADER } from '@sigx/actors/cluster';
+import { encodeEnvelope, HOST_CALL_HEADER } from '@sigx/actors/cluster';
 import type { Env } from './fixture-worker';
 
 declare module 'cloudflare:test' {
@@ -33,7 +33,7 @@ describe.skip('stub.fetch honours its signal', () => {
                 method: 'POST',
                 headers: {
                     'content-type': 'application/json',
-                    [SILO_CALL_HEADER]: encodeEnvelope(
+                    [HOST_CALL_HEADER]: encodeEnvelope(
                         { callChain: [], callId: 'c1.sig.0' },
                         'probe'
                     )
@@ -54,10 +54,10 @@ describe.skip('stub.fetch honours its signal', () => {
 
         const held = async (): Promise<boolean | undefined> =>
             runInDurableObject(stub, async (instance) => {
-                const silo = await (
-                    instance as { silo(): Promise<import('@sigx/actors').Silo> }
-                ).silo();
-                return silo.activations().find((a) => a.key === key)?.keptAlive;
+                const host = await (
+                    instance as { host(): Promise<import('@sigx/actors').Host> }
+                ).host();
+                return host.activations().find((a) => a.key === key)?.keptAlive;
             });
 
         console.log('STUBSIG before abort keptAlive=', await held());

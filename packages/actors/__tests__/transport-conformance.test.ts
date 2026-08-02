@@ -18,8 +18,8 @@ import {
     type TransportConformanceFactory,
     type TransportConformanceHarness
 } from '@sigx/actors/cluster/testing';
-import { encodeEnvelope, signAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from '@sigx/actors/cluster';
-import type { SiloDescriptor } from '@sigx/actors/cluster';
+import { encodeEnvelope, signAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from '@sigx/actors/cluster';
+import type { HostDescriptor } from '@sigx/actors/cluster';
 import { createCluster, type ClusterHarness } from './harness';
 
 /**
@@ -30,7 +30,7 @@ import { createCluster, type ClusterHarness } from './harness';
 const createHttpCluster: TransportConformanceFactory = async (
     options: ConformanceClusterOptions
 ): Promise<TransportConformanceHarness> => {
-    const harness: ClusterHarness = await createCluster(options.silos, {
+    const harness: ClusterHarness = await createCluster(options.hosts, {
         actors: options.actors,
         ...(options.secret === null ? {} : { secret: options.secret ?? 'conformance-secret' }),
         ...(options.policy ? { policy: options.policy } : {}),
@@ -41,23 +41,23 @@ const createHttpCluster: TransportConformanceFactory = async (
 
     return {
         placements: harness.placements,
-        silos: harness.silos,
+        hosts: harness.hosts,
         unbind: harness.unbind,
         crash: harness.crash,
-        impostor: async (target: SiloDescriptor) => {
+        impostor: async (target: HostDescriptor) => {
             const symbol = 'ConformanceEcho#increment';
             const callId = 'c1.forged';
             const response = await harness.fetch(
-                `${target.address}/_sigx/silo/${encodeURIComponent(symbol)}`,
+                `${target.address}/_sigx/host/${encodeURIComponent(symbol)}`,
                 {
                     method: 'POST',
                     headers: {
                         'content-type': 'application/json',
-                        [SILO_CALL_HEADER]: encodeEnvelope(
+                        [HOST_CALL_HEADER]: encodeEnvelope(
                             { callChain: [], callId },
                             's.attacker'
                         ),
-                        [SILO_AUTH_HEADER]: await signAuth('wrong-secret', symbol, callId)
+                        [HOST_AUTH_HEADER]: await signAuth('wrong-secret', symbol, callId)
                     },
                     body: JSON.stringify({ args: ['forged', 1] })
                 }

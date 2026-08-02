@@ -1,5 +1,5 @@
 /**
- * `defineJob` — one durable long-running operation per grain, as
+ * `defineJob` — one durable long-running operation per actor, as
  * convention over `defineActor` + the `tasks:` primitive. The layer
  * encodes the four invariants everyone would otherwise get wrong:
  *
@@ -12,7 +12,7 @@
  *  4. Progress is change-feed-visible without write amplification
  *     (mutated, pushed, not persisted).
  *
- * Blessed pattern: one grain per run — key = your run id. The directory's
+ * Blessed pattern: one actor per run — key = your run id. The directory's
  * single-activation guarantee IS the "exactly one runner" guarantee.
  */
 import { defineActor } from '../define';

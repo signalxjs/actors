@@ -1,6 +1,6 @@
 /**
  * The job model — the user-facing durable-operation vocabulary. A job is
- * one long-running operation hosted in one grain (key = your run id),
+ * one long-running operation hosted in one actor (key = your run id),
  * built entirely on the `tasks:` primitive: the runtime keeps it alive,
  * cancellable and crash-resumable; this layer standardizes the state
  * machine, progress, checkpoints and the client surface around it.
@@ -9,7 +9,7 @@ import type { ServerFnGuard } from '@sigx/server';
 import type { ActorPlacementStrategy, ReminderApi } from '../types';
 
 export type JobStatus =
-    /** The grain exists (virtually) but `start()` has not been called. */
+    /** The actor exists (virtually) but `start()` has not been called. */
     | 'pending'
     /** The run's task is live somewhere in the cluster (or resuming). */
     | 'running'
@@ -51,7 +51,7 @@ export const JOB_PAUSED: unique symbol = Symbol.for('sigx.actors.job.paused');
 export type JobPaused = typeof JOB_PAUSED;
 
 /**
- * The handle a `run()` body works through — the ONLY door into the grain
+ * The handle a `run()` body works through — the ONLY door into the actor
  * from detached code (each method is a serialized mailbox turn inside).
  */
 export interface JobHandle<In, C, Extra extends object> {
@@ -81,7 +81,7 @@ export interface JobHandle<In, C, Extra extends object> {
      */
     pause(c: C): Promise<JobPaused>;
     /**
-     * The grain's durable reminders — arm one before pausing to give a
+     * The actor's durable reminders — arm one before pausing to give a
      * human-in-the-loop wait a timeout; `onReminder(control, name)`
      * receives it and decides (resume with fallback data, or cancel).
      */
@@ -96,7 +96,7 @@ export interface JobControl<Extra extends object = Record<never, never>> {
     resume(data?: unknown): Promise<void>;
     /** Cancel unless already terminal. */
     cancel(): Promise<void>;
-    /** The grain's durable reminders (re-arm, clear, inspect). */
+    /** The actor's durable reminders (re-arm, clear, inspect). */
     readonly reminders: ReminderApi;
 }
 

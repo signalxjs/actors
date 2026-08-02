@@ -11,7 +11,7 @@ Prerequisites: the `tasks:` section in the actors README and the
 An in-process cron library (`node-cron` and friends) breaks the moment you
 run two replicas: every instance fires every schedule. Reminders already
 solve this — they live in storage, fire through placement, and their
-shards are re-owned when a silo dies. A schedule is just an actor per
+shards are re-owned when a host dies. A schedule is just an actor per
 scheduled thing, re-arming a **one-shot** reminder per occurrence (which
 sidesteps the 60s *period* floor; minute-resolution cron fits reminder
 coarseness fine):
@@ -41,7 +41,7 @@ export const WorkflowSchedule = defineActor({
     onReminder: async (ctx, name) => {
         if (name !== 'fire' || !ctx.state.cron) return;
         const runId = `${ctx.key}-${Date.now().toString(36)}`;
-        // Fire-and-return: the job runs detached on whatever silo placement
+        // Fire-and-return: the job runs detached on whatever host placement
         // picks; this actor's only business is the calendar.
         await ctx.actor(ExecutionJob, runId).start({ workflowId: ctx.key });
         ctx.state.lastRun = runId;
@@ -57,16 +57,16 @@ async function arm(ctx: { state: { cron: string | null; tz: string }; reminders:
 }
 ```
 
-Properties you get for free: exactly one silo fires each schedule (shard
-ownership + the reminder CAS), a dead silo's schedules move to survivors,
+Properties you get for free: exactly one host fires each schedule (shard
+ownership + the reminder CAS), a dead host's schedules move to survivors,
 and the schedule state is queryable like any other actor. Reminder
 resolution is coarse — "at or after due, within a tick" — which is the
 right contract for cron; if you need sub-minute precision you want a
 `ctx.timer` on a resident actor, not a reminder.
 
-## The queue-worker grain — strict ordering, bounded concurrency
+## The queue-worker actor — strict ordering, bounded concurrency
 
-`defineJob`'s blessed shape is one grain per run: maximal parallelism,
+`defineJob`'s blessed shape is one actor per run: maximal parallelism,
 per-run addressing. When you need the OPPOSITE — a queue that processes
 items one at a time (or N at a time) in order — use a singleton actor
 whose state is the queue, feeding per-run jobs and admitting new ones as
@@ -124,7 +124,7 @@ async function pump(ctx) {
 ```
 
 The single-activation guarantee is the lock: two callers cannot pump the
-same queue concurrently, however many silos take their calls. Completion
+same queue concurrently, however many hosts take their calls. Completion
 callbacks beat polling; the simplest wiring is a final line in the job's
 `run()` that calls `job.update()` plus a queue-side `ctx.timer` reconcile —
 or just have the job's caller invoke `done()`. Keep the queue actor's
@@ -134,10 +134,10 @@ turns small; the JOBS do the work.
 
 Jobs run on the DO backend unchanged (the task ledger lives in the
 object's storage; the liveness reminder rides its alarm), but the physics
-differ from a Node silo:
+differ from a Node host:
 
 - **Eviction is routine, not exceptional.** A DO can be evicted between any
-  two awaits — far more often than a Node silo dies. A job there is
+  two awaits — far more often than a Node host dies. A job there is
   effectively *checkpoint-and-resume with short gaps*: `attempt > 1` is
   normal operation, not an incident. Checkpoint aggressively (every step,
   not every N) and size `maxAttempts` accordingly (think 20, not 3).
@@ -155,8 +155,8 @@ differ from a Node silo:
 | Problem | Shape |
 |---|---|
 | A run someone asks about ("how's my sync?") | `defineJob`, key = run id |
-| Many independent runs in parallel | `defineJob`, one grain per run — placement spreads them |
-| Strict ordering / bounded concurrency | queue-worker grain feeding jobs |
+| Many independent runs in parallel | `defineJob`, one actor per run — placement spreads them |
+| Strict ordering / bounded concurrency | queue-worker actor feeding jobs |
 | Scheduled/recurring work | schedule actor + one-shot reminders |
 | Sub-second/high-frequency ticking | `ctx.timer` on a resident actor — not reminders, not jobs |
 | Human-in-the-loop wait with a deadline | `job.pause()` + `job.reminders` + `onReminder` control |

@@ -1,5 +1,5 @@
 /**
- * `createSiloDurableObject` — a Durable Object that IS an actor host.
+ * `createHostDurableObject` — a Durable Object that IS an actor host.
  *
  * A factory returning a class rather than a base class to extend, because
  * the object must own its seams: storage, reminders, placement and the
@@ -13,19 +13,19 @@
  * `fetch` and `alarm` work on a plain class. Importing it would make this
  * package unloadable outside workerd and take the fake-driven tests with it.
  */
-import type { ActorRef, ActorStorage, Silo } from '@sigx/actors';
+import type { ActorRef, ActorStorage, Host } from '@sigx/actors';
 import {
     defineActorApp,
     type ActorApp,
     type ActorAppOptions,
-    type SiloDefaults
-} from '@sigx/actors/silo';
+    type HostDefaults
+} from '@sigx/actors/host';
 import {
-    handleSiloRequestForRuntime,
-    matchesSiloRequest,
-    siloEndpointRuntime,
-    type SiloEndpointOptions,
-    type SiloEndpointRuntime
+    handleHostRequestForRuntime,
+    matchesHostRequest,
+    hostEndpointRuntime,
+    type HostEndpointOptions,
+    type HostEndpointRuntime
 } from '@sigx/actors/cluster';
 import { durableObjectReminders, type DurableObjectReminders } from './reminders';
 import { durableObjectStorage } from './storage';
@@ -52,10 +52,10 @@ export interface DurableObjectStateLike {
  */
 export interface DurableAppOptions extends ActorAppOptions {
     storage: ActorStorage;
-    defaults: SiloDefaults;
+    defaults: HostDefaults;
 }
 
-export interface SiloDurableObjectOptions<Env = unknown> {
+export interface HostDurableObjectOptions<Env = unknown> {
     /** Registry, unless the `app` factory supplies one via `withActors`. */
     actors?: ActorAppOptions['actors'];
     /**
@@ -76,30 +76,30 @@ export interface SiloDurableObjectOptions<Env = unknown> {
         'objectName' | 'locationHint' | 'jurisdiction' | 'base'
     >;
     /** Forwarded to the internal mount (body caps, `onError`, `timeoutMs`). */
-    endpoint?: SiloEndpointOptions;
+    endpoint?: HostEndpointOptions;
 }
 
-export interface SiloDurableObjectInstance {
+export interface HostDurableObjectInstance {
     fetch(request: Request): Promise<Response>;
     alarm(): Promise<void>;
-    /** The running silo, for subclasses adding their own handlers. */
-    silo(): Promise<Silo>;
+    /** The running host, for subclasses adding their own handlers. */
+    host(): Promise<Host>;
 }
 
 interface Started {
-    silo: Silo;
+    host: Host;
     app: ActorApp;
     reminders: DurableObjectReminders;
-    runtime: SiloEndpointRuntime;
+    runtime: HostEndpointRuntime;
 }
 
-export function createSiloDurableObject<Env = unknown>(
-    options: SiloDurableObjectOptions<Env>
-): new (state: DurableObjectStateLike, env: Env) => SiloDurableObjectInstance {
+export function createHostDurableObject<Env = unknown>(
+    options: HostDurableObjectOptions<Env>
+): new (state: DurableObjectStateLike, env: Env) => HostDurableObjectInstance {
     const base = options.placement?.base ?? '/_sigx/do';
     const objectName = options.placement?.objectName ?? durableObjectName;
 
-    return class SiloDurableObject implements SiloDurableObjectInstance {
+    return class HostDurableObject implements HostDurableObjectInstance {
         readonly #state: DurableObjectStateLike;
         readonly #env: Env;
         #starting: Promise<Started> | null = null;
@@ -128,7 +128,7 @@ export function createSiloDurableObject<Env = unknown>(
                 // Without a name there is nothing to compare a ref against, so
                 // `isSelf` would answer false for EVERY ref — including this
                 // object's own actor. The object would then fetch itself,
-                // forever. Refuse to start rather than run a silo that is
+                // forever. Refuse to start rather than run a host that is
                 // guaranteed to recurse.
                 //
                 // `name` is populated for ids from `idFromName`, which is what
@@ -167,7 +167,7 @@ export function createSiloDurableObject<Env = unknown>(
                 if (!options.actors) {
                     throw new Error(
                         '[sigx actors-cloudflare] no actors registered — pass `actors` to ' +
-                            'createSiloDurableObject(), or call withActors() in the `app` factory.'
+                            'createHostDurableObject(), or call withActors() in the `app` factory.'
                     );
                 }
                 app.withActors(options.actors);
@@ -181,17 +181,17 @@ export function createSiloDurableObject<Env = unknown>(
                 durableObjects({
                     namespace: options.namespace(this.#env),
                     isSelf: (ref) => objectName(ref) === state.id.name,
-                    siloId: state.id.name ?? state.id.toString(),
+                    hostId: state.id.name ?? state.id.toString(),
                     ...options.placement
                 })
             );
 
-            const silo = await app.start();
+            const host = await app.start();
             return {
-                silo,
+                host,
                 app,
                 reminders,
-                runtime: this.#guardIdentity(siloEndpointRuntime(silo))
+                runtime: this.#guardIdentity(hostEndpointRuntime(host))
             };
         }
 
@@ -205,7 +205,7 @@ export function createSiloDurableObject<Env = unknown>(
          * than letting one actor quietly exist in two objects.
          *
          */
-        #guardIdentity(runtime: SiloEndpointRuntime): SiloEndpointRuntime {
+        #guardIdentity(runtime: HostEndpointRuntime): HostEndpointRuntime {
             // Always present: `#boot()` refuses to start without it.
             const own = this.#state.id.name as string;
             const check = (ref: ActorRef): void => {
@@ -235,13 +235,13 @@ export function createSiloDurableObject<Env = unknown>(
             };
         }
 
-        async silo(): Promise<Silo> {
-            return (await this.#ready()).silo;
+        async host(): Promise<Host> {
+            return (await this.#ready()).host;
         }
 
         async fetch(request: Request): Promise<Response> {
             const { runtime } = await this.#ready();
-            if (!matchesSiloRequest(request, base)) {
+            if (!matchesHostRequest(request, base)) {
                 return new Response(
                     JSON.stringify({
                         error: {
@@ -256,7 +256,7 @@ export function createSiloDurableObject<Env = unknown>(
             }
             // No `secret`: a stub is not network-reachable, and holding the
             // namespace binding is the capability grant.
-            return handleSiloRequestForRuntime(request, {
+            return handleHostRequestForRuntime(request, {
                 ...options.endpoint,
                 runtime
             });
@@ -264,7 +264,7 @@ export function createSiloDurableObject<Env = unknown>(
 
         async alarm(): Promise<void> {
             // Booting first is required, not defensive: `onAlarm()` throws if
-            // the silo has not bound its reminders, and an alarm can be the
+            // the host has not bound its reminders, and an alarm can be the
             // FIRST thing an evicted object sees.
             const { reminders } = await this.#ready();
             await reminders.onAlarm();

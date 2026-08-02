@@ -22,7 +22,7 @@ export interface DashboardOptions {
 export interface DashboardView {
     /**
      * The last GOOD snapshot. Kept across a failed poll on purpose: a
-     * dashboard that blanks the moment a silo hiccups destroys exactly the
+     * dashboard that blanks the moment a host hiccups destroys exactly the
      * context you need to understand the hiccup.
      */
     snapshot: MonitorSnapshot | null;
@@ -34,11 +34,11 @@ export interface DashboardView {
     lastOk: number;
     polls: number;
     /**
-     * The silo a drill-down is open on, or null for the list view.
+     * The host a drill-down is open on, or null for the list view.
      *
      * Held here rather than in the screens because it changes what is
      * REQUESTED, not just what is drawn: a detail poll makes the selected
-     * silo walk its activation table, so nobody should pay for it while the
+     * host walk its activation table, so nobody should pay for it while the
      * panel is closed.
      */
     focus: string | null;
@@ -87,8 +87,8 @@ export class DashboardState {
     /** One poll. Safe to call directly — that is what the refresh key does. */
     async poll(): Promise<void> {
         if (this.#stopped) return;
-        // A slow silo must not queue polls behind each other: the previous
-        // request is abandoned rather than left to pile up, or a 5s silo on
+        // A slow host must not queue polls behind each other: the previous
+        // request is abandoned rather than left to pile up, or a 5s host on
         // a 1s interval accumulates requests until something gives.
         this.#inFlight?.abort();
         const controller = new AbortController();
@@ -97,7 +97,7 @@ export class DashboardState {
             const focus = this.view.focus;
             const next = await this.source.snapshot(
                 controller.signal,
-                focus ? { detail: true, siloId: focus } : {}
+                focus ? { detail: true, hostId: focus } : {}
             );
             if (this.#stopped || controller.signal.aborted) return;
             this.#record(next);
@@ -141,17 +141,17 @@ export class DashboardState {
     }
 
     /**
-     * Open or close the per-silo drill-down.
+     * Open or close the per-host drill-down.
      *
      * Polls immediately rather than waiting for the next tick, because the
      * detail a drill-down needs was not in the snapshot already on screen —
-     * opening one and staring at "no grains" for a second reads as a broken
+     * opening one and staring at "no actors" for a second reads as a broken
      * panel rather than a pending request.
      */
-    focus(siloId: string | null): void {
-        if (this.view.focus === siloId) return;
-        this.view.focus = siloId;
-        if (siloId) void this.poll();
+    focus(hostId: string | null): void {
+        if (this.view.focus === hostId) return;
+        this.view.focus = hostId;
+        if (hostId) void this.poll();
     }
 
     /** Step the interval, clamped. */
@@ -163,8 +163,8 @@ export class DashboardState {
     #record(next: MonitorSnapshot): void {
         const totals = next.cluster?.totals;
         const activations =
-            totals?.activations ?? next.silos.reduce((sum, s) => sum + s.stats.activations, 0);
-        const queued = totals?.queued ?? next.silos.reduce((sum, s) => sum + s.stats.queued, 0);
+            totals?.activations ?? next.hosts.reduce((sum, s) => sum + s.stats.activations, 0);
+        const queued = totals?.queued ?? next.hosts.reduce((sum, s) => sum + s.stats.queued, 0);
 
         // Gauges, not counters: pushed as-is rather than differenced.
         this.activations.push(activations);
@@ -180,9 +180,9 @@ export class DashboardState {
             this.failures.push(null);
         }
 
-        // Silos that left stop being tracked, so a long-lived dashboard over
+        // Hosts that left stop being tracked, so a long-lived dashboard over
         // a churning cluster does not grow a series per departed peer.
-        this.#rates.retain(['calls', 'failed', ...next.silos.map((s) => s.siloId)]);
+        this.#rates.retain(['calls', 'failed', ...next.hosts.map((s) => s.hostId)]);
     }
 }
 

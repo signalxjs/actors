@@ -8,7 +8,7 @@
  * derivation, `partial` handling, reconciling the embedded and HTTP shapes).
  *
  * The awkward parts are the point. Core reports cumulative counters with no
- * windowing, splits a cross-silo call across two silos on purpose, and marks
+ * windowing, splits a cross-host call across two hosts on purpose, and marks
  * an incomplete fan-out rather than failing it. Every consumer needs the
  * same handling of all three, so it lives here once.
  */
@@ -17,72 +17,72 @@ import type {
     ActorMetricsSnapshot,
     HealthStatus,
     MetricsDigest,
-    SiloStats
-} from '@sigx/actors/silo';
+    HostStats
+} from '@sigx/actors/host';
 import type {
     ClusterCounterTotals,
     ClusterMetricsTotals,
-    SiloReport
+    HostReport
 } from '@sigx/actors/cluster';
-import type { HealthReport } from '@sigx/actors/silo';
+import type { HealthReport } from '@sigx/actors/host';
 
-/** One silo, however we reached it. */
-export interface SiloView {
-    siloId: string;
+/** One host, however we reached it. */
+export interface HostView {
+    hostId: string;
     address: string;
     /** `'active' | 'joining' | 'leaving' | 'fenced'`, or `'unknown'` from a
-     *  single-node silo that has no membership to report one. */
+     *  single-node host that has no membership to report one. */
     status: string;
-    /** Since the silo started, ms. */
+    /** Since the host started, ms. */
     uptimeMs: number;
-    stats: SiloStats;
-    /** Absent for a silo reached without cluster reporting. */
+    stats: HostStats;
+    /** Absent for a host reached without cluster reporting. */
     counters: ClusterCounterTotals | null;
-    /** Reminder shards this silo claims under ITS OWN view. */
+    /** Reminder shards this host claims under ITS OWN view. */
     reminderShards: readonly string[];
-    /** This silo's membership view version — a spread across silos means
+    /** This host's membership view version — a spread across hosts means
      *  the view has not converged, which explains any other disagreement. */
     membershipVersion: number | null;
     /** Transport names in chain order; a disagreement here is a half-rolled
      *  transport deploy, which is usually the whole story. */
     transports: readonly string[] | null;
     /**
-     * THIS silo's own metrics, when it reported them.
+     * THIS host's own metrics, when it reported them.
      *
-     * Null is "this silo said nothing", not "this silo did nothing" — an
-     * uninstrumented silo and an idle one are different findings, and a
+     * Null is "this host said nothing", not "this host did nothing" — an
+     * uninstrumented host and an idle one are different findings, and a
      * panel that renders the first as zeroes claims the second.
      */
     metrics: MetricsDigest | null;
-    /** THIS silo's readiness. Null when it reported none. */
+    /** THIS host's readiness. Null when it reported none. */
     health: HealthReport | null;
-    /** THIS silo's live grains — only present under a detail poll. */
+    /** THIS host's live actors — only present under a detail poll. */
     activations: readonly ActivationInfo[] | null;
 }
 
 export interface ClusterView {
-    /** The silo that assembled the fan-out. */
+    /** The host that assembled the fan-out. */
     from: string;
     view: { version: number; size: number; active: number };
     totals: {
-        silos: number;
+        hosts: number;
         activations: number;
         queued: number;
         perType: Record<string, number>;
         counters: ClusterCounterTotals;
         /**
-         * Cluster-wide calls, errors, storage and latency — with `silos` as
+         * Cluster-wide calls, errors, storage and latency — with `hosts` as
          * the denominator. Null when nothing anywhere is instrumented.
          */
         metrics: ClusterMetricsTotals | null;
         /** Readiness across the fleet. */
         health: { ready: number; notReady: number; fatal: number; unknown: number };
     };
-    /** `p0`…`p15` → the silos CLAIMING each shard. Two claimants means views
+    /** `p0`…`p15` → the hosts CLAIMING each shard. Two claimants means views
      *  diverged; an empty list means nothing is ticking that shard. */
     reminderShards: Record<string, readonly string[]>;
     unreachable: readonly {
-        siloId: string;
+        hostId: string;
         address: string;
         reason: string;
         message: string;
@@ -92,11 +92,11 @@ export interface ClusterView {
 export interface MonitorSnapshot {
     /** Epoch-ms this snapshot was taken. */
     at: number;
-    silos: readonly SiloView[];
-    /** Null on a single-node silo — not an error, just no cluster. */
+    hosts: readonly HostView[];
+    /** Null on a single-node host — not an error, just no cluster. */
     cluster: ClusterView | null;
     /**
-     * The POLLED silo's own metrics — not the cluster's.
+     * The POLLED host's own metrics — not the cluster's.
      *
      * Kept distinct from `cluster.totals.metrics` because the two are
      * different facts and the whole complaint behind #121 was a dashboard
@@ -121,16 +121,16 @@ export interface MonitorSnapshot {
 /** How much a single poll should ask for. */
 export interface SnapshotOptions {
     /**
-     * Ask for per-silo grain lists and recent errors as well.
+     * Ask for per-host actor lists and recent errors as well.
      *
      * Off for the list view and on only while a drill-down is open: the
-     * walk is O(activations) on every silo at once, so a dashboard that
+     * walk is O(activations) on every host at once, so a dashboard that
      * always asked would make the cluster pay for a panel nobody is
      * looking at.
      */
     detail?: boolean;
-    /** Limit the expensive parts to one silo — what a drill-down wants. */
-    siloId?: string;
+    /** Limit the expensive parts to one host — what a drill-down wants. */
+    hostId?: string;
 }
 
 export interface MonitorSource {
@@ -141,11 +141,11 @@ export interface MonitorSource {
     close(): Promise<void>;
 }
 
-/** Fold a `SiloReport` (cluster wire shape) into the normalized view. */
-export function siloViewFromReport(report: SiloReport): SiloView {
+/** Fold a `HostReport` (cluster wire shape) into the normalized view. */
+export function hostViewFromReport(report: HostReport): HostView {
     const { membershipVersion, status, ...totals } = report.counters;
     return {
-        siloId: report.siloId,
+        hostId: report.hostId,
         address: report.address,
         status,
         uptimeMs: report.uptimeMs,

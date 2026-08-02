@@ -12,7 +12,7 @@ RG=<resource-group>          # the AKS cluster's resource group
 CLUSTER=<aks-cluster-name>
 ACR=<acr-name>               # attached to (or pull-permitted for) the cluster
 NS=sigx-actors-test          # namespace
-RELEASE=sigx                 # helm release; resources are $RELEASE-silo etc.
+RELEASE=sigx                 # helm release; resources are $RELEASE-host etc.
 # "loadgen JSON" = the one-line summary a load Job prints on stdout:
 kubectl -n $NS logs job/<job> | tail -1 | jq
 # "cluster snapshot" = the ops fan-out, via the port-forward from §2:
@@ -29,7 +29,7 @@ brew install helm                          # if missing
 az account set --subscription $SUBSCRIPTION
 az aks get-credentials -g $RG -n $CLUSTER
 
-# Dedicated, tainted node pool — 4 nodes: 3 silo + 1 redis (the chart's
+# Dedicated, tainted node pool — 4 nodes: 3 host + 1 redis (the chart's
 # mutual required anti-affinity partitions them). Autoscale up to 8 for
 # the HPA scenario; min 0 so idle sessions cost nothing.
 az aks nodepool add \
@@ -99,12 +99,12 @@ Secrets are generated on first install and preserved across upgrades.
 ## 2. Monitoring from your own terminal
 
 ```sh
-kubectl -n $NS port-forward svc/$RELEASE-silo 7311:7311 &
+kubectl -n $NS port-forward svc/$RELEASE-host 7311:7311 &
 OPS_SECRET=$(kubectl -n $NS get secret $RELEASE-secrets \
   -o jsonpath='{.data.opsSecret}' | base64 -d)
 
 # The live dashboard — the ops fan-out reaches the whole cluster from
-# whichever silo the forward lands on. Run from this repo (the sigx CLI
+# whichever host the forward lands on. Run from this repo (the sigx CLI
 # discovers its plugins from the project's dependencies):
 pnpm --filter aks-cluster-example exec sigx actors top \
   --url http://127.0.0.1:7311 --secret "$OPS_SECRET"
@@ -140,9 +140,9 @@ Run in order; each assumes the previous left the cluster healthy.
 
 ### (a) Deploy + membership convergence
 
-`kubectl -n $NS get pods -w` until 3 silos + redis are Ready. Then:
+`kubectl -n $NS get pods -w` until 3 hosts + redis are Ready. Then:
 
-- Cluster snapshot: `view.size == 3`, `view.active == 3`, every silo
+- Cluster snapshot: `view.size == 3`, `view.active == 3`, every host
   `status: "active"`, reminder shards 16/16 covered.
 - Convergence < 30 s from the last pod turning Ready.
 - **Negative check (proves the prod dist shipped):**
@@ -155,7 +155,7 @@ Run in order; each assumes the previous left the cluster healthy.
 `load counter 4 15 --set loadgen.keyCount=50`. Pass:
 
 - loadgen JSON `errors.total == 0`;
-- snapshot shows activations on **all three** silos (placement spread);
+- snapshot shows activations on **all three** hosts (placement spread);
 - state landed in Redis:
   `kubectl -n $NS exec deploy/$RELEASE-redis -- redis-cli --scan --pattern 'sigx:st:*' | head`.
 
@@ -169,7 +169,7 @@ load crunch 0 60 --set loadgen.sweep="1\,2\,4\,8\,16\,32\,64"
 
 (One JSON line per rung. Note the escaped commas inside `--set`.) Repeat
 each sweep twice; rungs should agree within ±15%. While it runs, watch
-`kubectl top pods -n $NS` — **which saturates first, silo CPU or Redis
+`kubectl top pods -n $NS` — **which saturates first, host CPU or Redis
 CPU, is a headline finding** (counter mode does one Redis CAS per call).
 Record the knee: the rung where ops/s stops scaling and p99 starts
 climbing. Everything later is judged against this curve.
@@ -184,8 +184,8 @@ helm upgrade $RELEASE examples/aks-cluster/deploy/chart -n $NS \
 ```
 
 Pass: `top` shows the view going 3→5 with zero loadgen errors during the
-join (new silos are readiness-gated); post-join steady-state ops/s ≥ the
-3-silo figure from (c); new keys activate on the new silos. Existing
+join (new hosts are readiness-gated); post-join steady-state ops/s ≥ the
+3-host figure from (c); new keys activate on the new hosts. Existing
 actors stay put — spread evens out via new activations, not migration.
 
 ### (e) Rolling restart under load — the zero-drop check
@@ -193,8 +193,8 @@ actors stay put — spread evens out via new activations, not migration.
 Under `load counter 64 600`:
 
 ```sh
-kubectl -n $NS rollout restart deploy/$RELEASE-silo
-kubectl -n $NS rollout status deploy/$RELEASE-silo
+kubectl -n $NS rollout restart deploy/$RELEASE-host
+kubectl -n $NS rollout status deploy/$RELEASE-host
 ```
 
 Mechanics under test: surge pod joins → old pod turns ready-503 and
@@ -202,18 +202,18 @@ announces `leaving` → preStop sleep lets the endpoints notice → 30 s
 drain hands actors off → terminate. Pass: **loadgen `errors.total == 0`**
 — this is the drain design's promise. Record the p99 blip during
 hand-off. Afterwards the view is back to size 5 (or 3) with all-new
-siloIds (a restart is a new silo by design).
+hostIds (a restart is a new host by design).
 
 ### (f) Hard pod kill under load — state recovery
 
 Under `load counter 64 300 --set loadgen.keyCount=200`:
 
 ```sh
-kubectl -n $NS delete pod <one silo pod> --grace-period=0 --force
+kubectl -n $NS delete pod <one host pod> --grace-period=0 --force
 ```
 
 Expect an error window ≈ membership TTL (15 s) + directory eviction while
-the dead silo's actors fail over; the progress lines on the Job's stderr
+the dead host's actors fail over; the progress lines on the Job's stderr
 timestamp it. After the run, verify **no committed state was lost**:
 
 ```sh
@@ -224,14 +224,14 @@ load verify 1 0 --set loadgen.keyCount=200
 #   actual  > acked  → legal: an increment can commit after its response died
 ```
 
-Also record from the snapshot: `counters.siloSweeps`, `wrongHostRedirects`
+Also record from the snapshot: `counters.hostSweeps`, `wrongHostRedirects`
 climbing during the window, and that the cluster reconverged with no
 human action.
 
 ### (g) Scale-in / drain under load (5 → 3)
 
 Under load: `helm upgrade ... --reuse-values --set replicaCount=3`. Pass:
-zero loadgen errors (drain = the rolling-restart path), drained silos'
+zero loadgen errors (drain = the rolling-restart path), drained hosts'
 actors reappear on survivors with state intact (spot-check a key's
 `current()` against its acked count), PDB never violated
 (`kubectl -n $NS get pdb`).
@@ -240,36 +240,36 @@ actors reappear on survivors with state intact (spot-check a key's
 
 Under load: `kubectl -n $NS delete pod <redis pod>`. Expected sequence:
 
-1. Silos fail heartbeats; past `ttlMs` each fires `onSelfSuspect` and
+1. Hosts fail heartbeats; past `ttlMs` each fires `onSelfSuspect` and
    **self-fences** (refuses activations).
 2. Readiness flips 503 (`fenced`) — the Service empties; loadgen errors
    hard. This is correct behavior, record it.
 3. Redis restarts on its node (Recreate + PVC), AOF replays state.
-4. **Record what recovery actually looks like** — do fenced silos rejoin
+4. **Record what recovery actually looks like** — do fenced hosts rejoin
    on their own once heartbeats succeed, or do they stay fenced until the
    kubelet recycles them? This scenario exists to answer that; if the
    answer is "stuck until restart", file a runtime issue.
 
 Pass: reconvergence without helm intervention in ~1–2 min after Redis is
 back; `load verify ...` shows no committed-state loss (AOF held it);
-`ActorStorageConflict` entries in silo logs during the window are
+`ActorStorageConflict` entries in host logs during the window are
 *evidence fencing worked*, not failures.
 
 ### (i) HPA + cluster autoscaler — node scale-out
 
 ```sh
 helm upgrade $RELEASE examples/aks-cluster/deploy/chart -n $NS \
-  --reuse-values --set hpa.enabled=true --set affinity.siloSelfSpread=required
+  --reuse-values --set hpa.enabled=true --set affinity.hostSelfSpread=required
 load crunch 64 600 --set loadgen.crunchIters=2000
 kubectl -n $NS get hpa -w     # and: kubectl get nodes -w
 ```
 
-Expected chain: silo CPU > 60% → HPA adds replicas → required self-spread
+Expected chain: host CPU > 60% → HPA adds replicas → required self-spread
 makes them Pending → cluster autoscaler adds tainted D2ls_v6 nodes → pods
 schedule (never onto the Redis node — required anti-affinity). Measure
-time from HPA scale decision to the new silo Ready (node boot + image
+time from HPA scale decision to the new host Ready (node boot + image
 pull + membership join). After the load ends: HPA scales in, drained
-silos hand off cleanly, the autoscaler reclaims empty nodes.
+hosts hand off cleanly, the autoscaler reclaims empty nodes.
 
 ### (j) Continuous monitoring
 
@@ -290,12 +290,12 @@ terminal.
 load jobs 1 0 --set loadgen.mode=jobs   # then, via the raw job template,
 # env: JOB_COUNT=50 JOB_STEPS=300 JOB_STEP_MS=1000
 # Mid-run, do BOTH:
-kubectl -n $NS rollout restart deploy/$RELEASE-silo
-kubectl -n $NS delete pod <one silo> --grace-period=0 --force
+kubectl -n $NS rollout restart deploy/$RELEASE-host
+kubectl -n $NS delete pod <one host> --grace-period=0 --force
 ```
 
 Pass: `completed == jobs` and `stuck == 0` (a job stranded `running` on a
-dead silo means directory eviction failed to revive it);
+dead host means directory eviction failed to revive it);
 `crashResumes > 0` proves the kill landed on live runs and they resumed
 from their checkpoints; observed progress regresses at most one step per
 resume. Wall time stretches by roughly the membership TTL per hard kill —
@@ -330,13 +330,13 @@ The matrix — every test runs from OUTSIDE the cluster:
 |---|---|---|
 | 1 | `curl -v https://chat.<zone>/` | 200 SSR HTML over h2, wildcard cert |
 | 2 | real browser, two tabs, different users, post in one | appears live in the other — no reload |
-| 3 | `/r/general` + `/r/random` | isolated rooms; ops (port-forward internal port) shows grains spread |
-| 4 | `GET /_sigx/health`, `GET /_sigx/ops`, `POST /_sigx/silo/x` on the public host | all 404 — the dual listener seals them; never JSON, never SSR HTML |
+| 3 | `/r/general` + `/r/random` | isolated rooms; ops (port-forward internal port) shows actors spread |
+| 4 | `GET /_sigx/health`, `GET /_sigx/ops`, `POST /_sigx/host/x` on the public host | all 404 — the dual listener seals them; never JSON, never SSR HTML |
 | 5 | `POST /_sigx/fn/... -H 'Origin: https://evil.example'` | 403 (same-origin via x-forwarded-*) |
 | 6 | no cookie → 401; forged `user=ada.deadbeef` → 401; signed cookie → 200 | the guard chain, end to end |
 | 7 | `POST /_sigx/actor/Room%23topic` (signed) | 200 — nginx passed `%23` through untouched |
 | 8 | hold a quiet `$live` connection ≥ 120 s | stays open — a `{"chunk":{"p":1}}` keepalive every 30 s, plus the 3600 s ingress timeouts; the client also reconnects on its own |
-| 9 | `kubectl -n sigx-chat rollout restart deploy/chat-silo` with a tab streaming | tab reconnects by itself and resumes receiving |
+| 9 | `kubectl -n sigx-chat rollout restart deploy/chat-host` with a tab streaming | tab reconnects by itself and resumes receiving |
 | 10 | post → `kubectl -n sigx-chat delete pod chat-redis-...` | AOF recovery, history intact |
 | 11 | WAN load from a laptop (signed cookie + correct Origin, recent+post loop) | p50/p99 vs the in-cluster curve; no 5xx |
 
@@ -357,7 +357,7 @@ helm upgrade $RELEASE examples/aks-cluster/deploy/chart -n $NS \
 (Adds the ServiceAccount + Lease Role/RoleBinding; the directory and
 actor state stay in Redis — independent seams.) Differences worth
 recording: convergence latency vs Redis pub/sub, behavior in (h) — with
-`membership=k8s` a Redis outage no longer fences silos, it only stalls
+`membership=k8s` a Redis outage no longer fences hosts, it only stalls
 directory claims and saves.
 
 Switching back (`--set membership=redis`) deletes the Lease RBAC while

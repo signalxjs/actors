@@ -8,7 +8,7 @@
  * Deliberately imports nothing Vite-specific (there is no client build in
  * this example at all): plain Node loads this via type stripping.
  */
-import { defineActorApp, memoryStorage } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage } from '@sigx/actors/host';
 import { redisStorage } from '@sigx/actors-redis';
 
 const url = process.env.REDIS_URL;

@@ -21,8 +21,8 @@ This is the sigx standard agent setup. The same pattern (this file +
 it originates in [`signalxjs/repo-template`](https://github.com/signalxjs/repo-template).
 See "Adopting this setup in another sigx repo" at the bottom.
 
-SignalX Actors is the home of `@sigx/actors` — Orleans-style virtual actors
-for SignalX: addressable, single-threaded, persistent server objects riding
+SignalX Actors is the home of `@sigx/actors` — virtual actors for
+SignalX: addressable, single-threaded, persistent server objects riding
 the serverFn wire protocol. A pnpm workspace (ESM, `"type": "module"`) with
 one published package under `packages/` plus runnable demos under
 `examples/`. Tech stack: TypeScript (strict), Vite, Vitest, oxlint.
@@ -150,7 +150,7 @@ pnpm bench:baseline       # record this machine's reference (gitignored)
 pnpm bench:compare        # run again and diff against that reference
 pnpm bench:diff --before=a.json --after=b.json   # diff two saved result files
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
-pnpm bench:tier2          # Tier 2: real sockets, one process per silo (opt-in)
+pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
 pnpm test:infra           # Tier-3 assertions against a DEPLOYED environment (env-gated)
 pnpm bench:infra          # Tier 3 perf: a real deployment, load driven from a same-region VM
 node examples/aks-cluster/deploy/testenv.mjs up|test|baseline|load|down
@@ -182,7 +182,7 @@ per-machine and gitignored for exactly that reason.
   same identical-commit run, every one came back bit-identical while 215 other
   metrics drifted. Adding `exact: true` to a metric that is not deterministic
   *by construction* (anything on `randomPlacementPolicy()`, on
-  `consistentHashPolicy()` — whose silo ids are minted per run — on a clock, or
+  `consistentHashPolicy()` — whose host ids are minted per run — on a clock, or
   on the heap) breaks the gate for everyone, so read `Metric.exact` in
   `benchmarks/src/types.ts` first.
 - **The merge queue measures only the gating scenarios.** `merge_group` takes
@@ -199,7 +199,7 @@ measurements all of this is calibrated against.
 
 Most scenarios are **Tier 1**: one process, zero sockets, measuring
 algorithmic shape. **Tier 2** (`cluster2/*`, `pnpm bench:tier2`) forks a
-process per silo and uses real loopback TCP; it is opt-in via `BENCH_TIER2=1`
+process per host and uses real loopback TCP; it is opt-in via `BENCH_TIER2=1`
 and never runs as part of `pnpm bench`. Inside it, counts (sockets, bytes)
 gate while timings are `informational` — see `benchmarks/BASELINES.md`, whose
 tier legend exists so a modelled figure is never quoted as a measured one.
@@ -209,14 +209,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 ## Packages
 
 - `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Nine
-  runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`), `./silo` (defineActorApp
-  + the plugin model, createSilo, runtime, memoryStorage), `./server`
-  (WinterCG wire endpoint, `onMiss` proxy/redirect/auto for grains another
-  silo owns, plus `actorRouteToken()` — read-only; the endpoint never
+  runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`), `./host` (defineActorApp
+  + the plugin model, createHost, runtime, memoryStorage), `./server`
+  (WinterCG wire endpoint, `onMiss` proxy/redirect/auto for actors another
+  host owns, plus `actorRouteToken()` — read-only; the endpoint never
   validates the routing token), `./node`
   (createAppHandler + connect adapter, fileStorage, signal handlers),
   `./client` (build-swap target, configureActors, the `ActorTransport`
-  seam + `fetchTransport`, the `route` option minting the per-grain
+  seam + `fetchTransport`, the `route` option minting the per-actor
   routing token, and the `ActorRouter` seam — `routedTransport`,
   `learningRouter`, `routedFetchTransport` — opt-in by import so it
   tree-shakes), `./job`
@@ -226,7 +226,7 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   integration; it imports `@sigx/runtime-core`, NEVER the `sigx`
   umbrella — see below), `./cluster` (the
   `cluster()` plugin, clusterPlacement (incl. `locate()` and
-  `publicAddress`), silo-to-silo endpoint, cluster provider seams,
+  `publicAddress`), host-to-host endpoint, cluster provider seams,
   memoryClusterHub), `./vite`
   (`sigxActors()` plugin).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
@@ -235,36 +235,36 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   the cluster-safe persistence option). ioredis ≥5 as a peer dependency;
   provider tests are env-gated on `REDIS_URL`.
 - `packages/actors-k8s` → `@sigx/actors-k8s` — Kubernetes membership
-  provider for `@sigx/actors/cluster`: `k8sMembership()`, silo liveness via
-  a coordination.k8s.io Lease per silo (renewed on the heartbeat cadence)
+  provider for `@sigx/actors/cluster`: `k8sMembership()`, host liveness via
+  a coordination.k8s.io Lease per host (renewed on the heartbeat cadence)
   and a label-selected Lease watch feeding the membership view. Node-only
   (`node:https`/`node:fs`), zero runtime deps — talks to the API server
   with fetch, no client lib. The actor directory stays store-backed
   (compose with `redisDirectory`). Tested against a fake API server;
   real-cluster suite env-gated on `KUBECONFIG`.
-- `packages/actors-tcp` → `@sigx/actors-tcp` — an Orleans-style framed TCP
+- `packages/actors-tcp` → `@sigx/actors-tcp` — a framed TCP
   transport for `@sigx/actors/cluster`: `tcpTransport()`, one multiplexed
   connection per peer instead of HTTP's one per in-flight request. Node-only
   (`node:net`), zero runtime deps. Justified by socket count, not latency —
   see `benchmarks/BASELINES.md`. Runs the shared transport conformance suite.
 - `packages/actors-ws` → `@sigx/actors-ws` — the same frames over WebSocket:
-  `wsTransport()` plus `attachSiloUpgrade()`, riding the silo's existing HTTP
+  `wsTransport()` plus `attachHostUpgrade()`, riding the host's existing HTTP
   port. `ws` as a peer dependency. Picked over `actors-tcp` when one port,
   proxy traversal or a WinterCG client matters.
 - `packages/actors-cloudflare` → `@sigx/actors-cloudflare` — Durable
   Objects as the backend, one DO per actor. A whole app runs on Workers:
-  `createSiloDurableObject()` (the object) + `createWorkerHandler()` (the
+  `createHostDurableObject()` (the object) + `createWorkerHandler()` (the
   edge), over `durableObjectStorage`, `durableObjectReminders` (alarms) and
   `durableObjectPlacement`/`durableObjects()`. Needs no membership,
   directory or HMAC — Cloudflare already guarantees single-instance — but it
   DOES use the internal mount: the Worker→object hop is `httpTransport()`
   with its `fetch` swapped for a stub call, so envelope, NDJSON, deadlines
   and branded errors are the runtime's own. The placement runs on BOTH sides
-  with an `isSelf` predicate; giving the object's own silo the plain local
+  with an `isSelf` predicate; giving the object's own host the plain local
   host instead activates a callee INSIDE the caller's object and corrupts
   state (break `isSelf` and the test suite OOMs — the object fetches itself
   forever). **Eviction is not deactivation**: the platform destroys the
-  isolate, silo and activation together, so `onDeactivate` never runs and
+  isolate, host and activation together, so `onDeactivate` never runs and
   `sweepIntervalMs` is 0. **A DO stub is never cached** — it is an I/O object
   bound to the request that made it, so reusing one across requests makes
   every later call "unreachable". Two suites: fakes under `__tests__` (fast,
@@ -272,10 +272,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   test:workers`, its own config and CI job — wrangler needs Node >= 22 and
   the main matrix includes 20).
 - `packages/actors-cli` → `@sigx/actors-cli` — a `@sigx/cli` PLUGIN (the
-  `@sigx/lynx-cli` shape, not its own binary) that observes silos:
+  `@sigx/lynx-cli` shape, not its own binary) that observes hosts:
   `sigx actors stats` and `sigx actors health`, over an embedded source
   (loads the project's app module in-process) or an HTTP one (polls a
-  running silo's `ops()` endpoint). `@sigx/actors-cli/source` is the
+  running host's `ops()` endpoint). `@sigx/actors-cli/source` is the
   renderer-free data layer, deliberately reusable by a future web
   dashboard. `@sigx/cli` and `@sigx/terminal` are NOT core packages, so
   they take literal version specs rather than `catalog:`.
@@ -287,20 +287,20 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   for the page — so every open tab stays live. Dev and
   prod start the same app module. Production-shaped: `REDIS_URL` clusters
   it (redisStorage + redisCluster) behind a dual listener (public SSR/
-  actor/fn surface vs internal health/ops/silo), with HMAC-signed HttpOnly
+  actor/fn surface vs internal health/ops/host), with HMAC-signed HttpOnly
   sessions and a self-reconnecting live connection; `deploy/` has the AKS chart +
   public ingress, exercised as runbook scenario (l). Not published.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
-  dev silo, client swap, streams, file persistence, and a runnable 3-silo
+  dev host, client swap, streams, file persistence, and a runnable 3-host
   cluster demo (`pnpm --filter counter-example cluster`), and the
   durable-job demo (`pnpm --filter counter-example job`): a checkpointing
-  `defineJob` whose owning silo is killed mid-run and which resumes from
+  `defineJob` whose owning host is killed mid-run and which resumes from
   its last checkpoint on a survivor. Not published.
   `pnpm --filter counter-example cluster:serve` keeps that cluster UP
   under steady traffic, with `metrics()` and `ops()` mounted — the
   target `sigx actors top` is demonstrated against.
 - `examples/aks-cluster` — the production-shaped deployment example: an
-  env-driven multi-silo entry (`MEMBERSHIP=redis|k8s` picks `redisCluster`
+  env-driven multi-host entry (`MEMBERSHIP=redis|k8s` picks `redisCluster`
   or `k8sMembership`+`redisDirectory`; storage is `redisStorage`), a
   closed-loop load generator over the public wire endpoint (`loadgen.mjs`,
   one JSON summary line per run), and the Dockerfile both run from
@@ -314,12 +314,12 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `examples/counter` builds its app at module scope, which on Workers binds
   whichever object constructed it first. Three things it documents because
   they all bite: `new_sqlite_classes` is a one-way door, `__DEV__` must be
-  `define`d or the silo throws on the first request, and the public mount
+  `define`d or the host throws on the first request, and the public mount
   needs an explicit `origin` policy. `MODE=load` exists but its local numbers
   describe `wrangler dev`, not Cloudflare — see the README. Not published.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
-  dist, per-grain heap footprint, leak detection, and the CPU/allocation
+  dist, per-actor heap footprint, leak detection, and the CPU/allocation
   profiling recipes. Run by hand (`pnpm bench`), and by the `Bench`
   workflow, which A/Bs a PR's base ref against its head ref on one runner
   through `benchmarks/src/compare-files.ts` and comments the delta. **A
@@ -410,7 +410,7 @@ the queue, in two moments:
   not pull a renderer. `sigx` is an umbrella whose first line is
   `import '@sigx/runtime-dom/platform'`, so depending on it drags the DOM
   runtime in behind it — wrong for a terminal app, a Lynx app, or a
-  headless silo, none of which have a DOM. `./app` needs framework
+  headless host, none of which have a DOM. `./app` needs framework
   primitives, so it imports **`@sigx/runtime-core`** (and
   `@sigx/runtime-core/internals`), which is what `sigx` re-exports anyway:
   the types are identical and consumers see no difference. The build keeps

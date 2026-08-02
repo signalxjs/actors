@@ -104,7 +104,7 @@ const columns: TableColumn<Row>[] = [
 
 describe('upstream contract: table layout', () => {
     it('takes space from the RIGHT when it has to shrink', () => {
-        const table = layoutTable(columns, [{ id: 'a-very-long-silo-id', n: 1 }], { width: 14 });
+        const table = layoutTable(columns, [{ id: 'a-very-long-host-id', n: 1 }], { width: 14 });
         // The left column is the identity; truncating it to make room for a
         // number would make the table unusable.
         expect(table.widths[0]).toBeGreaterThan(table.widths[1]!);
@@ -117,7 +117,7 @@ describe('upstream contract: table layout', () => {
     });
 
     it('measures display cells, not code units', () => {
-        // A grain key is user data, so this is reachable with an ordinary
+        // An actor key is user data, so this is reachable with an ordinary
         // key: two wide glyphs (4 cells) plus `-42` (3) is 7, where
         // `.length` says 5 — a column sized by length under-pads by 2 and
         // everything to its right shifts left.
@@ -204,10 +204,10 @@ describe('percentileItems', () => {
 
 describe('shardCells', () => {
     const shards = {
-        p0: ['silo-a'],
+        p0: ['host-a'],
         p1: [],
-        p2: ['silo-a', 'silo-b'],
-        p10: ['silo-c']
+        p2: ['host-a', 'host-b'],
+        p10: ['host-c']
     };
 
     it('distinguishes the three states that mean different things', () => {
@@ -221,8 +221,8 @@ describe('shardCells', () => {
         expect(shardCells(shards).map((c) => c.label)).toEqual(['p0', 'p1', 'p2', 'p10']);
     });
 
-    it('names the claimants, so a divergence says WHICH silos', () => {
-        expect(shardCells(shards)[2]!.detail).toBe('silo-a silo-b');
+    it('names the claimants, so a divergence says WHICH hosts', () => {
+        expect(shardCells(shards)[2]!.detail).toBe('host-a host-b');
     });
 
     it('picks out the two findings worth acting on', () => {

@@ -9,8 +9,8 @@
  *   1  reachable but NOT ready — drain it, do not restart it
  *   2  could not reach it at all
  *
- * 1 and 2 are deliberately distinct. A silo that answers "not ready" is
- * alive and handing off its activations; a silo that answers nothing is a
+ * 1 and 2 are deliberately distinct. A host that answers "not ready" is
+ * alive and handing off its activations; a host that answers nothing is a
  * different incident with a different fix, and collapsing them is how a
  * rolling deploy turns into an outage.
  */
@@ -37,10 +37,10 @@ export async function runHealth(ctx: ActorsCommandContext): Promise<void> {
         const snapshot = await source.snapshot();
         const health = snapshot.health;
         if (!health) {
-            // The silo answered, so it is alive; it simply reports no
+            // The host answered, so it is alive; it simply reports no
             // readiness aggregate. Not ready is the safe reading, but say
             // WHY rather than implying a failing check.
-            ctx.logger.warn('reachable, but the silo reports no health status');
+            ctx.logger.warn('reachable, but the host reports no health status');
             process.exitCode = EXIT_NOT_READY;
             return;
         }
@@ -58,7 +58,7 @@ export async function runHealth(ctx: ActorsCommandContext): Promise<void> {
             if (health.live && !health.ready) {
                 // The distinction the whole command exists for.
                 out('');
-                out('  This silo is ALIVE but out of rotation — drain it, do not restart it.');
+                out('  This host is ALIVE but out of rotation — drain it, do not restart it.');
             }
         }
         process.exitCode = health.ready ? EXIT_READY : EXIT_NOT_READY;

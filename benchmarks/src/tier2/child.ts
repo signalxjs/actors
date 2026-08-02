@@ -1,8 +1,8 @@
 /**
- * One silo, in its own OS process, listening on a real loopback socket.
+ * One host, in its own OS process, listening on a real loopback socket.
  *
  * This is the half of the rig that the in-process harness cannot be: every
- * cross-silo call here crosses a real TCP connection through Node's HTTP
+ * cross-host call here crosses a real TCP connection through Node's HTTP
  * stack, which is exactly the behaviour #89 is about and which `pipeFetch`
  * makes invisible.
  *
@@ -18,10 +18,10 @@
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/host';
 import { createAppHandler } from '@sigx/actors/node';
 import { cluster, httpTransport, type ClusterPlugin } from '@sigx/actors/cluster';
-import type { SiloTransportFactory } from '@sigx/actors/cluster';
+import type { HostTransportFactory } from '@sigx/actors/cluster';
 import { tcpTransport } from '@sigx/actors-tcp';
 import { wsTransport, type MinimalWebSocket, type WebSocketServerLike } from '@sigx/actors-ws';
 import { WebSocketServer, WebSocket as NodeWebSocket } from 'ws';
@@ -31,15 +31,15 @@ import type {
     DirectoryEntry,
     MembershipView,
     PlacementPolicy,
-    SiloDescriptor,
-    SiloStatus
+    HostDescriptor,
+    HostStatus
 } from '@sigx/actors/cluster';
-import type { Silo } from '@sigx/actors';
+import type { Host } from '@sigx/actors';
 import { closedLoop } from '../loop.ts';
 import type { ChildStats, DispatcherKind, StoreOp, ToChild, ToParent } from './protocol.ts';
 
 /** The internal mount's default prefix — matched by hand on the hot path. */
-const INTERNAL_BASE = '/_sigx/silo';
+const INTERNAL_BASE = '/_sigx/host';
 
 /**
  * Build the outbound client for this run's dispatcher arm.
@@ -76,7 +76,7 @@ function fail(error: unknown): never {
     process.exit(1);
 }
 
-// A parent that dies must never leave a silo holding a port.
+// A parent that dies must never leave a host holding a port.
 process.on('disconnect', () => process.exit(0));
 process.on('uncaughtException', fail);
 process.on('unhandledRejection', fail);
@@ -99,20 +99,20 @@ function rpc(op: StoreOp, ...args: readonly unknown[]): Promise<unknown> {
 
 /** The view the parent last pushed. Served synchronously — `dispatcherFor`
  *  is on the hot path, which is why the provider interface demands it. */
-let cachedView: MembershipView = { version: 0, silos: [] };
+let cachedView: MembershipView = { version: 0, hosts: [] };
 const changeCbs = new Set<(view: MembershipView) => void>();
 const suspectCbs = new Set<() => void>();
 
 const membership: ClusterMembership = {
-    join: async (self: SiloDescriptor) => void (await rpc('membership.join', self)),
-    setStatus: async (status: SiloStatus) => void (await rpc('membership.setStatus', status)),
+    join: async (self: HostDescriptor) => void (await rpc('membership.join', self)),
+    setStatus: async (status: HostStatus) => void (await rpc('membership.setStatus', status)),
     leave: async () => void (await rpc('membership.leave')),
     view: () => cachedView,
     refresh: async () => {
         cachedView = (await rpc('membership.refresh')) as MembershipView;
         return cachedView;
     },
-    isAlive: async (siloId: string) => (await rpc('membership.isAlive', siloId)) as boolean,
+    isAlive: async (hostId: string) => (await rpc('membership.isAlive', hostId)) as boolean,
     onChange(cb) {
         changeCbs.add(cb);
         return () => changeCbs.delete(cb);
@@ -135,7 +135,7 @@ const directory: ActorDirectory = {
         rpc('directory.claim', actorId, mine) as Promise<DirectoryEntry>,
     release: async (actorId, expected) => void (await rpc('directory.release', actorId, expected)),
     evict: (actorId, expected) => rpc('directory.evict', actorId, expected) as Promise<boolean>,
-    evictSilo: (siloId) => rpc('directory.evictSilo', siloId) as Promise<number>
+    evictHost: (hostId) => rpc('directory.evictHost', hostId) as Promise<number>
 };
 
 // ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ const Bench = defineActor({
     })
 });
 
-/** Every silo activates its own new actors — pins locality deterministically
+/** Every host activates its own new actors — pins locality deterministically
  *  so a driver knows exactly which calls cross the wire. */
 const selfPolicy: PlacementPolicy = { name: 'tier2-self', choose: (_r, _v, self) => self };
 
@@ -164,7 +164,7 @@ const selfPolicy: PlacementPolicy = { name: 'tier2-self', choose: (_r, _v, self)
 // Socket accounting.
 //
 // Counting ACCEPTS is how outbound sockets get measured without hooking
-// undici: if this silo accepted K connections from a peer, that peer opened
+// undici: if this host accepted K connections from a peer, that peer opened
 // K to us. Summed cluster-wide it is exactly "sockets ever opened".
 
 let accepted = 0;
@@ -206,7 +206,7 @@ function tcpHandles(): number {
     }
 }
 
-function snapshot(siloId: string, liveSockets: Set<Socket>): ChildStats {
+function snapshot(hostId: string, liveSockets: Set<Socket>): ChildStats {
     // Add the in-flight sockets' current byte counts to the closed ones, so
     // a run that never closes a connection still reports its traffic.
     let liveIn = 0;
@@ -216,7 +216,7 @@ function snapshot(siloId: string, liveSockets: Set<Socket>): ChildStats {
         liveOut += socket.bytesWritten;
     }
     return {
-        siloId,
+        hostId,
         accepted,
         concurrentPeak,
         concurrentNow,
@@ -235,8 +235,8 @@ function snapshot(siloId: string, liveSockets: Set<Socket>): ChildStats {
 async function main(): Promise<void> {
     let app: ActorApp | null = null;
     let plugin: ClusterPlugin | null = null;
-    let silo: Silo | null = null;
-    let siloId = '';
+    let host: Host | null = null;
+    let hostId = '';
     const live = new Set<Socket>();
 
     // The handler is swapped in after `cluster()` knows the port. Until then
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
         (res as unknown as { statusCode: number; end(): void }).statusCode = 503;
         (res as unknown as { end(): void }).end();
     };
-    // A prefix test, not `matchesSiloRequest`: that takes a `Request`, and
+    // A prefix test, not `matchesHostRequest`: that takes a `Request`, and
     // constructing one per inbound call would put allocation on the very hot
     // path this rig exists to measure.
     const server = createServer((req, res) => {
@@ -272,14 +272,14 @@ async function main(): Promise<void> {
 
                 // `tcp` and `ws` REPLACE the transport; the others tune the
                 // fetch behind the default one.
-                let transport: SiloTransportFactory | undefined;
+                let transport: HostTransportFactory | undefined;
                 let attachWs: (() => Promise<unknown>) | undefined;
                 if (message.dispatcher === 'tcp') {
                     transport = tcpTransport({ host: '127.0.0.1', keepAliveMs: 0 });
                 } else if (message.dispatcher === 'ws') {
                     const handle = wsTransport({
                         keepAliveMs: 0,
-                        advertiseUrl: () => `ws://127.0.0.1:${port}/_sigx/silo-ws`,
+                        advertiseUrl: () => `ws://127.0.0.1:${port}/_sigx/host-ws`,
                         // Cast to the CONTRACT rather than `never`: `ws`'s
                         // addEventListener is contravariantly incompatible with
                         // the minimal shape, but naming the target type means a
@@ -328,11 +328,11 @@ async function main(): Promise<void> {
                 return;
             }
             case 'start': {
-                silo = await app!.start();
+                host = await app!.start();
                 // The plugin exposes its placement immediately, so identity
-                // is readable without reaching into the silo.
-                siloId = plugin!.placement.identity.siloId;
-                send({ t: 'started', siloId });
+                // is readable without reaching into the host.
+                hostId = plugin!.placement.identity.hostId;
+                send({ t: 'started', hostId });
                 return;
             }
             case 'view': {
@@ -357,7 +357,7 @@ async function main(): Promise<void> {
                 // pass does no directory work — the `ipc_ops_per_call` guard
                 // asserts that this actually worked.
                 for (const target of message.targets) {
-                    await silo!.dispatch(target, 'noop', [], {
+                    await host!.dispatch(target, 'noop', [], {
                         callChain: [],
                         callId: `warm.${target.key}`
                     });
@@ -374,7 +374,7 @@ async function main(): Promise<void> {
                     call: (i) => {
                         callsIssued++;
                         const target = targets[i % targets.length]!;
-                        return silo!.dispatch(target, 'noop', [], {
+                        return host!.dispatch(target, 'noop', [], {
                             callChain: [],
                             callId: `d.${i}`
                         });
@@ -390,7 +390,7 @@ async function main(): Promise<void> {
                 return;
             }
             case 'stats':
-                send({ t: 'stats', id: message.id, stats: snapshot(siloId, live) });
+                send({ t: 'stats', id: message.id, stats: snapshot(hostId, live) });
                 return;
             case 'resetStats': {
                 accepted = 0;

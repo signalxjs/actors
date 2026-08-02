@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Mailbox } from '@sigx/actors/silo';
+import { Mailbox } from '@sigx/actors/host';
 import { isActorError } from '@sigx/actors';
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -47,7 +47,7 @@ describe('Mailbox', () => {
         expect(box.depth).toBe(0);
     });
 
-    it('close() rejects new turns with the silo-shutdown brand, queued turns still run', async () => {
+    it('close() rejects new turns with the host-shutdown brand, queued turns still run', async () => {
         const box = new Mailbox();
         let release!: () => void;
         const gate = new Promise<void>((r) => (release = r));
@@ -55,7 +55,7 @@ describe('Mailbox', () => {
         box.close();
         const rejected = box.run(async () => 'nope');
         await expect(rejected).rejects.toSatisfy(
-            (e: unknown) => isActorError(e) && e.kind === 'silo-shutdown'
+            (e: unknown) => isActorError(e) && e.kind === 'host-shutdown'
         );
         release();
         await expect(queued).resolves.toBe('done');

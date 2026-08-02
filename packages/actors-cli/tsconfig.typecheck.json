@@ -28,7 +28,7 @@
         "rootDir": "../..",
         "paths": {
             "@sigx/actors": ["../actors/src/index.ts"],
-            "@sigx/actors/silo": ["../actors/src/silo/index.ts"],
+            "@sigx/actors/host": ["../actors/src/host/index.ts"],
             "@sigx/actors/cluster": ["../actors/src/cluster/index.ts"],
             // Self-referential, because the tests import the package's own
             // public subpath rather than reaching into `src/` — which is

@@ -1,6 +1,6 @@
 /**
  * Node mounting for a whole app: the public actor endpoint PLUS every
- * plugin-contributed route (the cluster's internal silo-to-silo mount being
+ * plugin-contributed route (the cluster's internal host-to-host mount being
  * the first of them).
  *
  * Core's connect adapter resolves a symbol to a wrapped function, which is
@@ -12,14 +12,14 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { NodeRequestHandler } from '@sigx/server/node';
-import type { ActorApp, ActorRoute } from '../silo/app';
-import type { Silo } from '../types';
+import type { ActorApp, ActorRoute } from '../host/app';
+import type { Host } from '../types';
 import { createActorHandler, type ActorHandlerOptions } from './handler';
 
 /** Core's serverFn default; kept in step so both mounts cap alike. */
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
-export interface AppHandlerOptions extends Omit<ActorHandlerOptions, 'silo'> {
+export interface AppHandlerOptions extends Omit<ActorHandlerOptions, 'host'> {
     /**
      * Origin used to build the WinterCG `Request` for plugin routes when the
      * client sends no `Host` header. Only the origin matters — routes match
@@ -43,8 +43,8 @@ class HttpError extends Error {
  * Mount an app on a Node server: plugin routes first (they own specific
  * prefixes), then the public actor endpoint, then `next()`.
  *
- * The silo is resolved per request, so the handler can be built before
- * `app.start()` — the ordinary case, since a cluster silo usually needs its
+ * The host is resolved per request, so the handler can be built before
+ * `app.start()` — the ordinary case, since a cluster host usually needs its
  * listener to exist before it can advertise an address.
  */
 export function createAppHandler(
@@ -54,16 +54,16 @@ export function createAppHandler(
     const { fallbackOrigin = 'http://localhost', ...actorOptions } = options;
     const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
 
-    // Keyed on the silo instance, never captured: a handler must not outlive
-    // the silo it resolves against.
-    let cached: { silo: Silo; handler: NodeRequestHandler } | null = null;
-    const actorMount = (silo: Silo): NodeRequestHandler => {
-        if (cached?.silo !== silo) {
+    // Keyed on the host instance, never captured: a handler must not outlive
+    // the host it resolves against.
+    let cached: { host: Host; handler: NodeRequestHandler } | null = null;
+    const actorMount = (host: Host): NodeRequestHandler => {
+        if (cached?.host !== host) {
             cached = {
-                silo,
+                host,
                 // The resolved cap, not `options.maxBodyBytes` — otherwise
                 // the two mounts silently disagree when it is omitted.
-                handler: createActorHandler({ ...actorOptions, maxBodyBytes, silo })
+                handler: createActorHandler({ ...actorOptions, maxBodyBytes, host })
             };
         }
         return cached.handler;
@@ -75,8 +75,8 @@ export function createAppHandler(
         // must end here rather than await a `next` that does not exist.
         const fallthrough = next ?? ((): void => void sendError(res, 404, 'not found'));
         try {
-            const silo = app.silo;
-            if (!silo) {
+            const host = app.host;
+            if (!host) {
                 // The mount exists but the app is not running (yet, or any
                 // more) — that is precisely 503, not a 500 or a fallthrough.
                 sendError(res, 503, 'the actor app is not running');
@@ -112,11 +112,11 @@ export function createAppHandler(
                 const probe = new Request(url, { method: req.method ?? 'GET', headers });
                 const route = routes.find((candidate) => candidate.match(probe));
                 if (route) {
-                    await serveRoute(route, req, res, { url, headers, silo, maxBodyBytes });
+                    await serveRoute(route, req, res, { url, headers, host, maxBodyBytes });
                     return;
                 }
             }
-            await actorMount(silo)(req, res, fallthrough);
+            await actorMount(host)(req, res, fallthrough);
         } catch (error) {
             // A throw here would otherwise surface as an unhandled rejection
             // in whatever host called us with `void handler(...)`.
@@ -129,7 +129,7 @@ export function createAppHandler(
 interface ServeContext {
     url: URL;
     headers: Headers;
-    silo: Silo;
+    host: Host;
     maxBodyBytes: number;
 }
 
@@ -150,7 +150,7 @@ async function serveRoute(
     let response: Response;
     try {
         const request = await toRequest(req, ctx, aborter.signal);
-        response = await route.handle(request, ctx.silo);
+        response = await route.handle(request, ctx.host);
     } catch (error) {
         // Preserve a status the failure already carries (413 for an
         // oversized body); only genuinely unknown failures become 500.

@@ -18,7 +18,7 @@
  * `fetch` POST body is not duplex outside Chromium, so a late subscription
  * cannot be pushed onto an open stream. The obvious alternative — a control
  * POST against a session — is rejected on purpose: on Workers, at an edge, or
- * in a multi-silo cluster that POST cannot be routed to the instance holding
+ * in a multi-host cluster that POST cannot be routed to the instance holding
  * the open stream, and any session-affinity scheme becomes a new sticky-
  * routing requirement on every deployment target. So a set change debounces,
  * aborts, and reopens with the new set in the body.
@@ -244,7 +244,7 @@ export function createLiveChannel(
      *  - **Every reopen re-seeds every subscription.** That is what makes a
      *    reconnect need no resume token, and it means one widget mounting
      *    would otherwise look like the whole page updating.
-     *  - **A mutating turn re-runs EVERY subscription on that grain.** Change
+     *  - **A mutating turn re-runs EVERY subscription on that actor.** Change
      *    a room's topic and its `recent(20)` watch re-runs too, returning an
      *    identical list. Passing that on is a re-render (and a page-cache
      *    write) with nothing behind it.
@@ -307,7 +307,7 @@ export function createLiveChannel(
                 else if (__DEV__) {
                     console.warn('[sigx actors] live connection dropped, retrying:', reported);
                 }
-                // Jitter so a silo restart does not bring every tab back at
+                // Jitter so a host restart does not bring every tab back at
                 // the same millisecond.
                 await sleep(delay + Math.random() * 250, controller.signal);
                 delay = Math.min(delay * 2, maxRetryMs);

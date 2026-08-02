@@ -2,7 +2,7 @@
  * `@sigx/actors/app` — the sigx app integration.
  *
  * The ONLY actors entry that imports `sigx`, which is why it is a separate
- * export: the isomorphic root, `./client`, `./silo`, `./server`, `./node`
+ * export: the isomorphic root, `./client`, `./host`, `./server`, `./node`
  * and `./cluster` stay free of the framework, so a headless Worker
  * deployment never drags the runtime in.
  *

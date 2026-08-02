@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { actor, defineActor } from '@sigx/actors';
-import { createSilo, type Silo } from '@sigx/actors/silo';
+import { createHost, type Host } from '@sigx/actors/host';
 import {
     ACTOR_ROUTE_HEADER,
     actorRouteToken,
@@ -59,8 +59,8 @@ interface Seen {
     token: string | null;
 }
 
-function wireSilo(route?: ActorRouteToken): { silo: Silo; seen: Seen[] } {
-    const silo = createSilo({ actors: [cart], defaults: quiet });
+function wireHost(route?: ActorRouteToken): { host: Host; seen: Seen[] } {
+    const host = createHost({ actors: [cart], defaults: quiet });
     const seen: Seen[] = [];
     configureActors({
         endpoint: ENDPOINT,
@@ -75,10 +75,10 @@ function wireSilo(route?: ActorRouteToken): { silo: Silo; seen: Seen[] } {
             // The mount still recognizes the request — the token changed the
             // URL but not what the endpoint matches on.
             expect(matchesActorRequest(request)).toBe(true);
-            return await handleActorRequest(request, { silo, origin: false });
+            return await handleActorRequest(request, { host, origin: false });
         }
     });
-    return { silo, seen };
+    return { host, seen };
 }
 
 afterEach(() => configureActors(null));
@@ -87,7 +87,7 @@ describe('the routing token on the wire', () => {
     it('a tokenized call reaches the same actor as a bare one', async () => {
         // THE load-bearing test. If the token ever stopped being a middle
         // segment, the server would read it as the symbol and 404.
-        const { seen } = wireSilo();
+        const { seen } = wireHost();
         await expect(actor(CartRef, 'r1').add('socks')).resolves.toBe(1);
         await expect(actor(CartRef, 'r1').total()).resolves.toBe(1);
 
@@ -96,11 +96,11 @@ describe('the routing token on the wire', () => {
     });
 
     it('is byte-identical in effect to the bare URL', async () => {
-        const tokenized = wireSilo();
+        const tokenized = wireHost();
         const withToken = await actor(CartRef, 'same').add('a');
         configureActors(null);
 
-        const bare = wireSilo('none');
+        const bare = wireHost('none');
         const withoutToken = await actor(CartRef, 'same').add('a');
 
         expect(withToken).toBe(withoutToken);
@@ -109,7 +109,7 @@ describe('the routing token on the wire', () => {
     });
 
     it('sends the SAME token in both carriers', async () => {
-        const { seen } = wireSilo();
+        const { seen } = wireHost();
         await actor(CartRef, 'r2').add('a');
         // A path segment a mesh cannot silently strip, plus a header for
         // Envoy — which has no path-substring hash policy at all.
@@ -118,17 +118,17 @@ describe('the routing token on the wire', () => {
         expect(seen[0].token).toBe(seen[0].header);
     });
 
-    it('gives one grain ONE token across every method and stream', async () => {
+    it('gives one actor ONE token across every method and stream', async () => {
         // The locality property itself: an LB hashing this sends every call
-        // for `r3` to one silo, whatever method it names.
-        const { seen } = wireSilo();
+        // for `r3` to one host, whatever method it names.
+        const { seen } = wireHost();
         await actor(CartRef, 'r3').add('a');
         await actor(CartRef, 'r3').total();
         for await (const _ of actor(CartRef, 'r3').countTo(2)) void _;
 
         expect(seen).toHaveLength(3);
         expect(new Set(seen.map((s) => s.token)).size).toBe(1);
-        // …and a different grain gets a different one.
+        // …and a different actor gets a different one.
         await actor(CartRef, 'r4').total();
         expect(seen[3].token).not.toBe(seen[0].token);
     });
@@ -136,20 +136,20 @@ describe('the routing token on the wire', () => {
     it('dispatches a garbage token exactly as if it were valid', async () => {
         // Pins "the server never validates". A stale or hostile token is a
         // wrong ROUTE, never a wrong ANSWER.
-        const silo = createSilo({ actors: [cart], defaults: quiet });
+        const host = createHost({ actors: [cart], defaults: quiet });
         const request = new Request(`${ENDPOINT}/r/zzzzzzz/Cart%23add`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: ['r5', 'sock'] })
         });
-        const response = await handleActorRequest(request, { silo, origin: false });
+        const response = await handleActorRequest(request, { host, origin: false });
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toEqual({ data: 1 });
-        await silo.stop();
+        await host.stop();
     });
 
     it('routes a stream, and the NDJSON body is unaffected', async () => {
-        const { seen } = wireSilo();
+        const { seen } = wireHost();
         const got: number[] = [];
         for await (const value of actor(CartRef, 'r6').countTo(3)) got.push(value);
         expect(got).toEqual([1, 2, 3]);
@@ -159,7 +159,7 @@ describe('the routing token on the wire', () => {
     });
 
     it("'key' mode routes on a key containing a slash", async () => {
-        const { seen } = wireSilo('key');
+        const { seen } = wireHost('key');
         await expect(actor(CartRef, 'tenant/a').add('x')).resolves.toBe(1);
         expect(seen[0].url).toBe(`${ENDPOINT}/r/tenant%2Fa/Cart%23add`);
         // The server decodes it back to the real key, not the escaped form.
@@ -167,7 +167,7 @@ describe('the routing token on the wire', () => {
     });
 
     it("'key' mode routes on a non-ASCII key", async () => {
-        const { seen } = wireSilo('key');
+        const { seen } = wireHost('key');
         await expect(actor(CartRef, 'café').add('x')).resolves.toBe(1);
         expect(seen[0].url).toBe(`${ENDPOINT}/r/caf%C3%A9/Cart%23add`);
         expect(seen[0].token).toBe('café');
@@ -177,11 +177,11 @@ describe('the routing token on the wire', () => {
         // Regression: the header used to carry the RAW token while the path
         // carried the encoded one. An LB hashes the bytes it sees, so
         // `tenant/a` in the header beside `tenant%2Fa` in the path hashes to
-        // two different silos — the carriers disagreed exactly when the key
+        // two different hosts — the carriers disagreed exactly when the key
         // was interesting, which is the one thing they must never do.
         for (const key of ['tenant/a', 'café', 'a b', 'p%2Fq', 'x?y&z']) {
             configureActors(null);
-            const { seen } = wireSilo('key');
+            const { seen } = wireHost('key');
             await expect(actor(CartRef, key).add('x')).resolves.toBe(1);
 
             const segment = seen[0].url.split('/').at(-2);
@@ -209,23 +209,23 @@ describe('the routing token on the wire', () => {
     });
 
     it('a custom token function routes, and its result is escaped', async () => {
-        const { seen } = wireSilo((ref) => `z/${ref.key}`);
+        const { seen } = wireHost((ref) => `z/${ref.key}`);
         await expect(actor(CartRef, 'r7').add('x')).resolves.toBe(1);
         expect(seen[0].url).toBe(`${ENDPOINT}/r/z%2Fr7/Cart%23add`);
     });
 
     it('still reports 404 skew against the SYMBOL, not the token', async () => {
-        const silo = createSilo({ actors: [cart], defaults: quiet });
+        const host = createHost({ actors: [cart], defaults: quiet });
         const request = new Request(`${ENDPOINT}/r/abc123/Ghost%23add`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: ['g1'] })
         });
-        const response = await handleActorRequest(request, { silo, origin: false });
+        const response = await handleActorRequest(request, { host, origin: false });
         expect(response.status).toBe(404);
         const body = (await response.json()) as { error: { message: string } };
         expect(body.error.message).toContain('Ghost#add');
         expect(body.error.message).not.toContain('abc123');
-        await silo.stop();
+        await host.stop();
     });
 });

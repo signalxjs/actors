@@ -1,6 +1,6 @@
 /**
  * Wire plumbing shared by the public client entry and (soon) the cluster's
- * silo-to-silo transport: codec-seam accessors, the pollution-safe JSON
+ * host-to-host transport: codec-seam accessors, the pollution-safe JSON
  * reviver, branded wire-error re-creation, and the NDJSON stream reader.
  * Internal — exported from no entry point; the wire contract itself stays
  * pinned by the client/server integration tests.

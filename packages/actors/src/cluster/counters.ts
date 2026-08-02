@@ -3,9 +3,9 @@
  * story `metrics()` started. Same posture: counters you READ, no exporter,
  * no push pipeline, no dependency.
  *
- * ONE rule makes these safe to sum across silos: every counter is
- * incremented on exactly the one silo where its event happened, and the two
- * sides of a cross-silo event get DIFFERENT names. `remoteDispatches` (the
+ * ONE rule makes these safe to sum across hosts: every counter is
+ * incremented on exactly the one host where its event happened, and the two
+ * sides of a cross-host event get DIFFERENT names. `remoteDispatches` (the
  * caller sent a hop) and `inboundDispatches` (the owner served one) are
  * reported side by side and never added together — their gap is in-flight,
  * refused and retried attempts, which is itself the signal.
@@ -16,12 +16,12 @@
  * claimed actor) is not instrumented at all and stays byte for byte what it
  * was.
  */
-import type { SiloStatus } from './types';
+import type { HostStatus } from './types';
 
-/** The additive fields — every one a monotonic count of events on THIS silo. */
+/** The additive fields — every one a monotonic count of events on THIS host. */
 export interface ClusterCounterTotals {
-    // --- routing, origin side (this silo initiated the call) ---------------
-    /** Routed dispatches that resolved to this silo. */
+    // --- routing, origin side (this host initiated the call) ---------------
+    /** Routed dispatches that resolved to this host. */
     routedLocal: number;
     /** Hops sent OUT to a peer, per ATTEMPT — so retries are included. */
     remoteDispatches: number;
@@ -38,11 +38,11 @@ export interface ClusterCounterTotals {
     /** Calls that exhausted every attempt and threw `ActorActivationError`. */
     routingFailures: number;
 
-    // --- routing, inbound side (this silo served a peer) ------------------
+    // --- routing, inbound side (this host served a peer) ------------------
     /** Calls received from a peer on the internal mount. */
     inboundDispatches: number;
     inboundStreams: number;
-    /** Watches a peer opened on an actor THIS silo owns. */
+    /** Watches a peer opened on an actor THIS host owns. */
     inboundWatches: number;
 
     // --- route cache ------------------------------------------------------
@@ -62,12 +62,12 @@ export interface ClusterCounterTotals {
     // --- directory --------------------------------------------------------
     directoryLookups: number;
     directoryClaims: number;
-    /** Claims LOST to a peer — the wrong-host this silo threw at a caller. */
+    /** Claims LOST to a peer — the wrong-host this host threw at a caller. */
     claimConflicts: number;
     directoryReleases: number;
     directoryEvictions: number;
-    /** Departed peers whose entries this silo swept. */
-    siloSweeps: number;
+    /** Departed peers whose entries this host swept. */
+    hostSweeps: number;
     /** Entries removed by those sweeps. */
     sweptEntries: number;
 
@@ -75,7 +75,7 @@ export interface ClusterCounterTotals {
     /** 421s received: we called the wrong owner and re-routed. */
     wrongHostRedirects: number;
     unreachableRetries: number;
-    /** Peer was draining (503 silo-shutdown) — a rolling deploy in progress. */
+    /** Peer was draining (503 host-shutdown) — a rolling deploy in progress. */
     drainingRetries: number;
     /** Requests the internal mount refused as unauthenticated (403). */
     authFailures: number;
@@ -92,22 +92,22 @@ export interface ClusterCounterTotals {
     selfFences: number;
 
     // --- gauges that still sum meaningfully -------------------------------
-    /** Actors currently claimed by (and therefore active on) this silo. */
+    /** Actors currently claimed by (and therefore active on) this host. */
     claimed: number;
     /** Entries currently in the route cache (bounded at 10k). */
     routeCacheSize: number;
 }
 
-/** One silo's counters: the additive fields plus its own point-in-time state. */
+/** One host's counters: the additive fields plus its own point-in-time state. */
 export interface ClusterCounters extends ClusterCounterTotals {
-    /** `membership.view().version` AS THIS SILO SEES IT. A spread across
-     *  silos means the view has not converged, which explains any
+    /** `membership.view().version` AS THIS HOST SEES IT. A spread across
+     *  hosts means the view has not converged, which explains any
      *  disagreement in the rest of the report. */
     membershipVersion: number;
     /** Wire status, plus `'fenced'`: membership lost and self-fenced.
      *  `#fence()` deliberately leaves the published status alone, so this is
      *  the only place the distinction surfaces. */
-    status: SiloStatus | 'fenced';
+    status: HostStatus | 'fenced';
 }
 
 export function createCounters(): ClusterCounterTotals {
@@ -130,7 +130,7 @@ export function createCounters(): ClusterCounterTotals {
         claimConflicts: 0,
         directoryReleases: 0,
         directoryEvictions: 0,
-        siloSweeps: 0,
+        hostSweeps: 0,
         sweptEntries: 0,
         wrongHostRedirects: 0,
         unreachableRetries: 0,
@@ -146,7 +146,7 @@ export function createCounters(): ClusterCounterTotals {
 
 /**
  * Sum two counter sets field-wise. Only the additive fields — `status` and
- * `membershipVersion` are per-silo facts that a total would destroy, which
+ * `membershipVersion` are per-host facts that a total would destroy, which
  * is why they are not on `ClusterCounterTotals`.
  */
 export function addCounters(

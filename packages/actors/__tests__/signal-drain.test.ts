@@ -18,7 +18,7 @@ import { createServer, Agent, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Socket } from 'node:net';
 import { attachSignalHandlers } from '@sigx/actors/node';
-import { createSilo, type Silo } from '@sigx/actors/silo';
+import { createHost, type Host } from '@sigx/actors/host';
 import { defineActor } from '@sigx/actors';
 
 const Noop = defineActor({
@@ -34,7 +34,7 @@ const Noop = defineActor({
 
 interface Rig {
     server: Server;
-    silo: Silo;
+    host: Host;
     agent: Agent;
     port: number;
     /** Every socket the server accepted. */
@@ -50,12 +50,12 @@ afterEach(async () => {
         rig.agent.destroy();
         rig.server.closeAllConnections?.();
         await new Promise<void>((resolve) => rig.server.close(() => resolve()));
-        await rig.silo.stop({ timeoutMs: 500 }).catch(() => {});
+        await rig.host.stop({ timeoutMs: 500 }).catch(() => {});
     }
 });
 
 async function rig(options?: { server?: boolean }): Promise<Rig> {
-    const silo = createSilo({ actors: [Noop] });
+    const host = createHost({ actors: [Noop] });
     const sockets: Socket[] = [];
     const server = createServer((_req, res) => {
         res.writeHead(200, { 'content-type': 'text/plain' });
@@ -65,12 +65,12 @@ async function rig(options?: { server?: boolean }): Promise<Rig> {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as AddressInfo).port;
     const agent = new Agent({ keepAlive: true, maxSockets: 4 });
-    const detach = attachSignalHandlers(silo, {
+    const detach = attachSignalHandlers(host, {
         exit: false,
         timeoutMs: 500,
         ...(options?.server === false ? {} : { server })
     });
-    const created = { server, silo, agent, port, sockets, detach };
+    const created = { server, host, agent, port, sockets, detach };
     rigs.push(created);
     return created;
 }
@@ -131,13 +131,13 @@ describe('attachSignalHandlers({ server })', () => {
         fresh.destroy();
     });
 
-    it('still stops the silo', async () => {
+    it('still stops the host', async () => {
         const r = await rig();
         process.emit('SIGTERM');
-        await until(() => r.silo.stats().activations === 0, 'the silo to drain');
+        await until(() => r.host.stats().activations === 0, 'the host to drain');
         // A second stop is a no-op, which is what "already stopped" looks
         // like from outside.
-        await expect(r.silo.stop({ timeoutMs: 200 })).resolves.toBeUndefined();
+        await expect(r.host.stop({ timeoutMs: 200 })).resolves.toBeUndefined();
     });
 
     it('is idempotent across repeated signals', async () => {
@@ -157,7 +157,7 @@ describe('without a server', () => {
         await expect(get(r)).resolves.toBe(200);
 
         process.emit('SIGTERM');
-        await until(() => r.silo.stats().activations === 0, 'the silo to drain');
+        await until(() => r.host.stats().activations === 0, 'the host to drain');
 
         // Unchanged: the listener is untouched and the socket survives, which
         // is precisely the old behaviour this option exists to opt out of.
@@ -168,23 +168,23 @@ describe('without a server', () => {
     it('tolerates a server without the Node >= 18.2 connection methods', async () => {
         // An older Node, or a non-Node server object. Shutdown must not
         // throw at the one moment nothing is left to catch it.
-        const silo = createSilo({ actors: [Noop] });
+        const host = createHost({ actors: [Noop] });
         let closed = false;
         const minimal = {
             close: () => {
                 closed = true;
             }
         };
-        const detach = attachSignalHandlers(silo, {
+        const detach = attachSignalHandlers(host, {
             exit: false,
             timeoutMs: 500,
             server: minimal
         });
         process.emit('SIGTERM');
         await until(() => closed, 'close() to be called');
-        await until(() => silo.stats().activations === 0, 'the silo to drain');
+        await until(() => host.stats().activations === 0, 'the host to drain');
         detach();
-        await silo.stop({ timeoutMs: 200 }).catch(() => {});
+        await host.stop({ timeoutMs: 200 }).catch(() => {});
     });
 });
 
@@ -194,13 +194,13 @@ describe('a failed drain', () => {
         // on a terminated pod the exit code is often the only diagnostic
         // that survives. `exit: false` keeps the process, so this asserts
         // the reporting half.
-        const silo = createSilo({ actors: [Noop] });
+        const host = createHost({ actors: [Noop] });
         const boom = new Error('storage flush failed');
-        silo.stop = () => Promise.reject(boom);
+        host.stop = () => Promise.reject(boom);
 
         const seen: unknown[] = [];
         let closedAll = false;
-        const detach = attachSignalHandlers(silo, {
+        const detach = attachSignalHandlers(host, {
             exit: false,
             server: { close: () => {}, closeAllConnections: () => void (closedAll = true) },
             onError: (error) => seen.push(error)
@@ -217,10 +217,10 @@ describe('a failed drain', () => {
     });
 
     it('a throwing onError cannot break the shutdown', async () => {
-        const silo = createSilo({ actors: [Noop] });
-        silo.stop = () => Promise.reject(new Error('nope'));
+        const host = createHost({ actors: [Noop] });
+        host.stop = () => Promise.reject(new Error('nope'));
         let closedAll = false;
-        const detach = attachSignalHandlers(silo, {
+        const detach = attachSignalHandlers(host, {
             exit: false,
             server: { close: () => {}, closeAllConnections: () => void (closedAll = true) },
             onError: () => {
@@ -249,8 +249,8 @@ describe('the listener stays open until the drain finishes', () => {
 
         let release: () => void = () => {};
         const slow = new Promise<void>((resolve) => (release = resolve));
-        const realStop = r.silo.stop.bind(r.silo);
-        r.silo.stop = async (opts) => {
+        const realStop = r.host.stop.bind(r.host);
+        r.host.stop = async (opts) => {
             await slow;
             return realStop(opts);
         };
@@ -270,13 +270,13 @@ describe('the listener stays open until the drain finishes', () => {
     it('calls onStopBegin before the drain, so responses can say connection: close', async () => {
         const r = await rig();
         const order: string[] = [];
-        const realStop = r.silo.stop.bind(r.silo);
-        r.silo.stop = async (opts) => {
+        const realStop = r.host.stop.bind(r.host);
+        r.host.stop = async (opts) => {
             order.push('stop');
             return realStop(opts);
         };
         r.detach();
-        const detach = attachSignalHandlers(r.silo, {
+        const detach = attachSignalHandlers(r.host, {
             exit: false,
             timeoutMs: 500,
             server: r.server,
@@ -292,7 +292,7 @@ describe('the listener stays open until the drain finishes', () => {
     it('a throwing onStopBegin cannot abort the shutdown', async () => {
         const r = await rig();
         r.detach();
-        const detach = attachSignalHandlers(r.silo, {
+        const detach = attachSignalHandlers(r.host, {
             exit: false,
             timeoutMs: 500,
             server: r.server,
@@ -313,7 +313,7 @@ describe('a throwing server teardown', () => {
         // .finally() as an unhandled rejection and SKIPS process.exit —
         // leaving a process that was told to terminate running forever.
         // So this asserts the exit itself, not merely that we got here.
-        const silo = createSilo({ actors: [Noop] });
+        const host = createHost({ actors: [Noop] });
         const exits: (number | undefined)[] = [];
         const spy = vi
             .spyOn(process, 'exit')
@@ -322,7 +322,7 @@ describe('a throwing server teardown', () => {
                 return undefined as never;
             }) as never);
 
-        const detach = attachSignalHandlers(silo, {
+        const detach = attachSignalHandlers(host, {
             timeoutMs: 500,
             server: {
                 close: () => {
@@ -340,6 +340,6 @@ describe('a throwing server teardown', () => {
         expect(exits).toEqual([0]); // the DRAIN succeeded; only teardown threw
         spy.mockRestore();
         detach();
-        await silo.stop({ timeoutMs: 200 }).catch(() => {});
+        await host.stop({ timeoutMs: 200 }).catch(() => {});
     });
 });

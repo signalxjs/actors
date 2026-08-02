@@ -1,20 +1,20 @@
 /**
- * The routing token — grain identity where an intermediary can see it.
+ * The routing token — actor identity where an intermediary can see it.
  *
  * The wire puts the actor KEY in the JSON body:
  *
  *     POST /_sigx/actor/Cart%23addItem     {"args": ["cart-123", …]}
  *
  * No load balancer parses a body to route, so the edge cannot tell which
- * grain a request is for, and locality is a coin flip that degrades as 1/N.
- * This module exposes a stable per-grain token in the request line so an
+ * actor a request is for, and locality is a coin flip that degrades as 1/N.
+ * This module exposes a stable per-actor token in the request line so an
  * off-the-shelf LB can hash it:
  *
  *     POST /_sigx/actor/r/{token}/Cart%23addItem
  *     x-sigx-actor-route: {token}
  *
  * Composed with `preferLocalPolicy()`, the LB BECOMES the placement: the
- * first request for a key lands on silo X and activates there, and every
+ * first request for a key lands on host X and activates there, and every
  * later request for that key hashes to X again. The LB and the cluster then
  * need to agree on nothing but stability — not on an algorithm, not on a
  * membership view.
@@ -38,7 +38,7 @@
  * deliberately IGNORES the token entirely (see `actorRouteToken`).
  *
  * Routing is an optimization and never load-bearing for correctness. A
- * misrouted request still produces the right answer — the receiving silo
+ * misrouted request still produces the right answer — the receiving host
  * forwards, and the directory remains the sole arbiter of single-activation.
  * Everything here is a hint that is allowed to be stale, wrong, or absent.
  */
@@ -69,7 +69,7 @@ export const ACTOR_FOLLOW_HEADER = 'x-sigx-actor-follow';
  * The server caps on this too, not just the client. A redirect loop has to
  * be impossible rather than merely unlikely, and a client that ignores its
  * own cap — or is not ours — must not be able to bounce forever between two
- * silos that disagree about ownership.
+ * hosts that disagree about ownership.
  */
 export const ACTOR_HOPS_HEADER = 'x-sigx-actor-hops';
 
@@ -80,13 +80,13 @@ export const ACTOR_HOPS_HEADER = 'x-sigx-actor-hops';
 export const ACTOR_OWNER_HEADER = 'x-sigx-actor-owner';
 
 /**
- * How the client derives a grain's routing token.
+ * How the client derives an actor's routing token.
  *
  * - `'hash'` (default) — an opaque hash of the actor id.
  * - `'key'` — the raw actor key, for human-readable routing and debugging.
  * - `'none'` — emit no token; the URL stays as it was.
  * - a function — bring your own scheme (tenant affinity, an existing
- *   sharding key). Returning `null` or `''` emits no token for that grain.
+ *   sharding key). Returning `null` or `''` emits no token for that actor.
  *
  * `'hash'` is the default because actor keys are frequently user ids or
  * emails, and a raw key in the path lands in every access log, proxy trace
@@ -108,12 +108,12 @@ export type ActorRouteToken =
  * The default token: an opaque, fixed-width hash of the actor id.
  *
  * 32 bits is deliberate. Collisions do not hurt correctness — two colliding
- * grains merely co-locate — and the only thing more bits could buy is
+ * actors merely co-locate — and the only thing more bits could buy is
  * pre-image resistance, which an unkeyed hash does not provide at any width.
  *
  * Hashes `actorId()` itself rather than re-deriving the NUL-separated form,
  * so the two cannot drift even in principle. Changing this format costs a
- * one-deploy locality dip as tokens re-hash and grains re-home, and nothing
+ * one-deploy locality dip as tokens re-hash and actors re-home, and nothing
  * else — unlike `reminderShardOf`, which shares the hash but not the pin.
  */
 export function hashRouteToken(type: string, key: string): string {
@@ -121,10 +121,10 @@ export function hashRouteToken(type: string, key: string): string {
 }
 
 /**
- * The token for one grain under `route`, or `null` for "emit none".
+ * The token for one actor under `route`, or `null` for "emit none".
  *
  * `$`-prefixed types never get a token. `$live#subscribe` is one held-open
- * response fanning out to MANY grains, so there is no single token and no
+ * response fanning out to MANY actors, so there is no single token and no
  * single owner for it; sharding that connection would defeat the reason it
  * exists. `defineActor` refuses `$`-prefixed types, so this can never
  * collide with a real actor and it covers every future reserved mount.
@@ -154,7 +154,7 @@ export function routeTokenFor(
  *
  * Both carriers MUST use this one function. An LB hashes the bytes it sees,
  * so a path carrying `tenant%2Fa` beside a header carrying `tenant/a` would
- * hash to two different silos — the carriers would disagree exactly when the
+ * hash to two different hosts — the carriers would disagree exactly when the
  * key is interesting.
  */
 export function encodeRouteToken(token: string): string {

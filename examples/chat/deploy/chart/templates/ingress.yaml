@@ -39,20 +39,20 @@ spec:
         paths:
           # SSR documents, assets and serverFns: plain round-robin. These
           # carry NO routing token, so hashing them would hash the empty
-          # string and pin every page render onto a single silo.
+          # string and pin every page render onto a single host.
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ include "chat.fullname" . }}-silo
+                name: {{ include "chat.fullname" . }}-host
                 port:
                   name: public
 {{- if $locality }}
           # `$live` (and any other `$`-reserved symbol) is the ONE actor path
           # that must stay off the hash: one held-open response fans out to
-          # many grains, so the runtime deliberately sends no token — and an
+          # many actors, so the runtime deliberately sends no token — and an
           # empty hash key would pin every live subscription in the
-          # deployment onto a single silo. A longer prefix wins in nginx, so
+          # deployment onto a single host. A longer prefix wins in nginx, so
           # this carves it back out of the hashed Ingress below. (Chat does
           # not open a $live channel today; this keeps the chart correct for
           # anyone who copies it and does.)
@@ -64,13 +64,13 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: {{ include "chat.fullname" . }}-silo
+                name: {{ include "chat.fullname" . }}-host
                 port:
                   name: public
 {{- end }}
 {{- if $locality }}
 ---
-# The actor endpoint ONLY: hash each call to the silo that owns the grain.
+# The actor endpoint ONLY: hash each call to the host that owns the actor.
 # Every actor request carries the routing token in `x-sigx-actor-route`
 # (and in the path), so a consistent hash on it PLUS `preferLocalPolicy()`
 # in the app makes the edge and the cluster agree on one owner per key —
@@ -96,7 +96,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "chat.fullname" . }}-silo
+                name: {{ include "chat.fullname" . }}-host
                 port:
                   name: public
 {{- end }}

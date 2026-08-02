@@ -1,18 +1,18 @@
 /**
- * The silo entry — one pod, one silo. Everything deployment-specific
+ * The host entry — one pod, one host. Everything deployment-specific
  * arrives as environment (nothing hardcoded, the chart owns the values):
  *
  *   PORT                listen port                        default 7311
  *   POD_IP              this pod's IP (downward API)       default 127.0.0.1
  *   REDIS_URL           redis://host:6379                  REQUIRED
- *   CLUSTER_SECRET      silo-to-silo HMAC secret           REQUIRED
+ *   CLUSTER_SECRET      host-to-host HMAC secret           REQUIRED
  *   OPS_SECRET          /_sigx/ops bearer token            REQUIRED
  *   SIGX_NAMESPACE      Redis key namespace                default sigx
  *   FETCH_CONNECTIONS   undici pool size per peer origin   default 64
  *   MEMBERSHIP          redis | k8s                        default redis
  *   POD_NAMESPACE       k8s namespace (MEMBERSHIP=k8s)     downward API
  *
- * MEMBERSHIP=k8s swaps silo liveness onto coordination.k8s.io Leases
+ * MEMBERSHIP=k8s swaps host liveness onto coordination.k8s.io Leases
  * (@sigx/actors-k8s) while the actor directory stays in Redis — the two
  * seams are independent by design, and this toggle is how the same chart
  * validates both providers.
@@ -24,7 +24,7 @@
  */
 import { createServer } from 'node:http';
 import { Agent, fetch as undiciFetch } from 'undici';
-import { health, metrics, ops } from '@sigx/actors/silo';
+import { health, metrics, ops } from '@sigx/actors/host';
 import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
 import { cluster, clusterStats } from '@sigx/actors/cluster';
 import { redisCluster, redisDirectory } from '@sigx/actors-redis';
@@ -52,7 +52,7 @@ const OPS_SECRET = need('OPS_SECRET');
 const SIGX_NAMESPACE = process.env.SIGX_NAMESPACE ?? 'sigx';
 const MEMBERSHIP = process.env.MEMBERSHIP ?? 'redis';
 
-// One bounded pool for silo-to-silo calls. Node's global fetch is
+// One bounded pool for host-to-host calls. Node's global fetch is
 // unbounded (~2 sockets per in-flight request per peer); this caps it at
 // the per-peer concurrency we actually want.
 const agent = new Agent({ connections: Number(process.env.FETCH_CONNECTIONS ?? 64) });
@@ -89,7 +89,7 @@ const composed = app
             secret: OPS_SECRET,
             // The second argument is what `?detail=1` on the ops route asked
                 // for. Spreading it is what lets a dashboard drill into ONE
-                // silo without every poll paying for a fleet-wide grain walk.
+                // host without every poll paying for a fleet-wide actor walk.
                 cluster: (signal, query) => clusterStats(plugin.placement, { signal, ...query })
         })
     );
@@ -113,7 +113,7 @@ const server = createServer((req, res) => {
 // Listen BEFORE starting — app.start() joins membership, and from that
 // moment peers may place actors here and call them.
 await new Promise((resolve) => server.listen(PORT, resolve));
-const silo = await composed.start();
+const host = await composed.start();
 
 // Shutdown drains the HTTP edge, not just the actors (#142/#150/#157). The
 // preStop sleep + ready-503 dance only steers NEW connections away —
@@ -123,8 +123,8 @@ const silo = await composed.start();
 // `attachSignalHandlers` owns the sequence now, so this deployment and the
 // documented recipe cannot drift apart: onStopBegin (every response gets
 // `connection: close`, so pools retire sockets one response at a time) →
-// silo.stop() → close() + closeAllConnections() at the very end.
-attachSignalHandlers(silo, {
+// host.stop() → close() + closeAllConnections() at the very end.
+attachSignalHandlers(host, {
     server,
     timeoutMs: 30_000,
     onStopBegin: () => {
@@ -136,7 +136,7 @@ attachSignalHandlers(silo, {
 });
 
 console.log(
-    `[aks-cluster] silo ${plugin.placement.identity.siloId} on :${PORT} ` +
+    `[aks-cluster] host ${plugin.placement.identity.hostId} on :${PORT} ` +
         `advertise=http://${POD_IP}:${PORT} membership=${MEMBERSHIP} ` +
         `NODE_ENV=${process.env.NODE_ENV ?? '(unset)'}`
 );

@@ -2,23 +2,23 @@
  * The `ClusterMembership` contract on the fake API server: Lease shape,
  * view convergence between instances, the renewal/version separation,
  * liveness expiry with no event, drain visibility, self-fencing, token
- * rotation, the relist safety net — and a 2-silo smoke proving the
+ * rotation, the relist safety net — and a 2-host smoke proving the
  * membership/directory seam split end-to-end (k8s membership, in-memory
  * directory) with real forwarded actor calls.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { defineActor, type Silo } from '@sigx/actors';
-import { createSilo, memoryStorage } from '@sigx/actors/silo';
+import { defineActor, type Host } from '@sigx/actors';
+import { createHost, memoryStorage } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import {
     clusterPlacement,
-    handleSiloRequest,
-    matchesSiloRequest,
+    handleHostRequest,
+    matchesHostRequest,
     memoryClusterHub,
     type ClusterMembership,
     type ClusterPlacement,
-    type SiloDescriptor,
-    type SiloStatus
+    type HostDescriptor,
+    type HostStatus
 } from '@sigx/actors/cluster';
 import { k8sMembership, kubeClient } from '@sigx/actors-k8s';
 import { buildLease, DESCRIPTOR_ANNOTATION, microTime } from '../src/lease';
@@ -26,8 +26,8 @@ import { fakeKube, type FakeKube } from './fake-kube';
 
 const LABELS = { 'sigx.dev/cluster': 'default' };
 
-function descriptor(siloId: string, status: SiloStatus = 'active'): SiloDescriptor {
-    return { siloId, epoch: 1, address: `http://${siloId}:7311`, status };
+function descriptor(hostId: string, status: HostStatus = 'active'): HostDescriptor {
+    return { hostId, epoch: 1, address: `http://${hostId}:7311`, status };
 }
 
 async function until(cond: () => boolean, ms = 2000): Promise<void> {
@@ -77,10 +77,10 @@ describe('k8s membership provider', () => {
         expect(lease.metadata.labels).toEqual(LABELS);
         expect(lease.spec.holderIdentity).toBe('s.a');
         expect(lease.spec.leaseDurationSeconds).toBe(1);
-        const stored = JSON.parse(lease.metadata.annotations![DESCRIPTOR_ANNOTATION]!) as SiloDescriptor;
+        const stored = JSON.parse(lease.metadata.annotations![DESCRIPTOR_ANNOTATION]!) as HostDescriptor;
         expect(stored).toEqual(descriptor('s.a'));
 
-        expect(membership.view().silos.map((silo) => silo.siloId)).toEqual(['s.a']);
+        expect(membership.view().hosts.map((host) => host.hostId)).toEqual(['s.a']);
         expect(membership.view().version).toBeGreaterThan(0);
     });
 
@@ -94,11 +94,11 @@ describe('k8s membership provider', () => {
         const b = membershipFor(fake);
         await b.join(descriptor('s.b'));
 
-        await until(() => a.view().silos.length === 2);
-        await until(() => b.view().silos.length === 2);
+        await until(() => a.view().hosts.length === 2);
+        await until(() => b.view().hosts.length === 2);
         expect(seen.length).toBeGreaterThan(0);
         expect(seen.at(-1)).toBe(a.view().version);
-        expect(b.view().silos.map((silo) => silo.siloId).sort()).toEqual(['s.a', 's.b']);
+        expect(b.view().hosts.map((host) => host.hostId).sort()).toEqual(['s.a', 's.b']);
     });
 
     it('renewals never bump the version or fire onChange', async () => {
@@ -107,12 +107,12 @@ describe('k8s membership provider', () => {
         const b = membershipFor(fake);
         await a.join(descriptor('s.a'));
         await b.join(descriptor('s.b'));
-        await until(() => a.view().silos.length === 2);
+        await until(() => a.view().hosts.length === 2);
 
         const version = a.view().version;
         let changes = 0;
         a.onChange(() => changes++);
-        await sleep(300); // several heartbeats from both silos
+        await sleep(300); // several heartbeats from both hosts
         expect(a.view().version).toBe(version);
         expect(changes).toBe(0);
     });
@@ -133,10 +133,10 @@ describe('k8s membership provider', () => {
                 nowMs: Date.now()
             })
         );
-        await until(() => a.view().silos.length === 2);
+        await until(() => a.view().hosts.length === 2);
 
-        await until(() => a.view().silos.length === 1, 3000);
-        expect(a.view().silos[0]!.siloId).toBe('s.a');
+        await until(() => a.view().hosts.length === 1, 3000);
+        expect(a.view().hosts[0]!.hostId).toBe('s.a');
         // The lease object is still there — liveness expired, not deleted.
         expect(fake.leases.has('sigx-s.dead')).toBe(true);
     });
@@ -147,11 +147,11 @@ describe('k8s membership provider', () => {
         const b = membershipFor(fake);
         await a.join(descriptor('s.a'));
         await b.join(descriptor('s.b'));
-        await until(() => a.view().silos.length === 2);
+        await until(() => a.view().hosts.length === 2);
 
         await b.setStatus('leaving');
         await until(
-            () => a.view().silos.find((silo) => silo.siloId === 's.b')?.status === 'leaving'
+            () => a.view().hosts.find((host) => host.hostId === 's.b')?.status === 'leaving'
         );
     });
 
@@ -161,11 +161,11 @@ describe('k8s membership provider', () => {
         const b = membershipFor(fake);
         await a.join(descriptor('s.a'));
         await b.join(descriptor('s.b'));
-        await until(() => a.view().silos.length === 2);
+        await until(() => a.view().hosts.length === 2);
 
         await b.leave();
         expect(fake.leases.has('sigx-s.b')).toBe(false);
-        await until(() => a.view().silos.length === 1);
+        await until(() => a.view().hosts.length === 1);
         await expect(a.isAlive('s.b')).resolves.toBe(false);
     });
 
@@ -239,11 +239,11 @@ describe('k8s membership provider', () => {
                 nowMs: Date.now()
             })
         );
-        await until(() => a.view().silos.length === 2);
+        await until(() => a.view().hosts.length === 2);
 
         // Vanishes with no DELETED event — only a LIST can notice.
         fake.leases.delete('sigx-s.b');
-        await until(() => a.view().silos.length === 1, 1000);
+        await until(() => a.view().hosts.length === 1, 1000);
     });
 
     it('a malformed descriptor on a selector-matching Lease never enters the view', async () => {
@@ -262,7 +262,7 @@ describe('k8s membership provider', () => {
         // Right labels, fresh renewTime — but the descriptor is missing
         // epoch and status, which placement assumes on every view entry.
         halfFormed.metadata.annotations![DESCRIPTOR_ANNOTATION] = JSON.stringify({
-            siloId: 's.bad',
+            hostId: 's.bad',
             address: 'http://bad:7311'
         });
         await client.create(halfFormed);
@@ -278,10 +278,10 @@ describe('k8s membership provider', () => {
         await client.create(garbage);
 
         await sleep(150); // plenty of watch deliveries
-        expect(a.view().silos.map((silo) => silo.siloId)).toEqual(['s.a']);
+        expect(a.view().hosts.map((host) => host.hostId)).toEqual(['s.a']);
     });
 
-    it('2-silo smoke: k8s membership + in-memory directory under clusterPlacement', async () => {
+    it('2-host smoke: k8s membership + in-memory directory under clusterPlacement', async () => {
         const fake = fakeKube();
         const hub = memoryClusterHub();
         const secret = 'smoke-secret';
@@ -298,18 +298,18 @@ describe('k8s membership provider', () => {
             })
         });
 
-        const registry = new Map<string, { silo: Silo; placement: ClusterPlacement }>();
+        const registry = new Map<string, { host: Host; placement: ClusterPlacement }>();
         const pipeFetch: typeof globalThis.fetch = async (input, init) => {
             const request = new Request(input, init);
             const member = registry.get(new URL(request.url).host);
             if (!member) throw new TypeError('connection refused');
-            return matchesSiloRequest(request)
-                ? handleSiloRequest(request, { ...member, secret })
-                : handleActorRequest(request, { silo: member.silo, origin: false });
+            return matchesHostRequest(request)
+                ? handleHostRequest(request, { ...member, secret })
+                : handleActorRequest(request, { host: member.host, origin: false });
         };
 
         const storage = memoryStorage();
-        const silos: Silo[] = [];
+        const hosts: Host[] = [];
         for (let i = 0; i < 2; i++) {
             const placement = clusterPlacement({
                 membership: membershipFor(fake),
@@ -318,26 +318,26 @@ describe('k8s membership provider', () => {
                 secret,
                 fetch: pipeFetch
             });
-            const silo = createSilo({
+            const host = createHost({
                 actors: [counter],
                 storage,
                 placement,
                 defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 }
             });
-            registry.set(`smoke${i}.test`, { silo, placement });
-            silos.push(silo);
-            await silo.start();
+            registry.set(`smoke${i}.test`, { host, placement });
+            hosts.push(host);
+            await host.start();
         }
         try {
             const [a, b] = await Promise.all([
-                silos[0]!.actor(counter, 'shared').increment(1),
-                silos[1]!.actor(counter, 'shared').increment(1)
+                hosts[0]!.actor(counter, 'shared').increment(1),
+                hosts[1]!.actor(counter, 'shared').increment(1)
             ]);
             expect([a, b].sort()).toEqual([1, 2]);
-            await expect(silos[0]!.actor(counter, 'shared').increment(1)).resolves.toBe(3);
-            await expect(silos[1]!.actor(counter, 'shared').increment(1)).resolves.toBe(4);
+            await expect(hosts[0]!.actor(counter, 'shared').increment(1)).resolves.toBe(3);
+            await expect(hosts[1]!.actor(counter, 'shared').increment(1)).resolves.toBe(4);
         } finally {
-            await Promise.allSettled(silos.map((silo) => silo.stop({ timeoutMs: 1000 })));
+            await Promise.allSettled(hosts.map((host) => host.stop({ timeoutMs: 1000 })));
         }
     });
 });

@@ -1,53 +1,9 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`rendered frames > Cluster 1`] = `
+exports[`rendered frames > Actors 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
-cluster · 2 silo(s)
-view                 #5  1 active of 2
-collected from       s.2sme5hx2
-route cache          84% hit  (282 lookups)
-locates              44  27% answered "a peer owns it"
-remoteDispatches     1.28k  directoryClaims      37
-inboundDispatches    1.28k  claimConflicts       4
-routedLocal          1.28k  wrongHostRedirects   3
-remoteWatches        0      unreachableRetries   0
-inboundWatches       0      transportFallbacks   0
-retries              15     authFailures         0
-routingFailures      0      selfFences           0
-
-reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
-p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ● p7  ●
-p8  ● p9  ● p10 ● p11 ● p12 ● p13 ● p14 ● p15 ●"
-`;
-
-exports[`rendered frames > Cluster, cramped 1`] = `
-"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
-  them
-
-cluster · 2 silo(s)
-view                 #5  1 active of 2
-collected from       s.2sme5hx2
-route cache          84% hit  (282 lookups)
-locates              44  27% answered "a peer owns it"
-remoteDispatches     1.28k  directoryClaims      37
-inboundDispatches    1.28k  claimConflicts       4
-routedLocal          1.28k  wrongHostRedirects   3
-remoteWatches        0      unreachableRetries   0
-inboundWatches       0      transportFallbacks   0
-retries              15     authFailures         0
-routingFailures      0      selfFences           0
-
-reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
-p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ●
-p7  ● p8  ● p9  ● p10 ● p11 ● p12 ● p13 ●
-p14 ● p15 ●"
-`;
-
-exports[`rendered frames > Grains 1`] = `
-"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
-
-grains on silo s.2sme5hx2
+actors on host s.2sme5hx2
  TYPE     KEY     QUEUE    AGE   IDLE  TASKS  KEPT
  ─────────────────────────────────────────────────
  Counter  cart        0  2m47s  2m47s
@@ -77,10 +33,54 @@ slowest methods (p99 turn)
   Counter#nope                       136µs  47 calls  47 failed"
 `;
 
+exports[`rendered frames > Cluster 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+cluster · 2 host(s)
+view                 #5  1 active of 2
+collected from       s.2sme5hx2
+route cache          84% hit  (282 lookups)
+locates              44  27% answered "a peer owns it"
+remoteDispatches     1.28k  directoryClaims      37
+inboundDispatches    1.28k  claimConflicts       4
+routedLocal          1.28k  wrongHostRedirects   3
+remoteWatches        0      unreachableRetries   0
+inboundWatches       0      transportFallbacks   0
+retries              15     authFailures         0
+routingFailures      0      selfFences           0
+
+reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
+p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ● p7  ●
+p8  ● p9  ● p10 ● p11 ● p12 ● p13 ● p14 ● p15 ●"
+`;
+
+exports[`rendered frames > Cluster, cramped 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
+  them
+
+cluster · 2 host(s)
+view                 #5  1 active of 2
+collected from       s.2sme5hx2
+route cache          84% hit  (282 lookups)
+locates              44  27% answered "a peer owns it"
+remoteDispatches     1.28k  directoryClaims      37
+inboundDispatches    1.28k  claimConflicts       4
+routedLocal          1.28k  wrongHostRedirects   3
+remoteWatches        0      unreachableRetries   0
+inboundWatches       0      transportFallbacks   0
+retries              15     authFailures         0
+routingFailures      0      selfFences           0
+
+reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
+p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ●
+p7  ● p8  ● p9  ● p10 ● p11 ● p12 ● p13 ●
+p14 ● p15 ●"
+`;
+
 exports[`rendered frames > Health 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
-silo s.2sme5hx2
+host s.2sme5hx2
 live         yes
 ready        yes
 uptime       4m02s
@@ -99,53 +99,10 @@ storage
   0 etag conflicts — each one discarded an activation"
 `;
 
-exports[`rendered frames > Overview 1`] = `
+exports[`rendered frames > Host drill-down 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
-cluster · 2 silo(s)
-silos        2
-activations  32
-queued       2
-calls        1.19k  52 failed (4%)
-
-calls/s      ·██▇▅▄▆·█▇▅▄▅▇·█▆▄▅▇█·▆▄▄▆██·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
-failures/s   █▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
-queued       ▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█ 2 ▲
-activations  ████████████████████████████████████████████████████████████ 33 ▲
-
-latency                       queue                         turn
-p50 ██░░░░░░░░░░░░░░░░ 76µs   p50 █░░░░░░░░░░░░░░░░░ 34µs   p50 █░░░░░░░░░░░░░░░░░ 40µs
-p90 █████████░░░░░░░░░ 304µs  p90 ████░░░░░░░░░░░░░░ 136µs  p90 █████░░░░░░░░░░░░░ 160µs
-p99 ██████████████████ 608µs  p99 ████████░░░░░░░░░░ 272µs  p99 █████████░░░░░░░░░ 320µs
-high queue = a hot grain · high turn = a slow method"
-`;
-
-exports[`rendered frames > Overview, cramped 1`] = `
-"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
-  them
-
-cluster · 2 silo(s)
-silos        2
-activations  32
-queued       2
-calls        1.19k  52 failed (4%)
-
-calls/s      ·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
-failures/s   ▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
-queued       ▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█ 2 ▲
-activations  ████████████████████████████████ 33 ▲
-
-latency           queue             turn
-p50 █░░░░░ 76µs   p50 █░░░░░ 34µs   p50 █░░░░░ 40µs
-p90 ███░░░ 304µs  p90 █░░░░░ 136µs  p90 ██░░░░ 160µs
-p99 ██████ 608µs  p99 ███░░░ 272µs  p99 ███░░░ 320µs
-high queue = a hot grain · high turn = a slow method"
-`;
-
-exports[`rendered frames > Silo drill-down 1`] = `
-"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
-
-silo s.2sme5hx2
+host s.2sme5hx2
 status       active
 address      http://127.0.0.1:5391
 up           2m22s
@@ -160,7 +117,7 @@ checks
 errors by kind
   method-not-found     68
 
-grains on this silo
+actors on this host
  TYPE     KEY     QUEUE    AGE  IDLE  TASKS  KEPT
  ────────────────────────────────────────────────
  Counter  cart        3  2m47s    2s      1  yes
@@ -174,10 +131,10 @@ grains on this silo
   1–2/2"
 `;
 
-exports[`rendered frames > Silos 1`] = `
+exports[`rendered frames > Hosts 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
- SILO        STATUS   READY     UP  ACTS  QUEUE  VIEW  TRANSPORTS
+ HOST        STATUS   READY     UP  ACTS  QUEUE  VIEW  TRANSPORTS
  ────────────────────────────────────────────────────────────────
 ❯s.2sme5hx2  active   yes    2m22s    30      2    #5  http
  s.ikfugf49  leaving  NO     2m22s     2      0    #5  http
@@ -204,4 +161,47 @@ exports[`rendered frames > Silos 1`] = `
 
 
   1–2/2"
+`;
+
+exports[`rendered frames > Overview 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+cluster · 2 host(s)
+hosts        2
+activations  32
+queued       2
+calls        1.19k  52 failed (4%)
+
+calls/s      ·██▇▅▄▆·█▇▅▄▅▇·█▆▄▅▇█·▆▄▄▆██·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
+failures/s   █▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
+queued       ▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█ 2 ▲
+activations  ████████████████████████████████████████████████████████████ 33 ▲
+
+latency                       queue                         turn
+p50 ██░░░░░░░░░░░░░░░░ 76µs   p50 █░░░░░░░░░░░░░░░░░ 34µs   p50 █░░░░░░░░░░░░░░░░░ 40µs
+p90 █████████░░░░░░░░░ 304µs  p90 ████░░░░░░░░░░░░░░ 136µs  p90 █████░░░░░░░░░░░░░ 160µs
+p99 ██████████████████ 608µs  p99 ████████░░░░░░░░░░ 272µs  p99 █████████░░░░░░░░░ 320µs
+high queue = a hot actor · high turn = a slow method"
+`;
+
+exports[`rendered frames > Overview, cramped 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
+  them
+
+cluster · 2 host(s)
+hosts        2
+activations  32
+queued       2
+calls        1.19k  52 failed (4%)
+
+calls/s      ·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
+failures/s   ▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
+queued       ▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█ 2 ▲
+activations  ████████████████████████████████ 33 ▲
+
+latency           queue             turn
+p50 █░░░░░ 76µs   p50 █░░░░░ 34µs   p50 █░░░░░ 40µs
+p90 ███░░░ 304µs  p90 █░░░░░ 136µs  p90 ██░░░░ 160µs
+p99 ██████ 608µs  p99 ███░░░ 272µs  p99 ███░░░ 320µs
+high queue = a hot actor · high turn = a slow method"
 `;

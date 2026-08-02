@@ -3,7 +3,7 @@
  *
  * `raceDeadline` used to cost every dispatch an `async` wrapper, a
  * `Promise.race`, an extra promise, and a `setTimeout`/`clearTimeout` pair —
- * measured at 38% of `dispatch/warm-grain` throughput, and paid by every
+ * measured at 38% of `dispatch/warm-actor` throughput, and paid by every
  * production call because `callTimeoutMs` defaults to 30s. A 30s deadline
  * does not need millisecond firing, so far deadlines share ONE recurring
  * coarse timer and a bucket registry; per call that leaves a promise, a
@@ -17,7 +17,7 @@
  * the wire are unaffected by when the local timer happens to fire.
  *
  * Host timers on purpose, not the `ActorScheduler` — see the note on
- * `SiloDefaults.callTimeoutMs`. The recurring timer is armed only while
+ * `HostDefaults.callTimeoutMs`. The recurring timer is armed only while
  * calls are pending and is disarmed lazily (re-arm-on-tick only when
  * non-empty): clearing it eagerly on empty would reintroduce a
  * `setTimeout`/`clearTimeout` pair per call under sequential load, and the

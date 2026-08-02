@@ -13,7 +13,7 @@
  */
 import { Large, Tiny, WriteBehind } from '../actors.ts';
 import { closedLoop, LATENCY_NOISE_FLOOR_MS, sweepConcurrency } from '../loop.ts';
-import { benchCall, createBenchSilo, requireStreamDispatch } from '../silo-fixture.ts';
+import { benchCall, createBenchHost, requireStreamDispatch } from '../host-fixture.ts';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 const CONCURRENCIES = [1, 64] as const;
@@ -47,13 +47,13 @@ const explicitSave: Scenario = {
             ['tiny', Tiny],
             ['large', Large]
         ] as const) {
-            const fixture = await createBenchSilo({ actors: [def] });
+            const fixture = await createBenchHost({ actors: [def] });
             try {
                 const ref = { type: def.type, key: 'saver' };
                 const call = benchCall();
-                await fixture.silo.dispatch(ref, 'incrementAndSave', [1], call);
+                await fixture.host.dispatch(ref, 'incrementAndSave', [1], call);
                 const outcome = await closedLoop({
-                    call: () => fixture.silo.dispatch(ref, 'incrementAndSave', [1], call),
+                    call: () => fixture.host.dispatch(ref, 'incrementAndSave', [1], call),
                     concurrency: 1,
                     durationMs: ctx.durationMs,
                     latency: true
@@ -84,20 +84,20 @@ const explicitSave: Scenario = {
 /**
  * Write-behind installs a deep watch on state, so every mutating turn pays
  * the watcher and schedules a debounced flush. Compared against
- * `dispatch/warm-grain`'s `increment`, the gap is what the watch costs;
+ * `dispatch/warm-actor`'s `increment`, the gap is what the watch costs;
  * compared against `state/explicit-save`, it is what coalescing buys.
  */
 const writeBehind: Scenario = {
     name: 'state/write-behind',
     description: 'mutating turns under write-behind persistence (deep watch + debounced flush)',
     async run(ctx: RunContext): Promise<Metric[]> {
-        const fixture = await createBenchSilo({ actors: [WriteBehind] });
+        const fixture = await createBenchHost({ actors: [WriteBehind] });
         try {
             const ref = { type: WriteBehind.type, key: 'wb' };
             const call = benchCall();
-            await fixture.silo.dispatch(ref, 'increment', [1], call);
+            await fixture.host.dispatch(ref, 'increment', [1], call);
             return await sweepConcurrency({
-                call: () => fixture.silo.dispatch(ref, 'increment', [1], call),
+                call: () => fixture.host.dispatch(ref, 'increment', [1], call),
                 concurrencies: CONCURRENCIES,
                 durationMs: ctx.durationMs
             });
@@ -119,18 +119,18 @@ const changesFanout: Scenario = {
     async run(ctx: RunContext): Promise<Metric[]> {
         const metrics: Metric[] = [];
         for (const subscribers of [0, 1, 16]) {
-            const fixture = await createBenchSilo({ actors: [Tiny] });
+            const fixture = await createBenchHost({ actors: [Tiny] });
             const controller = new AbortController();
             try {
                 const ref = { type: Tiny.type, key: 'streamed' };
                 const call = benchCall();
-                await fixture.silo.dispatch(ref, 'increment', [1], call);
+                await fixture.host.dispatch(ref, 'increment', [1], call);
 
                 // Drain each subscriber in the background: an unconsumed
                 // change feed fills its 16-slot buffer and starts dropping,
                 // which would silently stop measuring the fan-out.
                 const drains: Promise<void>[] = [];
-                const openStream = requireStreamDispatch(fixture.silo);
+                const openStream = requireStreamDispatch(fixture.host);
                 for (let i = 0; i < subscribers; i++) {
                     const stream = openStream(
                         ref,
@@ -152,7 +152,7 @@ const changesFanout: Scenario = {
                 }
 
                 const outcome = await closedLoop({
-                    call: () => fixture.silo.dispatch(ref, 'increment', [1], call),
+                    call: () => fixture.host.dispatch(ref, 'increment', [1], call),
                     concurrency: 1,
                     durationMs: ctx.durationMs,
                     latency: false
@@ -173,10 +173,10 @@ const changesFanout: Scenario = {
                 //
                 // If that does not happen we must FAIL, not carry on: the
                 // scenario runs again every round, and iterators left parked
-                // on a silo we are about to drop would contaminate every
+                // on a host we are about to drop would contaminate every
                 // later measurement with work nobody is accounting for.
                 controller.abort();
-                await fixture.silo.dispatch(ref, 'increment', [1], call);
+                await fixture.host.dispatch(ref, 'increment', [1], call);
                 if (!(await settledWithin(drains, TEARDOWN_TIMEOUT_MS))) {
                     throw new Error(
                         `${subscribers} change-feed consumer(s) did not unwind within ` +

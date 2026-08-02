@@ -1,16 +1,16 @@
 /**
- * `defineActorApp` — the composition root over `createSilo`.
+ * `defineActorApp` — the composition root over `createHost`.
  *
- * `createSilo` takes exactly one `placement` and one `storage`, and
+ * `createHost` takes exactly one `placement` and one `storage`, and
  * `ActorPlacement.bind()` → `PlacementBindings` is the only lifecycle-hook
  * shape in the package. That makes the seams EXCLUSIVE: two things that both
  * want `beforeActivate` (a cluster directory and an audit log) cannot
  * coexist. An app fixes that by folding every plugin's contributions into
- * the single composite placement / storage / context that `createSilo`
- * already understands — so this layer is purely additive and `createSilo`
+ * the single composite placement / storage / context that `createHost`
+ * already understands — so this layer is purely additive and `createHost`
  * stays the documented low-level primitive.
  *
- * The app is an inert DESCRIPTION, not a running silo. That is what lets the
+ * The app is an inert DESCRIPTION, not a running host. That is what lets the
  * same module be started by a Node entry, the Vite dev server, or a Worker.
  */
 import type { TypeHandler } from '@sigx/serialize';
@@ -30,9 +30,9 @@ import type {
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,
-    Silo
+    Host
 } from '../types';
-import { createSilo, type CreateSiloOptions, type SiloDefaults } from './silo';
+import { createHost, type CreateHostOptions, type HostDefaults } from './host';
 import { memoryStorage } from './storage-memory';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ export type DispatchMiddleware = (next: ActorDispatcher) => ActorDispatcher;
 
 /**
  * What a placement factory gets. Deliberately narrow: `bind()` already
- * hands the placement the silo itself, so this exposes only what a backend
+ * hands the placement the host itself, so this exposes only what a backend
  * needs BEFORE binding — reading the per-type placement strategies actors
  * declared.
  */
@@ -67,18 +67,18 @@ export interface PlacementSetupContext {
 }
 
 /**
- * One plugin's answer to "should this silo be receiving traffic?".
+ * One plugin's answer to "should this host be receiving traffic?".
  *
  * SYNC on purpose: a readiness probe must never wait on a store round-trip,
  * which is the same reason `ClusterMembership.view()` is sync.
  */
 export interface HealthCheck {
-    /** False = take this silo out of rotation. */
+    /** False = take this host out of rotation. */
     ready: boolean;
     /**
      * This process cannot recover — fail LIVENESS, not just readiness, so
      * the orchestrator restarts it. Reserve it for terminal states (a
-     * fenced silo, a poisoned runtime): `ready: false` alone means "drain
+     * fenced host, a poisoned runtime): `ready: false` alone means "drain
      * me, I am still alive", and conflating the two turns every drain into
      * a restart. Implies not-ready.
      */
@@ -115,7 +115,7 @@ export interface ActorRoute {
     /** Diagnostic label, e.g. `'cluster:internal'`. */
     readonly name: string;
     match(request: Request): boolean;
-    handle(request: Request, silo: Silo): Promise<Response>;
+    handle(request: Request, host: Host): Promise<Response>;
 }
 
 /**
@@ -138,9 +138,9 @@ export interface PluginRegistry {
      * second claim throws, naming both plugins, because two placements
      * would mean two answers to where an actor lives.
      *
-     * A FACTORY, not an instance: it runs once the silo exists, so a custom
+     * A FACTORY, not an instance: it runs once the host exists, so a custom
      * placement can resolve per-type strategies declared on the actors
-     * (`defineActor({ placement })` — Orleans's attribute form) instead of
+     * (`defineActor({ placement })` — declared on the actor itself) instead of
      * being limited to a map fixed at plugin-construction time.
      */
     setPlacement(factory: (context: PlacementSetupContext) => ActorPlacement): void;
@@ -176,23 +176,23 @@ export interface PluginRegistry {
      */
     observeTurns(observer: ActorTurnObserver): () => void;
     /**
-     * After the silo is live (post `start()`), in registration order.
-     * Throwing ROLLS THE START BACK: the silo is stopped again and the
+     * After the host is live (post `start()`), in registration order.
+     * Throwing ROLLS THE START BACK: the host is stopped again and the
      * `onStop` hooks run, so a rejected `start()` leaks no background work.
      */
-    onStart(hook: (silo: Silo) => void | Promise<void>): void;
+    onStart(hook: (host: Host) => void | Promise<void>): void;
     /**
-     * After the silo has drained (post `stop()`), in REVERSE order, each
+     * After the host has drained (post `stop()`), in REVERSE order, each
      * isolated. Also runs when a start is rolled back — so treat it as
      * best-effort cleanup that may fire even if this plugin's `onStart`
      * never completed.
      */
-    onStop(hook: (silo: Silo) => void | Promise<void>): void;
+    onStop(hook: (host: Host) => void | Promise<void>): void;
     route(route: ActorRoute): void;
     /**
      * Contribute a readiness check — the seam a health endpoint aggregates.
-     * Composes: EVERY contributed check must pass for the silo to report
-     * ready, so any plugin can take its silo out of rotation without the
+     * Composes: EVERY contributed check must pass for the host to report
+     * ready, so any plugin can take its host out of rotation without the
      * endpoint knowing that plugin exists.
      *
      * `check` is SYNC and must stay cheap: it runs per probe, and a probe
@@ -222,12 +222,12 @@ export interface PluginRegistry {
      * captured at setup. Unlike a readiness check it is allowed to be
      * expensive-ish — an ops read is an operator polling at 1 Hz, not a load
      * balancer probing every second — but it must stay SYNC, for the same
-     * reason: the endpoint is what you reach for when the silo is already
+     * reason: the endpoint is what you reach for when the host is already
      * unwell, and it must not be able to hang.
      *
      * A throwing provider is caught and its section replaced with
      * `{ error }`, leaving every other section intact. The one tool that
-     * explains a broken silo must not be broken BY it.
+     * explains a broken host must not be broken BY it.
      *
      * `name` keys the report, so it must be non-empty and unique across
      * plugins; a clash throws at setup naming both.
@@ -241,7 +241,7 @@ export interface PluginRegistry {
      * An ops section is read by a human and may carry anything, including
      * derived percentiles; a digest is read by `clusterStats()` and has to
      * carry the raw distribution those percentiles are re-derived FROM,
-     * because averaging percentiles across silos produces a number that is
+     * because averaging percentiles across hosts produces a number that is
      * not the p99 of anything. Reading the ops section instead would hand
      * the aggregator exactly the un-mergeable shape.
      *
@@ -261,7 +261,7 @@ export interface PluginRegistry {
      * this call, so `.use()` order does not matter.
      *
      * `undefined` when nobody publishes that name, which is the ordinary
-     * case for a silo with no `metrics()` attached rather than an error.
+     * case for a host with no `metrics()` attached rather than an error.
      *
      * **Never throws** — not for a missing name, not for a provider that
      * fails, and not for one that reads its own digest. Whatever is wrong
@@ -305,7 +305,7 @@ export interface ActorAppOptions {
      * and therefore loads under plain Node too. A non-Vite entry passes
      * them here as before.
      */
-    actors?: CreateSiloOptions['actors'];
+    actors?: CreateHostOptions['actors'];
     /** Base storage, before any plugin decorators. Omit = in-memory. */
     storage?: ActorStorage;
     types?: readonly TypeHandler[];
@@ -313,7 +313,7 @@ export interface ActorAppOptions {
     scheduler?: ActorScheduler;
     /** Durable-reminder implementation. Default: the sharded table. */
     reminders?: ActorReminders;
-    defaults?: SiloDefaults;
+    defaults?: HostDefaults;
 }
 
 export interface ActorApp<Ext extends object = Record<never, never>> {
@@ -327,7 +327,7 @@ export interface ActorApp<Ext extends object = Record<never, never>> {
      * Throws if the app already has actors, so a host can never silently
      * replace what the author configured — and, like `use()`, once the app
      * has been started or its `routes` read: by then the registry is
-     * already baked into a running silo.
+     * already baked into a running host.
      */
     withActors(actors: NonNullable<ActorAppOptions['actors']>): ActorApp<Ext>;
     /** Whether a registry has been supplied yet. */
@@ -347,18 +347,18 @@ export interface ActorApp<Ext extends object = Record<never, never>> {
     ): ActorDefinition<S, M, St>;
     /** Plugin-contributed routes. Reading this seals the app. */
     readonly routes: readonly ActorRoute[];
-    /** The running silo — null before `start()` and again after `stop()`. */
-    readonly silo: Silo | null;
-    /** Build the silo, start it, then run every `onStart`. Idempotent. */
-    start(): Promise<Silo>;
-    /** Stop the silo, then run every `onStop` in reverse. Idempotent. */
+    /** The running host — null before `start()` and again after `stop()`. */
+    readonly host: Host | null;
+    /** Build the host, start it, then run every `onStart`. Idempotent. */
+    start(): Promise<Host>;
+    /** Stop the host, then run every `onStop` in reverse. Idempotent. */
     stop(opts?: { timeoutMs?: number }): Promise<void>;
 }
 
 /**
- * A plugin's turn subscription, which outlives the silo's construction: it
+ * A plugin's turn subscription, which outlives the host's construction: it
  * is declared during `setup()` but can only really be attached once the
- * silo exists, and may be cancelled from either side of that boundary.
+ * host exists, and may be cancelled from either side of that boundary.
  */
 interface TurnSubscription {
     observer: ActorTurnObserver;
@@ -377,8 +377,8 @@ interface Contributions {
     afterDeactivate: ((ref: ActorRef, reason: DeactivationReason) => void | Promise<void>)[];
     dispatch: DispatchMiddleware[];
     turnObservers: TurnSubscription[];
-    onStart: ((silo: Silo) => void | Promise<void>)[];
-    onStop: ((silo: Silo) => void | Promise<void>)[];
+    onStart: ((host: Host) => void | Promise<void>)[];
+    onStop: ((host: Host) => void | Promise<void>)[];
     routes: ActorRoute[];
     health: { name: string; check: () => HealthCheck; plugin: string }[];
     ops: { name: string; provider: () => unknown; plugin: string }[];
@@ -389,7 +389,7 @@ interface Contributions {
 /**
  * Fold the contributed checks into one report. A throwing check is
  * not-ready rather than an exception: an endpoint that 500s when a check is
- * broken tells an operator nothing about the silo.
+ * broken tells an operator nothing about the host.
  */
 function healthReport(c: Contributions): HealthReport {
     const checks: Record<string, HealthCheck> = {};
@@ -407,7 +407,7 @@ function healthReport(c: Contributions): HealthReport {
             result = { ready: false, detail: message || 'check failed' };
         }
         // Fatal implies not-ready: a check that says "restart me" must
-        // never leave the silo in rotation on a disagreeing `ready`.
+        // never leave the host in rotation on a disagreeing `ready`.
         if (result.fatal) result = { ...result, ready: false };
         checks[name] = result;
         if (!result.ready) ready = false;
@@ -420,7 +420,7 @@ function healthReport(c: Contributions): HealthReport {
  * Fold the contributed ops sections into one report.
  *
  * Same rule as `healthReport`, and for a sharper reason: this endpoint is
- * what an operator opens when a silo is already misbehaving, so one plugin
+ * what an operator opens when a host is already misbehaving, so one plugin
  * whose provider throws must cost its own section and nothing else. The
  * section stays present, carrying the reason.
  */
@@ -435,7 +435,7 @@ function healthReport(c: Contributions): HealthReport {
  *
  * A provider that throws costs its own digest and nothing else, for the
  * same reason a failing ops section does: the one tool that explains a
- * broken silo must not be broken by it.
+ * broken host must not be broken by it.
  */
 function readDigest(c: Contributions, name: string, options?: unknown): unknown {
     const entry = c.digests.find((candidate) => candidate.name === name);
@@ -444,7 +444,7 @@ function readDigest(c: Contributions, name: string, options?: unknown): unknown 
         // A provider that reads its own digest is a bug, but it is ITS bug.
         // Throwing here would take out the surrounding ops or cluster read,
         // which is the same mistake as letting a failing section 500 the
-        // endpoint that exists to explain a sick silo. Say so loudly in
+        // endpoint that exists to explain a sick host. Say so loudly in
         // dev, answer `undefined` in production.
         if (__DEV__) {
             console.warn(
@@ -497,8 +497,8 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
     #options: ActorAppOptions;
     #plugins: ActorPlugin<object>[] = [];
     #contributions: Contributions | null = null;
-    #silo: Silo | null = null;
-    #starting: Promise<Silo> | null = null;
+    #host: Host | null = null;
+    #starting: Promise<Host> | null = null;
     #stopped = false;
 
     constructor(options: ActorAppOptions) {
@@ -545,8 +545,8 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
         return this.#seal().routes;
     }
 
-    get silo(): Silo | null {
-        return this.#silo;
+    get host(): Host | null {
+        return this.#host;
     }
 
     /** Run every plugin's `setup()` exactly once and freeze the result. */
@@ -575,12 +575,12 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
         return c;
     }
 
-    start(): Promise<Silo> {
+    start(): Promise<Host> {
         if (this.#stopped) {
             return Promise.reject(
                 new Error(
                     '[sigx actors] this app has been stopped and cannot be restarted — a ' +
-                        'plugin-provided placement carries per-run identity (a cluster silo id ' +
+                        'plugin-provided placement carries per-run identity (a cluster host id ' +
                         'is minted once and its membership entry is gone after stop). Build a ' +
                         'new app with defineActorApp().'
                 )
@@ -592,14 +592,14 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             // a refused membership join must stay retryable rather than
             // poisoning the app with a stale error on every later call.
             if (this.#starting === starting) this.#starting = null;
-            this.#silo = null;
+            this.#host = null;
             throw error;
         });
         this.#starting = starting;
         return starting;
     }
 
-    async #start(): Promise<Silo> {
+    async #start(): Promise<Host> {
         if (!this.#options.actors) {
             throw new Error(
                 '[sigx actors] this app has no actors. Pass them to defineActorApp({ actors }), ' +
@@ -608,7 +608,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
         }
         const c = this.#seal();
         // A decorator has to wrap something concrete, so materialize the
-        // in-memory default here rather than leaving it to `createSilo` —
+        // in-memory default here rather than leaving it to `createHost` —
         // and carry its warning across, since it can no longer fire there.
         let storage = this.#options.storage;
         if (c.storageDecorators.length) {
@@ -625,7 +625,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             storage = c.storageDecorators.reduce((inner, decorate) => decorate(inner), storage);
         }
         const placement = compositePlacement(c);
-        const silo = createSilo({
+        const host = createHost({
             actors: this.#options.actors!,
             ...(storage ? { storage } : {}),
             ...(placement ? { placement } : {}),
@@ -638,25 +638,25 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
 
             ...(this.#options.defaults ? { defaults: this.#options.defaults } : {})
         });
-        this.#silo = silo;
-        // Attach turn observers now the silo exists. Each keeps its own
+        this.#host = host;
+        // Attach turn observers now the host exists. Each keeps its own
         // detach so a plugin can switch observation off later, and the last
         // one leaving restores the untouched dispatch path.
         for (const subscription of c.turnObservers) {
             if (subscription.cancelled) continue;
-            subscription.detach = silo.observeTurns(subscription.observer);
+            subscription.detach = host.observeTurns(subscription.observer);
         }
-        await silo.start();
+        await host.start();
         try {
-            for (const hook of c.onStart) await hook(silo);
+            for (const hook of c.onStart) await hook(host);
         } catch (error) {
-            // The silo is ALREADY live here — sweeper, reminder tick, a
-            // cluster join, and the ambient `__SIGX_ACTOR_SILO__` seam. A
+            // The host is ALREADY live here — sweeper, reminder tick, a
+            // cluster join, and the ambient `__SIGX_ACTOR_HOST__` seam. A
             // rejected start that just walked away would leak all of it and
-            // leave the seam pointing at a silo this app no longer tracks,
+            // leave the seam pointing at a host this app no longer tracks,
             // so roll the start back before surfacing the failure.
             try {
-                await silo.stop();
+                await host.stop();
             } catch (stopError) {
                 if (__DEV__) {
                     console.error(
@@ -665,18 +665,18 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
                     );
                 }
             }
-            await this.#runStopHooks(silo, c);
+            await this.#runStopHooks(host, c);
             throw error;
         }
-        return silo;
+        return host;
     }
 
     /** `onStop`, reverse order, each isolated — one bad plugin must not
      *  strand the rest of the teardown. */
-    async #runStopHooks(silo: Silo, c: Contributions): Promise<void> {
+    async #runStopHooks(host: Host, c: Contributions): Promise<void> {
         for (const hook of [...c.onStop].reverse()) {
             try {
-                await hook(silo);
+                await hook(host);
             } catch (error) {
                 if (__DEV__) {
                     console.error('[sigx actors] a plugin onStop hook threw (ignored):', error);
@@ -687,7 +687,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
 
     async stop(opts?: { timeoutMs?: number }): Promise<void> {
         if (this.#stopped) return;
-        // A stop racing an in-flight start must still tear that silo down.
+        // A stop racing an in-flight start must still tear that host down.
         if (this.#starting) {
             try {
                 await this.#starting;
@@ -695,28 +695,28 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
                 // A failed start left nothing running to stop.
             }
         }
-        const silo = this.#silo;
+        const host = this.#host;
         // Never started (or the start failed): nothing to tear down, and the
         // app stays startable.
-        if (!silo) return;
+        if (!host) return;
         this.#stopped = true;
         // Actors drain FIRST: an `onStop` hook may close a connection the
         // draining turns still need.
         try {
-            await silo.stop(opts);
+            await host.stop(opts);
         } catch (error) {
             // Teardown did NOT complete — a placement's membership leave can
             // throw against a dead store. Stay exactly as we were rather
-            // than reporting a shutdown that did not happen: `app.silo`
+            // than reporting a shutdown that did not happen: `app.host`
             // remains reachable so the failure is inspectable, and `stop()`
-            // can be retried (the silo's own stop is idempotent, so a retry
+            // can be retried (the host's own stop is idempotent, so a retry
             // proceeds to the hooks below).
             this.#stopped = false;
             throw error;
         }
         this.#starting = null;
-        this.#silo = null;
-        await this.#runStopHooks(silo, this.#seal());
+        this.#host = null;
+        await this.#runStopHooks(host, this.#seal());
     }
 }
 
@@ -840,7 +840,7 @@ function registryFor(pluginName: string, c: Contributions): PluginRegistry {
 }
 
 /**
- * Fold N `extendContext` factories into the single one `createSilo` takes.
+ * Fold N `extendContext` factories into the single one `createHost` takes.
  *
  * Deliberately NOT `Object.assign`: that copies through [[Set]], so a
  * `__proto__` key (which a plugin forwarding a `JSON.parse`d object really
@@ -876,7 +876,7 @@ function contextExtender(
 /**
  * Fold the plugins' placement, lifecycle hooks and dispatch middleware into
  * ONE `ActorPlacement`. Returns undefined when nothing was contributed, so a
- * plugin-free app gets `createSilo`'s own default local placement rather
+ * plugin-free app gets `createHost`'s own default local placement rather
  * than a pointless wrapper.
  */
 function compositePlacement(c: Contributions): ActorPlacement | undefined {
@@ -900,7 +900,7 @@ function compositePlacement(c: Contributions): ActorPlacement | undefined {
             hit = c.dispatch.reduceRight((next, middleware) => middleware(next), dispatcher);
             if (__DEV__ && dispatcher.dispatchStream && !hit.dispatchStream) {
                 // `dispatchStream` is optional, so a middleware returning
-                // just `{ dispatch }` silently drops it — and the silo then
+                // just `{ dispatch }` silently drops it — and the host then
                 // fails every `streams:` method blaming the TRANSPORT, which
                 // sends you looking in the wrong place entirely.
                 console.warn(
@@ -924,14 +924,14 @@ function compositePlacement(c: Contributions): ActorPlacement | undefined {
             const resolved = inner.dispatcherFor(ref);
             return isPromise(resolved) ? resolved.then(wrap) : wrap(resolved);
         },
-        bind(localDispatcher: ActorDispatcher, silo: Silo): PlacementBindings {
+        bind(localDispatcher: ActorDispatcher, host: Host): PlacementBindings {
             local = localDispatcher;
-            // Built HERE, not at plugin setup: `createSilo` calls bind() from
+            // Built HERE, not at plugin setup: `createHost` calls bind() from
             // its constructor, so this is the first moment a placement can be
             // handed a definition resolver — which is what lets a custom
             // placement read the per-type strategies actors declared.
-            inner = factory?.({ definition: (type) => silo.definition(type) });
-            return mergeBindings(inner?.bind?.(localDispatcher, silo) || undefined, c);
+            inner = factory?.({ definition: (type) => host.definition(type) });
+            return mergeBindings(inner?.bind?.(localDispatcher, host) || undefined, c);
         },
         // Forwarded, not wrapped: `locate` answers WHERE, and dispatch
         // middleware wraps HOW — a middleware has no say in ownership, and

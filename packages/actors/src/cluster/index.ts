@@ -1,9 +1,9 @@
 /**
  * `@sigx/actors/cluster` — multi-host clustering for the actor runtime.
  * WinterCG-clean and dependency-free: `clusterPlacement()` plugs into
- * `createSilo({ placement })`, provider interfaces define the cluster store
+ * `createHost({ placement })`, provider interfaces define the cluster store
  * seam (in-memory here for tests; Redis in `@sigx/actors-redis`), and
- * `handleSiloRequest` is the internal silo-to-silo endpoint mounted beside
+ * `handleHostRequest` is the internal host-to-host endpoint mounted beside
  * the public one.
  */
 export { cluster, type ClusterPlugin, type ClusterPluginOptions } from './plugin';
@@ -16,49 +16,49 @@ export {
     type ClusterPlacementOptions
 } from './placement';
 export {
-    handleSiloRequest,
-    handleSiloRequestForRuntime,
-    matchesSiloRequest,
-    createSiloResolver,
-    resolveSiloSymbol,
-    siloEndpointRuntime,
-    siloRuntime,
-    type SiloEndpointOptions,
-    type SiloRequestOptions,
-    type SiloRuntimeRequestOptions
-} from './silo-endpoint';
+    handleHostRequest,
+    handleHostRequestForRuntime,
+    matchesHostRequest,
+    createHostResolver,
+    resolveHostSymbol,
+    hostEndpointRuntime,
+    hostRuntime,
+    type HostEndpointOptions,
+    type HostRequestOptions,
+    type HostRuntimeRequestOptions
+} from './host-endpoint';
 export {
     clusterStats,
-    SILO_STATS_SYMBOL,
+    HOST_STATS_SYMBOL,
     type ClusterStatsFailure,
     type ClusterStatsFailureReason,
     type ClusterMetricsTotals,
     type ClusterStatsDetail,
     type ClusterStatsOptions,
     type ClusterStatsReport,
-    type SiloReport,
-    type SiloReportOptions
+    type HostReport,
+    type HostReportOptions
 } from './stats';
 export type { ClusterCounters, ClusterCounterTotals } from './counters';
 export { memoryClusterHub, type MemoryClusterHub } from './memory';
 export { httpTransport, HTTP_TRANSPORT_NAME, type HttpTransportOptions } from './transport';
 export type {
-    SiloCallMode,
-    SiloCallTarget,
-    SiloEndpointRuntime,
-    SiloTransport,
-    SiloTransportConfig,
-    SiloTransportFactory,
-    SiloTransportRuntime,
-    SiloWireCodec,
-    SiloWireError
+    HostCallMode,
+    HostCallTarget,
+    HostEndpointRuntime,
+    HostTransport,
+    HostTransportConfig,
+    HostTransportFactory,
+    HostTransportRuntime,
+    HostWireCodec,
+    HostWireError
 } from './seam';
 export { parseWatchOptions, watchSymbol, WATCH_SYMBOL_PREFIX } from './watch-symbol';
-export { fromSiloWireError, siloWireCodec, toSiloWireError } from './wire-errors';
+export { fromHostWireError, hostWireCodec, toHostWireError } from './wire-errors';
 export {
-    SILO_AUTH_HEADER,
-    SILO_CALL_HEADER,
-    SILO_PROTO,
+    HOST_AUTH_HEADER,
+    HOST_CALL_HEADER,
+    HOST_PROTO,
     decodeEnvelope,
     encodeEnvelope,
     signAuth,
@@ -71,7 +71,7 @@ export type {
     DirectoryEntry,
     MembershipView,
     PlacementPolicy,
-    SiloDescriptor,
-    SiloIdentity,
-    SiloStatus
+    HostDescriptor,
+    HostIdentity,
+    HostStatus
 } from './types';

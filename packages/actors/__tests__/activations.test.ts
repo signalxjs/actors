@@ -1,8 +1,8 @@
 /**
- * `silo.activations()` — the live grain list, and the transitional counts
+ * `host.activations()` — the live actor list, and the transitional counts
  * `stats()` used to drop.
  *
- * The gap this closes: `stats()` could say a silo held 12,000 activations
+ * The gap this closes: `stats()` could say a host held 12,000 activations
  * with 400 queued turns and could not say WHERE, which is the only question
  * worth asking at that point. Everything below is about that list being
  * usable from a dashboard — bounded, stably ordered, and honest about the
@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, memoryStorage, type Silo } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage, type Host } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -40,7 +40,7 @@ const Other = defineActor({
     })
 });
 
-async function silo(): Promise<{ live: Silo; stop: () => Promise<void> }> {
+async function host(): Promise<{ live: Host; stop: () => Promise<void> }> {
     const app = defineActorApp({
         actors: [Counter, Other],
         storage: memoryStorage(),
@@ -50,9 +50,9 @@ async function silo(): Promise<{ live: Silo; stop: () => Promise<void> }> {
     return { live, stop: () => app.stop() };
 }
 
-describe('silo.activations()', () => {
-    it('lists live grains with their type, key and mailbox depth', async () => {
-        const { live, stop } = await silo();
+describe('host.activations()', () => {
+    it('lists live actors with their type, key and mailbox depth', async () => {
+        const { live, stop } = await host();
         try {
             await live.actor(Counter, 'a').noop();
             await live.actor(Counter, 'b').noop();
@@ -74,13 +74,13 @@ describe('silo.activations()', () => {
         }
     });
 
-    it('sorts by queue depth — the hot grains first', async () => {
-        const { live, stop } = await silo();
+    it('sorts by queue depth — the hot actors first', async () => {
+        const { live, stop } = await host();
         try {
             const hot = live.actor(Counter, 'hot');
             const cold = live.actor(Counter, 'cold');
             await cold.noop();
-            // Three turns against one grain; the mailbox serializes them, so
+            // Three turns against one actor; the mailbox serializes them, so
             // depth is non-zero while they run.
             const inflight = Promise.all([hot.slow(60), hot.slow(60), hot.slow(60)]);
             await new Promise((resolve) => setTimeout(resolve, 20));
@@ -97,7 +97,7 @@ describe('silo.activations()', () => {
     });
 
     it('sorts by age and by idle', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             await live.actor(Counter, 'first').noop();
             await new Promise((resolve) => setTimeout(resolve, 25));
@@ -112,13 +112,13 @@ describe('silo.activations()', () => {
     });
 
     it('bounds the result, defaulting to 100', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             for (let i = 0; i < 120; i++) await live.actor(Counter, `k${i}`).noop();
             expect(live.activations()).toHaveLength(100);
             expect(live.activations({ limit: 5 })).toHaveLength(5);
             expect(live.activations({ limit: 1000 })).toHaveLength(120);
-            // A silo can hold millions; asking for none must not walk them.
+            // A host can hold millions; asking for none must not walk them.
             expect(live.activations({ limit: 0 })).toEqual([]);
         } finally {
             await stop();
@@ -126,7 +126,7 @@ describe('silo.activations()', () => {
     });
 
     it('falls back to the default on a non-finite limit, rather than unbounding', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             for (let i = 0; i < 120; i++) await live.actor(Counter, `k${i}`).noop();
             // `Math.max(0, Math.floor(NaN))` is NaN, and every comparison
@@ -146,7 +146,7 @@ describe('silo.activations()', () => {
     });
 
     it('filters by type', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             await live.actor(Counter, 'a').noop();
             await live.actor(Other, 'b').noop();
@@ -161,7 +161,7 @@ describe('silo.activations()', () => {
     });
 
     it('orders ties stably, so a polled table does not reshuffle', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             for (const key of ['c', 'a', 'b']) await live.actor(Counter, key).noop();
             // Every row has queued 0 — without the tie-break the order would
@@ -177,7 +177,7 @@ describe('silo.activations()', () => {
     });
 
     it('never reports a negative age or idle, even if the wall clock steps back', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             await live.actor(Counter, 'a').noop();
             // NTP or a VM host stepping the clock backwards would otherwise
@@ -194,8 +194,8 @@ describe('silo.activations()', () => {
         }
     });
 
-    it('is empty on a silo that has activated nothing', async () => {
-        const { live, stop } = await silo();
+    it('is empty on a host that has activated nothing', async () => {
+        const { live, stop } = await host();
         try {
             expect(live.activations()).toEqual([]);
         } finally {
@@ -204,9 +204,9 @@ describe('silo.activations()', () => {
     });
 });
 
-describe('silo.stats(): transitional slots', () => {
+describe('host.stats(): transitional slots', () => {
     it('reports zero when nothing is in flight', async () => {
-        const { live, stop } = await silo();
+        const { live, stop } = await host();
         try {
             await live.actor(Counter, 'a').noop();
             const stats = live.stats();
@@ -217,7 +217,7 @@ describe('silo.stats(): transitional slots', () => {
         }
     });
 
-    it('counts a slot mid-activation — a storm must not read as an idle silo', async () => {
+    it('counts a slot mid-activation — a storm must not read as an idle host', async () => {
         let release: (() => void) | undefined;
         const gate = new Promise<void>((resolve) => {
             release = resolve;
@@ -247,7 +247,7 @@ describe('silo.stats(): transitional slots', () => {
 
             const stats = live.stats();
             // Nothing settled yet, so the old `stats()` said "0 activations"
-            // for a silo that was entirely busy activating.
+            // for a host that was entirely busy activating.
             expect(stats.activations).toBe(0);
             expect(stats.transitional.activating).toBe(1);
             // And the list only ever shows settled slots — there is no

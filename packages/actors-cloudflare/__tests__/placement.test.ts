@@ -1,15 +1,15 @@
 /**
  * `durableObjectPlacement` — routing a ref to the object that holds it.
  *
- * No Workers runtime: a fake namespace maps object names to real silos, each
- * behind the real internal endpoint (`handleSiloRequestForRuntime` +
- * `siloEndpointRuntime`). So the wire under test is the shipped one —
+ * No Workers runtime: a fake namespace maps object names to real hosts, each
+ * behind the real internal endpoint (`handleHostRequestForRuntime` +
+ * `hostEndpointRuntime`). So the wire under test is the shipped one —
  * envelope, codec, NDJSON, branded errors — and only the platform is faked.
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor, isActorError } from '@sigx/actors';
-import { createSilo, manualScheduler, type Silo } from '@sigx/actors/silo';
-import { handleSiloRequestForRuntime, siloEndpointRuntime } from '@sigx/actors/cluster';
+import { createHost, manualScheduler, type Host } from '@sigx/actors/host';
+import { handleHostRequestForRuntime, hostEndpointRuntime } from '@sigx/actors/cluster';
 import { durableObjectPlacement, durableObjectStorage } from '@sigx/actors-cloudflare';
 import type { DurableObjectNamespaceLike } from '@sigx/actors-cloudflare';
 
@@ -45,22 +45,22 @@ const Counter = defineActor({
 });
 
 /**
- * A Durable Object namespace whose objects are real silos.
+ * A Durable Object namespace whose objects are real hosts.
  *
  * Each object gets its own storage map — which is the whole point: a test
  * can look at exactly which object's storage a write landed in.
  */
 function fakeNamespace(): DurableObjectNamespaceLike & {
-    readonly objects: Map<string, { silo: Silo; store: Map<string, unknown> }>;
+    readonly objects: Map<string, { host: Host; store: Map<string, unknown> }>;
     stop(): Promise<void>;
 } {
-    const objects = new Map<string, { silo: Silo; store: Map<string, unknown> }>();
+    const objects = new Map<string, { host: Host; store: Map<string, unknown> }>();
 
     // Keyed by the IN-FLIGHT creation, not the finished object: two
     // concurrent calls for one name must yield one object, exactly as the
     // platform guarantees. Awaiting between the miss and the insert would
-    // otherwise start two silos and leak the one that loses.
-    const creating = new Map<string, Promise<{ silo: Silo; store: Map<string, unknown> }>>();
+    // otherwise start two hosts and leak the one that loses.
+    const creating = new Map<string, Promise<{ host: Host; store: Map<string, unknown> }>>();
 
     const build = async (name: string) => {
         const store = new Map<string, unknown>();
@@ -70,7 +70,7 @@ function fakeNamespace(): DurableObjectNamespaceLike & {
             put: async <T,>(k: string, v: T) => void store.set(k, structuredClone(v)),
             delete: async (k: string) => store.delete(k)
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Counter],
             storage,
             scheduler: manualScheduler(),
@@ -83,13 +83,13 @@ function fakeNamespace(): DurableObjectNamespaceLike & {
             }),
             defaults: { sweepIntervalMs: 0, callTimeoutMs: 0 }
         });
-        await silo.start();
-        const entry = { silo, store };
+        await host.start();
+        const entry = { host, store };
         objects.set(name, entry);
         return entry;
     };
 
-    const hostFor = (name: string): Promise<{ silo: Silo; store: Map<string, unknown> }> =>
+    const hostFor = (name: string): Promise<{ host: Host; store: Map<string, unknown> }> =>
         creating.get(name) ?? (creating.set(name, build(name)), creating.get(name)!);
 
     const namespace: DurableObjectNamespaceLike & {
@@ -100,16 +100,16 @@ function fakeNamespace(): DurableObjectNamespaceLike & {
         idFromName: (name: string) => ({ name, toString: () => name }),
         get: (id) => ({
             async fetch(input: string | Request, init?: RequestInit) {
-                const { silo } = await hostFor(id.name!);
+                const { host } = await hostFor(id.name!);
                 const request =
                     typeof input === 'string' ? new Request(input, init) : input;
-                return handleSiloRequestForRuntime(request, {
-                    runtime: siloEndpointRuntime(silo)
+                return handleHostRequestForRuntime(request, {
+                    runtime: hostEndpointRuntime(host)
                 });
             }
         }),
         async stop() {
-            for (const { silo } of objects.values()) await silo.stop({ timeoutMs: 1_000 });
+            for (const { host } of objects.values()) await host.stop({ timeoutMs: 1_000 });
         }
     };
     return namespace;
@@ -120,21 +120,21 @@ function workerPlacement(namespace: DurableObjectNamespaceLike) {
     return durableObjectPlacement({ namespace, base: BASE });
 }
 
-async function workerSilo(namespace: DurableObjectNamespaceLike): Promise<Silo> {
-    const silo = createSilo({
+async function workerHost(namespace: DurableObjectNamespaceLike): Promise<Host> {
+    const host = createHost({
         actors: [Counter],
         scheduler: manualScheduler(),
         placement: workerPlacement(namespace),
         defaults: { sweepIntervalMs: 0, callTimeoutMs: 0 }
     });
-    await silo.start();
-    return silo;
+    await host.start();
+    return host;
 }
 
 describe('durableObjectPlacement', () => {
     it('routes a call to the object the ref names, and state persists there', async () => {
         const ns = fakeNamespace();
-        const worker = await workerSilo(ns);
+        const worker = await workerHost(ns);
         try {
             await expect(worker.actor(Counter, 'a').increment(2)).resolves.toBe(2);
             await expect(worker.actor(Counter, 'a').increment(3)).resolves.toBe(5);
@@ -151,7 +151,7 @@ describe('durableObjectPlacement', () => {
 
     it('gives two keys two objects, and the same key one', async () => {
         const ns = fakeNamespace();
-        const worker = await workerSilo(ns);
+        const worker = await workerHost(ns);
         try {
             await worker.actor(Counter, 'a').increment(1);
             await worker.actor(Counter, 'b').increment(1);
@@ -174,7 +174,7 @@ describe('durableObjectPlacement', () => {
         // Counter/a would activate Counter/b *in a's object* and write b's
         // record into a's storage — single activation violated, silently.
         const ns = fakeNamespace();
-        const worker = await workerSilo(ns);
+        const worker = await workerHost(ns);
         try {
             await expect(worker.actor(Counter, 'a').bumpPeer('b')).resolves.toBe(1);
 
@@ -226,7 +226,7 @@ describe('durableObjectPlacement', () => {
 
     it('streams NDJSON back through the stub', async () => {
         const ns = fakeNamespace();
-        const worker = await workerSilo(ns);
+        const worker = await workerHost(ns);
         try {
             const seen: unknown[] = [];
             for await (const chunk of worker.actor(Counter, 'a').watch()) {
@@ -241,7 +241,7 @@ describe('durableObjectPlacement', () => {
     });
 
     it('keeps an ACTOR error branded across the hop', async () => {
-        // `fromSiloWireError` re-creates the error on this side, and the
+        // `fromHostWireError` re-creates the error on this side, and the
         // brand surviving is a conformance requirement — a forked wire is
         // how a remote `state-conflict` quietly stops being one, and the
         // runtime stops discarding stale activations.
@@ -249,7 +249,7 @@ describe('durableObjectPlacement', () => {
         // A re-entrant self-call is the cheapest genuine actor error to
         // raise inside the object: `bumpPeer('a')` on Counter/a.
         const ns = fakeNamespace();
-        const worker = await workerSilo(ns);
+        const worker = await workerHost(ns);
         try {
             const error = await worker
                 .actor(Counter, 'a')
@@ -264,7 +264,7 @@ describe('durableObjectPlacement', () => {
 
     it('carries a plain method failure back with its message intact', async () => {
         const ns = fakeNamespace();
-        const worker = await workerSilo(ns);
+        const worker = await workerHost(ns);
         try {
             const error = await worker
                 .actor(Counter, 'a')
@@ -291,7 +291,7 @@ describe('durableObjectPlacement', () => {
             },
             get: (id) => ns.get(id)
         };
-        const worker = await workerSilo(counting);
+        const worker = await workerHost(counting);
         try {
             await worker.actor(Counter, 'a').increment(1);
             await worker.actor(Counter, 'a').increment(1);

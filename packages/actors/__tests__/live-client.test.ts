@@ -10,8 +10,8 @@
  * the server side.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineActor, type Silo } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { defineActor, type Host } from '@sigx/actors';
+import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { createLiveChannel } from '@sigx/actors/app';
 import { configureActors, fetchTransport, type ActorTransport } from '@sigx/actors/client';
@@ -29,7 +29,7 @@ interface Opened {
     push(frame: LiveFrame): void;
     /** A clean `done` terminator — every subscription ended server-side. */
     end(): void;
-    /** A dropped body: what a proxy timeout or a silo restart looks like. */
+    /** A dropped body: what a proxy timeout or a host restart looks like. */
     fail(error?: Error): void;
 }
 
@@ -179,7 +179,7 @@ describe('the live channel', () => {
 
     it('drops an unchanged value, however it arrives', async () => {
         // Found by running the real app: a mutating turn re-runs EVERY
-        // subscription on that grain, so changing a room's topic also re-emits
+        // subscription on that actor, so changing a room's topic also re-emits
         // its `recent(20)` — an identical list. Delivering that is a re-render
         // (and a page-cache write) with nothing behind it, and it happens on
         // every write, not on some edge.
@@ -423,7 +423,7 @@ const Cart = defineActor({
     })
 });
 
-const running: Silo[] = [];
+const running: Host[] = [];
 
 afterEach(async () => {
     configureActors(null);
@@ -432,16 +432,16 @@ afterEach(async () => {
 
 describe('the live channel over the wire', () => {
     it('pushes an actor read as it changes', async () => {
-        const silo = createSilo({ actors: [Cart], defaults: quiet });
-        running.push(silo);
-        await silo.start();
+        const host = createHost({ actors: [Cart], defaults: quiet });
+        running.push(host);
+        await host.start();
 
         const transport = fetchTransport({
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
                 const response = await handleActorRequest(request, {
-                    silo,
+                    host,
                     origin: false,
                     // No keepalive: the test would otherwise have to tell a
                     // ping apart from a value, which the reader already does.
@@ -473,13 +473,13 @@ describe('the live channel over the wire', () => {
 
         // The seed, then one value per mutating turn.
         await vi.waitFor(() => expect(seen).toEqual([0]), { timeout: 2000 });
-        await silo.actor(Cart, 'w1').add('apple');
+        await host.actor(Cart, 'w1').add('apple');
         await vi.waitFor(() => expect(seen).toEqual([0, 1]), { timeout: 2000 });
 
         channel.close();
-        // The watch is released, so the grain can be collected again.
+        // The watch is released, so the actor can be collected again.
         await vi.waitFor(
-            () => expect(silo.activations().map((a) => a.keptAlive)).toEqual([false]),
+            () => expect(host.activations().map((a) => a.keptAlive)).toEqual([false]),
             { timeout: 2000 }
         );
     });

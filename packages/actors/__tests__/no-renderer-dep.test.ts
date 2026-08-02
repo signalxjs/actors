@@ -5,7 +5,7 @@
  * `import '@sigx/runtime-dom/platform'`, so importing it anywhere in `src/`
  * drags the DOM runtime in behind it. That is wrong for every non-browser
  * consumer this runtime exists to serve — a terminal dashboard, a Lynx app,
- * a headless silo — none of which have a DOM, and none of which use a
+ * a headless host — none of which have a DOM, and none of which use a
  * single DOM API through this package.
  *
  * `./app` genuinely needs framework primitives, but they all live in

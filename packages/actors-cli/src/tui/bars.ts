@@ -10,7 +10,7 @@
  * with two is merely a divergence.
  */
 import { commonScale, type BarChartItem, type StatusCell } from '@sigx/terminal';
-import type { HistogramSnapshot } from '@sigx/actors/silo';
+import type { HistogramSnapshot } from '@sigx/actors/host';
 
 /**
  * A histogram as three comparable bars.
@@ -18,7 +18,7 @@ import type { HistogramSnapshot } from '@sigx/actors/silo';
  * `null` for an absent or empty histogram rather than three zeroed bars,
  * because `BarChart` draws a `null` as "no reading" while a row of zeroes
  * asserts "we measured, and it was fast". `metrics({ histograms: false })`
- * and a silo that has served nothing are both the former.
+ * and a host that has served nothing are both the former.
  */
 export function percentileItems(snapshot: HistogramSnapshot | null): BarChartItem[] {
     const empty = !snapshot || snapshot.count === 0;
@@ -88,7 +88,7 @@ export function unclaimedShards(shards: Record<string, readonly string[]>): stri
         .sort((a, b) => shardIndex(a) - shardIndex(b));
 }
 
-/** Shards claimed by more than one silo — views have diverged. */
+/** Shards claimed by more than one host — views have diverged. */
 export function splitShards(shards: Record<string, readonly string[]>): string[] {
     return Object.entries(shards)
         .filter(([, claimants]) => claimants.length > 1)

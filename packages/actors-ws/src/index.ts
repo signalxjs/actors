@@ -1,11 +1,11 @@
 /**
- * `@sigx/actors-ws` — silo-to-silo traffic over WebSocket.
+ * `@sigx/actors-ws` — host-to-host traffic over WebSocket.
  *
  * It speaks the same frames as `@sigx/actors-tcp` (`@sigx/actors/cluster/frames`)
  * with the same multiplexing, cancellation and credit semantics. The only
  * difference is the socket underneath — and the three things that buys:
  *
- *  - **One port.** Frames ride the HTTP listener the silo already has, so
+ *  - **One port.** Frames ride the HTTP listener the host already has, so
  *    there is no second port to open in a security group or a Service.
  *  - **Through proxies and load balancers**, which forward WebSocket and
  *    generally will not forward an arbitrary TCP protocol.
@@ -20,7 +20,7 @@
  * import { cluster, httpTransport } from '@sigx/actors/cluster';
  * import { wsTransport } from '@sigx/actors-ws';
  *
- * const ws = wsTransport({ advertiseUrl: () => `ws://10.0.4.7:7311/_sigx/silo-ws` });
+ * const ws = wsTransport({ advertiseUrl: () => `ws://10.0.4.7:7311/_sigx/host-ws` });
  * const app = defineActorApp({ actors, storage }).use(
  *     cluster({ providers, advertise, secret, transport: [ws, httpTransport()] })
  * );
@@ -37,7 +37,7 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import {
     FrameType,
-    SiloConnection,
+    HostConnection,
     DEFAULT_CREDIT,
     DEFAULT_MAX_FRAME_BYTES
 } from '@sigx/actors/cluster/frames';
@@ -46,11 +46,11 @@ import {
     signAuth,
     watchSymbol,
     type MembershipView,
-    type SiloDescriptor,
-    type SiloTransport,
-    type SiloTransportConfig,
-    type SiloTransportFactory,
-    type SiloTransportRuntime
+    type HostDescriptor,
+    type HostTransport,
+    type HostTransportConfig,
+    type HostTransportFactory,
+    type HostTransportRuntime
 } from '@sigx/actors/cluster';
 import { ActorUnreachableError } from '@sigx/actors';
 import type { ActorCallContext, ActorDispatcher, ActorRef } from '@sigx/actors';
@@ -59,18 +59,18 @@ import { webSocketLink, type MinimalWebSocket } from './link';
 export { webSocketLink, type MinimalWebSocket } from './link';
 export { DEFAULT_CREDIT, DEFAULT_MAX_FRAME_BYTES } from '@sigx/actors/cluster/frames';
 
-/** This transport's key in `SiloDescriptor.addresses`. */
+/** This transport's key in `HostDescriptor.addresses`. */
 export const WS_TRANSPORT_NAME = 'ws';
 /** Default path the upgrade handler matches. */
-export const DEFAULT_WS_PATH = '/_sigx/silo-ws';
+export const DEFAULT_WS_PATH = '/_sigx/host-ws';
 
 export interface WsTransportOptions {
-    /** Path the upgrade handler matches. Default `/_sigx/silo-ws`. */
+    /** Path the upgrade handler matches. Default `/_sigx/host-ws`. */
     path?: string;
     /**
-     * The URL peers should dial, e.g. `ws://10.0.4.7:7311/_sigx/silo-ws`.
+     * The URL peers should dial, e.g. `ws://10.0.4.7:7311/_sigx/host-ws`.
      *
-     * A function, because the silo's own port is often not known until its
+     * A function, because the host's own port is often not known until its
      * HTTP listener has bound — and the seam requires the address be produced
      * at `start()`, *before* the membership join, so nothing is advertised
      * that is not already answering.
@@ -88,9 +88,9 @@ export interface WsTransportOptions {
     connect?(url: string): MinimalWebSocket;
 }
 
-/** The bits of a `SiloTransport` this package adds for the upgrade handler. */
-export interface WsSiloTransport extends SiloTransport {
-    /** @internal — used by `attachSiloUpgrade`. */
+/** The bits of a `HostTransport` this package adds for the upgrade handler. */
+export interface WsHostTransport extends HostTransport {
+    /** @internal — used by `attachHostUpgrade`. */
     readonly __accept: (socket: MinimalWebSocket) => void;
     /** @internal — the path the upgrade handler should match. */
     readonly __path: string;
@@ -107,9 +107,9 @@ export interface WsSiloTransport extends SiloTransport {
  * handler — and the upgrade cannot go through the route seam.
  */
 export interface WsTransportHandle {
-    (config: SiloTransportConfig): SiloTransport;
+    (config: HostTransportConfig): HostTransport;
     /**
-     * Attach the silo upgrade handler to a server. Safe to call before or
+     * Attach the host upgrade handler to a server. Safe to call before or
      * after `cluster()` builds the transport; it waits for the instance.
      * Returns a detach function.
      */
@@ -117,34 +117,34 @@ export interface WsTransportHandle {
 }
 
 export function wsTransport(options: WsTransportOptions): WsTransportHandle {
-    let built: SiloTransport | undefined;
-    let announce: ((t: SiloTransport) => void) | undefined;
-    const ready = new Promise<SiloTransport>((resolve) => {
+    let built: HostTransport | undefined;
+    let announce: ((t: HostTransport) => void) | undefined;
+    const ready = new Promise<HostTransport>((resolve) => {
         announce = resolve;
     });
 
-    const factory = (config: SiloTransportConfig): SiloTransport => {
+    const factory = (config: HostTransportConfig): HostTransport => {
         const path = options.path ?? DEFAULT_WS_PATH;
         const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
         const credit = options.credit ?? DEFAULT_CREDIT;
         const keepAliveMs = options.keepAliveMs ?? 15_000;
 
-        let runtime: SiloTransportRuntime | null = null;
+        let runtime: HostTransportRuntime | null = null;
         let keepAlive: ReturnType<typeof setInterval> | null = null;
-        const links = new Map<string, SiloConnection>();
-        const dialing = new Map<string, Promise<SiloConnection>>();
-        const pending = new Set<SiloConnection>();
-        const outbound = new WeakSet<SiloConnection>();
+        const links = new Map<string, HostConnection>();
+        const dialing = new Map<string, Promise<HostConnection>>();
+        const pending = new Set<HostConnection>();
+        const outbound = new WeakSet<HostConnection>();
 
-        const register = (siloId: string, connection: SiloConnection): void => {
-            const existing = links.get(siloId);
+        const register = (hostId: string, connection: HostConnection): void => {
+            const existing = links.get(hostId);
             if (existing && existing !== connection && !existing.closed) {
                 // Same rule as the TCP transport: the lexicographically
-                // smaller siloId is the designated dialer and its outbound
+                // smaller hostId is the designated dialer and its outbound
                 // connection wins. Both ends compute it from ids they have
                 // already exchanged, so exactly one survives with no extra
                 // round trip.
-                const weDial = config.siloId < siloId;
+                const weDial = config.hostId < hostId;
                 const keepExisting = weDial ? outbound.has(existing) : !outbound.has(existing);
                 if (keepExisting) {
                     connection.close('duplicate');
@@ -152,34 +152,34 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
                 }
                 existing.close('superseded by the designated dialer');
             }
-            links.set(siloId, connection);
+            links.set(hostId, connection);
         };
 
         const adopt = (
             socket: MinimalWebSocket,
             dialer: boolean,
-            expectedSiloId?: string
-        ): SiloConnection => {
-            const connection: SiloConnection = new SiloConnection({
+            expectedHostId?: string
+        ): HostConnection => {
+            const connection: HostConnection = new HostConnection({
                 config,
                 link: webSocketLink(socket),
                 dialer,
                 maxFrameBytes,
                 credit,
                 runtime: () => runtime,
-                onPeer: (siloId) => {
+                onPeer: (hostId) => {
                     pending.delete(connection);
-                    if (expectedSiloId && siloId !== expectedSiloId) {
+                    if (expectedHostId && hostId !== expectedHostId) {
                         connection.close(
-                            `expected ${expectedSiloId} at this address, got ${siloId}`
+                            `expected ${expectedHostId} at this address, got ${hostId}`
                         );
                         return;
                     }
-                    register(siloId, connection);
+                    register(hostId, connection);
                 },
                 onClose: () => {
                     pending.delete(connection);
-                    const id = connection.peerSiloId;
+                    const id = connection.peerHostId;
                     if (id && links.get(id) === connection) links.delete(id);
                 }
             });
@@ -187,13 +187,13 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
             return connection;
         };
 
-        const hello = (connection: SiloConnection, type: number): void => {
+        const hello = (connection: HostConnection, type: number): void => {
             connection.send({
                 type,
                 flags: 0,
                 status: 0,
                 corrId: 0,
-                payload: { siloId: config.siloId, epoch: config.epoch, proto: 1 }
+                payload: { hostId: config.hostId, epoch: config.epoch, proto: 1 }
             });
         };
 
@@ -210,16 +210,16 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
             return new Ctor(url);
         };
 
-        const dial = async (target: SiloDescriptor): Promise<SiloConnection> => {
+        const dial = async (target: HostDescriptor): Promise<HostConnection> => {
             const url = target.addresses?.[WS_TRANSPORT_NAME];
-            if (!url) throw new Error(`[sigx actors] ${target.siloId} advertises no ws address`);
+            if (!url) throw new Error(`[sigx actors] ${target.hostId} advertises no ws address`);
             let socket: MinimalWebSocket;
             try {
                 socket = openSocket(url);
             } catch (cause) {
-                throw new ActorUnreachableError(`${target.siloId} (${url})`, { cause });
+                throw new ActorUnreachableError(`${target.hostId} (${url})`, { cause });
             }
-            const connection = adopt(socket, true, target.siloId);
+            const connection = adopt(socket, true, target.hostId);
             try {
                 await new Promise<void>((resolve, reject) => {
                     socket.addEventListener('open', () => resolve(), { once: true });
@@ -235,24 +235,24 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
                 // classifies on the actor error kind, and anything it cannot
                 // classify is a hard failure where a retry would converge.
                 connection.close('connect failed');
-                throw new ActorUnreachableError(`${target.siloId} (${url})`, { cause });
+                throw new ActorUnreachableError(`${target.hostId} (${url})`, { cause });
             }
             hello(connection, FrameType.HELLO);
-            links.set(target.siloId, connection);
+            links.set(target.hostId, connection);
             return connection;
         };
 
-        const linkTo = (target: SiloDescriptor): Promise<SiloConnection> => {
-            const existing = links.get(target.siloId);
+        const linkTo = (target: HostDescriptor): Promise<HostConnection> => {
+            const existing = links.get(target.hostId);
             if (existing && !existing.closed) return Promise.resolve(existing);
-            const inFlight = dialing.get(target.siloId);
+            const inFlight = dialing.get(target.hostId);
             if (inFlight) return inFlight;
-            const promise = dial(target).finally(() => dialing.delete(target.siloId));
-            dialing.set(target.siloId, promise);
+            const promise = dial(target).finally(() => dialing.delete(target.hostId));
+            dialing.set(target.hostId, promise);
             return promise;
         };
 
-        const dispatcherFor = (target: SiloDescriptor): ActorDispatcher | null => {
+        const dispatcherFor = (target: HostDescriptor): ActorDispatcher | null => {
             // A routing answer, not a failure — the next transport in the
             // chain gets its turn. That is what makes a rolling deploy work.
             if (!target.addresses?.[WS_TRANSPORT_NAME]) return null;
@@ -262,7 +262,7 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
                 payloadArgs: readonly unknown[],
                 call: ActorCallContext
             ): Promise<{
-                connection: SiloConnection;
+                connection: HostConnection;
                 symbol: string;
                 payload: unknown;
                 envelope: string;
@@ -273,7 +273,7 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
                     connection,
                     symbol,
                     payload: config.codec.encode(payloadArgs),
-                    envelope: encodeEnvelope(call, config.siloId),
+                    envelope: encodeEnvelope(call, config.hostId),
                     auth:
                         config.secret === undefined
                             ? undefined
@@ -347,7 +347,7 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
             };
         };
 
-        const transport: WsSiloTransport = {
+        const transport: WsHostTransport = {
             name: WS_TRANSPORT_NAME,
             __path: path,
             __accept(socket: MinimalWebSocket): void {
@@ -356,7 +356,7 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
                 hello(connection, FrameType.WELCOME);
             },
 
-            async start(rt: SiloTransportRuntime): Promise<string> {
+            async start(rt: HostTransportRuntime): Promise<string> {
                 runtime = rt;
                 if (keepAliveMs > 0) {
                     keepAlive = setInterval(() => {
@@ -374,13 +374,13 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
             dispatcherFor,
 
             onMembership(view: MembershipView): void {
-                // Silo ids are minted per START and never reused, so a link to
+                // Host ids are minted per START and never reused, so a link to
                 // a departed peer can never become useful again.
-                const live = new Set(view.silos.map((s) => s.siloId));
-                for (const [siloId, connection] of [...links]) {
-                    if (!live.has(siloId)) {
+                const live = new Set(view.hosts.map((s) => s.hostId));
+                for (const [hostId, connection] of [...links]) {
+                    if (!live.has(hostId)) {
                         connection.close('peer left the cluster');
-                        links.delete(siloId);
+                        links.delete(hostId);
                     }
                 }
             },
@@ -388,9 +388,9 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
             async stop(): Promise<void> {
                 if (keepAlive) clearInterval(keepAlive);
                 keepAlive = null;
-                for (const connection of [...links.values()]) connection.close('silo stopping');
+                for (const connection of [...links.values()]) connection.close('host stopping');
                 links.clear();
-                for (const connection of [...pending]) connection.close('silo stopping');
+                for (const connection of [...pending]) connection.close('host stopping');
                 pending.clear();
                 runtime = null;
             },
@@ -410,7 +410,7 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
         server: HttpServer,
         attachOptions?: { wss?: WebSocketServerLike }
     ): Promise<() => void> =>
-        attachSiloUpgrade(server, {
+        attachHostUpgrade(server, {
             transport: built ?? (await ready),
             ...(attachOptions?.wss ? { wss: attachOptions.wss } : {})
         });
@@ -420,7 +420,7 @@ export function wsTransport(options: WsTransportOptions): WsTransportHandle {
 
 export interface UpgradeOptions {
     /** The transport instance built by `wsTransport()(config)`. */
-    transport: SiloTransport;
+    transport: HostTransport;
     /**
      * `ws`'s `WebSocketServer`, in `noServer` mode. Optional: if omitted, one
      * is created via a dynamic `import('ws')`.
@@ -439,7 +439,7 @@ export interface WebSocketServerLike {
 }
 
 /**
- * Attach the silo upgrade handler to an existing HTTP server.
+ * Attach the host upgrade handler to an existing HTTP server.
  *
  * The package does not own the server on purpose: `ActorRoute.handle` returns
  * a `Response` and cannot express a Node upgrade — that needs the raw socket —
@@ -448,11 +448,11 @@ export interface WebSocketServerLike {
  *
  * Returns a detach function.
  */
-export async function attachSiloUpgrade(
+export async function attachHostUpgrade(
     server: HttpServer,
     options: UpgradeOptions
 ): Promise<() => void> {
-    const transport = options.transport as WsSiloTransport;
+    const transport = options.transport as WsHostTransport;
     const path = transport.__path ?? DEFAULT_WS_PATH;
     let wss = options.wss;
     if (!wss) {

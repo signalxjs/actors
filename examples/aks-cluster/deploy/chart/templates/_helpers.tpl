@@ -1,4 +1,4 @@
-{{/* Resources append suffixes (-silo, -redis, -loadgen-<suffix>), so cap
+{{/* Resources append suffixes (-host, -redis, -loadgen-<suffix>), so cap
      the base well under the 63-char resource-name limit. */}}
 {{- define "chart.fullname" -}}
 {{- printf "%s" .Release.Name | trunc 40 | trimSuffix "-" -}}
@@ -10,9 +10,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{- define "chart.siloSelector" -}}
+{{- define "chart.hostSelector" -}}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: silo
+app.kubernetes.io/component: host
 {{- end -}}
 
 {{- define "chart.redisSelector" -}}

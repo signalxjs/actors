@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { createSilo, manualScheduler } from '@sigx/actors/silo';
+import { createHost, manualScheduler } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -101,15 +101,15 @@ describe('streams', () => {
     });
 
     it('iterates a finite stream method end-to-end', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const host = createHost({ actors: [feed], defaults: quiet });
         const out: number[] = [];
-        for await (const n of silo.actor(feed, 's1').countTo(3)) out.push(n);
+        for await (const n of host.actor(feed, 's1').countTo(3)) out.push(n);
         expect(out).toEqual([1, 2, 3]);
     });
 
     it('the change feed yields a snapshot per mutating turn and releases on return()', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 's2');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 's2');
         await client.bump(); // activate first
 
         const iterator = client.watch()[Symbol.asyncIterator]();
@@ -132,13 +132,13 @@ describe('streams', () => {
         expect(collected).toEqual([2, 3, 4]);
         await iterator.return?.();
         // Keep-alive released → deactivation can proceed.
-        await silo.deactivateType('Feed');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Feed');
+        expect(host.stats().activations).toBe(0);
     });
 
     it('changes({ initial: true }) seeds the current snapshot and drops nothing after it', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 'seed');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 'seed');
         await client.bump(); // n = 1
 
         const iterator = client.watchSeeded()[Symbol.asyncIterator]();
@@ -152,13 +152,13 @@ describe('streams', () => {
         expect((await iterator.next()).value).toBe(3);
 
         await iterator.return?.();
-        await silo.deactivateType('Feed');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Feed');
+        expect(host.stats().activations).toBe(0);
     });
 
     it('changes() without the option still yields no seed frame', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 'noseed');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 'noseed');
         await client.bump(); // n = 1
 
         const iterator = client.watch()[Symbol.asyncIterator]();
@@ -172,10 +172,10 @@ describe('streams', () => {
     });
 
     it('warns in dev when a stream body reads live ctx.state', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const host = createHost({ actors: [feed], defaults: quiet });
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         try {
-            const iterator = silo.actor(feed, 'live').watchLive()[Symbol.asyncIterator]();
+            const iterator = host.actor(feed, 'live').watchLive()[Symbol.asyncIterator]();
             await iterator.next();
             await iterator.return?.();
             expect(warn.mock.calls.flat().join(' ')).toMatch(/ctx\.state/);
@@ -185,10 +185,10 @@ describe('streams', () => {
     });
 
     it('warns in dev when a stream body reads live ctx.state while cleaning up', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
+        const host = createHost({ actors: [feed], defaults: quiet });
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         try {
-            const iterator = silo
+            const iterator = host
                 .actor(feed, 'livefin')
                 .watchLiveOnCleanup()[Symbol.asyncIterator]();
             await iterator.next();
@@ -203,16 +203,16 @@ describe('streams', () => {
     });
 
     it('snapshot() is detached from live state', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        await expect(silo.actor(feed, 's3').snapshotThenMutate()).resolves.toEqual({
+        const host = createHost({ actors: [feed], defaults: quiet });
+        await expect(host.actor(feed, 's3').snapshotThenMutate()).resolves.toEqual({
             snapped: 0,
             live: 999
         });
     });
 
     it('a consumer that disconnects mid-pull can still tear the body down', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 'park');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 'park');
         await client.bump(); // activate
 
         const iterator = client.watch()[Symbol.asyncIterator]();
@@ -229,13 +229,13 @@ describe('streams', () => {
         await expect(within(parked, 1000)).resolves.toMatchObject({ done: true });
 
         // Keep-alive released → the activation is collectable again.
-        await silo.deactivateType('Feed');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Feed');
+        expect(host.stats().activations).toBe(0);
     });
 
     it('tears down a consumer that disconnects before the body has even started', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 'immediate');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 'immediate');
         await client.bump();
 
         const iterator = client.watch()[Symbol.asyncIterator]();
@@ -247,13 +247,13 @@ describe('streams', () => {
 
         await expect(within(returned, 1000)).resolves.toMatchObject({ done: true });
         await expect(within(parked, 1000)).resolves.toMatchObject({ done: true });
-        await silo.deactivateType('Feed');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Feed');
+        expect(host.stats().activations).toBe(0);
     });
 
     it('runs the body’s finally when a mid-pull consumer disconnects', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 'cleanup');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 'cleanup');
         await client.bump();
 
         const iterator = client.watchCleanup()[Symbol.asyncIterator]();
@@ -269,8 +269,8 @@ describe('streams', () => {
     });
 
     it('a disconnect closes only that body’s feed, not a sibling’s', async () => {
-        const silo = createSilo({ actors: [feed], defaults: quiet });
-        const client = silo.actor(feed, 'siblings');
+        const host = createHost({ actors: [feed], defaults: quiet });
+        const client = host.actor(feed, 'siblings');
         await client.bump(); // n = 1
 
         const first = client.watch()[Symbol.asyncIterator]();
@@ -291,31 +291,31 @@ describe('streams', () => {
 
     it('releases the keep-alive when a mid-pull consumer disconnects', async () => {
         const scheduler = manualScheduler();
-        const silo = createSilo({
+        const host = createHost({
             actors: [feed],
             scheduler,
             defaults: { idleAfterMs: 0, sweepIntervalMs: 1_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            const client = silo.actor(feed, 'keepalive');
+            const client = host.actor(feed, 'keepalive');
             await client.bump();
 
             const iterator = client.watch()[Symbol.asyncIterator]();
             void iterator.next();
             await new Promise((r) => setTimeout(r, 20));
-            expect(silo.activations()[0]?.keptAlive).toBe(true);
+            expect(host.activations()[0]?.keptAlive).toBe(true);
 
             await within(iterator.return!(), 1000);
             // The production cost of a stuck teardown is here rather than in
             // an error: the stream's ref stays held, so idle sweeping skips
             // this activation for as long as the process runs.
-            expect(silo.activations()[0]?.keptAlive).toBe(false);
+            expect(host.activations()[0]?.keptAlive).toBe(false);
             scheduler.advance(1_000);
             await new Promise((r) => setTimeout(r, 20));
-            expect(silo.stats().activations).toBe(0);
+            expect(host.stats().activations).toBe(0);
         } finally {
-            await silo.stop({ timeoutMs: 1_000 });
+            await host.stop({ timeoutMs: 1_000 });
         }
     });
 });

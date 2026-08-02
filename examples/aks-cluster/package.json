@@ -2,7 +2,7 @@
     "name": "aks-cluster-example",
     "private": true,
     "type": "module",
-    "description": "Production-shaped multi-silo cluster for the AKS deployment test: env-driven silo entry + in-cluster load generator, one container image",
+    "description": "Production-shaped multi-host cluster for the AKS deployment test: env-driven host entry + in-cluster load generator, one container image",
     "scripts": {
         "start": "node --conditions=production server.mjs",
         "start:dev": "node server.mjs",

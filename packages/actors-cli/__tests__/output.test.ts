@@ -28,9 +28,9 @@ import type { MonitorSnapshot, MonitorSource } from '../src/source/types';
 const { source } = vi.hoisted(() => {
     const snapshot: MonitorSnapshot = {
         at: 1_700_000_000_000,
-        silos: [
+        hosts: [
             {
-                siloId: 'silo-a',
+                hostId: 'host-a',
                 address: 'http://a:3000',
                 status: 'active',
                 uptimeMs: 65_000,
@@ -52,7 +52,7 @@ const { source } = vi.hoisted(() => {
         cluster: null,
         metrics: null,
         activations: null,
-        health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, silo: null },
+        health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, host: null },
         partial: false
     };
     const source: MonitorSource = {
@@ -101,7 +101,7 @@ describe('command output', () => {
         await runStats({ ...c.ctx, args: { ...c.ctx.args, json: true } });
         // The whole point of --json. `[sigx] {` is not JSON.
         const parsed = JSON.parse(c.text()) as MonitorSnapshot;
-        expect(parsed.silos).toHaveLength(1);
+        expect(parsed.hosts).toHaveLength(1);
         expect(parsed.partial).toBe(false);
     });
 
@@ -109,7 +109,7 @@ describe('command output', () => {
         const c = capture();
         await runStats(c.ctx);
         const text = c.text();
-        expect(text).toContain('silo-a');
+        expect(text).toContain('host-a');
         // Seven characters of noise in front of every row would also break
         // the column alignment the table works to produce.
         expect(text).not.toContain('[sigx]');

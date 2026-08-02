@@ -25,7 +25,7 @@ WORKDIR /app
 COPY --from=build /out ./
 # Fail the BUILD, not the pod: the runtime deps must resolve under the
 # production condition, and the built app must actually be in the image.
-RUN node --conditions=production -e "await import('@sigx/actors/silo'); await import('@sigx/actors-redis'); await import('@sigx/server/node'); await import('@sigx/server-renderer/node');"
+RUN node --conditions=production -e "await import('@sigx/actors/host'); await import('@sigx/actors-redis'); await import('@sigx/server/node'); await import('@sigx/server-renderer/node');"
 RUN node -e "const fs=require('node:fs'); fs.accessSync('dist/server/entry-server.js'); fs.accessSync('dist/client/index.html')"
 USER node
 EXPOSE 8080 7311

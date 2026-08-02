@@ -4,7 +4,7 @@
  *
  * The design follows issue #38: counters you READ, not a push pipeline and
  * no metrics-library dependency. `snapshot()` is the whole consumer API, so
- * a `/metrics` route, a stats grain, or a test assertion all use the same
+ * a `/metrics` route, a stats actor, or a test assertion all use the same
  * thing.
  *
  * Where each number comes from:
@@ -14,11 +14,11 @@
  *   onBeforeActivate     activations created
  *   onAfterDeactivate    activations destroyed, by reason
  *   decorateStorage      load/save/clear counts, latency, etag conflicts
- *   onStart              a silo handle, for live gauges
+ *   onStart              a host handle, for live gauges
  *
  * Only `observeTurns` needed adding. A dispatch middleware measures
- * enqueue-to-settle and cannot separate "this grain is slow" from "this
- * grain is hot" — opposite problems with opposite fixes — and only the
+ * enqueue-to-settle and cannot separate "this actor is slow" from "this
+ * actor is hot" — opposite problems with opposite fixes — and only the
  * activation knows both halves.
  */
 import { isActorError, isStorageConflict } from '../errors';
@@ -28,8 +28,8 @@ import type {
     ActorRef,
     ActorStorage,
     DeactivationReason,
-    Silo,
-    SiloStats
+    Host,
+    HostStats
 } from '../types';
 import { HISTOGRAM_LAYOUT, Histogram, type HistogramSnapshot } from './histogram';
 import {
@@ -68,7 +68,7 @@ export interface MetricsOptions {
      * How many recent failures to keep, newest last; 0 disables the ring.
      * Default 32.
      *
-     * The counts in `errors.byKind` say a silo is failing; the ring says
+     * The counts in `errors.byKind` say a host is failing; the ring says
      * what it looked like. Bounded because it is a debugging aid living in a
      * long-running process, not a log.
      */
@@ -108,7 +108,7 @@ export interface ActorMetricsSnapshot {
     };
     /** End-to-end: enqueue to settle. Null when `histograms: false`. */
     latencyMs: HistogramSnapshot | null;
-    /** Time waiting for the mailbox — high means the grain is HOT. */
+    /** Time waiting for the mailbox — high means the actor is HOT. */
     queueMs: HistogramSnapshot | null;
     /** Time holding the mailbox — high means the turn itself is SLOW. */
     turnMs: HistogramSnapshot | null;
@@ -144,8 +144,8 @@ export interface ActorMetricsSnapshot {
         conflicts: number;
         latencyMs: HistogramSnapshot | null;
     };
-    /** Live gauges from `silo.stats()`; null before `start()`. */
-    gauges: SiloStats | null;
+    /** Live gauges from `host.stats()`; null before `start()`. */
+    gauges: HostStats | null;
 }
 
 /** What a caller may ask a digest to carry. All of it is capped. */
@@ -165,7 +165,7 @@ export interface MetricsPlugin extends ActorPlugin {
      * The MERGEABLE view of the same counters, for `clusterStats()`.
      *
      * Distinct from `snapshot()` because a snapshot cannot be added up:
-     * its latency fields are percentiles, and averaging those across silos
+     * its latency fields are percentiles, and averaging those across hosts
      * yields a number that is not the p99 of anything. A digest carries the
      * raw bucket counts instead, so the cluster's percentiles can be
      * re-derived from the summed distribution.
@@ -177,7 +177,7 @@ export interface MetricsPlugin extends ActorPlugin {
     readonly enabled: boolean;
     /**
      * Start collecting. Before `start()` this only records the intent; the
-     * turn subscription attaches when the silo comes up.
+     * turn subscription attaches when the host comes up.
      */
     enable(): void;
     /**
@@ -223,7 +223,7 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
     const maxMethods = resolveLimit(options.maxMethods, DEFAULT_MAX_METHODS);
     const maxRecentErrors = resolveLimit(options.recentErrors, DEFAULT_RECENT_ERRORS);
 
-    let silo: Silo | null = null;
+    let host: Host | null = null;
     // Monotonic: `windowMs` is a duration, and the wall clock can step.
     let windowStart = performance.now();
     let enabled = options.enabled ?? true;
@@ -404,8 +404,8 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
             // larger half of the cost.
             if (queue && turn) {
                 subscribeTurns = () => {
-                    if (detachTurns || !silo) return;
-                    detachTurns = silo.observeTurns((ref, method, queuedMs, elapsedMs) => {
+                    if (detachTurns || !host) return;
+                    detachTurns = host.observeTurns((ref, method, queuedMs, elapsedMs) => {
                         queue.record(queuedMs);
                         turn.record(elapsedMs);
                         const bucket = bucketFor(ref.type);
@@ -413,7 +413,7 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                         bucket?.turn?.record(elapsedMs);
                         // The queue/turn split is the reason this seam
                         // exists, and it is most useful PER METHOD: a hot
-                        // grain and one slow method look identical in the
+                        // actor and one slow method look identical in the
                         // per-type view.
                         const methodBucket = methodBucketFor(ref.type, method);
                         methodBucket?.queue?.record(queuedMs);
@@ -476,22 +476,22 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
             // provider, so this costs nothing but the closure.
             registry.reportOps('metrics', () => plugin.snapshot());
             // …and the mergeable half, which `cluster()` reads to put this
-            // silo's distribution into `SiloReport`. Same "registration is
-            // free" argument: a silo with no cluster never calls it.
+            // host's distribution into `HostReport`. Same "registration is
+            // free" argument: a host with no cluster never calls it.
             registry.reportDigest('metrics', (options) =>
                 plugin.digest(options as MetricsDigestOptions | undefined)
             );
 
-            registry.onStart((live: Silo) => {
-                silo = live;
+            registry.onStart((live: Host) => {
+                host = live;
                 if (enabled) subscribeTurns?.();
             });
             registry.onStop(() => {
-                // Drop the handle: gauges from a stopped silo are stale, and
-                // holding it would pin the whole silo graph in memory.
+                // Drop the handle: gauges from a stopped host are stale, and
+                // holding it would pin the whole host graph in memory.
                 detachTurns?.();
                 detachTurns = null;
-                silo = null;
+                host = null;
             });
         },
 
@@ -537,13 +537,13 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                     conflicts,
                     latencyMs: storageLatency?.snapshot() ?? null
                 },
-                gauges: silo ? silo.stats() : null
+                gauges: host ? host.stats() : null
             };
         },
 
         digest(options: MetricsDigestOptions = {}): MetricsDigest {
             // Capped on top of `maxTypes`/`maxMethods`, because these rows
-            // ride an internal wire once a second per silo and the totals
+            // ride an internal wire once a second per host and the totals
             // only need counts. The fold keeps the breakdown summing to
             // `calls.total` rather than silently under-reporting.
             const typeLimit = resolveLimit(options.types, DEFAULT_DIGEST_TYPES);
@@ -570,7 +570,7 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                 windowMs: performance.now() - windowStart,
                 calls: { total: calls, failed, streams },
                 // Only the four TOP-LEVEL histograms travel. Per-type and
-                // per-method ones would be ~20KB a silo even sparse, for a
+                // per-method ones would be ~20KB a host even sparse, for a
                 // breakdown the cluster totals only want counts for.
                 latency: latency?.digest() ?? null,
                 queue: queue?.digest() ?? null,

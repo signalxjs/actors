@@ -7,7 +7,7 @@
  * supplied. An actor guard cannot do this itself, because guards receive
  * `(rq, { symbol, name })` — no key and no arguments.
  *
- * The `actor()` call here dispatches IN-PROCESS through the silo seam: same
+ * The `actor()` call here dispatches IN-PROCESS through the host seam: same
  * expression as the browser's, no HTTP hop, and the actor's own
  * `requireUser` chain still runs against this request.
  */

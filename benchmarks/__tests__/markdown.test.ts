@@ -111,9 +111,9 @@ function report(before: BenchResult, after: BenchResult, threshold = 0.1): strin
 
 describe('markdownComparison', () => {
     it('leads with the verdict and names both refs', () => {
-        const before = result([scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])]);
+        const before = result([scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])]);
         const after = result(
-            [scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])],
+            [scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])],
             1000,
             'def5678'
         );
@@ -127,12 +127,12 @@ describe('markdownComparison', () => {
     });
 
     it('reports a drop in a higher-is-better metric as a regression', () => {
-        const before = result([scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])]);
-        const after = result([scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 70)])]);
+        const before = result([scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])]);
+        const after = result([scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 70)])]);
 
         const md = report(before, after);
         expect(md).toContain('**Changes beyond ±10%**');
-        expect(md).toMatch(/\| `dispatch\/warm-grain` \| `c=1\/ops_per_sec` \|.*-30\.0% \| 🔴 regressed \|/);
+        expect(md).toMatch(/\| `dispatch\/warm-actor` \| `c=1\/ops_per_sec` \|.*-30\.0% \| 🔴 regressed \|/);
     });
 
     it('calls a delta inside the run-to-run spread inconclusive, not a regression', () => {
@@ -153,11 +153,11 @@ describe('markdownComparison', () => {
     });
 
     it('warns that the machine moved, and downgrades every verdict, when the probe drifted', () => {
-        const before = result([scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])]);
+        const before = result([scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])]);
         // Probe 30% slower on the "after" side — far past MACHINE_DRIFT_LIMIT,
         // so nothing below it can be attributed to the code.
         const after = result(
-            [scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 70)])],
+            [scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 70)])],
             700
         );
 
@@ -178,9 +178,9 @@ describe('markdownComparison', () => {
     it('renders a metric the "before" side never measured as new, with no delta', () => {
         // The regression this pins: `compare()` leaves the baseline at 0 for a
         // new metric, which rendered as a confident "0.0 → 120.0 (+0.0)".
-        const before = result([scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])]);
+        const before = result([scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])]);
         const after = result([
-            scenario('dispatch/warm-grain', [
+            scenario('dispatch/warm-actor', [
                 metric('c=1/ops_per_sec', 100),
                 metric('c=64/ops_per_sec', 120)
             ])
@@ -188,23 +188,23 @@ describe('markdownComparison', () => {
 
         const md = report(before, after);
         expect(md).toContain('**New** — measured on the "after" side only');
-        expect(md).toContain('`dispatch/warm-grain c=64/ops_per_sec`');
+        expect(md).toContain('`dispatch/warm-actor c=64/ops_per_sec`');
         expect(md).toMatch(/\| `c=64\/ops_per_sec` \| — \| 120\.0 \| — \| 🆕 new \|/);
         expect(md).not.toMatch(/`c=64\/ops_per_sec` \| 0\.0/);
     });
 
     it('lists a metric that stopped being measured as stale', () => {
         const before = result([
-            scenario('dispatch/warm-grain', [
+            scenario('dispatch/warm-actor', [
                 metric('c=1/ops_per_sec', 100),
                 metric('c=512/ops_per_sec', 90)
             ])
         ]);
-        const after = result([scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])]);
+        const after = result([scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])]);
 
         const md = report(before, after);
         expect(md).toContain('**Stale**');
-        expect(md).toContain('`dispatch/warm-grain c=512/ops_per_sec`');
+        expect(md).toContain('`dispatch/warm-actor c=512/ops_per_sec`');
     });
 
     it('does not call a crashed scenario\'s metrics "renamed or removed"', () => {
@@ -229,12 +229,12 @@ describe('markdownComparison', () => {
         // a real leak below rounding noise and lets truncation drop it.
         const leak = { unit: 'bytes', direction: 'lower', noiseFloor: 1 } as const;
         const before = result([
-            scenario('mem/leak-activate-deactivate', [metric('retained_per_grain', 0, leak)]),
-            scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)])
+            scenario('mem/leak-activate-deactivate', [metric('retained_per_actor', 0, leak)]),
+            scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)])
         ]);
         const after = result([
-            scenario('mem/leak-activate-deactivate', [metric('retained_per_grain', 4096, leak)]),
-            scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 70)])
+            scenario('mem/leak-activate-deactivate', [metric('retained_per_actor', 4096, leak)]),
+            scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 70)])
         ]);
 
         const md = report(before, after);
@@ -242,7 +242,7 @@ describe('markdownComparison', () => {
         const rows = headline.split('\n').filter((l) => l.startsWith('| `'));
         // Both regressed, so verdict priority ties and magnitude decides: the
         // unquantifiable 4 KiB leak must not sort below a -30% throughput move.
-        expect(rows[0]).toContain('retained_per_grain');
+        expect(rows[0]).toContain('retained_per_actor');
         expect(rows[0]).toContain('🔴 regressed');
         // And with no percentage to show, it reports the absolute difference.
         expect(rows[0]).toContain('+4.0 KiB');
@@ -262,13 +262,13 @@ describe('markdownComparison', () => {
     it('surfaces a big GC move as a diagnostic, never as a regression', () => {
         const gc = { unit: 'ms', direction: 'lower', informational: true } as const;
         const before = result([
-            scenario('dispatch/warm-grain', [
+            scenario('dispatch/warm-actor', [
                 metric('c=1/ops_per_sec', 100),
                 metric('gc/pause_ms', 10, gc)
             ])
         ]);
         const after = result([
-            scenario('dispatch/warm-grain', [
+            scenario('dispatch/warm-actor', [
                 metric('c=1/ops_per_sec', 100),
                 metric('gc/pause_ms', 20, gc)
             ])
@@ -465,14 +465,14 @@ describe('markdownComparison', () => {
         // one row worth acting on must not be the row that gets dropped.
         const noisy = { spread: 0.9 };
         const before = result([
-            scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)]),
+            scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)]),
             scenario(
                 'noise/everything',
                 Array.from({ length: 200 }, (_, i) => metric(`m${i}/ops_per_sec`, 100, noisy))
             )
         ]);
         const after = result([
-            scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 55)]),
+            scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 55)]),
             scenario(
                 'noise/everything',
                 Array.from({ length: 200 }, (_, i) => metric(`m${i}/ops_per_sec`, 80, noisy))
@@ -489,7 +489,7 @@ describe('markdownComparison', () => {
         expect(md).toMatch(/_… and \d+ more row\(s\) past the threshold/);
         // The only real regression outranks 200 inconclusive rows.
         expect(md).toContain('🔴 regressed');
-        expect(md).toMatch(/`dispatch\/warm-grain` \| `c=1\/ops_per_sec` \|.*🔴 regressed/);
+        expect(md).toMatch(/`dispatch\/warm-actor` \| `c=1\/ops_per_sec` \|.*🔴 regressed/);
     });
 
     it('keeps the biggest movers when it truncates', () => {
@@ -500,11 +500,11 @@ describe('markdownComparison', () => {
             )
         );
         const before = result([
-            scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 100)]),
+            scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 100)]),
             ...filler
         ]);
         const after = result([
-            scenario('dispatch/warm-grain', [metric('c=1/ops_per_sec', 40)]),
+            scenario('dispatch/warm-actor', [metric('c=1/ops_per_sec', 40)]),
             ...filler
         ]);
 

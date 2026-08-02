@@ -6,7 +6,7 @@ image:
 
 replicaCount: 3
 
-# Spread silos across nodes. A silo is one single-threaded Node process, so
+# Spread hosts across nodes. A host is one single-threaded Node process, so
 # replicas on the same node share one node's cores and add no throughput —
 # this is what makes replicaCount mean something.
 spread:
@@ -19,16 +19,16 @@ spread:
 ports:
   # What the ingress routes to: SSR + assets + serverFns + actor endpoint.
   public: 8080
-  # Probes, peer silos (advertise target), ops via port-forward. Never
+  # Probes, peer hosts (advertise target), ops via port-forward. Never
   # routed by the ingress.
   internal: 7311
 
 ingress:
   host: chat.omniaflowtest.net
-  # Hash actor calls to the grain's owner at the edge (a second Ingress for
+  # Hash actor calls to the actor's owner at the edge (a second Ingress for
   # /_sigx/actor with upstream-hash-by on the routing token). Only useful
   # together with preferLocalPolicy() in the app — the pair is what turns
-  # ~0.85 cross-silo hops per request into ~0.
+  # ~0.85 cross-host hops per request into ~0.
   localityRouting: true
 
 env:
@@ -90,8 +90,8 @@ redis:
       cpu: 500m
       memory: 256Mi
   appendonly: true
-  # Prefer a node without silos on it (soft — see the template).
-  awayFromSilos: true
+  # Prefer a node without hosts on it (soft — see the template).
+  awayFromHosts: true
   persistence:
     enabled: true
     size: 1Gi

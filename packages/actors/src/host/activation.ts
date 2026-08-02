@@ -12,7 +12,7 @@ import {
     ActorActivationError,
     ActorMethodNotFoundError,
     ActorStateConflictError,
-    SiloShutdownError,
+    HostShutdownError,
     isStorageConflict
 } from '../errors';
 import {
@@ -51,7 +51,7 @@ export const DEFAULT_WATCH_THROTTLE_MS = 50;
 /** Keys a context extension may never set — they reach the prototype. */
 const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** What the silo provides to every activation. */
+/** What the host provides to every activation. */
 export interface ActivationHost {
     readonly idleAfterMs: number;
     readonly slowTurnMs: number;
@@ -66,7 +66,7 @@ export interface ActivationHost {
      * timestamps — with none set the hot path is byte for byte what it was
      * before this seam existed.
      *
-     * MUTABLE on purpose: the silo clears it the moment the last observer
+     * MUTABLE on purpose: the host clears it the moment the last observer
      * unsubscribes, which is what makes switching observation off at runtime
      * actually cheap. A boolean checked inside a still-registered observer
      * would keep paying for the two clock reads below — the larger half of
@@ -242,7 +242,7 @@ export class Activation {
             // Crash recovery: restart every ledgered run. Only actors that
             // DECLARE tasks pay the storage read; everyone else activates
             // byte for byte as before. A liveness-reminder delivery lands
-            // here too — activating the grain is the delivery's real work.
+            // here too — activating the actor is the delivery's real work.
             if (opts.tasks) {
                 const ledger = await a.#ledger.load();
                 for (const [name, entry] of Object.entries(ledger)) {
@@ -387,7 +387,7 @@ export class Activation {
         }
         // The CALLER's signal, so an abandoned subscription releases even
         // when nothing ever calls `return()` on it — which is the normal
-        // case across a silo hop, where the serving generator is parked at
+        // case across a host hop, where the serving generator is parked at
         // an `await` and cannot act on a queued `return()` at all.
         return shared.subscribe(call.abortSignal);
     }
@@ -655,7 +655,7 @@ export class Activation {
             if (name === TASK_REMINDER) {
                 // The runtime's liveness reminder — never the user's. Its
                 // real work already happened: delivery re-activated the
-                // grain and `create` resumed the ledgered runs. Here, only
+                // actor and `create` resumed the ledgered runs. Here, only
                 // self-heal: restart an entry that somehow has no run, and
                 // disarm a reminder whose ledger is gone.
                 const ledger = await this.#ledger.load();
@@ -846,7 +846,7 @@ export class Activation {
         const table = this.#scope.run(() => opts.streams!(this.#streamContext(feeds)));
         // `run` returns undefined on a stopped scope — a turn that survived a
         // force-drop. Say so, rather than failing as an unknown method.
-        if (!table) throw new SiloShutdownError();
+        if (!table) throw new HostShutdownError();
         return table as Record<string, AnyStreamFn>;
     }
 
@@ -902,10 +902,10 @@ export class Activation {
      */
     async #startTask(name: string, input: unknown): Promise<void> {
         if (this.#faulted) throw this.#faulted;
-        // Deactivation in progress: the grain is going away — starting new
+        // Deactivation in progress: the actor is going away — starting new
         // detached work now would either be instantly aborted or escape the
         // settle the deactivation just awaited.
-        if (this.#abort.signal.aborted) throw new SiloShutdownError();
+        if (this.#abort.signal.aborted) throw new HostShutdownError();
         if (this.#tasks.has(name)) return;
         const run: TaskRun = {
             name,
@@ -1007,7 +1007,7 @@ export class Activation {
         // Per RUN, like #streamTable is per subscription: each run's table
         // closes over its own derived context (its own abortSignal).
         const table = this.#scope.run(() => opts.tasks!(this.#taskContext(run)));
-        if (!table) throw new SiloShutdownError();
+        if (!table) throw new HostShutdownError();
         return ownFn<AnyTaskFn>(table, name);
     }
 

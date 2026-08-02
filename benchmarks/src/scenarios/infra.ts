@@ -2,7 +2,7 @@
  * Tier 3 — a REAL deployment over its public endpoint.
  *
  * Tier 1 measures algorithmic shape in one process; Tier 2 measures counts
- * over real sockets across forked silos. Tier 3 measures neither: it
+ * over real sockets across forked hosts. Tier 3 measures neither: it
  * measures a deployment — TLS, an ingress, a placement policy, an edge
  * hash, a directory in Redis, whatever the chart happens to say today. Its
  * numbers are therefore NOT comparable to Tier 1 or Tier 2 ones, and
@@ -21,7 +21,7 @@
  * on a same-region VM is the tool for that, and the two must not be quoted
  * interchangeably.
  *
- * Give it TIME. Measured on a 3-silo deployment: `--runs=2 --duration=15000`
+ * Give it TIME. Measured on a 3-host deployment: `--runs=2 --duration=15000`
  * lands the read ladder at +/-13-32% but leaves the write and locality
  * scenarios at +/-68-91%, where nothing short of a 2x change is visible.
  * `--runs=3 --duration=30000` or more is the honest minimum for those, and
@@ -29,7 +29,7 @@
  * mistaken for a verdict ("noise >> signal" means exactly that).
  *
  * A comparison is refused outright when the DEPLOYMENT SHAPE differs (see
- * `INFRA_SHAPE`): three silos packed on one node and three spread across
+ * `INFRA_SHAPE`): three hosts packed on one node and three spread across
  * three look identical in every report and differ by more than 2x in
  * throughput, so silently comparing them produces a confident wrong
  * answer.

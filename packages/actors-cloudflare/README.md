@@ -9,7 +9,7 @@ Cloudflare already guarantees a single instance of a Durable Object
 globally and serializes requests to it. That *is* the virtual-actor
 contract, so this package needs none of the machinery
 `@sigx/actors/cluster` uses to rebuild it: no membership heartbeats, no
-activation directory, no HMAC-authenticated silo-to-silo mount.
+activation directory, no HMAC-authenticated host-to-host mount.
 
 Two seams remain.
 
@@ -44,7 +44,7 @@ export class ActorHost {
 ```
 
 The default `shardedReminders()` splits one table into fixed hash shards
-and polls it, because a silo hosts many actors and has to find whose
+and polls it, because a host hosts many actors and has to find whose
 reminder is due. A DO hosts exactly one, so there is nothing to search and
 nothing to poll: reminders live in the object's own storage and the
 platform wakes it at the earliest due time.
@@ -109,7 +109,7 @@ A ref resolves to `idFromName("type\0key")` — the runtime's own actor id.
 Not `type:key` or `type/key`: nothing forbids `:` or `/` in an actor key, so
 neither is injective, which is exactly why the id uses a NUL separator.
 
-**Why one placement on both sides.** Giving the object's own silo the plain
+**Why one placement on both sides.** Giving the object's own host the plain
 local host instead looks obvious and silently corrupts state:
 `ctx.actor(Cart, 'x')` called from `Counter/alice` would resolve locally and
 activate `Cart/x` *inside `Counter/alice`'s object*, writing that actor's
@@ -147,13 +147,13 @@ Two pieces, one bundle — on Cloudflare the Durable Object and the Worker are
 the same script, so the actor registry is a plain import in the entry.
 
 ```ts
-import { createSiloDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
+import { createHostDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
 import { Counter } from './counter.actor';
 
 interface Env { ACTORS: DurableObjectNamespace }
 
 // The object: hosts exactly the actor its id names.
-export class ActorHost extends createSiloDurableObject<Env>({
+export class ActorHost extends createHostDurableObject<Env>({
     actors: [Counter],
     namespace: (env) => env.ACTORS
 }) {}
@@ -167,7 +167,7 @@ export default createWorkerHandler<Env>({
 });
 ```
 
-`createSiloDurableObject` returns a class rather than being one to extend,
+`createHostDurableObject` returns a class rather than being one to extend,
 because the object must own its seams — storage, reminders, placement and the
 defaults all come from its own state, and a subclass wiring them itself would
 be one `super()` away from silent corruption. Extending the returned class
@@ -181,7 +181,7 @@ a failed start stays retryable.
 
 `alarm()` boots first and then delivers, which is not defensive: an alarm can
 be the **first** thing an evicted object sees, and `onAlarm()` refuses to run
-before the silo has bound its reminders.
+before the host has bound its reminders.
 
 Every inbound call is checked against the object's own id. Under Durable
 Objects that can never be a race — `ref` → object id is a pure function — so a
@@ -195,13 +195,13 @@ it cannot build a placement, and `setPlacement` being exclusive means an app
 that tries anyway fails naming both plugins rather than leaving the object
 able to fetch itself.
 
-The Worker's silo hosts nothing, so its storage is `unhostedStorage()` — every
+The Worker's host hosts nothing, so its storage is `unhostedStorage()` — every
 operation throws saying so. In-memory storage there would be a silent lie.
 
 ## Eviction is not deactivation
 
 A Durable Object is evicted when it goes idle, and eviction destroys the
-isolate, the silo and the activation together. **`onDeactivate` never runs.**
+isolate, the host and the activation together. **`onDeactivate` never runs.**
 
 That is a real difference from every other backend. An actor that flushes in
 `onDeactivate` must instead `ctx.save()` inside the turn, or use write-behind

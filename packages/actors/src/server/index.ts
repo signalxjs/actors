@@ -4,7 +4,7 @@
  * that re-exports it (a cycle that works under Node's loader but is exactly
  * the kind of initialization-order trap bundlers surface later).
  *
- * Same layout as `./silo` and `./cluster`: implementation in siblings, this
+ * Same layout as `./host` and `./cluster`: implementation in siblings, this
  * file only re-exports.
  */
 export {
@@ -17,7 +17,7 @@ export {
 } from './actor-endpoint';
 export {
     createFetchHandler,
-    requireSilo,
+    requireHost,
     type FetchHandlerOptions
 } from './fetch';
 /** The routing token an inbound call carries. READ-ONLY — the endpoint does

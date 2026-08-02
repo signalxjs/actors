@@ -9,7 +9,7 @@
  *
  * Wire shape:  POST {base}/{Type}%23{method}   {"args": [key, ...args]}
  * The actor KEY is the first wire argument — spliced in by the client
- * proxy, peeled off here before `silo.dispatch`.
+ * proxy, peeled off here before `host.dispatch`.
  */
 import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
 import {
@@ -28,16 +28,16 @@ import {
     type ActorReadCache,
     type ActorRef,
     type AnyActorDefinition,
-    type Silo
+    type Host
 } from '../types';
 
 /**
- * What this mount does with a call for a grain another silo owns.
+ * What this mount does with a call for an actor another host owns.
  *
- * - `'proxy'` — forward it over the silo-to-silo transport and answer with
+ * - `'proxy'` — forward it over the host-to-host transport and answer with
  *   the result. One client round trip, one internal hop, every time. The
  *   default, and the only correct answer for browsers: they usually cannot
- *   reach silos individually, and a cross-origin retry would preflight and
+ *   reach hosts individually, and a cross-origin retry would preflight and
  *   be refused by the same-origin policy.
  * - `'redirect'` — answer `421` naming the owner and let the client retry
  *   there. One extra round trip on a miss, then direct forever if the
@@ -67,8 +67,8 @@ export interface ActorResolverOptions {
 export interface ActorRequestOptions
     extends Omit<ServerFnRequestOptions, 'resolve' | 'renderBoundaries'>,
         ActorResolverOptions {
-    /** The running silo — explicit, never ambient. */
-    silo: Silo;
+    /** The running host — explicit, never ambient. */
+    host: Host;
     /**
      * How long an NDJSON stream may go silent before the endpoint emits a
      * keepalive `{"ping":1}` line. `0` disables it. Default 30 s, matching
@@ -100,7 +100,7 @@ export async function handleActorRequest(
     request: Request,
     options: ActorRequestOptions
 ): Promise<Response> {
-    const { silo, onMiss, base, maxHops, streamPingMs, ...rest } = options;
+    const { host, onMiss, base, maxHops, streamPingMs, ...rest } = options;
     const resolverOptions: ActorResolverOptions = {
         ...(onMiss !== undefined ? { onMiss } : {}),
         ...(base !== undefined ? { base } : {}),
@@ -108,7 +108,7 @@ export async function handleActorRequest(
     };
     const response = await handleServerFnRequest(request, {
         ...rest,
-        resolve: resolverFor(silo, resolverOptions)
+        resolve: resolverFor(host, resolverOptions)
     });
     return withKeepalive(response, streamPingMs ?? DEFAULT_STREAM_PING_MS);
 }
@@ -226,35 +226,35 @@ function withKeepalive(response: Response, pingMs: number): Response {
 }
 
 /**
- * Per-silo, then per-CONFIGURATION: the synthesized wrappers close over
- * `onMiss`, so two mounts of one silo with different miss policies — the
+ * Per-host, then per-CONFIGURATION: the synthesized wrappers close over
+ * `onMiss`, so two mounts of one host with different miss policies — the
  * browser origin proxying while the service origin redirects — must not
  * share a cache. Keyed by a canonical string rather than the options
  * object, which is freshly built per call.
  */
 const resolvers = new WeakMap<
-    Silo,
+    Host,
     Map<string, (symbol: string) => unknown | Promise<unknown>>
 >();
 
 function resolverFor(
-    silo: Silo,
+    host: Host,
     options: ActorResolverOptions
 ): (symbol: string) => unknown | Promise<unknown> {
-    let perSilo = resolvers.get(silo);
-    if (!perSilo) {
-        perSilo = new Map();
-        resolvers.set(silo, perSilo);
+    let perHost = resolvers.get(host);
+    if (!perHost) {
+        perHost = new Map();
+        resolvers.set(host, perHost);
     }
     const key = [
         options.onMiss ?? 'proxy',
         options.base ?? DEFAULT_BASE,
         options.maxHops ?? DEFAULT_MAX_HOPS
     ].join('|');
-    let resolver = perSilo.get(key);
+    let resolver = perHost.get(key);
     if (!resolver) {
-        resolver = createActorResolver(silo, options);
-        perSilo.set(key, resolver);
+        resolver = createActorResolver(host, options);
+        perHost.set(key, resolver);
     }
     return resolver;
 }
@@ -271,17 +271,17 @@ function hopsOf(request: Request): number {
     return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-const warnedSilos = new Set<string>();
+const warnedHosts = new Set<string>();
 
-/** Once per owner silo: a redirect mount that silently proxies forever is
+/** Once per owner host: a redirect mount that silently proxies forever is
  *  a misconfiguration worth naming, but not one worth logging per request. */
-function warnOnce(siloId: string): void {
-    if (!__DEV__ || warnedSilos.has(siloId)) return;
-    warnedSilos.add(siloId);
+function warnOnce(hostId: string): void {
+    if (!__DEV__ || warnedHosts.has(hostId)) return;
+    warnedHosts.add(hostId);
     console.warn(
-        `[sigx actors] onMiss:'redirect' cannot redirect to silo ${siloId}: it ` +
+        `[sigx actors] onMiss:'redirect' cannot redirect to host ${hostId}: it ` +
             `publishes no publicAddress, so this mount is proxying for it instead. ` +
-            `Set cluster({ publicAddress }) on that silo if clients can reach it directly.`
+            `Set cluster({ publicAddress }) on that host if clients can reach it directly.`
     );
 }
 
@@ -298,7 +298,7 @@ function warnOnce(siloId: string): void {
  * must instead compare against its own registry first.
  */
 export function createActorResolver(
-    silo: Silo,
+    host: Host,
     options: ActorResolverOptions = {}
 ): (symbol: string) => unknown | Promise<unknown> {
     const cache = new Map<string, unknown>();
@@ -309,7 +309,7 @@ export function createActorResolver(
         // `$live` is not an actor type, and `defineActor` refuses to let one
         // be named that.
         if (symbol === LIVE_SYMBOL) {
-            const live = synthesizeLive(silo);
+            const live = synthesizeLive(host);
             cache.set(symbol, live);
             return live;
         }
@@ -317,17 +317,17 @@ export function createActorResolver(
         if (hash <= 0 || hash === symbol.length - 1) return notFound(symbol);
         const type = symbol.slice(0, hash);
         const method = symbol.slice(hash + 1);
-        const def = silo.definition(type);
+        const def = host.definition(type);
         if (!def) return notFound(symbol, type);
         if (isPromise(def)) {
             return def.then((resolved) => {
                 if (!resolved) return notFound(symbol, type);
-                const wrapped = synthesize(silo, resolved, symbol, method, options);
+                const wrapped = synthesize(host, resolved, symbol, method, options);
                 cache.set(symbol, wrapped);
                 return wrapped;
             });
         }
-        const wrapped = synthesize(silo, def, symbol, method, options);
+        const wrapped = synthesize(host, def, symbol, method, options);
         cache.set(symbol, wrapped);
         return wrapped;
     };
@@ -338,12 +338,12 @@ export function createActorResolver(
  * argument is the subscription array; per-subscription guards run inside,
  * so one rejection cannot fail the whole connection.
  */
-function synthesizeLive(silo: Silo): unknown {
+function synthesizeLive(host: Host): unknown {
     return {
         __sigxName: 'subscribe',
         __sigxStream: true,
         __sigxFn: (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) =>
-            Promise.resolve(subscribeAll(silo, rq, args[0]))
+            Promise.resolve(subscribeAll(host, rq, args[0]))
     };
 }
 
@@ -358,13 +358,13 @@ function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
  * a developer sees when a client and server build fall out of sync. The
  * status and envelope shape are identical either way.
  *
- * Deliberately NOT memoized: `silo.definition()` is lazy behind the
+ * Deliberately NOT memoized: `host.definition()` is lazy behind the
  * `virtual:sigx-actors` registry, so a type that misses now can resolve
  * after an HMR edit adds it.
  */
 function notFound(symbol: string, type?: string): unknown {
     const detail = type
-        ? `no actor type "${type}" is registered with this silo — is it registered, ` +
+        ? `no actor type "${type}" is registered with this host — is it registered, ` +
           `and are the client and server builds from the same deploy?`
         : `expected a "Type#method" symbol.`;
     return {
@@ -378,7 +378,7 @@ function notFound(symbol: string, type?: string): unknown {
 }
 
 function synthesize(
-    silo: Silo,
+    host: Host,
     def: AnyActorDefinition,
     symbol: string,
     method: string,
@@ -400,7 +400,7 @@ function synthesize(
     const redirectIfRemote = async (rq: ServerFnContext, ref: ActorRef): Promise<void> => {
         // Checked FIRST so the default mount pays nothing new at all — not
         // a header read, not a locate, not an await.
-        if (onMiss === 'proxy' || silo.locate === undefined) return;
+        if (onMiss === 'proxy' || host.locate === undefined) return;
         // 'auto': only callers that said they can follow get redirected.
         // Everyone else — browsers, curl, an old client — gets the proxy.
         if (onMiss === 'auto' && rq.request.headers.get(ACTOR_FOLLOW_HEADER) === null) return;
@@ -409,7 +409,7 @@ function synthesize(
         // merely unlikely.
         if (hopsOf(rq.request) >= maxHops) return;
 
-        const location = await silo.locate(ref);
+        const location = await host.locate(ref);
         if (location === undefined || location.local) return;
 
         const origin = location.owner.publicAddress;
@@ -417,7 +417,7 @@ function synthesize(
             // The owner never published a client-reachable origin. Its
             // internal `address` is a pod IP — unreachable from outside and
             // not ours to disclose — so proxy instead.
-            warnOnce(location.owner.siloId);
+            warnOnce(location.owner.hostId);
             return;
         }
 
@@ -425,13 +425,13 @@ function synthesize(
         rq.responseHeaders.set(ACTOR_OWNER_HEADER, endpoint);
         throw new ServerFnError(
             421,
-            `[sigx actors] ${actorLabel(ref)} is owned by ${location.owner.siloId} — ` +
+            `[sigx actors] ${actorLabel(ref)} is owned by ${location.owner.hostId} — ` +
                 `retry at ${endpoint}`,
             {
                 kind: 'wrong-host',
                 // `endpoint`, never `address`: the internal origin must not
                 // cross to a client.
-                owner: { siloId: location.owner.siloId, endpoint },
+                owner: { hostId: location.owner.hostId, endpoint },
                 hops: hopsOf(rq.request) + 1
             }
         );
@@ -480,7 +480,7 @@ function synthesize(
             // `relayStream`.
             __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
                 const { key, rest, call } = await prepare(rq, args);
-                const iterable = silo.dispatchStream!(
+                const iterable = host.dispatchStream!(
                     { type: def.type, key },
                     method,
                     rest,
@@ -519,7 +519,7 @@ function synthesize(
         __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
             const { key, rest, call } = await prepare(rq, args);
             try {
-                return await silo.dispatch({ type: def.type, key }, method, rest, call);
+                return await host.dispatch({ type: def.type, key }, method, rest, call);
             } catch (error) {
                 throw toClientError(error);
             }

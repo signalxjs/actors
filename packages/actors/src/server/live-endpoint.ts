@@ -21,7 +21,7 @@ import { mintCallId } from '../call-id';
 import { runGuards } from '../guards';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, type LiveFrame, type LiveSubscription } from '../wire-shared';
-import type { AnyActorDefinition, Silo } from '../types';
+import type { AnyActorDefinition, Host } from '../types';
 
 // The wire contract itself (the symbol, the subscription record, the frame
 // shapes) lives in `../wire-shared`: the client half builds what this half
@@ -85,16 +85,16 @@ function toFrameError(error: unknown): { message: string; status: number } {
  * a round-robin merge would let one quiet actor stall the others.
  */
 export function subscribeAll(
-    silo: Silo,
+    host: Host,
     rq: ServerFnContext,
     raw: unknown,
     options: { pingMs?: number } = {}
 ): AsyncGenerator<LiveFrame> {
     const subs = parseSubscriptions(raw);
-    if (!silo.dispatchWatch) {
+    if (!host.dispatchWatch) {
         throw new ServerFnError(
             501,
-            '[sigx actors] this silo cannot watch (no dispatchWatch on its placement).'
+            '[sigx actors] this host cannot watch (no dispatchWatch on its placement).'
         );
     }
 
@@ -135,14 +135,14 @@ export function subscribeAll(
 
     const start = async (sub: LiveSubscription, index: number): Promise<void> => {
         try {
-            const def = await silo.definition(sub.t);
+            const def = await host.definition(sub.t);
             if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
             // The SAME guard chain a unary call runs, against this request.
             // A watch therefore exposes nothing a poller could not already
             // read — which is why there is no per-actor opt-in.
             await runGuards(def as AnyActorDefinition, sub.m, rq);
 
-            const iterable = silo.dispatchWatch!({ type: sub.t, key: sub.k }, sub.m, sub.a ?? [], {
+            const iterable = host.dispatchWatch!({ type: sub.t, key: sub.k }, sub.m, sub.a ?? [], {
                 callChain: [],
                 callId: mintCallId(),
                 abortSignal: rq.abortSignal

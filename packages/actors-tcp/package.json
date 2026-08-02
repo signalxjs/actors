@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors-tcp",
     "version": "0.1.0",
-    "description": "Orleans-style TCP transport for @sigx/actors \u2014 framed, multiplexed silo-to-silo connections",
+    "description": "Framed TCP transport for @sigx/actors \u2014 multiplexed host-to-host connections",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -27,8 +27,7 @@
         "virtual-actors",
         "cluster",
         "tcp",
-        "transport",
-        "orleans"
+        "transport"
     ],
     "author": "Andreas Ekdahl",
     "license": "MIT",

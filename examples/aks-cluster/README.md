@@ -1,21 +1,21 @@
 # aks-cluster example
 
-A production-shaped `@sigx/actors` deployment: N identical silo pods on
+A production-shaped `@sigx/actors` deployment: N identical host pods on
 Kubernetes, cluster state in Redis, one container image that runs both the
-silo (`server.mjs`) and the closed-loop load generator (`loadgen.mjs`).
+host (`server.mjs`) and the closed-loop load generator (`loadgen.mjs`).
 This is the app half of the AKS scale-out/perf test; the Helm chart lives
 in [`deploy/chart/`](deploy/chart/) and the Azure setup plus the full
 scenario runbook in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
 
 Nothing is hardcoded — both entries read their entire configuration from
-environment variables (documented in each file's header). The silo:
+environment variables (documented in each file's header). The host:
 
 - `cluster()` with `MEMBERSHIP=redis` (`redisCluster`) or `MEMBERSHIP=k8s`
   (`k8sMembership` Leases + `redisDirectory`) — same image, values toggle
 - `redisStorage` for actor state — the etag CAS makes hard-kill failover
   recover committed state, which the runbook's verify scenario proves
 - `metrics()` + `health()` (k8s probes) + `ops()` (the `sigx actors top`
-  endpoint), a bounded undici pool for silo-to-silo fetch, listen-before-
+  endpoint), a bounded undici pool for host-to-host fetch, listen-before-
   start ordering, and `attachSignalHandlers` for drain-on-SIGTERM
 
 ## Local run (no Kubernetes)
@@ -32,7 +32,7 @@ TARGET_URL=http://127.0.0.1:7311 DURATION_S=10 CONCURRENCY=8 \
   pnpm --filter aks-cluster-example loadgen
 ```
 
-Multiple local silos: run more instances with the same `REDIS_URL` and a
+Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each
 other through Redis exactly as the pods do.
 

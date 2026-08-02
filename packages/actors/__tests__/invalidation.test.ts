@@ -8,8 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { component, defineApp, onUnmounted, signal, type App } from 'sigx';
-import { actor, actorKey, defineActor, type Silo } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { actor, actorKey, defineActor, type Host } from '@sigx/actors';
+import { createHost } from '@sigx/actors/host';
 import {
     actorsPlugin,
     useActorAction,
@@ -65,13 +65,13 @@ const OrderActor = defineActor({
 });
 
 const mounted: App<unknown>[] = [];
-const silos: Silo[] = [];
+const hosts: Host[] = [];
 
-async function startSilo(): Promise<Silo> {
-    const silo = createSilo({ actors: [CartActor, OrderActor], defaults: quiet });
-    await silo.start();
-    silos.push(silo);
-    return silo;
+async function startHost(): Promise<Host> {
+    const host = createHost({ actors: [CartActor, OrderActor], defaults: quiet });
+    await host.start();
+    hosts.push(host);
+    return host;
 }
 
 /** Mount a setup fn inside an app that has the plugin installed. */
@@ -113,14 +113,14 @@ beforeEach(() => {
 
 afterEach(async () => {
     for (const app of mounted.splice(0)) app.unmount();
-    for (const silo of silos.splice(0)) await silo.stop();
+    for (const host of hosts.splice(0)) await host.stop();
     document.body.innerHTML = '';
     delete (globalThis as { __SIGX_ASYNC__?: unknown }).__SIGX_ASYNC__;
 });
 
 describe('invalidation on write', () => {
     it('refreshes a read of the same actor, with no manual refresh()', async () => {
-        await startSilo();
+        await startHost();
 
         const view = mount(() => ({
             total: useActorState(CartActor, 'c1', 'total'),
@@ -136,7 +136,7 @@ describe('invalidation on write', () => {
     });
 
     it('refreshes EVERY read of that actor, across components', async () => {
-        await startSilo();
+        await startHost();
 
         const { a, b, write } = mountAll({
             a: () => useActorState(CartActor, 'c2', 'total'),
@@ -153,7 +153,7 @@ describe('invalidation on write', () => {
     });
 
     it('leaves a different actor alone', async () => {
-        await startSilo();
+        await startHost();
 
         const { cart, order, write } = mountAll({
             cart: () => useActorState(CartActor, 'c3', 'total'),
@@ -173,7 +173,7 @@ describe('invalidation on write', () => {
     });
 
     it('leaves a different KEY of the same type alone', async () => {
-        await startSilo();
+        await startHost();
 
         const { c4, c40, write } = mountAll({
             c4: () => useActorState(CartActor, 'c4', 'total'),
@@ -192,7 +192,7 @@ describe('invalidation on write', () => {
     });
 
     it('invalidates: false disables it', async () => {
-        await startSilo();
+        await startHost();
 
         const view = mount(() => ({
             total: useActorState(CartActor, 'c5', 'total'),
@@ -210,7 +210,7 @@ describe('invalidation on write', () => {
     });
 
     it('honours an explicit pattern list', async () => {
-        await startSilo();
+        await startHost();
 
         // A cart write declared as staling every Order instead.
         const { cart, order, write } = mountAll({
@@ -233,7 +233,7 @@ describe('invalidation on write', () => {
     });
 
     it('accepts a function form, given the result and the key', async () => {
-        await startSilo();
+        await startHost();
 
         const seen: unknown[] = [];
         const view = mount(() => ({
@@ -255,7 +255,7 @@ describe('invalidation on write', () => {
     });
 
     it('does not invalidate when the write FAILS', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
 
         const view = mount(() => ({
             total: useActorState(CartActor, 'c8', 'total'),
@@ -263,7 +263,7 @@ describe('invalidation on write', () => {
             bad: useActorAction(CartActor, 'c8', 'nope' as 'add')
         }));
         await settle();
-        await silo.actor(CartActor, 'c8').add('cherry'); // change it behind the read
+        await host.actor(CartActor, 'c8').add('cherry'); // change it behind the read
         const before = reads;
 
         const result = await view.bad.run(['x']);
@@ -275,7 +275,7 @@ describe('invalidation on write', () => {
     });
 
     it('matches a REACTIVE key at its current value, not the one it mounted with', async () => {
-        await startSilo();
+        await startHost();
 
         const selected = signal({ id: 'c9' });
         const view = mount(() => ({
@@ -297,7 +297,7 @@ describe('invalidation on write', () => {
     });
 
     it('drops the page-payload entry so a remount refetches', async () => {
-        await startSilo();
+        await startHost();
 
         const blob = Object.assign(Object.create(null) as Record<string, unknown>, {
             '["@actor","Cart","c11","total"]': 99
@@ -322,7 +322,7 @@ describe('invalidation on write', () => {
     });
 
     it('unregisters on unmount — no refresh after the component is gone', async () => {
-        await startSilo();
+        await startHost();
 
         const { gone, write } = mountAll({
             gone: () => useActorState(CartActor, 'c12', 'total'),
@@ -375,31 +375,31 @@ describe('a write from another client', () => {
     }
 
     it('does not reach a read that only listens to its own app', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         const view = mountReader('c13', { live: false });
         await settle();
         expect(view.total.value).toBe(0);
 
         // The "other tab": a write this app had no part in.
-        await silo.actor(CartActor, 'c13').add('apple');
+        await host.actor(CartActor, 'c13').add('apple');
         await settle();
 
         expect(view.total.value).toBe(0); // stale, and nothing said so
     });
 
     it('reaches it once a ctx.changes() feed drives the invalidation', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         const view = mountReader('c14', { live: 'watch' });
         await settle();
         expect(view.total.value).toBe(0);
 
-        await silo.actor(CartActor, 'c14').add('apple');
+        await host.actor(CartActor, 'c14').add('apple');
         await settle();
 
         expect(view.total.value).toBe(1);
 
         // And it keeps up — the feed is not a one-shot.
-        await silo.actor(CartActor, 'c14').add('pear');
+        await host.actor(CartActor, 'c14').add('pear');
         await settle();
         expect(view.total.value).toBe(2);
     });
@@ -422,9 +422,9 @@ describe('a write from another client', () => {
     }
 
     it('catches up on a write that landed between the SSR read and the subscription', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         seedPage('c15', 0); // what the server rendered
-        await silo.actor(CartActor, 'c15').add('apple'); // …then someone else posted
+        await host.actor(CartActor, 'c15').add('apple'); // …then someone else posted
 
         const view = mountReader('c15', { live: 'watch' });
         await settle();
@@ -433,9 +433,9 @@ describe('a write from another client', () => {
     });
 
     it('…and without the seed the page sits on the stale value', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         seedPage('c16', 0);
-        await silo.actor(CartActor, 'c16').add('apple');
+        await host.actor(CartActor, 'c16').add('apple');
 
         const view = mountReader('c16', { live: 'watchFromNow' });
         await settle();
@@ -443,7 +443,7 @@ describe('a write from another client', () => {
         expect(view.total.value).toBe(0); // subscribed too late, told nothing
 
         // Only an unrelated later write shakes it loose.
-        await silo.actor(CartActor, 'c16').add('pear');
+        await host.actor(CartActor, 'c16').add('pear');
         await settle();
         expect(view.total.value).toBe(2);
     });

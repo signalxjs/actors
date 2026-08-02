@@ -1,5 +1,5 @@
 /**
- * `useActorState` / `useActorAction` against a real in-process silo.
+ * `useActorState` / `useActorAction` against a real in-process host.
  *
  * The load-bearing assertion here is DEDUPE: two components reading the same
  * actor must produce ONE dispatch. That falls out of building on `useData`'s
@@ -9,10 +9,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { component, defineApp, signal, type App } from 'sigx';
 import { defineActor } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { createHost } from '@sigx/actors/host';
 import { useActorAction, useActorState } from '@sigx/actors/app';
 import type { AsyncState } from 'sigx';
-import type { Silo } from '@sigx/actors';
+import type { Host } from '@sigx/actors';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -36,17 +36,17 @@ const CartActor = defineActor({
 });
 
 const mounted: App<unknown>[] = [];
-const silos: Silo[] = [];
+const hosts: Host[] = [];
 
 /**
- * `actor()` resolves the RUNNING silo through the `__SIGX_ACTOR_SILO__`
+ * `actor()` resolves the RUNNING host through the `__SIGX_ACTOR_HOST__`
  * seam, which `start()` installs — creating one is not enough.
  */
-async function startSilo(): Promise<Silo> {
-    const silo = createSilo({ actors: [CartActor], defaults: quiet });
-    await silo.start();
-    silos.push(silo);
-    return silo;
+async function startHost(): Promise<Host> {
+    const host = createHost({ actors: [CartActor], defaults: quiet });
+    await host.start();
+    hosts.push(host);
+    return host;
 }
 
 /** Mount a setup function as an app; returns whatever it exposes. */
@@ -69,15 +69,15 @@ const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 10));
 
 afterEach(async () => {
     for (const app of mounted.splice(0)) app.unmount();
-    for (const silo of silos.splice(0)) await silo.stop();
+    for (const host of hosts.splice(0)) await host.stop();
     document.body.innerHTML = '';
     dispatches = 0;
 });
 
 describe('useActorState', () => {
     it('resolves an actor read into AsyncState', async () => {
-        const silo = await startSilo();
-        await silo.actor(CartActor, 'c1').add('apple');
+        const host = await startHost();
+        await host.actor(CartActor, 'c1').add('apple');
 
         const state = mount(() => useActorState(CartActor, 'c1', 'total'));
         await settle();
@@ -88,8 +88,8 @@ describe('useActorState', () => {
     });
 
     it('two components reading the same actor dispatch ONCE', async () => {
-        const silo = await startSilo();
-        await silo.actor(CartActor, 'c2').add('pear');
+        const host = await startHost();
+        await host.actor(CartActor, 'c2').add('pear');
         dispatches = 0;
 
         const a = mount(() => useActorState(CartActor, 'c2', 'total'));
@@ -102,8 +102,8 @@ describe('useActorState', () => {
     });
 
     it('different actor keys are different reads', async () => {
-        const silo = await startSilo();
-        await silo.actor(CartActor, 'c3').add('plum');
+        const host = await startHost();
+        await host.actor(CartActor, 'c3').add('plum');
         dispatches = 0;
 
         const a = mount(() => useActorState(CartActor, 'c3', 'total'));
@@ -116,7 +116,7 @@ describe('useActorState', () => {
     });
 
     it('a falsy reactive key parks the read in idle without dispatching', async () => {
-        await startSilo();
+        await startHost();
 
         const state = mount(() =>
             useActorState(CartActor, () => null as unknown as ['c5', 'total'])
@@ -128,8 +128,8 @@ describe('useActorState', () => {
     });
 
     it('follows a reactive key, reading arguments out of it rather than a closure', async () => {
-        const silo = await startSilo();
-        await silo.actor(CartActor, 'c6').add('fig');
+        const host = await startHost();
+        await host.actor(CartActor, 'c6').add('fig');
 
         const selected = signal({ id: 'c6' });
         const state: AsyncState<number> = mount(() =>
@@ -146,7 +146,7 @@ describe('useActorState', () => {
 
 describe('useActorAction', () => {
     it('runs a mutation and reports it as AsyncAction', async () => {
-        await startSilo();
+        await startHost();
 
         const action = mount(() => useActorAction(CartActor, 'c8', 'add'));
         expect(action.loading).toBe(false);
@@ -158,7 +158,7 @@ describe('useActorAction', () => {
     });
 
     it('resolves a getter key at run time', async () => {
-        await startSilo();
+        await startHost();
 
         let key = 'c9';
         const action = mount(() => useActorAction(CartActor, () => key, 'add'));

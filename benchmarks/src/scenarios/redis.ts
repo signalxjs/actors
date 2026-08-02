@@ -1,21 +1,21 @@
 /**
  * What a membership change actually costs against Redis.
  *
- * `cluster/membership-fanout` measures how many silos get notified, which is
+ * `cluster/membership-fanout` measures how many hosts get notified, which is
  * exact but provider-independent. The number people care about is what that
  * becomes in round trips, and until now `BASELINES.md` reported that as a
  * MODEL derived from reading `packages/actors-redis/src/index.ts`. The model
  * was corrected twice and was still wrong both times, which is a good sign
  * it should have been measured.
  *
- * So: measure it. `CONFIG RESETSTAT`, add one silo, read `INFO commandstats`.
+ * So: measure it. `CONFIG RESETSTAT`, add one host, read `INFO commandstats`.
  *
  * Env-gated on `REDIS_URL`, the same convention as
  * `packages/actors-redis/__tests__/redis-cluster.test.ts`. Skipped entirely
  * without it, so the default suite still runs anywhere.
  *
- * Only the MEMBERSHIP provider is instantiated, not whole silos: the refresh
- * fan-out is entirely a membership concern, and standing up 101 real silos
+ * Only the MEMBERSHIP provider is instantiated, not whole hosts: the refresh
+ * fan-out is entirely a membership concern, and standing up 101 real hosts
  * would add a lot of noise to a command count.
  */
 import Redis from 'ioredis';
@@ -68,11 +68,11 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 /** Distinguishes measurements within a process; the clock separates runs. */
 let measurementSeq = 0;
 
-/** Commands caused by ONE silo joining a cluster that already has `n`. */
+/** Commands caused by ONE host joining a cluster that already has `n`. */
 async function measureJoin(url: string, n: number): Promise<CommandStats> {
     // Genuinely fresh per measurement, across processes as well as within
     // one. Leftover keys are read by every refresh, so a reused namespace
-    // inflates the count — and since silo records carry a TTL far longer
+    // inflates the count — and since host records carry a TTL far longer
     // than a benchmark run, a crashed run would otherwise poison the next.
     const namespace = `bench-amp-${n}-${Date.now()}-${++measurementSeq}`;
     const admin = new Redis(url);
@@ -85,7 +85,7 @@ async function measureJoin(url: string, n: number): Promise<CommandStats> {
         const membership = redisMembership(client, { namespace, ...QUIET_MEMBERSHIP });
         members.push(membership);
         await membership.join({
-            siloId: `s${i}`,
+            hostId: `s${i}`,
             epoch: 1,
             address: `http://s${i}.test`,
             status: 'active'
@@ -114,13 +114,13 @@ async function measureJoin(url: string, n: number): Promise<CommandStats> {
         }
         for (const client of clients) client.disconnect();
         // Every key, not just the index: `leave()` failures are swallowed
-        // above, and an orphaned `{ns}:silo:{id}` record outlives a run by
+        // above, and an orphaned `{ns}:host:{id}` record outlives a run by
         // its TTL and would be read by every refresh if the namespace were
         // ever reused.
         const keys = [
-            `${namespace}:silos`,
+            `${namespace}:hosts`,
             `${namespace}:mver`,
-            ...Array.from({ length: n + 1 }, (_v, i) => `${namespace}:silo:s${i}`)
+            ...Array.from({ length: n + 1 }, (_v, i) => `${namespace}:host:s${i}`)
         ];
         await admin.del(...keys).catch(() => {});
         admin.disconnect();
@@ -129,7 +129,7 @@ async function measureJoin(url: string, n: number): Promise<CommandStats> {
 
 const redisAmplification: Scenario = {
     name: 'cluster/redis-amplification',
-    description: 'Redis commands caused by ONE silo joining an N-member cluster (needs REDIS_URL)',
+    description: 'Redis commands caused by ONE host joining an N-member cluster (needs REDIS_URL)',
     async run(ctx: RunContext): Promise<Metric[]> {
         const url = process.env['REDIS_URL'];
         if (!url) {

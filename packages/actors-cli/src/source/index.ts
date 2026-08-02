@@ -7,11 +7,11 @@
  * fan-outs, reconciling the embedded and HTTP shapes).
  */
 export {
-    siloViewFromReport,
+    hostViewFromReport,
     type ClusterView,
     type MonitorSnapshot,
     type MonitorSource,
-    type SiloView
+    type HostView
 } from './types';
 export { httpSource, OpsRequestError, type HttpSourceOptions } from './http';
 export { embeddedSource, EmbeddedSourceError, type EmbeddedSourceOptions } from './embedded';

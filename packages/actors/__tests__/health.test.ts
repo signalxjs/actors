@@ -3,7 +3,7 @@
  * underneath them.
  *
  * The invariant these pin is operational, not functional: **liveness and
- * readiness must disagree during a drain.** A silo that has announced
+ * readiness must disagree during a drain.** A host that has announced
  * `leaving` is perfectly alive (killing it would abort the handoff) and
  * must not be receiving traffic. Every test below exists to keep those two
  * answers from collapsing into one.
@@ -16,7 +16,7 @@ import {
     memoryStorage,
     type ActorPlugin,
     type HealthCheck
-} from '@sigx/actors/silo';
+} from '@sigx/actors/host';
 import { createFetchHandler } from '@sigx/actors/server';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
@@ -49,7 +49,7 @@ const get = (
     handler: (request: Request) => Promise<Response>,
     path: string,
     method = 'GET'
-): Promise<Response> => handler(new Request(`http://silo.test${path}`, { method }));
+): Promise<Response> => handler(new Request(`http://host.test${path}`, { method }));
 
 describe('health: liveness and readiness', () => {
     it('serves 200 live / 200 ready once started, and no-store on both', async () => {
@@ -71,7 +71,7 @@ describe('health: liveness and readiness', () => {
         }
     });
 
-    it('an app with NO checks is ready — a single-node silo needs no wiring', async () => {
+    it('an app with NO checks is ready — a single-node host needs no wiring', async () => {
         const app = appWith(health());
         const handler = createFetchHandler(app);
         await app.start();
@@ -84,7 +84,7 @@ describe('health: liveness and readiness', () => {
         }
     });
 
-    it('a failing check takes the silo out of rotation and names itself', async () => {
+    it('a failing check takes the host out of rotation and names itself', async () => {
         const app = appWith(
             health(),
             gate('warmup', () => ({ ready: false, detail: 'cache cold' }))
@@ -182,13 +182,13 @@ describe('health: liveness and readiness', () => {
         const plugin = health();
         const app = appWith(plugin);
         const handler = createFetchHandler(app);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'a').increment(1);
+            await host.actor(Counter, 'a').increment(1);
             const body = await (await get(handler, '/_sigx/health/ready')).json();
-            expect(body.silo).toEqual({ activations: 1, queued: 0 });
+            expect(body.host).toEqual({ activations: 1, queued: 0 });
             expect(JSON.stringify(body)).not.toContain('Counter');
-            expect(plugin.status().silo).toEqual({ activations: 1, queued: 0 });
+            expect(plugin.status().host).toEqual({ activations: 1, queued: 0 });
         } finally {
             await app.stop();
         }
@@ -221,7 +221,7 @@ describe('health: liveness and readiness', () => {
             const body = await (await get(handler, '/_sigx/health/ready')).json();
             expect(body.status).toBe('not-ready');
             expect(body.checks).toBeUndefined();
-            expect(body.silo).toBeUndefined();
+            expect(body.host).toBeUndefined();
         } finally {
             await app.stop();
         }
@@ -261,25 +261,25 @@ describe('health: liveness and readiness', () => {
     it('status() gives the same answer in process, and reports gauges', async () => {
         const plugin = health();
         const app = appWith(plugin);
-        expect(plugin.status()).toMatchObject({ live: false, ready: false, silo: null });
+        expect(plugin.status()).toMatchObject({ live: false, ready: false, host: null });
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'a').increment(1);
+            await host.actor(Counter, 'a').increment(1);
             const status = plugin.status();
             expect(status.live).toBe(true);
             expect(status.ready).toBe(true);
-            expect(status.silo).toEqual({ activations: 1, queued: 0 });
+            expect(status.host).toEqual({ activations: 1, queued: 0 });
         } finally {
             await app.stop();
         }
-        // The silo handle is released on stop — health must not pin it.
-        expect(plugin.status()).toMatchObject({ live: false, ready: false, silo: null });
+        // The host handle is released on stop — health must not pin it.
+        expect(plugin.status()).toMatchObject({ live: false, ready: false, host: null });
     });
 
     it('before start the whole mount is 503 — the entry answers, not the route', async () => {
         // Documented and deliberate: a route only ever runs on a started
-        // silo, so serving at all IS the liveness signal. Use a k8s
+        // host, so serving at all IS the liveness signal. Use a k8s
         // startupProbe to cover a slow boot.
         const app = appWith(health());
         const handler = createFetchHandler(app);
@@ -294,7 +294,7 @@ describe('health: fatal checks fail liveness', () => {
     // a check can declare the process UNRECOVERABLE (`fatal: true`), and
     // then liveness — not just readiness — must fail, because a restart is
     // the only medicine and the kubelet is the one holding it. Found on
-    // AKS (#141): a fenced silo sat live-200/ready-503 forever and the
+    // AKS (#141): a fenced host sat live-200/ready-503 forever and the
     // cluster stayed dead until a human restarted the pods.
     it('ready:false alone keeps liveness 200 (drain, do not restart)', async () => {
         const plugin = health();

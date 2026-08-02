@@ -10,7 +10,7 @@
  * hatch is deliberate and warns.
  *
  * **A broken plugin costs its own section and nothing else.** This is the
- * endpoint an operator opens when a silo is already misbehaving. If one
+ * endpoint an operator opens when a host is already misbehaving. If one
  * throwing provider could 500 it, it would be reliably unavailable at
  * exactly the moment it matters.
  */
@@ -24,7 +24,7 @@ import {
     ops,
     type ActorPlugin,
     type OpsSnapshot
-} from '@sigx/actors/silo';
+} from '@sigx/actors/host';
 import { createFetchHandler } from '@sigx/actors/server';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
@@ -63,7 +63,7 @@ const get = (
     init?: { method?: string; secret?: string | null }
 ): Promise<Response> =>
     handler(
-        new Request(`http://silo.test${path}`, {
+        new Request(`http://host.test${path}`, {
             method: init?.method ?? 'GET',
             headers:
                 init?.secret === null
@@ -103,9 +103,9 @@ describe('ops(): the snapshot endpoint', () => {
     it('serves the snapshot with no-store, including perType', async () => {
         const app = appWith(ops({ secret: SECRET }));
         const handler = createFetchHandler(app);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'a').increment(1);
+            await host.actor(Counter, 'a').increment(1);
             const response = await get(handler, '/_sigx/ops');
             expect(response.status).toBe(200);
             expect(response.headers.get('cache-control')).toBe('no-store');
@@ -125,9 +125,9 @@ describe('ops(): the snapshot endpoint', () => {
     it('carries the hottest activations, bounded and deepest-mailbox first', async () => {
         const app = appWith(ops({ secret: SECRET }));
         const handler = createFetchHandler(app);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            for (const key of ['a', 'b']) await silo.actor(Counter, key).increment(1);
+            for (const key of ['a', 'b']) await host.actor(Counter, key).increment(1);
             const body = (await (await get(handler, '/_sigx/ops')).json()) as OpsSnapshot;
             expect(body.activations).toHaveLength(2);
             expect(body.activations.map((a) => a.key).sort()).toEqual(['a', 'b']);
@@ -140,9 +140,9 @@ describe('ops(): the snapshot endpoint', () => {
     it('honours the activations cap, and 0 omits the list entirely', async () => {
         const capped = appWith(ops({ secret: SECRET, activations: 1 }));
         const cappedHandler = createFetchHandler(capped);
-        const siloA = await capped.start();
+        const hostA = await capped.start();
         try {
-            for (const key of ['a', 'b', 'c']) await siloA.actor(Counter, key).increment(1);
+            for (const key of ['a', 'b', 'c']) await hostA.actor(Counter, key).increment(1);
             const body = (await (await get(cappedHandler, '/_sigx/ops')).json()) as OpsSnapshot;
             expect(body.activations).toHaveLength(1);
             // The totals still see all three — only the LIST is bounded.
@@ -153,10 +153,10 @@ describe('ops(): the snapshot endpoint', () => {
 
         const off = appWith(ops({ secret: SECRET, activations: 0 }));
         const offHandler = createFetchHandler(off);
-        const siloB = await off.start();
+        const hostB = await off.start();
         try {
-            await siloB.actor(Counter, 'a').increment(1);
-            // Grain keys are the one field here that can be personal data,
+            await hostB.actor(Counter, 'a').increment(1);
+            // Actor keys are the one field here that can be personal data,
             // so turning the list off must not cost you the rest.
             const body = (await (await get(offHandler, '/_sigx/ops')).json()) as OpsSnapshot;
             expect(body.activations).toEqual([]);
@@ -167,13 +167,13 @@ describe('ops(): the snapshot endpoint', () => {
     });
 
     it('falls back to the default on a non-finite activations cap', async () => {
-        // Same NaN hole as `silo.activations({ limit })`: it would defeat
+        // Same NaN hole as `host.activations({ limit })`: it would defeat
         // the `=== 0` check and pass NaN straight through to the walk.
         const app = appWith(ops({ secret: SECRET, activations: Number.NaN }));
         const handler = createFetchHandler(app);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            for (let i = 0; i < 25; i++) await silo.actor(Counter, `k${i}`).increment(1);
+            for (let i = 0; i < 25; i++) await host.actor(Counter, `k${i}`).increment(1);
             const body = (await (await get(handler, '/_sigx/ops')).json()) as OpsSnapshot;
             expect(body.activations).toHaveLength(20);
         } finally {
@@ -216,7 +216,7 @@ describe('ops(): the snapshot endpoint', () => {
     it('serves 503 before start, like every other route', async () => {
         const app = appWith(ops({ secret: SECRET }));
         const handler = createFetchHandler(app);
-        // Not started: a route only runs on a started silo, so serving at
+        // Not started: a route only runs on a started host, so serving at
         // all is the liveness signal.
         const response = await get(handler, '/_sigx/ops');
         expect(response.status).toBe(503);
@@ -297,7 +297,7 @@ describe('ops(): the reportOps seam', () => {
         await app.start();
         try {
             const response = await get(handler, '/_sigx/ops');
-            // Still 200: the tool that explains a broken silo must not be
+            // Still 200: the tool that explains a broken host must not be
             // broken BY it.
             expect(response.status).toBe(200);
             const body = (await response.json()) as OpsSnapshot;
@@ -376,7 +376,7 @@ describe('ops(): the cluster fan-out route', () => {
     });
 
     it('serves the collector result when wired', async () => {
-        const report = { at: 1, from: 'silo-a', partial: false };
+        const report = { at: 1, from: 'host-a', partial: false };
         const app = appWith(ops({ secret: SECRET, cluster: () => Promise.resolve(report) }));
         const handler = createFetchHandler(app);
         await app.start();
@@ -405,12 +405,12 @@ describe('ops(): the cluster fan-out route', () => {
         try {
             await get(handler, '/_sigx/ops/cluster');
             await get(handler, '/_sigx/ops/cluster?detail=1');
-            await get(handler, '/_sigx/ops/cluster?detail=1&activations=5&silo=a&silo=b');
+            await get(handler, '/_sigx/ops/cluster?detail=1&activations=5&host=a&host=b');
             // Absent means the cheap report — an upgraded COLLECTOR is what
-            // grows the traffic, never an upgraded silo.
+            // grows the traffic, never an upgraded host.
             expect(asked[0]).toEqual({});
             expect(asked[1]).toEqual({ detail: true });
-            expect(asked[2]).toEqual({ detail: { activations: 5, silos: ['a', 'b'] } });
+            expect(asked[2]).toEqual({ detail: { activations: 5, hosts: ['a', 'b'] } });
         } finally {
             await app.stop();
         }
@@ -431,7 +431,7 @@ describe('ops(): the cluster fan-out route', () => {
         await app.start();
         try {
             // A typo in a query string must not silently turn a 1 Hz poll
-            // into a fleet-wide grain walk, and must not 500 either.
+            // into a fleet-wide actor walk, and must not 500 either.
             // Detail is opted INTO: anything unrecognised is off, because
             // the expensive direction is the one you have to ask for
             // precisely.
@@ -503,7 +503,7 @@ describe('ops(): the cluster fan-out route', () => {
         try {
             const response = await get(handler, '/_sigx/ops/cluster');
             // Not an empty report — that would read as a healthy cluster of
-            // zero silos, which is the one answer that is never true.
+            // zero hosts, which is the one answer that is never true.
             expect(response.status).toBe(503);
             expect(JSON.stringify(await response.json())).toMatch(/membership unavailable/);
         } finally {
@@ -516,10 +516,10 @@ describe('ops(): what the plugins publish', () => {
     it('carries the metrics snapshot under "metrics"', async () => {
         const app = appWith(metrics(), ops({ secret: SECRET }));
         const handler = createFetchHandler(app);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'a').increment(1);
-            await expect(silo.actor(Counter, 'a').boom()).rejects.toThrow();
+            await host.actor(Counter, 'a').increment(1);
+            await expect(host.actor(Counter, 'a').boom()).rejects.toThrow();
             const body = (await (await get(handler, '/_sigx/ops')).json()) as OpsSnapshot;
             const collected = body.ops.metrics as { calls: { total: number; failed: number } };
             expect(collected.calls.total).toBe(2);
@@ -578,9 +578,9 @@ describe('ops(): what the plugins publish', () => {
     it('snapshot() gives the same answer in process', async () => {
         const plugin = ops({ secret: SECRET });
         const app = appWith(plugin);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'a').increment(1);
+            await host.actor(Counter, 'a').increment(1);
             const inProcess = plugin.snapshot();
             expect(inProcess.v).toBe(1);
             expect(inProcess.stats.perType).toEqual({ Counter: 1 });

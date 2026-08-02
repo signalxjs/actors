@@ -13,7 +13,7 @@
  * level up. The cost is identical and just as quiet: a departed consumer
  * leaves `keptAlive` set, which does not merely delay idle collection, it
  * EXEMPTS the activation from it (`local-host.ts`: `if (a.idle &&
- * !a.keptAlive && …)`). The grain never becomes eligible — and on Workers,
+ * !a.keptAlive && …)`). The actor never becomes eligible — and on Workers,
  * where the platform's eviction is the only collector, the object stays
  * resident and billable for as long as the isolate lives.
  *

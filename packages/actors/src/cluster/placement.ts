@@ -20,7 +20,7 @@ import {
 import {
     actorId,
     actorLabel,
-    emptySiloStats,
+    emptyHostStats,
     type ActorCallContext,
     type ActorDispatcher,
     type ActorLocation,
@@ -28,62 +28,62 @@ import {
     type ActorRef,
     type AnyActorDefinition,
     type PlacementBindings,
-    type Silo
+    type Host
 } from '../types';
 import { mintCallId } from '../call-id';
-import { fnv1a, reminderShardKeys } from '../silo/reminder-shards';
+import { fnv1a, reminderShardKeys } from '../host/reminder-shards';
 import {
     createCounters,
     type ClusterCounters,
     type ClusterCounterTotals
 } from './counters';
 import {
-    SILO_STATS_METHOD,
-    SILO_STATS_TYPE,
-    type SiloReport,
-    type SiloReportOptions
+    HOST_STATS_METHOD,
+    HOST_STATS_TYPE,
+    type HostReport,
+    type HostReportOptions
 } from './stats';
 import { httpTransport } from './transport';
-import type { ActorRoute, HealthReport } from '../silo/app';
-import type { MetricsDigest } from '../silo/digest';
+import type { ActorRoute, HealthReport } from '../host/app';
+import type { MetricsDigest } from '../host/digest';
 import type {
-    SiloTransport,
-    SiloTransportConfig,
-    SiloTransportFactory,
-    SiloTransportRuntime
+    HostTransport,
+    HostTransportConfig,
+    HostTransportFactory,
+    HostTransportRuntime
 } from './seam';
-import { resolveSiloSymbol } from './silo-endpoint';
-import { fromSiloWireError, siloWireCodec, toSiloWireError } from './wire-errors';
+import { resolveHostSymbol } from './host-endpoint';
+import { fromHostWireError, hostWireCodec, toHostWireError } from './wire-errors';
 import type {
     ClusterProviders,
     DirectoryEntry,
     MembershipView,
     PlacementPolicy,
-    SiloDescriptor,
-    SiloIdentity
+    HostDescriptor,
+    HostIdentity
 } from './types';
 
 export interface ClusterPlacementOptions extends ClusterProviders {
-    /** Peer-reachable origin of this silo's HTTP listener. */
+    /** Peer-reachable origin of this host's HTTP listener. */
     advertise: string;
     /**
-     * Origin a CLIENT can reach this silo's PUBLIC actor mount on, e.g.
-     * `https://silo-3.example.com`. Published in the membership descriptor
+     * Origin a CLIENT can reach this host's PUBLIC actor mount on, e.g.
+     * `https://host-3.example.com`. Published in the membership descriptor
      * so peers can redirect callers here.
      *
      * Distinct from `advertise`, which is the INTERNAL origin: redirecting
      * an external client to a pod IP hangs at best and discloses internal
-     * topology at worst. Leave it unset unless silos are individually
+     * topology at worst. Leave it unset unless hosts are individually
      * reachable from outside — `onMiss: 'redirect'` then proxies instead,
      * which is correct rather than broken.
      */
     publicAddress?: string;
     /** Shared cluster secret for the internal mount. */
     secret?: string;
-    /** Path prefix of the internal mount. Default `/_sigx/silo`. */
+    /** Path prefix of the internal mount. Default `/_sigx/host`. */
     internalBase?: string;
     /**
-     * How this silo reaches its peers. Default `httpTransport()`.
+     * How this host reaches its peers. Default `httpTransport()`.
      *
      * A LIST is a fallback chain, tried in order — the rolling-deploy
      * story: `[tcpTransport(), httpTransport()]` upgrades link by link as
@@ -92,7 +92,7 @@ export interface ClusterPlacementOptions extends ClusterProviders {
      * address for it is unreachable, loudly. `httpTransport()` reaches
      * every peer, so it is only ever valid as the LAST entry.
      */
-    transport?: SiloTransportFactory | readonly SiloTransportFactory[];
+    transport?: HostTransportFactory | readonly HostTransportFactory[];
     /**
      * Fetch implementation (tests pipe it straight into peers' handlers).
      * Sugar for `transport: httpTransport({ fetch })`; passing both throws.
@@ -113,7 +113,7 @@ export interface ClusterPlacementOptions extends ClusterProviders {
     /** Free-form placement hints published in the membership descriptor. */
     meta?: Record<string, string>;
     /**
-     * This silo's readiness, for `SiloReport.health`.
+     * This host's readiness, for `HostReport.health`.
      *
      * Wired by `cluster()` from `registry.health()`. A hand-rolled
      * placement may leave it out; the field is then simply absent, which is
@@ -121,7 +121,7 @@ export interface ClusterPlacementOptions extends ClusterProviders {
      */
     health?: () => HealthReport | undefined;
     /**
-     * This silo's mergeable metrics, for `SiloReport.metrics`.
+     * This host's mergeable metrics, for `HostReport.metrics`.
      *
      * Wired by `cluster()` from `registry.digest('metrics')` — a seam that
      * only walks digest providers, so this cannot re-enter the ops section
@@ -135,7 +135,7 @@ export interface ClusterPlacementOptions extends ClusterProviders {
  *
  * A stats request arrives over the internal wire. HMAC proves who is
  * asking; it says nothing about whether `activations: 1e9` is a reasonable
- * thing to ask a silo with millions of grains to walk and serialise. So the
+ * thing to ask a host with millions of actors to walk and serialise. So the
  * caps live here, on the answering side, and are not negotiable.
  */
 const MAX_REPORT_ACTIVATIONS = 200;
@@ -153,33 +153,33 @@ function clampRequest(value: unknown, fallback: number, ceiling: number): number
 }
 
 export interface ClusterPlacement extends ActorPlacement {
-    readonly identity: SiloIdentity;
-    /** This silo's current membership descriptor. */
-    descriptor(): SiloDescriptor;
-    /** Whether THIS silo owns a reminder shard under the current view. */
+    readonly identity: HostIdentity;
+    /** This host's current membership descriptor. */
+    descriptor(): HostDescriptor;
+    /** Whether THIS host owns a reminder shard under the current view. */
     ownsReminderShard(shard: string): boolean;
     /**
      * Explicit rebalance primitive: gracefully deactivate ONE locally-owned
      * activation with reason `'migrated'` and release its claim — the next
      * call re-places it under the current policy. No-op if the actor is
-     * not active on this silo. Automatic load-driven rebalancing composes
+     * not active on this host. Automatic load-driven rebalancing composes
      * on top of this.
      */
     migrate(ref: ActorRef): Promise<void>;
     /**
-     * Where this grain lives, resolved WITHOUT dispatching and WITHOUT
+     * Where this actor lives, resolved WITHOUT dispatching and WITHOUT
      * activating — the public endpoint's `onMiss: 'redirect'` asks this
      * before it decides whether to answer 421 or proxy.
      *
      * Uses the same resolution order as dispatch (claim → route cache →
      * directory → policy), so a redirect and a proxy would go to the same
-     * silo. Note it can PLACE a not-yet-placed grain in the route cache,
+     * host. Note it can PLACE a not-yet-placed actor in the route cache,
      * exactly as a dispatch would — placement is sticky so concurrent
      * callers agree — but it never activates anything.
      */
     locate(ref: ActorRef): Promise<ActorLocation>;
     /**
-     * Inbound side, consumed by `handleSiloRequest`: dispatch LOCALLY or
+     * Inbound side, consumed by `handleHostRequest`: dispatch LOCALLY or
      * throw wrong-host — never forward (redirect-not-proxy).
      */
     dispatchInbound(
@@ -201,16 +201,16 @@ export interface ClusterPlacement extends ActorPlacement {
         call: ActorCallContext,
         options?: { throttleMs?: number }
     ): AsyncIterable<unknown>;
-    /** The membership view this silo currently holds. */
+    /** The membership view this host currently holds. */
     view(): MembershipView;
-    /** Pull-based routing/directory counters for THIS silo. Fresh object. */
+    /** Pull-based routing/directory counters for THIS host. Fresh object. */
     counters(): ClusterCounters;
     /**
-     * This silo's operational snapshot — the local half of `clusterStats()`,
-     * and exactly what a peer's `$sigx:silo#stats` answers. Safe before
+     * This host's operational snapshot — the local half of `clusterStats()`,
+     * and exactly what a peer's `$sigx:host#stats` answers. Safe before
      * `start()`: reports `'joining'` and zeroes.
      */
-    report(options?: SiloReportOptions): SiloReport;
+    report(options?: HostReportOptions): HostReport;
     /**
      * The HTTP mounts the configured transports need. `cluster()`
      * contributes these through `PluginRegistry.route()`; a hand-rolled
@@ -227,7 +227,7 @@ export interface ClusterPlacement extends ActorPlacement {
      * the counters cannot move them.
      */
     peerReport(
-        target: SiloDescriptor,
+        target: HostDescriptor,
         timeoutMs: number,
         signal?: AbortSignal,
         /**
@@ -236,30 +236,30 @@ export interface ClusterPlacement extends ActorPlacement {
          * reshaping these parameters would break a hand-rolled placement
          * for no gain.
          */
-        request?: SiloReportOptions
-    ): Promise<SiloReport>;
+        request?: HostReportOptions
+    ): Promise<HostReport>;
     /**
      * @internal — the internal mount reports HMAC rejections here. Optional
      * on the interface so a hand-rolled placement passed to
-     * `handleSiloRequest` need not implement it.
+     * `handleHostRequest` need not implement it.
      */
     noteAuthFailure?(): void;
 }
 
 /**
- * Highest-random-weight (rendezvous) selection: every silo independently
+ * Highest-random-weight (rendezvous) selection: every host independently
  * picks the SAME member for a key, with a lexical tie-break so equal hashes
  * cannot split the answer. Shared by new-activation placement and reminder
  * shard ownership — two uses of one rule, not two rules that agree.
  */
-function rendezvous(key: string, silos: readonly SiloDescriptor[]): SiloDescriptor | null {
-    let best: SiloDescriptor | null = null;
+function rendezvous(key: string, hosts: readonly HostDescriptor[]): HostDescriptor | null {
+    let best: HostDescriptor | null = null;
     let bestScore = -1;
-    for (const silo of silos) {
-        const score = fnv1a(`${key}|${silo.siloId}`);
-        if (score > bestScore || (score === bestScore && best !== null && silo.siloId < best.siloId)) {
+    for (const host of hosts) {
+        const score = fnv1a(`${key}|${host.hostId}`);
+        if (score > bestScore || (score === bestScore && best !== null && host.hostId < best.hostId)) {
             bestScore = score;
-            best = silo;
+            best = host;
         }
     }
     return best;
@@ -290,43 +290,43 @@ function randBase36(length: number): string {
     return out.slice(0, length);
 }
 
-/** Uniform random over active silos — the Orleans default posture. */
+/** Uniform random over active hosts — the default posture. */
 const randomPolicy: PlacementPolicy = {
     name: 'random',
     backend: CLUSTER_BACKEND,
     choose(_ref, view, self) {
-        const active = view.silos.filter((s) => s.status === 'active');
+        const active = view.hosts.filter((s) => s.status === 'active');
         if (active.length === 0) return self;
         return active[Math.floor(Math.random() * active.length)]!;
     }
 };
 
-/** Uniform random over active silos (the default). Exported for
+/** Uniform random over active hosts (the default). Exported for
  *  `typePolicies` maps that override only some types. */
 export function randomPlacementPolicy(): PlacementPolicy {
     return randomPolicy;
 }
 
 /**
- * Rendezvous (highest-random-weight) placement: every silo deterministically
+ * Rendezvous (highest-random-weight) placement: every host deterministically
  * picks the SAME target for a new key, so racing activations agree without
  * a directory round-trip and misses stay rare. The directory remains the
  * arbiter; membership changes only re-home keys that hashed to the departed
- * silo.
+ * host.
  */
 export function consistentHashPolicy(): PlacementPolicy {
     return {
         name: 'consistent-hash',
         backend: CLUSTER_BACKEND,
         choose(ref, view, self) {
-            const active = view.silos.filter((s) => s.status === 'active');
+            const active = view.hosts.filter((s) => s.status === 'active');
             if (active.length === 0) return self;
             return rendezvous(actorId(ref), active) ?? self;
         }
     };
 }
 
-/** Pin new activations to the calling silo — sticky-LB-friendly for hot
+/** Pin new activations to the calling host — sticky-LB-friendly for hot
  *  session-shaped types. */
 export function preferLocalPolicy(): PlacementPolicy {
     return {
@@ -341,17 +341,17 @@ export function clusterPlacement(options: ClusterPlacementOptions): ClusterPlace
 }
 
 class ClusterPlacementImpl implements ClusterPlacement {
-    readonly identity: SiloIdentity;
+    readonly identity: HostIdentity;
     #options: ClusterPlacementOptions;
     #policy: PlacementPolicy;
     #retries: number;
     #retryBackoffMs: number;
-    /** Silo ids seen in a membership view — the departure diff base. */
-    #seenSilos = new Set<string>();
+    /** Host ids seen in a membership view — the departure diff base. */
+    #seenHosts = new Set<string>();
     /** The configured chain, in order. First non-null dispatcher wins. */
-    #transports: readonly SiloTransport[];
-    /** siloId → the chain entry that reaches it. Dropped on a view change. */
-    #transportFor = new Map<string, SiloTransport>();
+    #transports: readonly HostTransport[];
+    /** hostId → the chain entry that reaches it. Dropped on a view change. */
+    #transportFor = new Map<string, HostTransport>();
     /** Peers already dev-warned about a fallback — warn once, not per call. */
     #warnedFallback = new Set<string>();
     /**
@@ -362,16 +362,16 @@ class ClusterPlacementImpl implements ClusterPlacement {
      */
     #addresses: Record<string, string> | undefined;
     #local: ActorDispatcher | null = null;
-    #silo: Silo | null = null;
+    #host: Host | null = null;
     /** type → its `defineActor({ placement })` policy, or null if none. */
     #declaredPolicies = new Map<string, PlacementPolicy | null>();
     /** Our live directory claims: actorId → the entry we wrote. */
     #claimed = new Map<string, DirectoryEntry>();
-    /** actorId → siloId hint. Insertion-ordered Map as a cheap LRU. */
+    /** actorId → hostId hint. Insertion-ordered Map as a cheap LRU. */
     #routeCache = new Map<string, string>();
     #seq = 0;
     #fenced = false;
-    #status: SiloDescriptor['status'] = 'joining';
+    #status: HostDescriptor['status'] = 'joining';
     #unsubscribe: (() => void)[] = [];
     /** Mutable counters — never handed out; `counters()` copies. */
     #counters: ClusterCounterTotals = createCounters();
@@ -379,7 +379,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #startedAt = 0;
 
     constructor(options: ClusterPlacementOptions) {
-        this.identity = { siloId: `s.${randBase36(8)}`, epoch: Date.now() };
+        this.identity = { hostId: `s.${randBase36(8)}`, epoch: Date.now() };
         this.#options = options;
         this.#policy = options.policy ?? randomPolicy;
         this.#retries = options.retries ?? 3;
@@ -393,30 +393,30 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     `transport: httpTransport({ fetch }).`
             );
         }
-        const config: SiloTransportConfig = {
-            siloId: this.identity.siloId,
+        const config: HostTransportConfig = {
+            hostId: this.identity.hostId,
             epoch: this.identity.epoch,
-            internalBase: options.internalBase ?? '/_sigx/silo',
-            codec: siloWireCodec,
-            toWireError: toSiloWireError,
-            fromWireError: fromSiloWireError,
+            internalBase: options.internalBase ?? '/_sigx/host',
+            codec: hostWireCodec,
+            toWireError: toHostWireError,
+            fromWireError: fromHostWireError,
             ...(options.secret !== undefined ? { secret: options.secret } : {})
         };
         const factories = options.transport
             ? Array.isArray(options.transport)
                 ? options.transport
-                : [options.transport as SiloTransportFactory]
+                : [options.transport as HostTransportFactory]
             : [httpTransport(options.fetch ? { fetch: options.fetch } : {})];
         if (factories.length === 0) {
             throw new Error(
-                `[sigx actors] cluster({ transport: [] }) has no transports — this silo ` +
+                `[sigx actors] cluster({ transport: [] }) has no transports — this host ` +
                     `could not reach any peer.`
             );
         }
         this.#transports = factories.map((factory) => factory(config));
     }
 
-    descriptor(): SiloDescriptor {
+    descriptor(): HostDescriptor {
         return {
             ...this.identity,
             address: this.#options.advertise,
@@ -445,26 +445,26 @@ class ClusterPlacementImpl implements ClusterPlacement {
     // -----------------------------------------------------------------------
     // ActorPlacement
 
-    bind(local: ActorDispatcher, silo: Silo): PlacementBindings {
+    bind(local: ActorDispatcher, host: Host): PlacementBindings {
         this.#local = local;
-        this.#silo = silo;
+        this.#host = host;
         return {
             beforeActivate: async (ref) => {
                 if (this.#fenced) {
                     throw new ActorUnreachableError(
-                        `${this.identity.siloId} (self, fenced — membership lost)`
+                        `${this.identity.hostId} (self, fenced — membership lost)`
                     );
                 }
                 const id = actorId(ref);
                 const mine: DirectoryEntry = {
-                    siloId: this.identity.siloId,
-                    activationId: `${this.identity.siloId}/${this.identity.epoch}/${++this.#seq}`
+                    hostId: this.identity.hostId,
+                    activationId: `${this.identity.hostId}/${this.identity.epoch}/${++this.#seq}`
                 };
                 this.#counters.directoryClaims++;
                 let winner = await this.#options.directory.claim(id, mine);
                 if (
                     winner.activationId !== mine.activationId &&
-                    winner.siloId === this.identity.siloId &&
+                    winner.hostId === this.identity.hostId &&
                     !this.#claimed.has(id)
                 ) {
                     // A stale entry naming US without a live claim behind it
@@ -479,7 +479,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     this.#counters.claimConflicts++;
                     throw new ActorWrongHostError(
                         actorLabel(ref),
-                        this.#ownerHint(winner.siloId)
+                        this.#ownerHint(winner.hostId)
                     );
                 }
                 this.#claimed.set(id, mine);
@@ -500,22 +500,22 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
     async migrate(ref: ActorRef): Promise<void> {
         if (!this.#claimed.has(actorId(ref))) return;
-        await this.#silo?.deactivate(ref, 'migrated');
+        await this.#host?.deactivate(ref, 'migrated');
     }
 
     /**
      * Rendezvous hashing over the ACTIVE membership view: for each shard,
-     * the silo with the highest hash(shard, siloId) owns it. Deterministic
+     * the host with the highest hash(shard, hostId) owns it. Deterministic
      * per view — no stored assignment, no lease. Transient view divergence
-     * (two silos both claiming a shard) is safe: the reminder shard's etag
+     * (two hosts both claiming a shard) is safe: the reminder shard's etag
      * CAS keeps firing at-most-once regardless.
      */
     ownsReminderShard(shard: string): boolean {
         const active = this.#options.membership
             .view()
-            .silos.filter((s) => s.status === 'active');
+            .hosts.filter((s) => s.status === 'active');
         if (active.length === 0) return true; // solo / not started
-        return rendezvous(shard, active)?.siloId === this.identity.siloId;
+        return rendezvous(shard, active)?.hostId === this.identity.hostId;
     }
 
     async start(): Promise<void> {
@@ -535,8 +535,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
         await this.#options.membership.join(this.descriptor());
         this.#startedAt = performance.now();
-        this.#seenSilos = new Set(
-            this.#options.membership.view().silos.map((s) => s.siloId)
+        this.#seenHosts = new Set(
+            this.#options.membership.view().hosts.map((s) => s.hostId)
         );
         this.#notifyTransports(this.#options.membership.view());
         this.#unsubscribe.push(
@@ -551,21 +551,21 @@ class ClusterPlacementImpl implements ClusterPlacement {
     }
 
     /**
-     * The live-silo half of the seam, handed to transports at `start()`.
+     * The live-host half of the seam, handed to transports at `start()`.
      * Built here so a transport in another package never touches the
      * placement's internals — the dependency arrow points one way.
      */
-    #runtime(): SiloTransportRuntime {
+    #runtime(): HostTransportRuntime {
         return {
             descriptor: () => this.descriptor(),
             view: () => this.view(),
-            resolve: (symbol) => resolveSiloSymbol(this.#silo!, symbol),
+            resolve: (symbol) => resolveHostSymbol(this.#host!, symbol),
             dispatch: (ref, method, args, call) => {
                 // The ops channel answers before any activation lookup, and
                 // deliberately does NOT count as an inbound dispatch —
                 // reading the counters must not move them.
-                if (ref.type === SILO_STATS_TYPE) {
-                    return Promise.resolve(this.report(args[0] as SiloReportOptions | undefined));
+                if (ref.type === HOST_STATS_TYPE) {
+                    return Promise.resolve(this.report(args[0] as HostReportOptions | undefined));
                 }
                 return this.dispatchInbound(ref, method, args, call);
             },
@@ -578,13 +578,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
     }
 
     /**
-     * Silo ids are minted per START and never reused, so a departed id never
+     * Host ids are minted per START and never reused, so a departed id never
      * returns and a connection-oriented transport can drop its link
      * unconditionally.
      */
     #notifyTransports(view: MembershipView): void {
         // A descriptor can in principle gain an address without a new
-        // siloId (a status rewrite republishes it), so the resolved chain
+        // hostId (a status rewrite republishes it), so the resolved chain
         // entry is not durable across views.
         this.#transportFor.clear();
         for (const transport of this.#transports) transport.onMembership?.(view);
@@ -602,7 +602,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
     }
 
     async stop(): Promise<void> {
-        // silo.stop() has already drained activations (releasing claims,
+        // host.stop() has already drained activations (releasing claims,
         // reason 'migrated') between beginStop() and here.
         for (const unsub of this.#unsubscribe) unsub();
         this.#unsubscribe = [];
@@ -634,7 +634,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const target = await this.#resolveTarget(ref);
         if (target === 'local') return LOCAL;
         this.#counters.locateRemote++;
-        return { local: false, owner: this.#ownerHint(target.siloId) };
+        return { local: false, owner: this.#ownerHint(target.hostId) };
     }
 
     // -----------------------------------------------------------------------
@@ -650,7 +650,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // it: this is the same logical call the caller already counted on
         // its own side. Note that `#local` is the RAW local dispatcher, so
         // an inbound call does not pass through `useDispatch` middleware —
-        // `metrics()` counts a cross-silo call once, on the caller.
+        // `metrics()` counts a cross-host call once, on the caller.
         this.#counters.inboundDispatches++;
         return this.#local!.dispatch(ref, method, args, call);
     }
@@ -699,13 +699,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
         };
     }
 
-    report(options?: SiloReportOptions): SiloReport {
+    report(options?: HostReportOptions): HostReport {
         const shards = reminderShardKeys().filter((shard) => this.ownsReminderShard(shard));
         // Clamped HERE, at the responder, not at the caller. The request
-        // arrives over a wire; `activations: 1e9` on a silo with millions
-        // of grains is a remote CPU-and-memory amplifier, and HMAC proves
+        // arrives over a wire; `activations: 1e9` on a host with millions
+        // of actors is a remote CPU-and-memory amplifier, and HMAC proves
         // who is asking, not that what they asked for is sane.
-        const grains = clampRequest(options?.activations, 0, MAX_REPORT_ACTIVATIONS);
+        const actors = clampRequest(options?.activations, 0, MAX_REPORT_ACTIVATIONS);
         const digest = options?.metrics
             ? this.#options.metrics?.({
                   types: clampRequest(options.types, DIGEST_TYPES, MAX_DIGEST_TYPES),
@@ -716,11 +716,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const health = this.#options.health?.();
         return {
             v: 1,
-            siloId: this.identity.siloId,
+            hostId: this.identity.hostId,
             epoch: this.identity.epoch,
             address: this.#options.advertise,
             status: this.#fenced ? 'fenced' : this.#status,
-            stats: this.#silo?.stats() ?? emptySiloStats(),
+            stats: this.#host?.stats() ?? emptyHostStats(),
             counters: this.counters(),
             reminderShards: shards,
             uptimeMs: this.#startedAt === 0 ? 0 : Math.round(performance.now() - this.#startedAt),
@@ -728,8 +728,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
             ...(this.#options.meta ? { meta: this.#options.meta } : {}),
             ...(digest ? { metrics: digest } : {}),
             ...(health ? { health } : {}),
-            ...(grains > 0 && this.#silo
-                ? { activations: [...this.#silo.activations({ limit: grains, sortBy: 'queued' })] }
+            ...(actors > 0 && this.#host
+                ? { activations: [...this.#host.activations({ limit: actors, sortBy: 'queued' })] }
                 : {})
         };
     }
@@ -737,11 +737,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
     /** @internal — straight to the transport, never through the routing loop,
      *  so reading the counters cannot move them. */
     async peerReport(
-        target: SiloDescriptor,
+        target: HostDescriptor,
         timeoutMs: number,
         signal?: AbortSignal,
-        request?: SiloReportOptions
-    ): Promise<SiloReport> {
+        request?: HostReportOptions
+    ): Promise<HostReport> {
         const timeout = AbortSignal.timeout(timeoutMs);
         const call: ActorCallContext = {
             callChain: [],
@@ -753,20 +753,20 @@ class ClusterPlacementImpl implements ClusterPlacement {
         };
         const report = (await this.#transportDispatcher(target)
             .dispatch(
-                { type: SILO_STATS_TYPE, key: SILO_STATS_METHOD },
-                SILO_STATS_METHOD,
+                { type: HOST_STATS_TYPE, key: HOST_STATS_METHOD },
+                HOST_STATS_METHOD,
                 // A peer that predates this argument ignores it and answers
                 // the payload it always did — still `v: 1`, just without the
                 // new optional fields. That is why the version does not bump.
                 request ? [request] : [],
                 call
-            )) as SiloReport | undefined;
+            )) as HostReport | undefined;
         if (!report || report.v !== 1) {
             // A rolling deploy IS a mixed-version cluster, and the ops tool
             // has to keep working during the deploy that broke things.
             throw Object.assign(
                 new Error(
-                    `[sigx actors] ${target.siloId} answered an unsupported stats payload ` +
+                    `[sigx actors] ${target.hostId} answered an unsupported stats payload ` +
                         `(v${String(report?.v)})`
                 ),
                 { status: 404 }
@@ -781,31 +781,31 @@ class ClusterPlacementImpl implements ClusterPlacement {
     /**
      * Walk the transport chain for a peer: the first that can reach it wins.
      * `null` from `dispatcherFor` is a ROUTING answer ("I publish no address
-     * for that silo"), not a failure — it is what lets a mixed-transport
+     * for that host"), not a failure — it is what lets a mixed-transport
      * cluster exist at all, and therefore what makes a rolling deploy of a
      * new transport possible.
      */
-    #transportDispatcher(target: SiloDescriptor): ActorDispatcher {
-        const cached = this.#transportFor.get(target.siloId);
+    #transportDispatcher(target: HostDescriptor): ActorDispatcher {
+        const cached = this.#transportFor.get(target.hostId);
         if (cached) {
             const hit = cached.dispatcherFor(target);
             if (hit) return hit;
-            this.#transportFor.delete(target.siloId);
+            this.#transportFor.delete(target.hostId);
         }
         for (let i = 0; i < this.#transports.length; i++) {
             const transport = this.#transports[i]!;
             const dispatcher = transport.dispatcherFor(target);
             if (!dispatcher) continue;
-            this.#transportFor.set(target.siloId, transport);
+            this.#transportFor.set(target.hostId, transport);
             if (i > 0) {
                 this.#counters.transportFallbacks++;
-                if (__DEV__ && !this.#warnedFallback.has(target.siloId)) {
-                    this.#warnedFallback.add(target.siloId);
+                if (__DEV__ && !this.#warnedFallback.has(target.hostId)) {
+                    this.#warnedFallback.add(target.hostId);
                     console.warn(
-                        `[sigx actors] ${target.siloId} is not reachable over ` +
+                        `[sigx actors] ${target.hostId} is not reachable over ` +
                             `"${this.#transports[0]!.name}" — falling back to ` +
                             `"${transport.name}". Expected mid-rollout; permanent means ` +
-                            `that silo never advertised the preferred transport.`
+                            `that host never advertised the preferred transport.`
                     );
                 }
             }
@@ -815,7 +815,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // means you deploy a transport, benchmark it, and measure the old
         // one without ever knowing.
         throw new ActorUnreachableError(
-            `${target.siloId} — no configured transport reaches it (tried ` +
+            `${target.hostId} — no configured transport reaches it (tried ` +
                 `${this.#transports.map((t) => t.name).join(', ')}; it advertises ` +
                 `${Object.keys(target.addresses ?? {}).join(', ') || 'none'})`
         );
@@ -833,16 +833,16 @@ class ClusterPlacementImpl implements ClusterPlacement {
     /**
      * The owner hint for a peer — the ONE place both the wrong-host throw
      * and `locate()` build it, so the internal and public answers cannot
-     * drift into disagreeing about who owns a grain.
+     * drift into disagreeing about who owns an actor.
      *
      * Carries both origins; it is the consumer's job to pick. The internal
      * mount uses `address`, the public endpoint uses `publicAddress` and
      * must never leak `address` to a client.
      */
-    #ownerHint(siloId: string): ActorOwnerHint {
-        const member = this.#member(siloId);
+    #ownerHint(hostId: string): ActorOwnerHint {
+        const member = this.#member(hostId);
         return {
-            siloId,
+            hostId,
             ...(member?.address !== undefined ? { address: member.address } : {}),
             ...(member?.publicAddress !== undefined
                 ? { publicAddress: member.publicAddress }
@@ -850,50 +850,50 @@ class ClusterPlacementImpl implements ClusterPlacement {
         };
     }
 
-    #member(siloId: string): SiloDescriptor | undefined {
-        return this.#options.membership.view().silos.find((s) => s.siloId === siloId);
+    #member(hostId: string): HostDescriptor | undefined {
+        return this.#options.membership.view().hosts.find((s) => s.hostId === hostId);
     }
 
-    #cacheRoute(id: string, siloId: string): void {
+    #cacheRoute(id: string, hostId: string): void {
         if (this.#routeCache.size >= ROUTE_CACHE_MAX) {
             const oldest = this.#routeCache.keys().next().value;
             if (oldest !== undefined) this.#routeCache.delete(oldest);
         }
         this.#routeCache.delete(id);
-        this.#routeCache.set(id, siloId);
+        this.#routeCache.set(id, hostId);
     }
 
     #pruneRoutes(view: MembershipView): void {
-        const live = new Set(view.silos.map((s) => s.siloId));
-        for (const [id, siloId] of this.#routeCache) {
-            if (!live.has(siloId)) this.#routeCache.delete(id);
+        const live = new Set(view.hosts.map((s) => s.hostId));
+        for (const [id, hostId] of this.#routeCache) {
+            if (!live.has(hostId)) this.#routeCache.delete(id);
         }
     }
 
     /**
-     * Proactive directory hygiene: when a silo we have seen disappears
+     * Proactive directory hygiene: when a host we have seen disappears
      * from the view AND the store confirms it dead (a graceful leaver
      * already released its claims), sweep its entries so callers never
      * trip over them. Racing survivors are fine — eviction is idempotent.
      * Lazy eviction on lookup remains the backstop.
      */
     async #sweepDeparted(view: MembershipView): Promise<void> {
-        const live = new Set(view.silos.map((s) => s.siloId));
-        const departed = [...this.#seenSilos].filter(
-            (id) => !live.has(id) && id !== this.identity.siloId
+        const live = new Set(view.hosts.map((s) => s.hostId));
+        const departed = [...this.#seenHosts].filter(
+            (id) => !live.has(id) && id !== this.identity.hostId
         );
-        for (const id of live) this.#seenSilos.add(id);
-        if (departed.length === 0 || !this.#options.directory.evictSilo) return;
+        for (const id of live) this.#seenHosts.add(id);
+        if (departed.length === 0 || !this.#options.directory.evictHost) return;
         for (const id of departed) {
-            // A silo only stops being "seen" once its sweep completed (or
+            // A host only stops being "seen" once its sweep completed (or
             // the store says it is in fact alive-and-absent-from-view for
             // now) — a transient view drop or a failed sweep keeps it on
             // the list, so the next membership change tries again.
             try {
                 if (await this.#options.membership.isAlive(id)) continue;
-                this.#counters.siloSweeps++;
-                this.#counters.sweptEntries += await this.#options.directory.evictSilo(id);
-                this.#seenSilos.delete(id);
+                this.#counters.hostSweeps++;
+                this.#counters.sweptEntries += await this.#options.directory.evictHost(id);
+                this.#seenHosts.delete(id);
             } catch (error) {
                 if (__DEV__) {
                     console.error(`[sigx actors] directory sweep for ${id} failed:`, error);
@@ -913,18 +913,18 @@ class ClusterPlacementImpl implements ClusterPlacement {
             if (nul > 0) types.add(id.slice(0, nul));
         }
         for (const type of types) {
-            await this.#silo?.deactivateType(type).catch(() => {});
+            await this.#host?.deactivateType(type).catch(() => {});
         }
     }
 
     /** Resolve who should serve `ref` right now: us, or a peer. */
-    async #resolveTarget(ref: ActorRef): Promise<'local' | SiloDescriptor> {
+    async #resolveTarget(ref: ActorRef): Promise<'local' | HostDescriptor> {
         const id = actorId(ref);
         if (this.#claimed.has(id)) return 'local';
 
         const cached = this.#routeCache.get(id);
         if (cached !== undefined) {
-            if (cached === this.identity.siloId) {
+            if (cached === this.identity.hostId) {
                 this.#counters.routeCacheHits++;
                 return 'local';
             }
@@ -940,13 +940,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#counters.directoryLookups++;
         const entry = await this.#options.directory.lookup(id);
         if (entry) {
-            if (entry.siloId === this.identity.siloId) return 'local';
-            const member = this.#member(entry.siloId);
+            if (entry.hostId === this.identity.hostId) return 'local';
+            const member = this.#member(entry.hostId);
             if (member) {
-                this.#cacheRoute(id, entry.siloId);
+                this.#cacheRoute(id, entry.hostId);
                 return member;
             }
-            if (!(await this.#options.membership.isAlive(entry.siloId))) {
+            if (!(await this.#options.membership.isAlive(entry.hostId))) {
                 // Dead owner: reclaim lazily and place fresh below.
                 this.#counters.directoryEvictions++;
                 await this.#options.directory.evict(id, entry);
@@ -954,7 +954,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         }
 
         const view = this.#options.membership.view();
-        if (view.silos.length === 0) return 'local'; // not started / solo
+        if (view.hosts.length === 0) return 'local'; // not started / solo
         const policy =
             (await this.#declaredPolicy(ref.type)) ??
             this.#options.typePolicies?.[ref.type] ??
@@ -962,13 +962,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const chosen = policy.choose(ref, view, this.descriptor());
         // Sticky: concurrent activations of one key must agree on a target
         // so racing dispatches join one claim instead of splitting.
-        this.#cacheRoute(id, chosen.siloId);
-        return chosen.siloId === this.identity.siloId ? 'local' : chosen;
+        this.#cacheRoute(id, chosen.hostId);
+        return chosen.hostId === this.identity.hostId ? 'local' : chosen;
     }
 
     /**
      * The strategy an actor declared with `defineActor({ placement })` —
-     * Orleans's placement attribute, and the highest-precedence answer.
+     * the per-actor placement attribute, and the highest-precedence answer.
      *
      * Resolved lazily and memoized per TYPE: a `virtual:sigx-actors`
      * registry only loads a type's module on demand, so this cannot be
@@ -979,11 +979,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const memo = this.#declaredPolicies.get(type);
         if (memo !== undefined) return memo ?? undefined;
 
-        const silo = this.#silo;
-        if (!silo) return undefined;
+        const host = this.#host;
+        if (!host) return undefined;
         let def: AnyActorDefinition | null;
         try {
-            def = (await silo.definition(type)) ?? null;
+            def = (await host.definition(type)) ?? null;
         } catch {
             // A failed module load is the dispatch path's problem to report,
             // not the placement's — fall through to the configured policy.
@@ -993,7 +993,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // Three cases, not one. Before the `backend` tag existed the runtime
         // could not tell them apart, so EVERY unusable declaration was
         // ignored with a dev-only warning — and a typo'd strategy silently
-        // placed grains somewhere other than where its author said, in
+        // placed actors somewhere other than where its author said, in
         // production, with nothing pointing at the cause.
         if (declared) {
             // TAGGED FOR SOMEONE ELSE — checked before shape, and on the tag
@@ -1008,7 +1008,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             }
             // OURS, OR UNTAGGED AND UNRECOGNISED. Either way it cannot do the
             // job it was declared for, and failing loudly beats placing the
-            // grain somewhere the author did not ask for.
+            // actor somewhere the author did not ask for.
             if (typeof (declared as PlacementPolicy).choose !== 'function') {
                 throw new Error(
                     `[sigx actors] actor "${type}" declares placement ` +
@@ -1028,7 +1028,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
      * immediately (the redirect told us where); unreachable and a REMOTE
      * peer's shutdown retry after a backoff (a blip, or a rolling deploy
      * releasing its claims as it drains); null = not ours, rethrow. A
-     * LOCAL shutdown is never retried — this silo really is stopping.
+     * LOCAL shutdown is never retried — this host really is stopping.
      */
     async #noteFailure(
         id: string,
@@ -1039,8 +1039,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
             this.#counters.wrongHostRedirects++;
             this.#routeCache.delete(id);
             const owner = (error as ActorWrongHostError).owner;
-            if (owner?.siloId && owner.siloId !== this.identity.siloId) {
-                this.#cacheRoute(id, owner.siloId);
+            if (owner?.hostId && owner.hostId !== this.identity.hostId) {
+                this.#cacheRoute(id, owner.hostId);
             }
             return 'wrong-host';
         }
@@ -1049,14 +1049,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
             this.#routeCache.delete(id);
             this.#counters.directoryLookups++;
             const entry = await this.#options.directory.lookup(id);
-            if (entry && !(await this.#options.membership.isAlive(entry.siloId))) {
+            if (entry && !(await this.#options.membership.isAlive(entry.hostId))) {
                 this.#counters.directoryEvictions++;
                 await this.#options.directory.evict(id, entry);
             }
             await this.#options.membership.refresh();
             return 'unreachable';
         }
-        if (remote && isActorError(error) && error.kind === 'silo-shutdown') {
+        if (remote && isActorError(error) && error.kind === 'host-shutdown') {
             this.#counters.drainingRetries++;
             // The owner is handing off: its claim releases as the actor
             // drains — don't evict, just re-resolve after a backoff (the
@@ -1138,7 +1138,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         options?: { throttleMs?: number }
     ): AsyncIterable<unknown> {
         const id = actorId(ref);
-        const resolveTarget = (): Promise<'local' | SiloDescriptor> => this.#resolveTarget(ref);
+        const resolveTarget = (): Promise<'local' | HostDescriptor> => this.#resolveTarget(ref);
         const noteFailure = (
             error: unknown,
             remote: boolean
@@ -1146,7 +1146,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             this.#noteFailure(id, error, remote);
         const backoff = (attempt: number): Promise<void> => this.#backoff(attempt);
         const local = this.#local!;
-        const remoteDispatcher = (target: SiloDescriptor): ActorDispatcher =>
+        const remoteDispatcher = (target: HostDescriptor): ActorDispatcher =>
             this.#transportDispatcher(target);
         const retries = this.#retries;
         // Captured like `local`/`remoteDispatcher`: `run()` is a free
@@ -1176,7 +1176,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                             // fix is to configure a transport that can.
                             throw new Error(
                                 `[sigx actors] cannot watch ${actorLabel(ref)} on ` +
-                                    `${target.siloId}: the transport reaching it does not ` +
+                                    `${target.hostId}: the transport reaching it does not ` +
                                     `implement dispatchWatch.`
                             );
                         }

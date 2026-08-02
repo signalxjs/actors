@@ -10,7 +10,7 @@
     "compatibility_flags": ["nodejs_compat"],
 
     "durable_objects": {
-        "bindings": [{ "name": "ACTORS", "class_name": "ActorSilo" }]
+        "bindings": [{ "name": "ACTORS", "class_name": "ActorHost" }]
     },
 
     // `new_sqlite_classes`, NOT `new_classes`.
@@ -19,11 +19,11 @@
     // be migrated to SQLite in place — the class is stuck with it forever —
     // and carries a far smaller per-value limit. This is the single most
     // consequential irreversible line in the file.
-    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ActorSilo"] }],
+    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ActorHost"] }],
 
     // `__DEV__` is the runtime's compile-time dev flag. The published
     // package ships both a dev and a production dist and expects its bundler
-    // to define it; without this, the silo throws `__DEV__ is not defined` on
+    // to define it; without this, the host throws `__DEV__ is not defined` on
     // the first request. `pnpm dev` overrides it to true for local warnings.
     "define": { "__DEV__": "false" },
 

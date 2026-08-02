@@ -1,31 +1,31 @@
 /**
- * The isomorphic `actor()` entry: silo seam resolution, guard chains on the
+ * The isomorphic `actor()` entry: host seam resolution, guard chains on the
  * in-process transport, and per-call options.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
 import { actor, defineActor, useActor } from '@sigx/actors';
-import { createSilo, type Silo } from '@sigx/actors/silo';
+import { createHost, type Host } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
-let running: Silo | null = null;
+let running: Host | null = null;
 afterEach(async () => {
     await running?.stop({ timeoutMs: 1000 });
     running = null;
 });
 
-async function startSilo(actors: Parameters<typeof createSilo>[0]['actors']): Promise<Silo> {
-    const silo = createSilo({ actors, defaults: quiet });
-    await silo.start();
-    running = silo;
-    return silo;
+async function startHost(actors: Parameters<typeof createHost>[0]['actors']): Promise<Host> {
+    const host = createHost({ actors, defaults: quiet });
+    await host.start();
+    running = host;
+    return host;
 }
 
 describe('actor() entry', () => {
-    it('throws a descriptive boot-order error when no silo is running', async () => {
+    it('throws a descriptive boot-order error when no host is running', async () => {
         const def = defineActor({
-            type: 'NoSilo',
+            type: 'NoHost',
             unguarded: true,
             state: () => ({}),
             methods: () => ({
@@ -34,10 +34,10 @@ describe('actor() entry', () => {
                 }
             })
         });
-        await expect(async () => actor(def, 'k').ping()).rejects.toThrow(/no silo is running/);
+        await expect(async () => actor(def, 'k').ping()).rejects.toThrow(/no host is running/);
     });
 
-    it('dispatches in-process through the seam once a silo is started', async () => {
+    it('dispatches in-process through the seam once a host is started', async () => {
         const def = defineActor({
             type: 'Seamed',
             unguarded: true,
@@ -49,7 +49,7 @@ describe('actor() entry', () => {
                 }
             })
         });
-        await startSilo([def]);
+        await startHost([def]);
         await expect(actor(def, 'k').bump()).resolves.toBe(1);
         await expect(useActor(def, 'k').bump()).resolves.toBe(2);
     });
@@ -81,7 +81,7 @@ describe('actor() entry', () => {
                 }
             })
         });
-        await startSilo([def]);
+        await startHost([def]);
         await expect(actor(def, 'g').open()).resolves.toBe('ok');
         await expect(actor(def, 'g').secret()).rejects.toMatchObject({
             __sigxServerFnError: true,
@@ -111,7 +111,7 @@ describe('actor() entry', () => {
                 }
             })
         });
-        await startSilo([def]);
+        await startHost([def]);
         await expect(actor(def, 'c').with({ context: request }).ping()).resolves.toBe('pong');
         expect(sawUrl).toBe('https://example.test/page');
     });
@@ -131,7 +131,7 @@ describe('actor() entry', () => {
                 }
             })
         });
-        await startSilo([def]);
+        await startHost([def]);
         await expect(actor(def, 'd').ping()).rejects.toThrow(/not available on an in-process/);
     });
 
@@ -151,7 +151,7 @@ describe('actor() entry', () => {
                 }
             })
         });
-        await startSilo([def]);
+        await startHost([def]);
         const iterate = async () => {
             for await (const chunk of actor(def, 's').feed()) void chunk;
         };

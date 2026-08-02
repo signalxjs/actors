@@ -8,13 +8,13 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ClusterMembership, SiloDescriptor } from '@sigx/actors/cluster';
+import type { ClusterMembership, HostDescriptor } from '@sigx/actors/cluster';
 import { k8sMembership } from '@sigx/actors-k8s';
 
 const KUBECONFIG = process.env.KUBECONFIG;
 
-function descriptor(siloId: string): SiloDescriptor {
-    return { siloId, epoch: Date.now(), address: `http://${siloId}:7311`, status: 'active' };
+function descriptor(hostId: string): HostDescriptor {
+    return { hostId, epoch: Date.now(), address: `http://${hostId}:7311`, status: 'active' };
 }
 
 async function until(cond: () => boolean, ms = 10_000): Promise<void> {
@@ -70,21 +70,21 @@ describe.skipIf(!KUBECONFIG)('k8s membership over a real API server (kubectl pro
         const b: ClusterMembership = k8sMembership(options);
         try {
             await a.join(descriptor('s.reala'));
-            expect(a.view().silos.map((s) => s.siloId)).toEqual(['s.reala']);
+            expect(a.view().hosts.map((s) => s.hostId)).toEqual(['s.reala']);
 
             await b.join(descriptor('s.realb'));
-            await until(() => a.view().silos.length === 2);
-            await until(() => b.view().silos.length === 2);
+            await until(() => a.view().hosts.length === 2);
+            await until(() => b.view().hosts.length === 2);
 
             await expect(a.isAlive('s.realb')).resolves.toBe(true);
 
             await b.setStatus('leaving');
             await until(
-                () => a.view().silos.find((s) => s.siloId === 's.realb')?.status === 'leaving'
+                () => a.view().hosts.find((s) => s.hostId === 's.realb')?.status === 'leaving'
             );
 
             await b.leave();
-            await until(() => a.view().silos.length === 1);
+            await until(() => a.view().hosts.length === 1);
             await expect(a.isAlive('s.realb')).resolves.toBe(false);
         } finally {
             await Promise.allSettled([a.leave(), b.leave()]);

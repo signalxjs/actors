@@ -6,8 +6,8 @@
  * because nothing has to cross a wire, and it needs no secret because there
  * is no boundary to authenticate across.
  *
- * The trade is that it STARTS A SILO. It cannot attach to one already
- * running, and the silo it starts is a real one — it joins membership,
+ * The trade is that it STARTS A HOST. It cannot attach to one already
+ * running, and the host it starts is a real one — it joins membership,
  * claims actors, and ticks reminders. That is fine pointed at a dev app and
  * wrong pointed at production, which is why the HTTP source exists and why
  * this one says loudly what it is doing.
@@ -17,15 +17,15 @@ import type {
     HealthPlugin,
     MetricsPlugin,
     OpsPlugin,
-    Silo
-} from '@sigx/actors/silo';
+    Host
+} from '@sigx/actors/host';
 import type { ClusterPlugin } from '@sigx/actors/cluster';
 import {
-    siloViewFromReport,
+    hostViewFromReport,
     type ClusterView,
     type MonitorSnapshot,
     type MonitorSource,
-    type SiloView,
+    type HostView,
     type SnapshotOptions
 } from './types';
 
@@ -82,7 +82,7 @@ export class EmbeddedSourceError extends Error {
 export async function embeddedSource(options: EmbeddedSourceOptions): Promise<MonitorSource> {
     const load = options.load ?? ((specifier) => import(specifier) as Promise<Record<string, unknown>>);
     // Non-finite falls back to the default rather than through: NaN would
-    // defeat the `=== 0` check below and reach `silo.activations()` as a
+    // defeat the `=== 0` check below and reach `host.activations()` as a
     // bound that is not one. (Core's own `resolveLimit` is internal, so the
     // check is restated rather than reached into.)
     const limit = Number.isFinite(options.activations)
@@ -104,20 +104,20 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
         throw new EmbeddedSourceError(
             `"${options.module}" exports no actor app — expected an \`app\` (or default) ` +
                 'export from defineActorApp(). Point --app at your actors.app.ts, or use ' +
-                '--url to watch a running silo over its ops endpoint instead.'
+                '--url to watch a running host over its ops endpoint instead.'
         );
     }
 
     // An already-started app is reused rather than restarted: `start()` is
     // idempotent while running, and a monitor must never be the thing that
-    // cycles the silo it is monitoring.
+    // cycles the host it is monitoring.
     //
     // Read BEFORE starting, because that is the only moment the answer is
     // knowable — and it decides whether `close()` may stop the app. Shutting
-    // down a silo we merely attached to would drain someone else's
+    // down a host we merely attached to would drain someone else's
     // activations on Ctrl+C.
-    const alreadyRunning = app.silo !== null;
-    const silo: Silo = app.silo ?? (await app.start());
+    const alreadyRunning = app.host !== null;
+    const host: Host = app.host ?? (await app.start());
     const metrics = loaded.metrics ?? null;
     const cluster = loaded.cluster ?? null;
     const ops = loaded.ops ?? null;
@@ -128,16 +128,16 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
         label: options.module,
 
         async snapshot(signal?: AbortSignal, ask?: SnapshotOptions): Promise<MonitorSnapshot> {
-            const stats = silo.stats();
+            const stats = host.stats();
             const at = Date.now();
-            // `Silo` itself carries no start time — uptime lives on the ops
+            // `Host` itself carries no start time — uptime lives on the ops
             // and health plugins, both of which stamp it in `onStart`. With
             // neither, a single-node view honestly reports 0 rather than
             // inventing one from when the CLI happened to attach.
             const health = ops?.snapshot().health ?? healthPlugin?.status() ?? null;
             const uptimeMs = health?.uptimeMs ?? 0;
 
-            let silos: readonly SiloView[];
+            let hosts: readonly HostView[];
             let clusterView: ClusterView | null = null;
             let partial = false;
 
@@ -148,10 +148,10 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                 const report = await clusterStats(cluster.placement, {
                     signal,
                     ...(ask?.detail
-                        ? { detail: ask.siloId ? { silos: [ask.siloId] } : true }
+                        ? { detail: ask.hostId ? { hosts: [ask.hostId] } : true }
                         : {})
                 });
-                silos = report.silos.map(siloViewFromReport);
+                hosts = report.hosts.map(hostViewFromReport);
                 partial = report.partial;
                 clusterView = {
                     from: report.from,
@@ -161,9 +161,9 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                     unreachable: report.unreachable
                 };
             } else {
-                silos = [
+                hosts = [
                     {
-                        siloId: options.module,
+                        hostId: options.module,
                         address: 'in-process',
                         status: 'unknown',
                         uptimeMs,
@@ -181,10 +181,10 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
 
             return {
                 at,
-                silos,
+                hosts,
                 cluster: clusterView,
                 metrics: metrics?.snapshot() ?? null,
-                activations: limit === 0 ? null : silo.activations({ limit, sortBy: 'queued' }),
+                activations: limit === 0 ? null : host.activations({ limit, sortBy: 'queued' }),
                 health,
                 partial
             };

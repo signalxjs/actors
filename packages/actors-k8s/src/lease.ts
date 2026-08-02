@@ -1,11 +1,11 @@
 /**
- * Lease ↔ SiloDescriptor mapping. One Lease per silo: `spec.renewTime` is
+ * Lease ↔ HostDescriptor mapping. One Lease per host: `spec.renewTime` is
  * the heartbeat, `spec.leaseDurationSeconds` the declared TTL, and the full
  * descriptor rides an annotation — Leases are the one Kubernetes object
  * whose whole job is exactly this (kubelet node heartbeats), so liveness
  * and discovery need no second object kind.
  */
-import type { SiloDescriptor } from '@sigx/actors/cluster';
+import type { HostDescriptor } from '@sigx/actors/cluster';
 
 export const DESCRIPTOR_ANNOTATION = 'sigx.dev/descriptor';
 export const CLUSTER_LABEL = 'sigx.dev/cluster';
@@ -28,8 +28,8 @@ export interface LeaseObject {
     };
 }
 
-export function leaseName(prefix: string, siloId: string): string {
-    return `${prefix}-${siloId}`;
+export function leaseName(prefix: string, hostId: string): string {
+    return `${prefix}-${hostId}`;
 }
 
 /** RFC 3339 with microseconds — the wire form of k8s MicroTime. */
@@ -38,7 +38,7 @@ export function microTime(ms: number): string {
 }
 
 export function buildLease(
-    self: SiloDescriptor,
+    self: HostDescriptor,
     options: {
         name: string;
         namespace: string;
@@ -57,7 +57,7 @@ export function buildLease(
             annotations: { [DESCRIPTOR_ANNOTATION]: JSON.stringify(self) }
         },
         spec: {
-            holderIdentity: self.siloId,
+            holderIdentity: self.hostId,
             leaseDurationSeconds: Math.ceil(options.ttlMs / 1000),
             acquireTime: microTime(options.nowMs),
             renewTime: microTime(options.nowMs)
@@ -75,7 +75,7 @@ export interface LeasePatch {
     spec: { renewTime: string };
 }
 
-export function renewPatch(nowMs: number, descriptor?: SiloDescriptor): LeasePatch {
+export function renewPatch(nowMs: number, descriptor?: HostDescriptor): LeasePatch {
     const patch: LeasePatch = { spec: { renewTime: microTime(nowMs) } };
     if (descriptor) {
         patch.metadata = {
@@ -89,19 +89,19 @@ const STATUSES = new Set(['joining', 'active', 'leaving']);
 
 /**
  * Parse a peer's descriptor off its Lease; null for foreign/malformed
- * leases. The full `SiloDescriptor` shape is enforced — anything matching
+ * leases. The full `HostDescriptor` shape is enforced — anything matching
  * the labelSelector lands in the membership view, and a half-formed
  * descriptor (missing epoch, unknown status) would violate what placement
  * assumes about every view entry.
  */
-export function parseLease(lease: LeaseObject): SiloDescriptor | null {
+export function parseLease(lease: LeaseObject): HostDescriptor | null {
     const raw = lease.metadata?.annotations?.[DESCRIPTOR_ANNOTATION];
     if (!raw) return null;
     try {
-        const descriptor = JSON.parse(raw) as SiloDescriptor;
+        const descriptor = JSON.parse(raw) as HostDescriptor;
         if (
-            typeof descriptor.siloId !== 'string' ||
-            !descriptor.siloId ||
+            typeof descriptor.hostId !== 'string' ||
+            !descriptor.hostId ||
             typeof descriptor.address !== 'string' ||
             typeof descriptor.epoch !== 'number' ||
             !Number.isFinite(descriptor.epoch) ||

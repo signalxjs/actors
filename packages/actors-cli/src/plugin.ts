@@ -1,5 +1,5 @@
 /**
- * `@sigx/actors-cli` — the sigx CLI plugin for observing actor silos.
+ * `@sigx/actors-cli` — the sigx CLI plugin for observing actor hosts.
  *
  * Delivered as a CLI plugin rather than its own binary for the reason
  * `@sigx/lynx-cli` is: `sigx` is already the command an app author runs, and
@@ -30,7 +30,7 @@ type Verb = (typeof VERBS)[number];
  */
 const actorsArgs = {
     verb: a.positional().describe(`What to do: ${VERBS.join(' | ')}`),
-    url: a.string().describe('Origin of a running silo, e.g. http://localhost:3000'),
+    url: a.string().describe('Origin of a running host, e.g. http://localhost:3000'),
     secret: a.string().describe('ops() bearer token (or $SIGX_OPS_SECRET)'),
     base: a.string().describe('ops() path prefix (default /_sigx/ops)'),
     app: a.string().describe('Actor app module to load in-process'),
@@ -88,7 +88,7 @@ export default definePlugin({
     detect,
     commands: {
         actors: {
-            description: 'Observe actor silos, grains and clusters (top | stats | health)',
+            description: 'Observe actor hosts, actors and clusters (top | stats | health)',
             args: actorsArgs,
             // The cast bridges the parser's inferred shape to the stated
             // one. They agree by construction — `ActorsArgs` mirrors the
@@ -102,7 +102,7 @@ export default definePlugin({
      *
      * Deliberately a chip and a pointer, not a live panel. Rendering one
      * would mean opening a source, and the only zero-config source starts a
-     * silo: it joins membership, claims actors and ticks reminders. Doing
+     * host: it joins membership, claims actors and ticks reminders. Doing
      * that as a side effect of somebody else's dev server is a genuinely
      * bad surprise, and "the monitor quietly became a cluster member" is
      * not a sentence anyone should have to debug.
@@ -118,7 +118,7 @@ export default definePlugin({
                 description: 'how to open the actors dashboard',
                 run: (shell) => {
                     shell.say('sigx actors top                    — dashboard (loads this project)');
-                    shell.say('sigx actors top --url http://…     — dashboard against a running silo');
+                    shell.say('sigx actors top --url http://…     — dashboard against a running host');
                     shell.say('sigx actors stats --json           — one snapshot, for piping');
                     shell.say('sigx actors health                 — probe; exit code is the answer');
                 }

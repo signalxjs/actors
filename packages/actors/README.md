@@ -1,6 +1,6 @@
 # @sigx/actors
 
-Orleans-style **virtual actors** for SignalX: addressable, single-threaded,
+**Virtual actors** for SignalX: addressable, single-threaded,
 persistent server objects that integrate with sigx's server layer — actor
 calls ride the same wire protocol, codec, and security posture as `serverFn`.
 
@@ -16,7 +16,7 @@ export const CartActor = defineActor({
     methods: (ctx) => ({
         async addItem(item: Item) {
             ctx.state.items.push(item);   // deep signal — just mutate
-            await ctx.save();             // Orleans WriteStateAsync
+            await ctx.save();             // explicit persistence
             return ctx.state.items.length;
         }
     })
@@ -41,7 +41,7 @@ destroy, no connection management — that is the virtual-actor model.
    Plain mutation on `ctx.state` is race-free; no locks, ever.
 3. **`await` holds the mailbox.** A turn ends when the method's promise
    settles — an awaited `fetch` inside a method blocks every queued call to
-   that actor until it resolves. This is the non-reentrant Orleans default
+   that actor until it resolves. This is the non-reentrant default
    and the model's core trade: state safety over intra-actor concurrency.
    (Dev builds warn when a turn exceeds `slowTurnMs`.)
 4. **Persistent.** `ctx.save()` writes state through the pluggable
@@ -50,7 +50,7 @@ destroy, no connection management — that is the virtual-actor model.
    (`ActorStateConflictError`) — the next call loads the winning state.
 5. **Deadlock-detected.** Every call carries its chain; `A → B → A` into a
    non-reentrant actor **throws `ActorDeadlockError` immediately** with the
-   full chain, instead of Orleans's hang-until-timeout. `reentrant: true`
+   full chain, instead of hanging until a timeout. `reentrant: true`
    allows call-chain re-entry (the cycle runs inline against your own turn).
 
 ## Setup
@@ -59,7 +59,7 @@ destroy, no connection management — that is the virtual-actor model.
 pnpm add @sigx/actors
 ```
 
-**Vite app** — add the plugin; it runs a dev silo for you and mounts the
+**Vite app** — add the plugin; it runs a dev host for you and mounts the
 endpoint at `/_sigx/actor`:
 
 ```ts
@@ -99,7 +99,7 @@ actors:
 
 ```ts
 // server.mjs — the SAME app module
-const silo = await app.withActors([Counter]).start();
+const host = await app.withActors([Counter]).start();
 ```
 
 `withActors` throws if the app already declared `actors`, so a host can
@@ -109,16 +109,16 @@ exactly this shape in dev and in production.
 **Production server entry** — explicit composition, the sigx idiom:
 
 ```ts
-import { createSilo } from '@sigx/actors/silo';
+import { createHost } from '@sigx/actors/host';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import { actors } from './dist/server/sigx-actors.js'; // build-emitted registry
 
-const silo = createSilo({ actors, storage });
-await silo.start();
+const host = createHost({ actors, storage });
+await host.start();
 
 export default {
     async fetch(request: Request): Promise<Response> {
-        if (matchesActorRequest(request)) return handleActorRequest(request, { silo });
+        if (matchesActorRequest(request)) return handleActorRequest(request, { host });
         if (matchesServerFn(request))     return handleServerFnRequest(request, { resolve });
         return documentHandler(request);
     }
@@ -130,16 +130,16 @@ Node servers use `createActorHandler` / `attachSignalHandlers` from
 
 ## The app: one config, many runtimes
 
-`createSilo` stays the low-level primitive, but it takes exactly ONE
+`createHost` stays the low-level primitive, but it takes exactly ONE
 `placement` and ONE `storage`, and `ActorPlacement.bind()` is its only
 lifecycle-hook shape — so two things that both want `beforeActivate` cannot
 coexist. `defineActorApp` is the composition root that fixes that: it folds
 every plugin's contributions into the single placement, storage and context
-`createSilo` already understands.
+`createHost` already understands.
 
 ```ts
 // src/actors.app.ts — one typed source of truth
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { fileStorage } from '@sigx/actors/node';
 
 export const app = defineActorApp({
@@ -153,8 +153,8 @@ export const { defineActor } = app;
 ```
 
 ```ts
-const silo = await app.start();   // builds the silo, starts it, runs onStart
-await app.stop();                 // drains the silo, then onStop in reverse
+const host = await app.start();   // builds the host, starts it, runs onStart
+await app.stop();                 // drains the host, then onStop in reverse
 ```
 
 The app is an inert **description** until `start()`, which is what lets the
@@ -162,7 +162,7 @@ same module be started by a Node entry, the Vite dev server, or a Worker.
 
 A started app is **single-use**: `start()` is idempotent while running, but
 after `stop()` it refuses to restart (a plugin placement mints its identity
-per run — a cluster silo id is gone once its membership entry is), so build a
+per run — a cluster host id is gone once its membership entry is), so build a
 new app instead. A start that *fails* is the exception: the rejection is not
 cached, so fixing the cause and calling `start()` again really retries.
 
@@ -173,7 +173,7 @@ cached, so fixing the cause and calling `start()` again really retries.
 both plugins.
 
 ```ts
-import type { ActorPlugin } from '@sigx/actors/silo';
+import type { ActorPlugin } from '@sigx/actors/host';
 
 interface Logger { info(message: string): void }
 
@@ -226,7 +226,7 @@ export const Counter = defineActor({
 |---|---|---|
 | `addTypeHandlers` | concatenated | codec handlers for state persistence |
 | `decorateStorage` | chained | last registered is **outermost** |
-| `setPlacement` | **exclusive** | a factory, run once the silo exists; a second claim throws, naming both plugins |
+| `setPlacement` | **exclusive** | a factory, run once the host exists; a second claim throws, naming both plugins |
 | `onBeforeActivate` | in order | throwing **refuses** the activation |
 | `onAfterDeactivate` | reverse order | errors caught per hook and dev-logged |
 | `useDispatch` | outside-in | first registered is **outermost**; must forward `dispatchStream` |
@@ -247,18 +247,18 @@ owns.
 > hashes the routing token.
 
 
-Two independent axes, the same split Orleans draws:
+Two independent axes:
 
 - **The backend** — *who hosts an actor at all*: the local host, a cluster,
   Durable Objects. One per app, claimed with `setPlacement`.
-- **The strategy** — *which silo a new activation goes to*, Orleans's
-  `IPlacementDirector`. That is `PlacementPolicy` from `@sigx/actors/cluster`;
+- **The strategy** — *which host a new activation goes to*. That is
+  `PlacementPolicy` from `@sigx/actors/cluster`;
   ship your own `choose(ref, view, self)` alongside the built-in
   `randomPlacementPolicy()`, `consistentHashPolicy()` and
   `preferLocalPolicy()`.
 
-A strategy can be declared **on the actor**, which is Orleans's placement
-attribute and beats the central `typePolicies` map:
+A strategy can be declared **on the actor**, a per-type placement
+attribute that beats the central `typePolicies` map:
 
 ```ts
 export const Session = defineActor({
@@ -269,7 +269,7 @@ export const Session = defineActor({
 ```
 
 `setPlacement` takes a **factory**, not an instance, precisely so a backend
-can read those declarations — it runs once the silo exists, so the context
+can read those declarations — it runs once the host exists, so the context
 can resolve definitions:
 
 ```ts
@@ -287,7 +287,7 @@ Precedence for a new activation: `defineActor({ placement })` →
 uniform random.
 
 A declared strategy the cluster **cannot use** — no `choose()` — is an error,
-not a fallback: silently placing a grain somewhere other than where its author
+not a fallback: silently placing an actor somewhere other than where its author
 declared is the kind of failure that leaves no signal pointing at its cause. A
 strategy intended for a *different* placement backend should say so, and is
 then ignored in silence:
@@ -317,7 +317,7 @@ pumping) rather than routing everything through the generic bridge.
 
 Durable reminders are a seam too. The default `shardedReminders()` keeps the
 table in `ActorStorage` under a reserved type, split into 16 hash shards that
-silos divide between them — which assumes **many actors per silo**:
+hosts divide between them — which assumes **many actors per host**:
 
 ```ts
 defineActorApp({ actors, reminders: shardedReminders() })   // the default
@@ -345,7 +345,7 @@ That matters for two things. Tests can drive time exactly:
 
 ```ts
 const scheduler = manualScheduler();
-const silo = createSilo({ actors, scheduler, defaults: { idleAfterMs: 0 } });
+const host = createHost({ actors, scheduler, defaults: { idleAfterMs: 0 } });
 scheduler.advance(60_000);   // an hour of sweeps, instantly
 ```
 
@@ -390,7 +390,7 @@ Three things are on the package author, because the consuming app's build
 never sees the source:
 
 - **Guards.** `requireGuards` cannot inspect a package, so declare `use` or
-  `unguarded` yourself. The silo dev-warns for a registered actor that
+  `unguarded` yourself. The host dev-warns for a registered actor that
   declares neither.
 - **Stream names** in the ref must match the definition; they drive wire
   routing.
@@ -423,7 +423,7 @@ wire-only backstop, exactly like the serverFn endpoint's.
 
 Declare a method a cacheable read and the endpoint accepts `GET` for it and
 emits the `Cache-Control` you asked for, so browsers, CDNs and reverse
-proxies absorb read traffic that would otherwise reach a grain:
+proxies absorb read traffic that would otherwise reach an actor:
 
 ```ts
 defineActor({
@@ -470,10 +470,10 @@ The rest follows from that, and is checked:
 - **Streams cannot be declared**, and saying so is a definition-time throw
   rather than a silently ignored declaration.
 - **POST keeps working** for every declared read: the declaration lives on
-  the definition, not on the wire, so a hand-built silo with no build
+  the definition, not on the wire, so a hand-built host with no build
   transform, an older client, or a service calling by hand all still work.
-- **Routing is unchanged** — the token travels in both carriers, and a grain
-  another silo owns is proxied as usual, with the answering silo making the
+- **Routing is unchanged** — the token travels in both carriers, and an actor
+  another host owns is proxied as usual, with the answering host making the
   caching promise.
 - **No `content-type` on the GET**: it would describe a body that does not
   exist, and it is a non-safelisted header, so leaving it off is one fewer
@@ -524,7 +524,7 @@ carriers for a declared read, so this is a client-side choice.
   as ordinary mailbox turns (coalesced under load) and die with the
   activation. Timers don't keep an actor alive unless `keepAlive: true`.
 - `ctx.reminders.set(name, { due, period })` — **durable**: stored through
-  `ActorStorage`, fired by the silo's scheduler, and they **re-activate an
+  `ActorStorage`, fired by the host's scheduler, and they **re-activate an
   idle or restarted actor** (`onReminder(ctx, name)`). Minimum period 60s;
   coarse resolution ("at or after"); at-most-once per tick.
 
@@ -630,7 +630,7 @@ The rules, and why they hold the actor model together:
 - **`cancel` is a request, not a join.** It aborts and returns; the run
   leaves `ctx.tasks.list()` when its body settles. (Awaiting settlement from
   a method turn would deadlock with the task's own wind-down `turn()`.)
-- **A running task keeps the grain alive** — the idle sweeper skips it, like
+- **A running task keeps the actor alive** — the idle sweeper skips it, like
   an open stream.
 - **`start` is single-flight per name** and resolves when the body is
   *launched*, not finished. A task that throws is terminal — no automatic
@@ -643,19 +643,19 @@ durably recorded: a ledger entry in the reserved `$sigx:tasks` storage
 record plus a liveness reminder armed under the same name. From then on:
 
 - A run **interrupted by deactivation** (any reason but cancel) keeps its
-  entry — the next activation of the grain restarts it, with
+  entry — the next activation of the actor restarts it, with
   `TaskInfo.restarts` bumped and the original `input` replayed through the
   state codec. Completion, a throw, and `cancel` all remove the entry (a
   thrown task is terminal; crash ≠ throw), and an empty ledger disarms the
   reminder.
-- The **reminder is the crash driver**: when a silo dies, the reminder
-  shards are re-owned by the surviving silos, the next tick delivers
-  through placement, and the grain — tasks and all — re-activates wherever
+- The **reminder is the crash driver**: when a host dies, the reminder
+  shards are re-owned by the surviving hosts, the next tick delivers
+  through placement, and the actor — tasks and all — re-activates wherever
   the cluster puts it, within roughly 60–90s. No client call needed.
 - The contract is **at-least-once**: the runtime resumes the *function*;
   your code resumes the *work* from its own checkpointed state (the
   `ctx.turn()` + `save()` pattern above — resume by reading how far the
-  last checkpoint got). A run that completes in the same instant its silo
+  last checkpoint got). A run that completes in the same instant its host
   stops may restart once more; make the last step idempotent or gate it on
   state.
 - On the Cloudflare Durable Object backend this degrades gracefully: the
@@ -667,7 +667,7 @@ record plus a liveness reminder armed under the same name. From then on:
 ## Jobs (`@sigx/actors/job`)
 
 `defineJob` is the packaged experience on top of `tasks:` — one durable
-long-running operation per grain, with the state machine, progress,
+long-running operation per actor, with the state machine, progress,
 checkpoints and client surface already decided. Start a job from a request
 handler and return immediately; check on it from anywhere in the cluster.
 
@@ -707,7 +707,7 @@ What the layer decides for you:
 - **State machine**: `pending → running → (paused ⇄ running) → completed |
   failed | cancelled`. `status()`/`watch()` return `JobInfo` — never the
   checkpoint (private) or the result (fetched once via `result()`).
-- **One grain per run** — key = your run id. The directory's
+- **One actor per run** — key = your run id. The directory's
   single-activation guarantee *is* the "exactly one runner" guarantee.
 - **`start` is idempotent under retry**: a non-pending job returns its
   current info and never restarts.
@@ -716,7 +716,7 @@ What the layer decides for you:
   checkpoint; past `maxAttempts` the job is marked `failed`. `resume(data)`
   on a paused job re-runs with `job.resumeData` and no attempt cost.
 - **`pause` parks durably**: `return job.pause(checkpoint)` writes the
-  checkpoint, marks `paused`, and releases the task — the grain idles at
+  checkpoint, marks `paused`, and releases the task — the actor idles at
   zero cost until `resume()`. For a timeout, arm `job.reminders` before
   pausing and handle it in `onReminder(control, name)` — `control.resume()`
   / `control.cancel()` are internal, so no self-dispatch deadlock.
@@ -738,11 +738,11 @@ not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob
   throw fails all parked callers and forgets the activation (nothing is
   remembered — the next call retries from scratch).
 - Idle actors deactivate after `idleAfterMs` (default 20 min; per-actor
-  override). `ctx.deactivate()` = Orleans `DeactivateOnIdle`: finish the
+  override). `ctx.deactivate()`: finish the
   queue, then go.
-- `silo.stop()` drains every mailbox, flushes persistence, ends open streams
+- `host.stop()` drains every mailbox, flushes persistence, ends open streams
   and rejects new external calls.
-  `attachSignalHandlers(silo, { server, onStopBegin })`
+  `attachSignalHandlers(host, { server, onStopBegin })`
   wires it to SIGTERM/SIGINT **and** drains the HTTP edge,
   which is the other half of a graceful shutdown. Both options matter:
   `onStopBegin` is what retires keep-alive sockets gracefully, while
@@ -759,29 +759,29 @@ not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob
   ≥ 10 s away shares one registry tick and may fire up to ~2 s late, while
   a short budget (a wire hop arriving nearly spent) gets an exact timer.
 
-### Seeing which grains are live
+### Seeing which actors are live
 
-`silo.stats()` gives you the counts. `silo.activations()` gives you the
-grains themselves — bounded, sorted, and safe to poll:
+`host.stats()` gives you the counts. `host.activations()` gives you the
+actors themselves — bounded, sorted, and safe to poll:
 
 ```ts
-silo.activations({ sortBy: 'queued', limit: 20 });
+host.activations({ sortBy: 'queued', limit: 20 });
 // [{ type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004,
 //    idleMs: 0, keptAlive: false, tasks: 0 }, …]
 ```
 
-`tasks` is the running detached-task count — the grains hosting
+`tasks` is the running detached-task count — the actors hosting
 long-running work, and the usual reason a `keptAlive` row is being skipped
 by the idle sweeper. `sigx actors top` shows it as a TASKS column.
 
 `sortBy` picks which end you care about: `'queued'` (default) is the hot
-grains, `'age'` the long-lived ones, `'idle'` the next sweep's candidates.
+actors, `'age'` the long-lived ones, `'idle'` the next sweep's candidates.
 `type` filters. Ties break on the actor id so the order is **stable between
 polls** — a table that reshuffles equal rows at 1 Hz is unreadable.
 
 It walks the directory, so it costs O(activations) and allocates a record
 per candidate; `limit` defaults to 100 because this is a "top N" view and a
-silo can hold millions. Poll it at human rates, not per request.
+host can hold millions. Poll it at human rates, not per request.
 
 `ageMs` is monotonic and `idleMs` is wall-clock — deliberately different
 clocks. Age is a duration and must survive an NTP step; idle is compared
@@ -789,22 +789,22 @@ against `idleAfterMs` by the sweeper, which genuinely wants wall time.
 
 `stats()` also reports `transitional: { activating, deactivating }`. Those
 slots have no activation to read yet, so they are not in `activations` and
-never were in the counts — which meant a silo in the middle of an
+never were in the counts — which meant a host in the middle of an
 activation storm read as **idle**, at exactly the moment you were looking
 at it.
 
 ## Metrics
 
-`metrics()` is a plugin that counts what the silo is doing. Pull-based: no
+`metrics()` is a plugin that counts what the host is doing. Pull-based: no
 exporter, no push pipeline, no metrics-library dependency — you read
 `snapshot()` whenever you want, from a route, a health check, or a test.
 
 ```ts
-import { defineActorApp, memoryStorage, metrics } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage, metrics } from '@sigx/actors/host';
 
 const m = metrics();
 const app = defineActorApp({ actors, storage: memoryStorage() }).use(m);
-const silo = await app.start();
+const host = await app.start();
 
 m.snapshot();
 // {
@@ -829,7 +829,7 @@ call's latency and they mean opposite things:
 | | meaning | fix |
 |---|---|---|
 | high `turnMs` | the method itself is slow | move I/O out of the turn, split the method |
-| high `queueMs` | the grain is a hotspot — callers are waiting behind each other | shard the key, or reduce traffic to it |
+| high `queueMs` | the actor is a hotspot — callers are waiting behind each other | shard the key, or reduce traffic to it |
 
 A dispatch middleware only ever sees the sum, which is why `queueMs` is the
 number people usually lack. `metrics()` gets it from `observeTurns`, the one
@@ -842,7 +842,7 @@ mismatch that discarded an activation.
 
 `byType` tells you a type is slow; it never tells you *which of its methods*
 is. `byMethod` carries the same five numbers keyed `Type#method`, and the
-queue/turn split is most useful there — within one type, a hot grain and one
+queue/turn split is most useful there — within one type, a hot actor and one
 slow method look identical until you separate the methods.
 
 ```ts
@@ -852,8 +852,8 @@ m.snapshot().byMethod['Cart#checkout'];
 
 `errors.byKind` counts `ActorErrorKind` — `'call-timeout'`, `'wrong-host'`,
 `'state-conflict'`, `'unreachable'`, `'deadlock'`, `'activation'`,
-`'method-not-found'`, `'silo-shutdown'` — plus `'(unknown)'` for anything an
-actor method threw itself. `calls.failed` says a silo is failing; this says
+`'method-not-found'`, `'host-shutdown'` — plus `'(unknown)'` for anything an
+actor method threw itself. `calls.failed` says a host is failing; this says
 what is wrong with it, and the two are very different questions: a rising
 `'unreachable'` is a network or membership problem, a rising `'(unknown)'` is
 your code.
@@ -950,12 +950,12 @@ swallowed and dev-logged — it can never fail a turn.
 Registering no observer leaves the hot path exactly as it was: the
 timestamps are only taken when someone is listening.
 
-**In a cluster, `metrics()` is per-silo and the two halves of a cross-silo
-call land on different silos.** `calls.total` and `latencyMs` are counted on
-the silo that *originated* the call; `queueMs`/`turnMs` and the activation
-gauges on the silo that *executed* it. That is a split, not a double count —
+**In a cluster, `metrics()` is per-host and the two halves of a cross-host
+call land on different hosts.** `calls.total` and `latencyMs` are counted on
+the host that *originated* the call; `queueMs`/`turnMs` and the activation
+gauges on the host that *executed* it. That is a split, not a double count —
 an inbound hop goes through the raw local dispatcher and never touches
-`useDispatch` — so summing `calls.total` across silos gives the true number
+`useDispatch` — so summing `calls.total` across hosts gives the true number
 of calls the cluster served, once each.
 
 ## Health & readiness
@@ -966,7 +966,7 @@ the aggregate of every plugin's `reportHealth()` contribution, and
 not:
 
 ```ts
-import { defineActorApp, health } from '@sigx/actors/silo';
+import { defineActorApp, health } from '@sigx/actors/host';
 
 export const app = defineActorApp({ actors, storage })
     .use(cluster({ providers, advertise, secret }))   // optional
@@ -979,8 +979,8 @@ export const app = defineActorApp({ actors, storage })
 | `GET /_sigx/health/ready` | **readiness** — should it be receiving traffic? | drain it |
 
 **They must be allowed to disagree, and the drain is why.** A graceful
-`silo.stop()` announces `leaving` *before* activations hand off, so for the
-whole handoff window the silo is `200 live` and `503 not-ready`: take it out
+`host.stop()` announces `leaving` *before* activations hand off, so for the
+whole handoff window the host is `200 live` and `503 not-ready`: take it out
 of the load balancer, do **not** restart it — a restart would abort the
 handoff that makes rolling deploys drop zero calls.
 
@@ -988,10 +988,10 @@ The cluster check fails for three states, each with a `detail` you can read
 off the probe body:
 
 - **`leaving`** — draining (post-`beginStop`). Not-ready, still live.
-- **`fenced`** — this silo lost its membership heartbeat and now refuses
+- **`fenced`** — this host lost its membership heartbeat and now refuses
   every activation. Its *published* status still reads `active`, so without
   this check a balancer would happily keep feeding a black hole. Fenced is
-  also **fatal** (below): the fence is permanent for this silo identity, so
+  also **fatal** (below): the fence is permanent for this host identity, so
   liveness fails too and the orchestrator restarts the pod — the fresh
   process mints a new identity and rejoins. Without that, an outage of the
   membership store longer than `ttlMs` leaves every pod `200 live /
@@ -1017,7 +1017,7 @@ reported not-ready with its message — a broken check must never 500 the
 endpoint that is supposed to diagnose it.
 
 **Before `start()` the whole mount answers 503**, including `/_sigx/health` —
-routes only run on a started silo, so serving at all *is* the liveness
+routes only run on a started host, so serving at all *is* the liveness
 signal. On Kubernetes that means a `startupProbe`, which exists for exactly
 this and also suppresses the liveness probe until the first success:
 
@@ -1048,7 +1048,7 @@ bare `{ status, uptimeMs }`.
 authenticated, which is the whole reason it is a separate route.
 
 ```ts
-import { metrics, health, ops } from '@sigx/actors/silo';
+import { metrics, health, ops } from '@sigx/actors/host';
 
 const collect = metrics();
 const app = defineActorApp({ actors })
@@ -1065,9 +1065,9 @@ const app = defineActorApp({ actors })
 Everything a monitoring tool needs was already being collected and none of it
 was reachable from outside the process: `metrics().snapshot()` contributes no
 route, `clusterStats()` takes a placement *object* rather than a URL, and the
-one remote surface that did exist — the `$sigx:silo#stats` symbol — is
+one remote surface that did exist — the `$sigx:host#stats` symbol — is
 cluster-only, carries no latency distributions, and disappears entirely in a
-cluster of socket-only transports. A single-node silo was unobservable from
+cluster of socket-only transports. A single-node host was unobservable from
 outside.
 
 **The secret is mandatory.** `ops()` throws at construction without one unless
@@ -1091,8 +1091,8 @@ app.use(c).use(ops({
 }));
 ```
 
-`ops()` lives in `@sigx/actors/silo` and `clusterStats` in
-`@sigx/actors/cluster`, so a single-node silo must not pay for the cluster
+`ops()` lives in `@sigx/actors/host` and `clusterStats` in
+`@sigx/actors/cluster`, so a single-node host must not pay for the cluster
 bundle to have an ops endpoint. Passing a thunk also leaves `timeoutMs` and
 `concurrency` where they already are, on `ClusterStatsOptions`.
 
@@ -1109,14 +1109,14 @@ registry.reportOps('cache', () => ({ entries: cache.size, hits, misses }));
 
 Providers run **per read**, so return live numbers rather than a value
 captured at setup. They must stay sync, for the same reason a readiness check
-must: this is the endpoint you reach for when the silo is *already* unwell,
+must: this is the endpoint you reach for when the host is *already* unwell,
 and it must not be able to hang. A throwing provider is caught and its section
 replaced with `{ error }`, leaving every other section intact — the one tool
-that explains a broken silo must not be broken by it. Names must be unique; a
+that explains a broken host must not be broken by it. Names must be unique; a
 clash throws at setup naming both plugins.
 
 `ops().snapshot()` gives the same answer in process, for a test or for a tool
-embedded in the silo rather than polling it.
+embedded in the host rather than polling it.
 
 ### Cluster-wide stats
 
@@ -1128,18 +1128,18 @@ import { clusterStats } from '@sigx/actors/cluster';
 const report = await clusterStats(plugin.placement, { timeoutMs: 2000 });
 // {
 //   view:    { version: 12, size: 3, active: 3 },
-//   silos:   [{ siloId, address, status, stats: { activations, queued, perType },
+//   hosts:   [{ hostId, address, status, stats: { activations, queued, perType },
 //               counters, reminderShards: ['p3','p7',…], uptimeMs,
 //               metrics, health }],
-//   totals:  { silos, activations, queued, perType, counters, metrics, health },
+//   totals:  { hosts, activations, queued, perType, counters, metrics, health },
 //   reminderShards: { p0: ['s.ab12'], p1: ['s.cd34'], … },
-//   unreachable: [{ siloId, address, reason: 'unreachable', message }],
+//   unreachable: [{ hostId, address, reason: 'unreachable', message }],
 //   partial: false
 // }
 ```
 
 **Behaviour is cluster-wide too, not just topology.** Each report carries a
-mergeable metrics *digest* and that silo's readiness, so one call answers for
+mergeable metrics *digest* and that host's readiness, so one call answers for
 the whole fleet — one reachable endpoint, one secret, and it works behind an
 ingress where the peers are not individually reachable.
 
@@ -1147,69 +1147,69 @@ ingress where the peers are not individually reachable.
 streams, `errors.byKind`, storage operations, activation churn, per-type and
 per-method call counts — and **latency merged properly**. A
 `HistogramSnapshot` is p50/p90/p99 with no buckets, and the average of two
-silos' p99s is not the p99 of anything, so the digest carries the bucket
+hosts' p99s is not the p99 of anything, so the digest carries the bucket
 counts instead and the percentiles are re-derived from the summed
 distribution. The buckets are sparse (a few dozen of 384 are ever occupied),
 and a peer whose bucket LAYOUT differs has its counters merged and its
 distribution dropped rather than silently mixed into a different axis.
 
 ```ts
-report.totals.metrics?.silos;          // how many silos actually reported
+report.totals.metrics?.hosts;          // how many hosts actually reported
 report.totals.metrics?.turnMs?.p99Ms;  // from merged buckets, not an average
 report.totals.health;                  // { ready, notReady, fatal, unknown }
 ```
 
-**`totals.metrics.silos` is the denominator, and it matters.** A silo with no
+**`totals.metrics.hosts` is the denominator, and it matters.** A host with no
 `metrics()` attached — or one mid-rolling-deploy on a build that predates the
 digest — contributes nothing, and totals that quietly cover two thirds of the
 fleet look exactly like totals that cover all of it. It is `null`, rather than
 a wall of zeroes, when nothing anywhere is instrumented: no instrumentation
 and no traffic are very different findings.
 
-**Drill-down is opt-in.** `detail` adds each silo's live grain list and recent
+**Drill-down is opt-in.** `detail` adds each host's live actor list and recent
 failures, which the ordinary poll deliberately omits: the walk is
-O(activations) on every silo at once, and grain keys are the one field here
+O(activations) on every host at once, and actor keys are the one field here
 that can be personal data.
 
 ```ts
-// Everything, for one silo — the shape a dashboard drill-down wants.
-await clusterStats(plugin.placement, { detail: { activations: 20, silos: [id] } });
+// Everything, for one host — the shape a dashboard drill-down wants.
+await clusterStats(plugin.placement, { detail: { activations: 20, hosts: [id] } });
 ```
 
-Over HTTP that is `GET /_sigx/ops/cluster?detail=1&activations=20&silo=<id>`,
+Over HTTP that is `GET /_sigx/ops/cluster?detail=1&activations=20&host=<id>`,
 behind the same bearer as the rest of `ops()`. Requested limits are clamped by
 the *responder*, not trusted from the caller: the wire is HMAC-guarded, but
 that proves who is asking, not that `activations: 1e9` is a reasonable thing
-to ask a silo with millions of grains.
+to ask a host with millions of actors.
 
-Adding all of this kept `SiloReport.v` at `1`. Every field is optional, so a
+Adding all of this kept `HostReport.v` at `1`. Every field is optional, so a
 peer on an older build simply answers without them — where a version bump
 would have made a new collector classify every not-yet-deployed peer as
 `unsupported`, blanking the report during exactly the deploy it exists to
 explain.
 
-It travels as a reserved symbol (`$sigx:silo#stats`) on the **existing**
+It travels as a reserved symbol (`$sigx:host#stats`) on the **existing**
 internal mount, so it inherits the per-request HMAC, the envelope, the codec
 and the body cap — there is no second, unauthenticated way to read your
-topology. It needs `secret` configured, like every other silo-to-silo call.
+topology. It needs `secret` configured, like every other host-to-host call.
 
-**It never throws because a peer is sick.** A silo that times out, refuses
+**It never throws because a peer is sick.** A host that times out, refuses
 the secret, or predates this build lands in `unreachable` with a `reason`,
 and `partial: true` marks the totals as a lower bound. A report you cannot
 get during an incident is worthless. Peers are queried with bounded
-concurrency (default 16), so a 100-silo fan-out is waves rather than 100
+concurrency (default 16), so a 100-host fan-out is waves rather than 100
 simultaneous connections, and the collector answers for itself in process.
 
-`reminderShards` maps each of the 16 shards to the silos *claiming* it, built
+`reminderShards` maps each of the 16 shards to the hosts *claiming* it, built
 from the reports rather than recomputed centrally — so **two** claimants means
 views have diverged (safe: the per-shard etag CAS keeps reminders
 at-most-once) and an **empty** list means nothing is ticking that shard. The
-number of distinct silos across that map is also how many silos do reminder
+number of distinct hosts across that map is also how many hosts do reminder
 work at all, which is otherwise invisible.
 
 ### Cluster counters
 
-`placement.counters()` is the per-silo, pull-based routing view — the same
+`placement.counters()` is the per-host, pull-based routing view — the same
 posture as `metrics()`, and always on (integer increments on paths already
 doing network and directory work; the local fast path is not instrumented at
 all).
@@ -1224,9 +1224,9 @@ all).
 | `routeCacheHits` / `routeCacheMisses` / `routeCacheSize` | directory load. A collapsing hit rate is what precedes a directory melt-down |
 | `locates` / `locateRemote` | the miss rate the EDGE is producing. `locateRemote / locates` staying high means whatever routes in front of the cluster is not agreeing with placement — the number to watch after wiring up routing-token hashing |
 | `directoryLookups`, `directoryClaims`, `claimConflicts`, `directoryReleases` | activation races, and claim leaks — a widening claims-vs-releases gap strands keys |
-| `directoryEvictions`, `siloSweeps`, `sweptEntries` | failover actually happening. Zero sweeps after a crash means dead entries are only being reclaimed lazily |
+| `directoryEvictions`, `hostSweeps`, `sweptEntries` | failover actually happening. Zero sweeps after a crash means dead entries are only being reclaimed lazily |
 | `membershipChanges`, `membershipVersion` | store load. One join notifies every member, so this is the counter that makes membership cost visible |
-| `selfFences` | this silo was a black hole. Anything above zero needs investigating |
+| `selfFences` | this host was a black hole. Anything above zero needs investigating |
 | `authFailures` | secret rotation gone wrong — a 403 on the internal mount is otherwise completely silent |
 | `claimed`, `status` | actors owned here, and `'fenced'` where the published status still says `active` |
 
@@ -1277,7 +1277,7 @@ behaviour comes from: an `AsyncState` with `match()`/`refresh()` that
 canonical key** — ten components reading one actor make one dispatch.
 
 **SSR seeding is free.** `actor()` is isomorphic, so during a server render
-the read dispatches in-process through the silo (guards and all), resolves
+the read dispatches in-process through the host (guards and all), resolves
 into the markup, and serializes into the page under its canonical actor key.
 The browser restores it on mount **without refetching**.
 
@@ -1324,7 +1324,7 @@ What it costs and what it guarantees:
 - **An unchanged value is dropped, not delivered.** Two things produce one
   routinely: the re-seed above (one widget mounting must not look like the
   whole page updating), and the fact that a mutating turn re-runs *every*
-  subscription on that grain — change a room's topic and its `recent(20)`
+  subscription on that actor — change a room's topic and its `recent(20)`
   watch re-runs too, returning an identical list. These are views of current
   state, not an event log, so a subscriber cannot need to know that the value
   it already holds was recomputed.
@@ -1341,10 +1341,10 @@ What it costs and what it guarantees:
   a unary call, at subscribe time, so it exposes nothing a polling client
   could not already read. There is deliberately no per-actor `live` opt-in.
 
-Cross-silo works without configuration: each subscription dispatches through
-placement, so watching an actor another silo owns rides the silo-to-silo
+Cross-host works without configuration: each subscription dispatches through
+placement, so watching an actor another host owns rides the host-to-host
 transport. `$live` is never routed or redirected — one response fans out to
-many grains, so no single grain can claim it.
+many actors, so no single actor can claim it.
 
 Tuning, if you need it, is on the plugin — `actorsPlugin({ live: {
 debounceMs, retryMs, maxRetryMs, onError } })`. A transport that brings its
@@ -1353,8 +1353,8 @@ one, with no call site changing.
 
 ## Dev & HMR
 
-The vite plugin's dev silo lives in the SSR module runner's graph and is
-reachable through the `__SIGX_ACTOR_SILO__` seam. Editing a `*.actor.ts`
+The vite plugin's dev host lives in the SSR module runner's graph and is
+reachable through the `__SIGX_ACTOR_HOST__` seam. Editing a `*.actor.ts`
 file deactivates that type through storage — **state survives edits iff your
 app configures persistent storage** (`sigxActors({ app })` runs your real
 config, so it does); with the bare in-memory default it resets (the dev log
@@ -1370,7 +1370,7 @@ part is an optional routing hint — under `route: 'none'`, and for the
 everything else is unchanged. It is the serverFn
 protocol verbatim — same origin policy, body caps, prototype-pollution
 guards, error masking, and codec — because `handleActorRequest` *is*
-`handleServerFnRequest` with a silo-backed resolver. `configureActors()`
+`handleServerFnRequest` with a host-backed resolver. `configureActors()`
 (from `@sigx/actors/client`) points remote/native clients at another base,
 independently of `configureServerFn`.
 
@@ -1389,10 +1389,10 @@ do not).
 
 ### The routing token
 
-`{token}` is a stable per-grain routing hint, mirrored into the
+`{token}` is a stable per-actor routing hint, mirrored into the
 `x-sigx-actor-route` header. It exists because the actor **key** rides in
 the JSON body, and no load balancer will parse a body to route — so without
-it the edge cannot tell which grain a request is for, and locality decays as
+it the edge cannot tell which actor a request is for, and locality decays as
 1/N (measured 1.00, 0.50, 0.12, 0.02, 0.01 for N = 1, 2, 10, 50, 100).
 
 It is a **middle** segment, deliberately: the symbol is decoded as the
@@ -1426,15 +1426,15 @@ Envoy has no path-substring hash policy at all.
 
 Both carry the token **percent-encoded**, byte for byte identical: a load
 balancer hashes what it sees, so `tenant%2Fa` in the path beside `tenant/a`
-in the header would route the two carriers to different silos. It also keeps
+in the header would route the two carriers to different hosts. It also keeps
 the header value safe ASCII for keys that are not. Hash-mode tokens are
 `[0-9a-z]{7}`, so encoding is a no-op there; it matters for `'key'` mode and
 custom functions. `actorRouteToken()` decodes either carrier back to the
 real value.
 
 ```nginx
-map $uri $grain { ~^/_sigx/actor/r/([^/]+)/ $1; }
-upstream silos { hash $grain consistent; server ...; }
+map $uri $actor { ~^/_sigx/actor/r/([^/]+)/ $1; }
+upstream hosts { hash $actor consistent; server ...; }
 # or, equivalently:  hash $http_x_sigx_actor_route consistent;
 ```
 
@@ -1444,8 +1444,8 @@ Envoy     hash_policy: { header: { header_name: x-sigx-actor-route } }
 ```
 
 **Pair it with `preferLocalPolicy()` — the token alone changes nothing.**
-The composition is what produces locality: the LB hashes the token to silo
-X, the first call activates the grain *there*, and every later call for that
+The composition is what produces locality: the LB hashes the token to host
+X, the first call activates the actor *there*, and every later call for that
 key hashes to X again. The LB and the cluster then agree on nothing but
 stability, which is why the LB's algorithm need not match the cluster's.
 
@@ -1460,21 +1460,21 @@ fraction in the steady state:
 
 The middle row is an **anti-pattern**, not a middle ground: the edge's hash
 and the cluster's rendezvous hash are different functions over different
-sets, so they disagree on most keys and guarantee a hop for every grain.
+sets, so they disagree on most keys and guarantee a hop for every actor.
 Deterministic placement does not help here — caller affinity does.
 
 Two limits worth knowing:
 
 - **`$live` carries no token** (nor does any `$`-reserved symbol). One
-  held-open response fans out to *many* grains, so there is no single token
+  held-open response fans out to *many* actors, so there is no single token
   and no single owner; sharding that connection would defeat the reason it
   exists. Live subscriptions still dispatch correctly through placement —
   they just keep paying the hop.
-- **A migrated grain does not follow the LB.** `preferLocalPolicy()` applies
-  to *new* activations, and the directory keeps a live grain where it is. So
-  after a scale-out, already-hot grains stay misrouted until they deactivate.
+- **A migrated actor does not follow the LB.** `preferLocalPolicy()` applies
+  to *new* activations, and the directory keeps a live actor where it is. So
+  after a scale-out, already-hot actors stay misrouted until they deactivate.
 
-The internal silo-to-silo mount carries no token: the caller has already
+The internal host-to-host mount carries no token: the caller has already
 resolved the exact owner.
 
 Renaming an actor's `type` or its methods is a **wire break** (and `type`
@@ -1486,10 +1486,10 @@ The runtime reserves two symbol shapes on top of that, which is why
 | symbol | what it is |
 |---|---|
 | `$live#subscribe` | the public multiplexed subscribe mount — many live reads on one held-open NDJSON response |
-| `$watch:{Type}#{method}` | INTERNAL, silo-to-silo only: the same read as `{Type}#{method}`, but opened as a subscription |
+| `$watch:{Type}#{method}` | INTERNAL, host-to-host only: the same read as `{Type}#{method}`, but opened as a subscription |
 
 The second exists because a watch is an ordinary read dispatched in watch
-mode, so the receiving silo cannot tell which is meant from the method
+mode, so the receiving host cannot tell which is meant from the method
 alone — `streamNames` separates streams from calls, and a watch is neither.
 It rides the **symbol** rather than the call envelope because the per-call
 HMAC signs `proto\nsymbol\ncallId\ntimestamp`: the envelope is not covered,
@@ -1534,11 +1534,11 @@ serve in dev and prod alike. (One current limit: `ActorRoute.handle` returns
 a `Response`, which cannot express a Node WebSocket upgrade — that needs the
 raw socket. Workers can express it.)
 
-That limit applies to this **client-facing** transport. A *silo-to-silo*
+That limit applies to this **client-facing** transport. A *host-to-host*
 transport is not bound by it, because it is free to bring its own listener
 instead of a route — `httpTransport()`, the default, does contribute a route
 like any other plugin, but a socket transport does not have to. See
-[the silo-to-silo transport seam](#the-silo-to-silo-transport-is-pluggable).
+[the host-to-host transport seam](#the-host-to-host-transport-is-pluggable).
 
 ### Routing is pluggable too
 
@@ -1557,7 +1557,7 @@ configureActors(routedTransport(fetchTransport({ endpoint }), learningRouter()))
 | router | how it decides | good for |
 |---|---|---|
 | *(none — the default)* | always the configured endpoint | one origin, browsers |
-| `learningRouter()` | caches what redirects teach it | any caller that can reach silos directly |
+| `learningRouter()` | caches what redirects teach it | any caller that can reach hosts directly |
 | `staticRouter(url)` | always `url` | pinning over the build-time endpoint |
 | `chainRouters(a, b)` | first non-null answer wins | composing a precise router with a learning one |
 | yours | a service mesh, an existing sharding scheme, tenant affinity | whatever the deployment already does |
@@ -1584,13 +1584,13 @@ ignored, because a cache that breaks while *remembering* an answer must not
 destroy the answer. That is not politeness — it is what makes it safe to put
 arbitrary user code on the dispatch path, and it holds because routing is an
 optimization: a wrong endpoint costs a hop, never a wrong answer, since the
-receiving silo still forwards or redirects and the directory remains the
-sole arbiter of who owns a grain.
+receiving host still forwards or redirects and the directory remains the
+sole arbiter of who owns an actor.
 
 Two limits worth knowing:
 
 - **`$live` is never routed.** One held-open response fans out to many
-  grains, so there is no single owner to pick; the router is bypassed and
+  actors, so there is no single owner to pick; the router is bypassed and
   the server fans out through placement as usual.
 - **A stream is routed on its FIRST pull only.** A redirect there re-routes
   cleanly; past the first value the endpoint is settled, and a later failure
@@ -1627,27 +1627,27 @@ reads core's `__SIGX_SERVERFN_CODEC__` seam directly, so one
 
 ## Clustering (multi-host)
 
-One silo per host, many hosts, one actor system — add the `cluster()`
+One host per host, many hosts, one actor system — add the `cluster()`
 plugin:
 
 ```ts
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { cluster } from '@sigx/actors/cluster';
 import { redisCluster } from '@sigx/actors-redis';
 
 export const app = defineActorApp({ actors, storage }).use(
     cluster({
         providers: redisCluster({ url: process.env.REDIS_URL }), // membership + directory
-        advertise: 'http://10.0.4.7:7311',   // this silo's peer-reachable origin
-        secret: process.env.SILO_SECRET      // declared ONCE
+        advertise: 'http://10.0.4.7:7311',   // this host's peer-reachable origin
+        secret: process.env.HOST_SECRET      // declared ONCE
     })
 );
 ```
 
-The plugin contributes the internal silo-to-silo mount as a route, so
+The plugin contributes the internal host-to-host mount as a route, so
 `secret` and `internalBase` are stated once instead of being repeated at
 the endpoint, and an adapter that mounts `app.routes` picks up
-silo-to-silo traffic automatically:
+host-to-host traffic automatically:
 
 ```ts
 import { createServer } from 'node:http';
@@ -1666,14 +1666,14 @@ const server = createServer((req, res) => {
 
 // Listen BEFORE starting: `app.start()` joins membership, and from that
 // moment peers may place actors here and call them. Bind first and there
-// is no window where this silo is routable but nothing is listening.
+// is no window where this host is routable but nothing is listening.
 await new Promise<void>((resolve) => server.listen(7311, resolve));
-const silo = await app.start();
+const host = await app.start();
 
-attachSignalHandlers(silo, { server, onStopBegin: () => (stopping = true) });
+attachSignalHandlers(host, { server, onStopBegin: () => (stopping = true) });
 ```
 
-**Pass the `server`, not just the silo.** Stopping the actors is only half a
+**Pass the `server`, not just the host.** Stopping the actors is only half a
 graceful shutdown. An orchestrator's preStop sleep and readiness-503 steer
 *new* connections away, but connections already established survive endpoint
 removal (conntrack) and ride into the exiting pod, where they are reset when
@@ -1685,7 +1685,7 @@ The sequence is deliberately *not* the obvious one:
 
 1. `onStopBegin()` — start answering `connection: close`. This is what
    actually drains the pools, one response at a time, interrupting nothing.
-2. `silo.stop()` — the actor drain. Pooled connections keep flowing; peers
+2. `host.stop()` — the actor drain. Pooled connections keep flowing; peers
    whose dials are refused see `unreachable`, which is retryable by design.
 3. `server.close()` + `closeAllConnections()` — **last**.
 
@@ -1695,19 +1695,19 @@ includes a socket the client is at that instant writing its next request
 onto. That produces exactly the reset the sequence exists to prevent.
 
 On other runtimes, route `app.routes` yourself — each is a
-`{ match(request), handle(request, silo) }` pair. The lower-level
-`clusterPlacement` / `handleSiloRequest` / `matchesSiloRequest` remain
+`{ match(request), handle(request, host) }` pair. The lower-level
+`clusterPlacement` / `handleHostRequest` / `matchesHostRequest` remain
 exported for hand-rolled mounts.
 
 #### Redirect on a miss, instead of proxying
 
-When a call arrives at a silo that does not own the grain, the mount
+When a call arrives at a host that does not own the actor, the mount
 **proxies** it: one client round trip, one internal hop, every time. With
 the routing token in front of an LB that hop should be rare — but for
-callers that can reach silos directly, it can be removed entirely.
+callers that can reach hosts directly, it can be removed entirely.
 
 ```ts
-handleActorRequest(request, { silo, onMiss: 'redirect' });   // or 'auto'
+handleActorRequest(request, { host, onMiss: 'redirect' });   // or 'auto'
 ```
 
 | `onMiss` | behaviour |
@@ -1716,7 +1716,7 @@ handleActorRequest(request, { silo, onMiss: 'redirect' });   // or 'auto'
 | `'redirect'` | answer `421` naming the owner; the client retries there. |
 | `'auto'` | redirect callers that advertise they can follow, proxy the rest. |
 
-It goes on the **mount**, not the silo, so one cluster can serve a browser
+It goes on the **mount**, not the host, so one cluster can serve a browser
 origin that proxies and an internal origin that redirects.
 
 The client opts in, and remembers:
@@ -1734,17 +1734,17 @@ at all.
 
 Remembering is the point. Without it a redirect costs *two* client round
 trips versus one trip plus an internal hop — strictly worse than proxying.
-With it, only the first call to a grain pays: 2 requests once, then 1
+With it, only the first call to an actor pays: 2 requests once, then 1
 forever, straight to the owner. A learned endpoint is dropped as soon as it
 proves wrong (a connection failure or a 5xx), falling back to the configured
-endpoint rather than stranding the grain.
+endpoint rather than stranding the actor.
 
 **The owner must publish where clients can reach it:**
 
 ```ts
 cluster({
     advertise: 'http://10.0.4.7:7311',        // INTERNAL, peer-to-peer
-    publicAddress: 'https://silo-3.example.com' // what a client can reach
+    publicAddress: 'https://host-3.example.com' // what a client can reach
 });
 ```
 
@@ -1760,10 +1760,10 @@ Three things worth knowing before turning it on:
   origin makes the retry cross-origin, so it preflights and is refused by
   the endpoint's default same-origin policy. Redirecting a browser requires
   an explicit `origin` allowlist and CORS on the owner's mount — which is
-  why the single-origin deployment (all silos behind one public origin, the
+  why the single-origin deployment (all hosts behind one public origin, the
   LB hashing the routing token) is usually the better answer there.
 - **`$live` is never redirected.** One held-open response fans out to many
-  grains, so there is no single owner to point at.
+  actors, so there is no single owner to point at.
 - **421 is safe to retry.** The endpoint resolves the owner *before*
   dispatching, so a redirect has provably run no code — which matters
   because actor calls are not idempotent and a 421 is a status user agents
@@ -1773,9 +1773,9 @@ Redirect chains are bounded at both ends (default 2 hops): the client cap is
 the useful one, the server cap is what makes a loop impossible even against
 a client that ignores its own.
 
-#### The silo-to-silo transport is pluggable
+#### The host-to-host transport is pluggable
 
-How silos reach *each other* is a seam. `httpTransport()` is the default and
+How hosts reach *each other* is a seam. `httpTransport()` is the default and
 needs no configuration; it is also the only one that is WinterCG-clean,
 which is what makes clustering work on Workers-style runtimes:
 
@@ -1796,7 +1796,7 @@ because they only ever reach the HTTP transport and a chain need not contain
 one.
 
 A transport declares its own peer-reachable address, published in the
-membership descriptor under `addresses[name]` — so a silo can speak more
+membership descriptor under `addresses[name]` — so a host can speak more
 than one. A **list is a fallback chain**, tried in order:
 
 ```ts
@@ -1804,16 +1804,16 @@ transport: [tcpTransport({ port: 11111 }), httpTransport()]
 ```
 
 That is the rolling-deploy story, and the reason `addresses` exists: while
-the deploy is half-done, silos that already advertise `tcp` talk over it and
+the deploy is half-done, hosts that already advertise `tcp` talk over it and
 the rest are still reached over HTTP, with no window in which any peer is
-unreachable. A descriptor with no `addresses` at all — a silo from a build
+unreachable. A descriptor with no `addresses` at all — a host from a build
 that predates the field — reads as HTTP-only, which is the safe direction.
 
 A **single** transport is strict: a peer that advertises no address for it is
 unreachable, loudly, rather than silently falling back. That is deliberate —
 a silent fallback means you deploy a transport, benchmark it, and measure the
 old one without ever knowing. Fallbacks that *do* happen are counted
-(`counters().transportFallbacks`), reported (`SiloReport.transports`), and
+(`counters().transportFallbacks`), reported (`HostReport.transports`), and
 dev-warned once per peer.
 
 Because the internal mount is now just a route a transport declares, a
@@ -1825,9 +1825,9 @@ public actor wire is unaffected either way.
 
 Node's global `fetch` is undici with an **unbounded** pool and
 `pipelining: 1`, which means one connection per in-flight request — measured
-at *two* per in-flight request against a silo (`benchmarks/BASELINES.md`,
+at *two* per in-flight request against a host (`benchmarks/BASELINES.md`,
 Tier 2). At concurrency 64 across 99 peers that projects to ~12 600 sockets
-per silo, which is file descriptors, kernel buffers and a connection burst
+per host, which is file descriptors, kernel buffers and a connection burst
 every time a peer restarts.
 
 The fix is four lines through the `fetch` seam:
@@ -1836,7 +1836,7 @@ The fix is four lines through the `fetch` seam:
 import { Agent, fetch as undiciFetch } from 'undici';
 import { cluster, httpTransport } from '@sigx/actors/cluster';
 
-// One pool per silo process, bounded per peer origin. Size it to your
+// One pool per host process, bounded per peer origin. Size it to your
 // per-peer concurrency — see the caveat below before going lower.
 const agent = new Agent({ connections: 64 });
 
@@ -1876,8 +1876,8 @@ differently, so re-check on yours before tuning aggressively.
 
 #### Which placement policy should you use?
 
-Measured, not argued — `pnpm bench:run locality-warm`, N=100, 240 grains, in
-the **warm** steady state (grains already placed, which is where a running
+Measured, not argued — `pnpm bench:run locality-warm`, N=100, 240 actors, in
+the **warm** steady state (actors already placed, which is where a running
 cluster spends its life):
 
 | edge × policy | local fraction | ownership spread |
@@ -1888,8 +1888,8 @@ cluster spends its life):
 | skewed LB × `randomPlacementPolicy()` | 0.00 | 2.92 |
 | skewed LB × `preferLocalPolicy()` | 0.80 | **80.4** |
 
-*Ownership spread is the most-loaded silo's grain count over the mean: 1.0 is
-perfectly even, and N means one silo owns everything.*
+*Ownership spread is the most-loaded host's actor count over the mean: 1.0 is
+perfectly even, and N means one host owns everything.*
 
 **Use `preferLocalPolicy()` if — and only if — your edge hashes the routing
 token.** That is the one row that wins, and it wins completely. Set it
@@ -1900,13 +1900,13 @@ per-type with `defineActor({ placement })` or cluster-wide with
 explain why:
 
 - Under a plain round-robin balancer, `preferLocalPolicy()` buys **nothing** —
-  0.00 versus random's 0.02, both of them noise around 1/N. It pins each grain wherever its first call
+  0.00 versus random's 0.02, both of them noise around 1/N. It pins each actor wherever its first call
   landed, and the balancer then sends the next call somewhere else anyway.
   A default that only helps once you have also configured your load
   balancer is not a default; it is a trap with a good outcome attached.
 - Under a balancer that is *not* even — a rolling deploy, a bad health
   check, a scaled-down pool — it concentrates ownership catastrophically:
-  **80×** at N=100, one silo holding 80% of the grains. And they do not move
+  **80×** at N=100, one host holding 80% of the actors. And they do not move
   back, because placement only applies to *new* activations. Random holds
   ~2.9 regardless of what the edge does, which is the property you want
   precisely when things are going wrong.
@@ -1951,7 +1951,7 @@ makes adopting one safe mid-deploy.
 **Writing one?** There is a conformance suite — `transportConformance` in
 `packages/actors/src/cluster/testing.ts` — holding the cases a transport must
 pass, and so the definition of correct behaviour. Supply a harness that builds
-an N-silo cluster over your wire and every case runs against it. The rule it
+an N-host cluster over your wire and every case runs against it. The rule it
 enforces throughout is *assert on the error `kind`, never on an HTTP status*,
 which is what makes the contract expressible off HTTP at all.
 
@@ -1963,19 +1963,19 @@ outside this repo.
 
 How it works, in one paragraph: every activation writes a **claim** into a
 distributed directory (create-if-absent; released on deactivation), so a
-key activates on exactly one silo; calls for actors placed elsewhere are
+key activates on exactly one host; calls for actors placed elsewhere are
 forwarded over the internal endpoint with the full call context (chain,
 call id, deadline as *remaining* ms — clock-skew-proof) so deadlock
 detection and timeouts work across hosts; a misdirected call answers
 **421 wrong-host** with the owner and the caller re-routes (bounded, never
 proxied); membership is TTL-heartbeat liveness in the shared store; the
 reminder table is split into 16 hash shards, each ticked by exactly one
-silo via rendezvous hashing over the view (the per-shard etag CAS keeps
+host via rendezvous hashing over the view (the per-shard etag CAS keeps
 firing at-most-once even if views transiently diverge). Under all of it,
 the storage etag CAS remains the integrity floor — a briefly-stale route
 costs a rejected save and a fault-and-reload, never corrupted state.
 
-Guards still run once, at the public edge — silo-to-silo hops are
+Guards still run once, at the public edge — host-to-host hops are
 intra-system, authenticated per request with an HMAC signature derived
 from the shared `secret` (bound to the call, freshness-windowed; run
 mTLS/VPC between hosts — transport encryption is deliberately out of
@@ -1983,15 +1983,15 @@ scope). Streams cross
 hops with cancellation and keep-alive release intact. Placement is
 pluggable per cluster and per type (`policy`, `typePolicies`:
 `consistentHashPolicy()`, `preferLocalPolicy()`, uniform random by
-default), a graceful `silo.stop()` hands actors off (`'migrated'`
+default), a graceful `host.stop()` hands actors off (`'migrated'`
 deactivations, claims released as they drain, callers retry through
 routing — rolling deploys drop zero calls), and
 `placement.migrate(ref)` moves one actor explicitly. For tests,
-`memoryClusterHub()` gives an N-silo in-process cluster with no external
+`memoryClusterHub()` gives an N-host in-process cluster with no external
 store.
 
 To see inside a running cluster — readiness that drains a `leaving` or
-fenced silo, `clusterStats()` across the view, and the routing/directory
+fenced host, `clusterStats()` across the view, and the routing/directory
 counters — see [Health & readiness](#health--readiness) above.
 
 ## Entry points
@@ -1999,19 +1999,19 @@ counters — see [Health & readiness](#health--readiness) above.
 | Entry | Contents |
 |---|---|
 | `@sigx/actors` | `defineActor`, `actor`, `useActor`, `actorKey`, errors, types — isomorphic, light |
-| `@sigx/actors/silo` | `defineActorApp`, `createSilo`, `memoryStorage`, `metrics()`, `health()`, `ops()`, storage/placement/plugin seams — server-only |
+| `@sigx/actors/host` | `defineActorApp`, `createHost`, `memoryStorage`, `metrics()`, `health()`, `ops()`, storage/placement/plugin seams — server-only |
 | `@sigx/actors/server` | `handleActorRequest`, `matchesActorRequest`, `createActorResolver` — WinterCG-clean |
 | `@sigx/actors/node` | `createAppHandler` (all mounts), `createActorHandler`, `attachSignalHandlers`, `fileStorage` |
 | `@sigx/actors/client` | `__actorRef`, `configureActors`, `fetchTransport`, the `ActorTransport` seam — the build-swap target |
 | `@sigx/actors/app` | `actorsPlugin()`, `useActorState`, `useActorAction` — the sigx app integration (the only entry that imports `@sigx/runtime-core`) |
 | `@sigx/actors/job` | `defineJob` — durable long-running operations: state machine, progress, checkpoint/pause/resume, `watch()` (convention over `defineActor` + `tasks:`) |
-| `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `clusterStats`, `handleSiloRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
+| `@sigx/actors/cluster` | `cluster()` plugin, `clusterPlacement`, `clusterStats`, `handleHostRequest`, `memoryClusterHub`, provider seams — WinterCG-clean |
 | `@sigx/actors/vite` | `sigxActors()`, `extractActors` |
 | `@sigx/actors/vite-client` | ambient types for `virtual:sigx-actors` (types only) |
 
 ## Design notes & deliberate limits (v1)
 
-- **One silo per process; many processes via `./cluster`.** The
+- **One host per process; many processes via `./cluster`.** The
   `ActorDispatcher`/`ActorPlacement` seams remain the extension point for
   other distributed backends (Cloudflare Durable Objects map naturally);
   every call already flows through them, and dev-mode `devSerializeChecks`
@@ -2023,6 +2023,6 @@ counters — see [Health & readiness](#health--readiness) above.
   interleaving is not offered — `reentrant: true` is call-chain re-entry
   only.
 - Reserved names: actor types starting with `$sigx:` and the method name
-  `$sigx:reminder`. `$sigx:silo#stats` is the cluster's ops channel and is
-  answered before any definition lookup, so an actor type named `$sigx:silo`
-  would simply be uncallable across silos.
+  `$sigx:reminder`. `$sigx:host#stats` is the cluster's ops channel and is
+  answered before any definition lookup, so an actor type named `$sigx:host`
+  would simply be uncallable across hosts.

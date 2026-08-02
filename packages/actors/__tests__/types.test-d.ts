@@ -10,7 +10,7 @@ import type {
     ActorPlacementStrategy,
     AnyActorDefinition
 } from '@sigx/actors';
-import { defineActorApp, type ActorPlugin } from '@sigx/actors/silo';
+import { defineActorApp, type ActorPlugin } from '@sigx/actors/host';
 
 const Cart = defineActor({
     type: 'Cart',
@@ -193,7 +193,7 @@ describe('plugin ctx extension inference', () => {
         });
     });
 
-    it('still produces a plain ActorDefinition the silo accepts', () => {
+    it('still produces a plain ActorDefinition the host accepts', () => {
         const app = defineActorApp({ actors: [] }).use(loggerPlugin);
         const Logged = app.defineActor({
             type: 'Plain',

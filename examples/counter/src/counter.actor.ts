@@ -5,7 +5,7 @@ import { defineActor } from './actors.app.ts';
 /**
  * A virtual actor: addressable by key, activated lazily on first call,
  * single-threaded (one turn at a time — no races on `ctx.state`), and
- * persistent across restarts via the silo's storage.
+ * persistent across restarts via the host's storage.
  */
 export const Counter = defineActor({
     type: 'Counter',
@@ -17,7 +17,7 @@ export const Counter = defineActor({
         async increment(by: number) {
             ctx.state.count += by;
             ctx.state.lastVisit = new Date();
-            await ctx.save(); // Orleans WriteStateAsync — explicit by default
+            await ctx.save(); // persistence is explicit — state saves only when asked
             return ctx.state.count;
         },
         async current() {

@@ -18,7 +18,7 @@ pnpm bench:baseline           # record this machine's reference (5 rounds)
 pnpm bench:compare            # run again and diff against that reference
 pnpm bench:profile dispatch   # same, under --cpu-prof
 
-pnpm bench:tier2              # real sockets, a process per silo (opt-in)
+pnpm bench:tier2              # real sockets, a process per host (opt-in)
 
 # diff two saved result files (neither has to be the baseline)
 pnpm bench:diff --before=a.json --after=b.json [--markdown=out.md]
@@ -48,15 +48,15 @@ what you want is the gap, not the absolute number:
 
 ```
 dispatch/mailbox-raw          the promise-chain turn queue, no actor
-dispatch/warm-grain           + placement, reentrancy check, directory, turn
-dispatch/warm-grain-deadline  + the call-deadline machinery (the production default)
+dispatch/warm-actor           + placement, reentrancy check, directory, turn
+dispatch/warm-actor-deadline  + the call-deadline machinery (the production default)
 dispatch/via-proxy            + client proxy and a minted call id
 wire/endpoint-roundtrip       + wire codec, JSON, endpoint (no socket)
 ```
 
 `c=1` is uncontended cost. `c=64` and `c=512` are the queueing story: against a
-single grain the mailbox serializes, so throughput should flatten while p99
-climbs. `dispatch/fan-out-grains` is the control — spread across 1 000 grains,
+single actor the mailbox serializes, so throughput should flatten while p99
+climbs. `dispatch/fan-out-actors` is the control — spread across 1 000 actors,
 throughput should *not* collapse the same way.
 
 `±NN%` after a value is that metric's own spread across rounds. Anything past
@@ -65,15 +65,15 @@ size, so don't read anything into it.
 
 ## Two tiers, and why the distinction is load-bearing
 
-Almost everything here is **Tier 1**: one process, zero sockets. Cross-silo
+Almost everything here is **Tier 1**: one process, zero sockets. Cross-host
 scenarios route through a `pipeFetch` that calls straight into the peer's
 handlers. That is deliberate — it isolates the *software* cost and the
-algorithmic shape, which is what scales to 100 silos or does not — and it
+algorithmic shape, which is what scales to 100 hosts or does not — and it
 means the entire socket story is invisible to it.
 
-**Tier 2** (`cluster2/*`, `pnpm bench:tier2`) is the other half: N silos as
+**Tier 2** (`cluster2/*`, `pnpm bench:tier2`) is the other half: N hosts as
 real forked processes over real loopback TCP. It is opt-in because it forks a
-process per silo and binds ports, and it is slow.
+process per host and binds ports, and it is slow.
 
 ```sh
 pnpm bench:tier2                        # the Tier-2 scenarios
@@ -109,7 +109,7 @@ That split is not theoretical: the run recorded in `BASELINES.md` printed
 `THE MACHINE WAS BUSY` (the probe moved 15%) while the socket counts came back
 identical every single round.
 
-How the rig works, in one paragraph: `child_process.fork` per silo — fork
+How the rig works, in one paragraph: `child_process.fork` per host — fork
 inherits `execArgv`, so `--conditions=production` propagates and children
 measure the built prod dist, where a spawned `node` would silently benchmark
 the dev dist. Each child binds port 0, reads back the port, and only then
@@ -120,7 +120,7 @@ a real Redis would inject its own latency and sockets into every comparison
 (#87 owns that axis) — a guard metric fails the run if store traffic per call
 rises above 0.05, which would mean the route cache stopped working and the
 numbers describe the store instead. Sockets are counted by **accepts on the
-receiving side**: if a silo accepted K connections from a peer, that peer
+receiving side**: if a host accepted K connections from a peer, that peer
 opened K, so no hook into undici is needed. The count is cross-checked against
 libuv's own TCP handle table.
 
@@ -209,15 +209,15 @@ This is the part worth internalising, and it is enforced in code
 Mark a metric `exact: true` only where determinism holds **by construction**,
 and note that "looked stable" is not the test:
 
-- `preferLocalPolicy()` activates on the receiving silo, and every edge
+- `preferLocalPolicy()` activates on the receiving host, and every edge
   strategy here is a pure function of an index or a key. Those arms qualify.
 - `randomPlacementPolicy()` obviously does not.
 - `consistentHashPolicy()` does not either, for a subtler reason worth
-  remembering: it is deterministic *given the silo ids*, and the ids are minted
+  remembering: it is deterministic *given the host ids*, and the ids are minted
   per run. Steady within a run, different across two — the worst possible shape
   for a gate.
 - `cluster/reminder-shard-ownership` at n=2 was bit-identical in four runs and
-  is still not flagged: 16 shards landing across 2 silos is *probably* even, not
+  is still not flagged: 16 shards landing across 2 hosts is *probably* even, not
   deterministic, and it already varied at n=10.
 
 ### The merge queue runs a narrower set
@@ -275,7 +275,7 @@ calibration available, and worth recording:
   the halves, well inside the drift limit, so no banner fired. The probe
   catches a machine that is globally slower; it does not catch one scenario
   landing in a noisy window.
-- The runner is 2 vCPU, and it is *not* slow — `dispatch/warm-grain c=1` came
+- The runner is 2 vCPU, and it is *not* slow — `dispatch/warm-actor c=1` came
   back at 814k ops/s there against 357k on a busy developer laptop. Absolute
   numbers from either are still meaningless; only the paired delta is not.
 
@@ -306,7 +306,7 @@ or [speedscope](https://www.speedscope.app/). With sourcemaps on, frames land on
 real `src/*.ts` lines.
 
 ```sh
-pnpm bench:profile dispatch/warm-grain
+pnpm bench:profile dispatch/warm-actor
 ```
 
 **Allocation.** Sampled allocation-by-call-site — the direct way to confirm or
@@ -315,7 +315,7 @@ refute a suspicion about the promise-chain mailbox or `CallDeadlines`:
 ```sh
 node --conditions=production --expose-gc --enable-source-maps \
   --heap-prof --heap-prof-dir=benchmarks/profiles \
-  benchmarks/src/main.ts dispatch/warm-grain --runs=1
+  benchmarks/src/main.ts dispatch/warm-actor --runs=1
 ```
 
 **GC pressure.** Every scenario reports `gc/pause_ms` and `gc/collections` from a
@@ -337,33 +337,33 @@ BENCH_HEAP_SNAPSHOT=1 pnpm bench:run mem/leak-activate-deactivate
 ```
 
 **Is the leak detector actually working?** It was verified by planting one: an
-actor that retains its context on activation measured **626 B/grain retained**
-against **3 B/grain** clean — a 150× signal. If you change the memory scenarios,
+actor that retains its context on activation measured **626 B/actor retained**
+against **3 B/actor** clean — a 150× signal. If you change the memory scenarios,
 re-do that; a leak detector that has never caught a leak is not evidence.
 
 ## Cluster scaling
 
 `cluster/*` answers a different question from the rest of the suite: not
-"how fast" but **"does it still work at 100 silos"**.
+"how fast" but **"does it still work at 100 hosts"**.
 
 ```sh
 pnpm bench:run cluster/          # the whole sweep, N = 1, 2, 10, 50, 100
 pnpm bench:run cluster/ --quick  # N = 1, 2, 10
 ```
 
-Every silo shares one CPU here, so **absolute throughput from an N=100 run is
-meaningless** — it is 100 silos contending for one core. What is exact, and
+Every host shares one CPU here, so **absolute throughput from an N=100 run is
+meaningless** — it is 100 hosts contending for one core. What is exact, and
 what these measure, is the *algorithmic* shape: how many provider calls the
 runtime makes and how per-decision cost grows with N. An O(N²) shows up here
 on a laptop instead of on a bill.
 
 How to read it: a metric that stays **flat** from N=1 to N=100 scales. One
-that grows with N is a shared bottleneck. One that grows with N *per silo* is
+that grows with N is a shared bottleneck. One that grows with N *per host* is
 an O(N²).
 
-`benchmarks/src/cluster-harness.ts` wraps each silo's cluster providers in a
+`benchmarks/src/cluster-harness.ts` wraps each host's cluster providers in a
 counter, so `directory.claim`, `membership.refresh`, change notifications and
-the rest are all attributable per silo.
+the rest are all attributable per host.
 
 **What the in-process sweep cannot tell you:** what those provider calls cost
 against real Redis. `memoryClusterHub` answers `refresh()` from a local map.
@@ -393,7 +393,7 @@ specifically want parity with CI's `redis:7` service.
 
 The same variable un-skips the provider tests:
 `REDIS_URL=redis://localhost:6399 pnpm test -- actors-redis`. Measuring it
-for real needs a Redis instance, and interpreting a real 100-silo run needs
+for real needs a Redis instance, and interpreting a real 100-host run needs
 cluster-wide stats that do not exist yet (issue #38).
 
 See `BASELINES.md` for what the sweep found.
@@ -401,7 +401,7 @@ See `BASELINES.md` for what the sweep found.
 ## Adding a scenario
 
 A scenario is `{ name, description, run(ctx) → Metric[] }`, registered in
-`src/scenarios/index.ts`. It must create and tear down its own silos — the runner
+`src/scenarios/index.ts`. It must create and tear down its own hosts — the runner
 calls `run()` many times.
 
 ```ts
@@ -409,10 +409,10 @@ const myScenario: Scenario = {
     name: 'group/thing',
     description: 'what layer this isolates',
     async run(ctx) {
-        const fixture = await createBenchSilo({ actors: [Tiny] });
+        const fixture = await createBenchHost({ actors: [Tiny] });
         try {
             return await sweepConcurrency({
-                call: () => fixture.silo.dispatch(ref, 'noop', [], benchCall()),
+                call: () => fixture.host.dispatch(ref, 'noop', [], benchCall()),
                 concurrencies: [1, 64],
                 durationMs: ctx.durationMs
             });
@@ -434,7 +434,7 @@ Rules worth knowing:
   it is the only kind of number a shared runner can judge. Set it only where
   determinism holds by construction: no `randomPlacementPolicy()`, no wall
   clock, no heap.
-- `createBenchSilo` uses `manualScheduler()` and hour-long sweep/reminder
+- `createBenchHost` uses `manualScheduler()` and hour-long sweep/reminder
   intervals, so background jobs never land mid-measurement. Scenarios that
   measure those jobs drive `fixture.clock.advance(ms)` themselves.
 - `callTimeoutMs` defaults to `0` (no deadline machinery on the measured path). Pass

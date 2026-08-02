@@ -5,13 +5,13 @@
  *
  * Two exports, two jobs:
  *
- *  - `ActorSilo` is the object. It hosts exactly the actor its id names.
+ *  - `ActorHost` is the object. It hosts exactly the actor its id names.
  *  - `default` is the edge. It hosts nothing and routes everything.
  *
  * Both need the registry: the Worker to run guards, tell a stream method from
  * a unary one, and be the 404 authority; the object to actually activate.
  */
-import { createSiloDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
+import { createHostDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
 import { createApp } from './actors.app';
 import { Counter } from './counter.actor';
 import { servePage } from './page';
@@ -30,7 +30,7 @@ export interface Env {
 
 const actors = [Counter, Ticker];
 
-export class ActorSilo extends createSiloDurableObject<Env>({
+export class ActorHost extends createHostDurableObject<Env>({
     actors,
     namespace: (env) => env.ACTORS,
     // Receives the object's own storage/reminders/defaults and must pass them

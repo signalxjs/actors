@@ -5,12 +5,12 @@
  * This exists to localise a failure found on Workers: after a client cancels a
  * watch, `keptAlive` stayed true and the activation was never released. That
  * chain crosses several links, so this asks the simplest possible version of
- * the question — a plain silo behind the public endpoint — to tell a core
+ * the question — a plain host behind the public endpoint — to tell a core
  * problem apart from one introduced by the Worker→Durable-Object hop.
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { createSilo, manualScheduler, memoryStorage } from '@sigx/actors/silo';
+import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { relayStream } from '../src/stream-relay';
 
@@ -32,8 +32,8 @@ const Counter = defineActor({
     })
 });
 
-function silo() {
-    return createSilo({
+function host() {
+    return createHost({
         actors: [Counter],
         storage: memoryStorage(),
         scheduler: manualScheduler(),
@@ -115,12 +115,12 @@ describe('cancelling a watch, over the public endpoint, no Cloudflare', () => {
     it('releases the activation when the REQUEST is aborted', async () => {
         // What a real client disconnect looks like: the inbound request is
         // aborted. This is the trigger that matters in production.
-        const s = silo();
+        const s = host();
         await s.start();
         try {
             const ac = new AbortController();
             const res = await handleActorRequest(call('Counter#watch', ['r'], ac.signal), {
-                silo: s,
+                host: s,
                 origin: false
             });
             expect(res.status).toBe(200);
@@ -144,11 +144,11 @@ describe('cancelling a watch, over the public endpoint, no Cloudflare', () => {
     });
 
     it('releases the activation when the consumer cancels', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         try {
             const res = await handleActorRequest(call('Counter#watch', ['a']), {
-                silo: s,
+                host: s,
                 origin: false
             });
             expect(res.status).toBe(200);

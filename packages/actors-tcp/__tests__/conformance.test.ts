@@ -19,32 +19,32 @@ import {
     type TransportConformanceFactory,
     type TransportConformanceHarness
 } from '@sigx/actors/cluster/testing';
-import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage, type ActorApp } from '@sigx/actors/host';
 import { createAppHandler } from '@sigx/actors/node';
 import {
     cluster,
     memoryClusterHub,
     type ClusterPlacement,
-    type SiloDescriptor
+    type HostDescriptor
 } from '@sigx/actors/cluster';
-import type { Silo } from '@sigx/actors';
+import type { Host } from '@sigx/actors';
 import { tcpTransport, TCP_TRANSPORT_NAME } from '../src/index.ts';
 
-/** Deterministic: every silo activates its own new actors. */
-const selfPolicy = { name: 'tcp-conformance-self', choose: (_r: unknown, _v: unknown, self: SiloDescriptor) => self };
+/** Deterministic: every host activates its own new actors. */
+const selfPolicy = { name: 'tcp-conformance-self', choose: (_r: unknown, _v: unknown, self: HostDescriptor) => self };
 
 interface Member {
     app: ActorApp;
-    silo: Silo;
+    host: Host;
     placement: ClusterPlacement;
     server: Server;
     transport: { openLinks?(): number; stop?(): void | Promise<void> };
 }
 
 /**
- * A real N-silo cluster: each silo gets its own HTTP listener (for the public
+ * A real N-host cluster: each host gets its own HTTP listener (for the public
  * wire and so `unbind`/`crash` have something to sever) plus a TCP listener
- * that carries every silo-to-silo call.
+ * that carries every host-to-host call.
  */
 const createTcpCluster: TransportConformanceFactory = async (
     options: ConformanceClusterOptions
@@ -54,7 +54,7 @@ const createTcpCluster: TransportConformanceFactory = async (
     const members: Member[] = [];
     const secret = options.secret === null ? undefined : (options.secret ?? 'tcp-conformance');
 
-    for (let i = 0; i < options.silos; i++) {
+    for (let i = 0; i < options.hosts; i++) {
         // Bind the HTTP listener first so `advertise` is a real address, the
         // same ordering the seam requires of the TCP listener itself.
         const server = createServer();
@@ -66,7 +66,7 @@ const createTcpCluster: TransportConformanceFactory = async (
             providers: hub.providers(),
             advertise: `http://127.0.0.1:${httpPort}`,
             policy: (options.policy ?? selfPolicy) as never,
-            // TCP ONLY — no HTTP fallback in the chain, so every cross-silo
+            // TCP ONLY — no HTTP fallback in the chain, so every cross-host
             // call in the suite is genuinely carried by this package.
             transport: (config) => {
                 const t = tcpTransport({ host: '127.0.0.1', keepAliveMs: 0 })(config);
@@ -89,18 +89,18 @@ const createTcpCluster: TransportConformanceFactory = async (
             defaults: { sweepIntervalMs: 3_600_000, reminderTickMs: 3_600_000, callTimeoutMs: 0 }
         }).use(plugin);
         server.on('request', createAppHandler(app));
-        const silo = await app.start();
-        members.push({ app, silo, placement: plugin.placement, server, transport: captured });
+        const host = await app.start();
+        members.push({ app, host, placement: plugin.placement, server, transport: captured });
     }
 
     const severed = new Set<number>();
 
     return {
         placements: members.map((m) => m.placement),
-        silos: members.map((m) => m.silo),
-        /** Wire-level unreachable while membership still lists the silo. */
+        hosts: members.map((m) => m.host),
+        /** Wire-level unreachable while membership still lists the host. */
         unbind: (i) => {
-            // Wire-level unreachable while membership STILL lists the silo.
+            // Wire-level unreachable while membership STILL lists the host.
             // Only the transport is torn down; the placement keeps its
             // heartbeat, so peers must classify this as `unreachable` rather
             // than quietly re-placing the actor somewhere else.
@@ -111,7 +111,7 @@ const createTcpCluster: TransportConformanceFactory = async (
         crash: (i) => {
             // Membership drops it AND the listeners die. No cleanup runs.
             severed.add(i);
-            hub.kill(members[i]!.placement.identity.siloId);
+            hub.kill(members[i]!.placement.identity.hostId);
             void members[i]!.transport.stop?.();
             members[i]!.server.closeAllConnections?.();
             members[i]!.server.close();
@@ -119,9 +119,9 @@ const createTcpCluster: TransportConformanceFactory = async (
         /** Membership only — every socket stays up, so the reaping case can
          *  isolate the membership path from a socket simply closing. */
         dropMembership: (i) => {
-            hub.kill(members[i]!.placement.identity.siloId);
+            hub.kill(members[i]!.placement.identity.hostId);
         },
-        impostor: async (target: SiloDescriptor) => {
+        impostor: async (target: HostDescriptor) => {
             // Speak the real frame protocol with the WRONG secret.
             const { connect } = await import('node:net');
             const { encodeFrame, FrameType, FrameReader } = await import(

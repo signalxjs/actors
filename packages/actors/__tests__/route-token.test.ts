@@ -27,7 +27,7 @@ describe('the routing token', () => {
         expect(token).not.toContain('cart');
     });
 
-    it('pins its exact format — changing it re-homes every grain', () => {
+    it('pins its exact format — changing it re-homes every actor', () => {
         // Literals, deliberately NOT inline snapshots: `vitest -u` would
         // silently rewrite a snapshot, and these values ARE the wire contract
         // an operator's LB config hashes. Changing them costs a one-deploy
@@ -37,7 +37,7 @@ describe('the routing token', () => {
         expect(hashRouteToken('$live', 'x')).toBe('1nuzeap');
     });
 
-    it('separates type from key, so two grains cannot collide by concatenation', () => {
+    it('separates type from key, so two actors cannot collide by concatenation', () => {
         // Without the NUL separator, ('ab','c') and ('a','bc') would collide.
         expect(hashRouteToken('ab', 'c')).not.toBe(hashRouteToken('a', 'bc'));
         expect(hashRouteToken('Cart', 'a')).not.toBe(hashRouteToken('Cart', 'b'));
@@ -67,7 +67,7 @@ describe('routeTokenFor', () => {
     });
 
     it('never tokenizes a $-reserved type, in any mode', () => {
-        // $live#subscribe is ONE response fanning out to MANY grains: there
+        // $live#subscribe is ONE response fanning out to MANY actors: there
         // is no single token and no single owner. defineActor refuses
         // $-prefixed types, so this covers every future reserved mount too.
         expect(routeTokenFor('hash', '$live', 'x')).toBeNull();
@@ -75,7 +75,7 @@ describe('routeTokenFor', () => {
         expect(routeTokenFor(() => 'forced', '$live', 'x')).toBeNull();
     });
 
-    it('lets a custom function opt out per grain', () => {
+    it('lets a custom function opt out per actor', () => {
         expect(routeTokenFor(() => null, 'Cart', 'c1')).toBeNull();
         expect(routeTokenFor(() => '', 'Cart', 'c1')).toBeNull();
         expect(routeTokenFor((ref) => `t-${ref.key}`, 'Cart', 'c1')).toBe('t-c1');
@@ -125,7 +125,7 @@ describe('routePath', () => {
 
 describe('actorRouteToken', () => {
     const req = (url: string, headers?: Record<string, string>): Request =>
-        new Request(`http://silo.test${url}`, { method: 'POST', headers });
+        new Request(`http://host.test${url}`, { method: 'POST', headers });
 
     it('round-trips the path segment', () => {
         expect(actorRouteToken(req(`${BASE}/r/abc123/Cart%23add`))).toBe('abc123');

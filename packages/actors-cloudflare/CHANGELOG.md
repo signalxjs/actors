@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **silo → host** (#233): `createSiloDurableObject` →
+  `createHostDurableObject` and the `SiloDurableObject*` types are
+  `HostDurableObject*`. The Durable Object storage keys (`sigx:reminders`)
+  are unchanged. A deployed Worker adopting the rename needs a
+  `renamed_classes` migration for its exported class.
+
 ### Fixed
 
 - **A Durable Object stub is no longer cached between dispatches** (#149).
@@ -47,7 +55,7 @@
 
 ### Added
 
-- **`createSiloDurableObject()` and `createWorkerHandler()`** (#143) — an
+- **`createHostDurableObject()` and `createWorkerHandler()`** (#143) — an
   actor app now runs on Workers. The object hosts exactly the actor its id
   names; the Worker hosts nothing and routes everything.
 
@@ -66,11 +74,11 @@
   The `app` factory is never handed `env`, so it structurally cannot build a
   placement of its own; combined with `setPlacement` being exclusive, an app
   that tries fails naming both plugins instead of leaving the object able to
-  fetch itself. `unhostedStorage()` backs the Worker's silo, which never
+  fetch itself. `unhostedStorage()` backs the Worker's host, which never
   activates anything.
 
   **Eviction is not deactivation**: the platform destroys the isolate, the
-  silo and the activation together, so `onDeactivate` never runs. Actors that
+  host and the activation together, so `onDeactivate` never runs. Actors that
   flush there must `ctx.save()` in the turn instead. Documented in the
   README, because nothing in the type system says it.
 
@@ -79,7 +87,7 @@
   `idFromName` over the runtime's own actor id.
 
   **One placement runs on both sides**, distinguished only by an `isSelf`
-  predicate. Giving the object's own silo the plain local host instead looks
+  predicate. Giving the object's own host the plain local host instead looks
   obvious and silently corrupts state: `ctx.actor(Cart, 'x')` from inside
   `Counter/alice` would activate `Cart/x` *in alice's object* and write its
   record into the wrong object's storage — single activation violated, with
@@ -111,7 +119,7 @@
 
   `durableObjectReminders({ storage, alarms })` implements `ActorReminders`
   over the DO alarm. The default `shardedReminders()` splits one table into
-  fixed hash shards and polls it, because a silo hosts many actors and has
+  fixed hash shards and polls it, because a host hosts many actors and has
   to find whose reminder is due; a DO hosts exactly one, so there is
   nothing to search and nothing to poll. It also removes the cadence floor
   — `shardedReminders` can only promise "at or after `nextDue`, checked

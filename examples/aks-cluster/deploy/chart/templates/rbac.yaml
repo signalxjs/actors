@@ -1,10 +1,10 @@
-# MEMBERSHIP=k8s only: silo liveness via coordination.k8s.io Leases needs
+# MEMBERSHIP=k8s only: host liveness via coordination.k8s.io Leases needs
 # Lease access in this namespace — nothing else (per the actors-k8s README).
 {{- if eq .Values.membership "k8s" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "chart.fullname" . }}-silo
+  name: {{ include "chart.fullname" . }}-host
   labels:
     {{- include "chart.labels" . | nindent 4 }}
 ---
@@ -31,5 +31,5 @@ roleRef:
   name: {{ include "chart.fullname" . }}-membership
 subjects:
   - kind: ServiceAccount
-    name: {{ include "chart.fullname" . }}-silo
+    name: {{ include "chart.fullname" . }}-host
 {{- end }}

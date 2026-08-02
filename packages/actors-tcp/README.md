@@ -1,6 +1,6 @@
 # `@sigx/actors-tcp`
 
-Orleans-style **TCP transport** for [`@sigx/actors`](https://www.npmjs.com/package/@sigx/actors):
+Framed **TCP transport** for [`@sigx/actors`](https://www.npmjs.com/package/@sigx/actors):
 one multiplexed, framed connection per peer instead of one HTTP connection per
 in-flight request.
 
@@ -15,7 +15,7 @@ import { tcpTransport } from '@sigx/actors-tcp';
 cluster({
     providers,
     advertise: 'http://10.0.4.7:7311',
-    secret: process.env.SILO_SECRET,
+    secret: process.env.HOST_SECRET,
     // A CHAIN: TCP wherever the peer advertises it, HTTP everywhere else.
     // That is what makes a rolling deploy of this transport possible.
     transport: [tcpTransport({ port: 11111 }), httpTransport()]
@@ -37,7 +37,7 @@ Two separate wins, and they are worth different amounts:
 
 **Socket count — real at any network.** HTTP's pool sizes to
 `concurrency × peers` (measured at *two* connections per in-flight request, so
-~12 600 per silo at c=64 across 99 peers). That is file descriptors, kernel
+~12 600 per host at c=64 across 99 peers). That is file descriptors, kernel
 buffers, conntrack entries and a connection burst on every peer restart. One
 connection per peer does not change with RTT.
 
@@ -45,7 +45,7 @@ connection per peer does not change with RTT.
 ratio: ~70 µs per call versus ~14 µs. On a LAN with a 200–1000 µs round trip
 that difference is worth roughly 1.1×, not 4.9×. Take the socket property as
 the reason to choose this; treat the throughput as a bonus that shrinks the
-further apart your silos are.
+further apart your hosts are.
 
 > An earlier version of this README said this transport was "not about
 > latency". That was wrong. Per-call HMAC really is worth only 1.19× over a
@@ -59,17 +59,17 @@ reasonable choice.
 
 ## Deploying it
 
-`SiloDescriptor.addresses` carries a `tcp` entry per silo, so a mixed cluster
+`HostDescriptor.addresses` carries a `tcp` entry per host, so a mixed cluster
 is expressible and the rollout is safe:
 
 1. Deploy with `transport: [tcpTransport(), httpTransport()]` everywhere.
-2. Silos that have the new build advertise `tcp` and use it with each other;
-   silos that do not are still reached over HTTP.
-3. Once every silo advertises `tcp`, drop `httpTransport()` from the chain if
+2. Hosts that have the new build advertise `tcp` and use it with each other;
+   hosts that do not are still reached over HTTP.
+3. Once every host advertises `tcp`, drop `httpTransport()` from the chain if
    you want the internal HTTP mount gone entirely.
 
 Step 3 is optional and has a consequence worth knowing: with no HTTP transport
-in the chain there is **no internal `/_sigx/silo` mount at all** — a smaller
+in the chain there is **no internal `/_sigx/host` mount at all** — a smaller
 attack surface, but nothing to `curl`. The public actor wire is unaffected.
 
 ## Options
@@ -105,12 +105,12 @@ Four things are load-bearing:
   re-resolves; silently re-sending a non-idempotent actor method to a host
   that may no longer own the actor would be a correctness bug.
 - **Simultaneous dial** is settled without an extra round trip: the
-  lexicographically smaller `siloId` is the designated dialer and its
+  lexicographically smaller `hostId` is the designated dialer and its
   outbound connection wins, so exactly one survives.
 
 Authentication is the same per-call HMAC the HTTP transport uses, over the
 same shared `secret`. Transport encryption is an operator concern — run mTLS
-or a private network between silos.
+or a private network between hosts.
 
 ## Conformance
 

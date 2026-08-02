@@ -47,7 +47,7 @@ name: Bench
 # `exact` metrics — which is exactly the set that can fail — and the full A/B
 # stays on `pull_request`, where the paths filter applies and a human reads it.
 #
-# Tier 2 (`BENCH_TIER2=1`, a forked process per silo) and Tier 3
+# Tier 2 (`BENCH_TIER2=1`, a forked process per host) and Tier 3
 # (`BENCH_INFRA=1`, a real deployment) stay out — the first wants a quiet
 # machine with spare cores, the second wants a cluster.
 on:

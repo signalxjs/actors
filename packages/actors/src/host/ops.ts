@@ -5,9 +5,9 @@
  * It exists because none of what M7 and `metrics()` already collect was
  * reachable from anywhere else. `metrics().snapshot()` contributes no route,
  * `clusterStats()` takes a placement OBJECT rather than a URL, and the one
- * remote surface that did exist — the `$sigx:silo#stats` symbol — is
+ * remote surface that did exist — the `$sigx:host#stats` symbol — is
  * cluster-only, carries no latency distributions, and disappears entirely in
- * a cluster of socket-only transports. A single-node silo was completely
+ * a cluster of socket-only transports. A single-node host was completely
  * unobservable from outside.
  *
  * Why this is a NEW route rather than more of `/_sigx/health`:
@@ -27,11 +27,11 @@
  */
 import { timingSafeEquals } from '../timing-safe';
 import {
-    emptySiloStats,
+    emptyHostStats,
     resolveLimit,
     type ActivationInfo,
-    type Silo,
-    type SiloStats
+    type Host,
+    type HostStats
 } from '../types';
 import type { ActorPlugin, OpsReport, PluginRegistry } from './app';
 import type { HealthStatus } from './health';
@@ -59,14 +59,14 @@ export interface OpsOptions {
      * always `() => clusterStats(cluster.placement)`.
      *
      * It is wired by the CALLER rather than discovered, because `ops()`
-     * lives in `@sigx/actors/silo` and `clusterStats` in
-     * `@sigx/actors/cluster`: a single-node silo must not pay for the
+     * lives in `@sigx/actors/host` and `clusterStats` in
+     * `@sigx/actors/cluster`: a single-node host must not pay for the
      * cluster bundle to have an ops endpoint. Passing a thunk also leaves
      * `timeoutMs` / `concurrency` where they already are, on
      * `ClusterStatsOptions`, rather than mirroring them here.
      *
      * Without it, `{base}/cluster` answers 404 — the honest code for "this
-     * silo has no cluster to report on".
+     * host has no cluster to report on".
      */
     cluster?: (signal: AbortSignal, query?: OpsClusterQuery) => Promise<unknown>;
     /**
@@ -74,7 +74,7 @@ export interface OpsOptions {
      * 20; 0 omits the list.
      *
      * Small by default for two reasons. The walk is O(activations), and
-     * this endpoint gets polled. And the list carries grain KEYS — which on
+     * this endpoint gets polled. And the list carries actor KEYS — which on
      * this endpoint is the point, but is also the one field here that can
      * be personal data, so it is worth being able to turn off without
      * giving up the rest of the snapshot.
@@ -86,30 +86,30 @@ export interface OpsOptions {
  * What `GET {base}/cluster` was asked for, parsed from the query string.
  *
  * Declared structurally rather than imported from `@sigx/actors/cluster`:
- * `ops()` lives in `/silo` and must not drag the cluster bundle in to
+ * `ops()` lives in `/host` and must not drag the cluster bundle in to
  * describe a query. It is assignable to `ClusterStatsOptions['detail']`, so
  * the usual thunk — `(signal, query) => clusterStats(placement, { signal,
  * ...query })` — type-checks without either module importing the other.
  */
 export interface OpsClusterQuery {
-    detail?: boolean | { activations?: number; errors?: number; silos?: string[] };
+    detail?: boolean | { activations?: number; errors?: number; hosts?: string[] };
 }
 
 /** What `GET {base}` answers. */
 export interface OpsSnapshot {
     /** Payload version. A rolling deploy IS a mixed-version fleet, and the
      *  tool reading this has to keep working during the deploy that broke
-     *  things — same discipline as `SiloReport.v`. */
+     *  things — same discipline as `HostReport.v`. */
     v: 1;
     /** Epoch-ms the snapshot was taken. */
     at: number;
     /** Since `start()`, ms. */
     uptimeMs: number;
     /** Live gauges, INCLUDING `perType` — this endpoint is authenticated. */
-    stats: SiloStats;
+    stats: HostStats;
     /**
      * The hottest live activations, deepest mailbox first. Bounded by
-     * `activations`, empty when it is 0 or the silo is not running.
+     * `activations`, empty when it is 0 or the host is not running.
      */
     activations: readonly ActivationInfo[];
     /** The same aggregate `/_sigx/health/ready` reports on, in full. */
@@ -121,26 +121,26 @@ export interface OpsSnapshot {
 export interface OpsPlugin extends ActorPlugin {
     /**
      * The same answer the endpoint gives, in process — for a test, or for a
-     * tool embedded in the silo rather than polling it.
+     * tool embedded in the host rather than polling it.
      */
     snapshot(): OpsSnapshot;
 }
 
 /**
- * `?detail=1&activations=5&silo=a&silo=b` → what the fan-out should ask for.
+ * `?detail=1&activations=5&host=a&host=b` → what the fan-out should ask for.
  *
  * Detail is opted INTO explicitly: absent, off, or anything unrecognised
  * means the cheap report. An allowlist rather than "not one of the falsy
  * spellings", because the expensive direction must be the one you have to
  * ask for precisely — `?detail=flase` should cost nothing, not make every
- * silo in the fleet walk its activation table.
+ * host in the fleet walk its activation table.
  */
 const DETAIL_ON = new Set(['', '1', 'true', 'yes', 'on']);
 
 function clusterQuery(url: URL): OpsClusterQuery {
     const detail = url.searchParams.get('detail');
     if (detail === null || !DETAIL_ON.has(detail.toLowerCase())) return {};
-    const silos = url.searchParams.getAll('silo').filter(Boolean);
+    const hosts = url.searchParams.getAll('host').filter(Boolean);
     const number = (name: string): number | undefined => {
         const raw = url.searchParams.get(name);
         if (raw === null) return undefined;
@@ -149,20 +149,20 @@ function clusterQuery(url: URL): OpsClusterQuery {
     };
     const activations = number('activations');
     const errors = number('errors');
-    if (silos.length === 0 && activations === undefined && errors === undefined) {
+    if (hosts.length === 0 && activations === undefined && errors === undefined) {
         return { detail: true };
     }
     return {
         detail: {
             ...(activations === undefined ? {} : { activations }),
             ...(errors === undefined ? {} : { errors }),
-            ...(silos.length > 0 ? { silos } : {})
+            ...(hosts.length > 0 ? { hosts } : {})
         }
     };
 }
 
 const BEARER = /^Bearer (.+)$/;
-/** Enough to see the hot grains; small enough to poll. */
+/** Enough to see the hot actors; small enough to poll. */
 const DEFAULT_OPS_ACTIVATIONS = 20;
 
 export function ops(options: OpsOptions = {}): OpsPlugin {
@@ -192,7 +192,7 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
     const collectCluster = options.cluster;
     const activationLimit = resolveLimit(options.activations, DEFAULT_OPS_ACTIVATIONS);
 
-    let silo: Silo | null = null;
+    let host: Host | null = null;
     let startedAt = 0;
     // Captured in setup() and called per REQUEST, so sections and checks
     // contributed by plugins registered AFTER this one are still included.
@@ -203,18 +203,18 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
         v: 1,
         at: Date.now(),
         uptimeMs: startedAt === 0 ? 0 : Math.round(performance.now() - startedAt),
-        stats: silo?.stats() ?? emptySiloStats(),
+        stats: host?.stats() ?? emptyHostStats(),
         activations:
-            activationLimit === 0 || !silo
+            activationLimit === 0 || !host
                 ? []
-                : silo.activations({ limit: activationLimit, sortBy: 'queued' }),
+                : host.activations({ limit: activationLimit, sortBy: 'queued' }),
         health: readHealth?.() ?? {
-            live: silo !== null,
-            ready: silo !== null,
+            live: host !== null,
+            ready: host !== null,
             fatal: false,
             uptimeMs: 0,
             checks: {},
-            silo: null
+            host: null
         },
         ops: readOps?.() ?? {}
     });
@@ -257,23 +257,23 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
         setup(registry: PluginRegistry): void {
             readHealth = () => {
                 const report = registry.health();
-                const stats = silo?.stats();
+                const stats = host?.stats();
                 return {
-                    live: silo !== null,
-                    ready: silo !== null && report.ready,
+                    live: host !== null,
+                    ready: host !== null && report.ready,
                     fatal: report.fatal,
                     uptimeMs: startedAt === 0 ? 0 : Math.round(performance.now() - startedAt),
                     checks: report.checks,
-                    silo: stats ? { activations: stats.activations, queued: stats.queued } : null
+                    host: stats ? { activations: stats.activations, queued: stats.queued } : null
                 };
             };
             readOps = () => registry.ops();
             registry.onStart((started) => {
-                silo = started;
+                host = started;
                 startedAt = performance.now();
             });
             registry.onStop(() => {
-                silo = null;
+                host = null;
                 startedAt = 0;
             });
             registry.route({
@@ -302,7 +302,7 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
                     if (!collectCluster) {
                         return fail(
                             404,
-                            '[sigx actors] this silo reports no cluster — pass ' +
+                            '[sigx actors] this host reports no cluster — pass ' +
                                 'ops({ cluster: () => clusterStats(placement) }) to enable it'
                         );
                     }
@@ -324,7 +324,7 @@ export function ops(options: OpsOptions = {}): OpsPlugin {
                         // `unreachable` and sets `partial`. So reaching here
                         // means the collector itself failed, which is worth
                         // saying plainly rather than as an empty report that
-                        // reads like a healthy cluster of zero silos.
+                        // reads like a healthy cluster of zero hosts.
                         const message = (error as Error)?.message ?? String(error);
                         return fail(503, `[sigx actors] cluster stats failed: ${message}`);
                     } finally {

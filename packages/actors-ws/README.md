@@ -1,7 +1,7 @@
 # `@sigx/actors-ws`
 
 **WebSocket transport** for [`@sigx/actors`](https://www.npmjs.com/package/@sigx/actors)
-silo-to-silo traffic — the same frames as
+host-to-host traffic — the same frames as
 [`@sigx/actors-tcp`](../actors-tcp), over one port.
 
 ```sh
@@ -10,13 +10,13 @@ pnpm add @sigx/actors-ws ws
 
 ```ts
 import { createServer } from 'node:http';
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { createAppHandler } from '@sigx/actors/node';
 import { cluster, httpTransport } from '@sigx/actors/cluster';
 import { wsTransport } from '@sigx/actors-ws';
 
 const ws = wsTransport({
-    advertiseUrl: () => `ws://10.0.4.7:7311/_sigx/silo-ws`
+    advertiseUrl: () => `ws://10.0.4.7:7311/_sigx/host-ws`
 });
 
 const app = defineActorApp({ actors, storage }).use(
@@ -34,7 +34,7 @@ await app.start();
 Raw TCP is the better wire where you control the network. WebSocket earns its
 place in the cases TCP cannot reach:
 
-- **One port.** Frames ride the HTTP listener the silo already has — no second
+- **One port.** Frames ride the HTTP listener the host already has — no second
   port in a security group, a Service, or a firewall rule.
 - **Through proxies and load balancers.** They forward WebSocket; they will
   generally not forward an arbitrary TCP protocol.
@@ -61,7 +61,7 @@ Read the two wins differently: the socket count holds at any RTT, while the
 **HTTP remains the default** and must — `@sigx/actors/cluster` stays zero-dep
 and WinterCG-clean so Workers keep working.
 
-## Mounting: why `attachSiloUpgrade` exists
+## Mounting: why `attachHostUpgrade` exists
 
 `ActorRoute.handle` returns a `Response` and cannot express a Node WebSocket
 upgrade — that needs the raw socket. So this is the one piece the plugin's
@@ -70,13 +70,13 @@ server**:
 
 ```ts
 const detach = await ws.attach(server);
-// or, with an explicit instance: attachSiloUpgrade(server, { transport })
+// or, with an explicit instance: attachHostUpgrade(server, { transport })
 ```
 
 `cluster()` builds the transport from the factory internally, so `attach()`
 resolves that instance for you rather than making you capture it. It registers
 `server.on('upgrade')`, matches the configured path (default
-`/_sigx/silo-ws`), completes the handshake with `ws` in `noServer` mode, and
+`/_sigx/host-ws`), completes the handshake with `ws` in `noServer` mode, and
 hands the socket to the shared frame layer. Upgrades on other paths are left
 alone, so your own WebSocket endpoints keep working. Returns a detach function.
 
@@ -85,7 +85,7 @@ alone, so your own WebSocket endpoints keep working. Returns a detach function.
 | option | default | |
 |---|---|---|
 | `advertiseUrl()` | — | **Required.** The URL peers dial. A function, because the port is often not known until the HTTP listener has bound, and the address must be produced before the membership join. |
-| `path` | `/_sigx/silo-ws` | Path the upgrade handler matches. |
+| `path` | `/_sigx/host-ws` | Path the upgrade handler matches. |
 | `connect(url)` | global `WebSocket` | Client factory. Supply `ws`'s implementation on runtimes without a global. |
 | `maxFrameBytes` | 8 MiB | Frames larger than this are refused before being processed. |
 | `credit` | 32 | Stream chunks a consumer accepts before it must extend credit. |

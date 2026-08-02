@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { isServerFnError, ServerFnError } from '@sigx/server';
 import { actor, defineActor } from '@sigx/actors';
-import { createSilo, type Silo } from '@sigx/actors/silo';
+import { createHost, type Host } from '@sigx/actors/host';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import { __actorRef, configureActors } from '@sigx/actors/client';
 
@@ -90,19 +90,19 @@ function abortLinked(response: Response, signal: AbortSignal | null | undefined)
     return new Response(stream, { status: response.status, headers: response.headers });
 }
 
-function wireSilo(): Silo {
-    const silo = createSilo({ actors: [cart], defaults: quiet });
+function wireHost(): Host {
+    const host = createHost({ actors: [cart], defaults: quiet });
     // The client's fetch goes straight into the real endpoint handler.
     configureActors({
         endpoint: ENDPOINT,
         fetch: async (input, init) => {
             const request = new Request(input, init);
             expect(matchesActorRequest(request)).toBe(true);
-            const response = await handleActorRequest(request, { silo, origin: false });
+            const response = await handleActorRequest(request, { host, origin: false });
             return abortLinked(response, init?.signal);
         }
     });
-    return silo;
+    return host;
 }
 
 afterEach(() => {
@@ -116,7 +116,7 @@ const CartRef = __actorRef('Cart', ENDPOINT, ['countTo', 'explode', 'forever']) 
 
 describe('actor wire (client proxy ↔ real endpoint)', () => {
     it('round-trips a call with rich types both ways', async () => {
-        wireSilo();
+        wireHost();
         const when = new Date(1234567890000);
         const result = (await actor(CartRef, 'w1').add('socks', when)) as {
             count: number;
@@ -129,13 +129,13 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('runs definition guards on the wire and reports Type#method info', async () => {
-        wireSilo();
+        wireHost();
         await actor(CartRef, 'w2').add('x', new Date());
         expect(guardLog).toContain('use:Cart#add');
     });
 
     it('a guard veto surfaces as a branded ServerFnError with its status', async () => {
-        wireSilo();
+        wireHost();
         const failure = actor(CartRef, 'w3').forbidden();
         await expect(failure).rejects.toSatisfy(
             (e: unknown) => isServerFnError(e) && e.status === 403 && e.message === 'no entry'
@@ -145,14 +145,14 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     it('a non-ServerFnError throw still reaches the client as a branded 500', async () => {
         // (Prod masking of the message is core's wireErrorShape behavior —
         // __DEV__ test builds intentionally keep the detail visible.)
-        wireSilo();
+        wireHost();
         await expect(actor(CartRef, 'w4').boom()).rejects.toSatisfy(
             (e: unknown) => isServerFnError(e) && e.status === 500
         );
     });
 
     it('an unknown actor type 404s naming the ACTOR, not a "server function"', async () => {
-        const silo = wireSilo();
+        const host = wireHost();
         // Straight at the endpoint: the client proxy replaces the server's
         // message with its own skew hint, so assert the wire body itself.
         const response = await handleActorRequest(
@@ -161,7 +161,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: ['g'] })
             }),
-            { silo, origin: false }
+            { host, origin: false }
         );
         expect(response.status).toBe(404);
         const body = (await response.json()) as { error: { message: string } };
@@ -171,7 +171,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('the 404 the client sees names the actor and points at build skew', async () => {
-        wireSilo();
+        wireHost();
         const ghost = __actorRef('Ghost', ENDPOINT) as unknown as {
             __sigxActorProxy: (key: string) => { spook(): Promise<unknown> };
         };
@@ -185,7 +185,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('an unknown METHOD on a known actor maps to 404 method-not-found', async () => {
-        wireSilo();
+        wireHost();
         const bad = actor(CartRef, 'w5') as unknown as { nope(): Promise<unknown> };
         await expect(bad.nope()).rejects.toSatisfy(
             (e: unknown) => isServerFnError(e) && e.status === 404
@@ -193,14 +193,14 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('rejects a non-string key with a 400', async () => {
-        const silo = wireSilo();
+        const host = wireHost();
         const response = await handleActorRequest(
             new Request(`${ENDPOINT}/${encodeURIComponent('Cart#add')}`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: [123, 'x'] })
             }),
-            { silo, origin: false }
+            { host, origin: false }
         );
         expect(response.status).toBe(400);
     });
@@ -224,14 +224,14 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
             methods: () => ({ async toString() { return 'mine'; } })
         });
 
-        const post = (silo: Silo, symbol: string, args: unknown[] = ['k']) =>
+        const post = (host: Host, symbol: string, args: unknown[] = ['k']) =>
             handleActorRequest(
                 new Request(`${ENDPOINT}/${encodeURIComponent(symbol)}`, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ args })
                 }),
-                { silo, origin: false }
+                { host, origin: false }
             );
 
         // `toString`/`constructor` answered 200; `valueOf`/`hasOwnProperty`
@@ -246,8 +246,8 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
             '__proto__'
         ]) {
             it(`"${member}" is a 404 method-not-found, not dispatchable surface`, async () => {
-                const silo = createSilo({ actors: [bare], defaults: quiet });
-                const response = await post(silo, `Bare#${member}`);
+                const host = createHost({ actors: [bare], defaults: quiet });
+                const response = await post(host, `Bare#${member}`);
                 expect(response.status).toBe(404);
                 const body = (await response.json()) as { error: { message: string } };
                 expect(body.error.message).toContain(member);
@@ -259,14 +259,14 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
             // its `.length` is the arity (0), so the empty-chain early return
             // did not fire when an actor-level `use` chain existed, and the
             // guard loop then iterated a FUNCTION → TypeError → 500.
-            const silo = createSilo({ actors: [cart], defaults: quiet });
-            const response = await post(silo, 'Cart#toString');
+            const host = createHost({ actors: [cart], defaults: quiet });
+            const response = await post(host, 'Cart#toString');
             expect(response.status).toBe(404);
         });
 
         it('a DECLARED method whose name shadows a prototype member still works', async () => {
-            const silo = createSilo({ actors: [shadow], defaults: quiet });
-            const response = await post(silo, 'Shadow#toString');
+            const host = createHost({ actors: [shadow], defaults: quiet });
+            const response = await post(host, 'Shadow#toString');
             expect(response.status).toBe(200);
             const body = (await response.json()) as { data: string };
             expect(body.data).toBe('mine');
@@ -274,7 +274,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('streams NDJSON end-to-end with rich chunk types', async () => {
-        wireSilo();
+        wireHost();
         const out: { i: number; at: Date }[] = [];
         for await (const chunk of actor(CartRef, 's1').countTo(3)) {
             out.push(chunk as { i: number; at: Date });
@@ -284,7 +284,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('a mid-stream throw arrives as an in-band branded error after prior chunks', async () => {
-        wireSilo();
+        wireHost();
         const seen: unknown[] = [];
         const iterate = async () => {
             for await (const chunk of actor(CartRef, 's2').explode()) seen.push(chunk);
@@ -294,18 +294,18 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('consumer break cancels the server generator (its finally runs) and frees the actor', async () => {
-        const silo = wireSilo();
+        const host = wireHost();
         for await (const chunk of actor(CartRef, 's3').forever()) {
             if ((chunk as number) >= 2) break;
         }
         await new Promise((r) => setTimeout(r, 20));
         expect(cleanupLog).toContain('forever:finally');
         // Keep-alive released: the activation can deactivate.
-        await silo.deactivateType('Cart');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Cart');
+        expect(host.stats().activations).toBe(0);
     });
 
-    it('external wire calls inherit the silo callTimeoutMs deadline (504 on overrun)', async () => {
+    it('external wire calls inherit the host callTimeoutMs deadline (504 on overrun)', async () => {
         const slowpoke = defineActor({
             type: 'Slowpoke',
             unguarded: true,
@@ -317,14 +317,14 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
                 }
             })
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [slowpoke],
             defaults: { ...quiet, callTimeoutMs: 40 }
         });
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) =>
-                handleActorRequest(new Request(input, init), { silo, origin: false })
+                handleActorRequest(new Request(input, init), { host, origin: false })
         });
         const ref = __actorRef('Slowpoke', ENDPOINT) as unknown as typeof slowpoke;
         await expect(actor(ref, 't1').nap()).rejects.toSatisfy(
@@ -333,7 +333,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     });
 
     it('the endpoint-level guard is a wire-only backstop over the same mount', async () => {
-        const silo = createSilo({ actors: [cart], defaults: quiet });
+        const host = createHost({ actors: [cart], defaults: quiet });
         const response = await handleActorRequest(
             new Request(`${ENDPOINT}/${encodeURIComponent('Cart#add')}`, {
                 method: 'POST',
@@ -341,7 +341,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
                 body: JSON.stringify({ args: ['k', 'x', null] })
             }),
             {
-                silo,
+                host,
                 origin: false,
                 guard: () => {
                     throw new ServerFnError(401, 'endpoint backstop');

@@ -57,14 +57,14 @@ export const HISTOGRAM_LAYOUT = `ll-${SUB_BITS}-${MAX_OCTAVE}`;
  * A histogram's raw distribution, in a shape that can be SUMMED.
  *
  * This exists because `HistogramSnapshot` cannot be merged: averaging two
- * silos' p99s is not the cluster's p99 and is not any other statistic
+ * hosts' p99s is not the cluster's p99 and is not any other statistic
  * either. Percentiles have to be re-derived from the combined counts, so
  * the counts are what travels.
  *
  * **Sparse** — `idx` holds the occupied bucket indices ascending, `n` the
- * counts parallel to it. Of 384 buckets a real silo occupies a few dozen,
+ * counts parallel to it. Of 384 buckets a real host occupies a few dozen,
  * so this is several times smaller than a dense array on a payload that a
- * dashboard polls once a second per silo.
+ * dashboard polls once a second per host.
  *
  * `sumUs`/`minUs`/`maxUs` are exact rather than bucketed, so a merged mean
  * is a real mean rather than a mean of means.
@@ -164,7 +164,7 @@ export class Histogram {
     }
 
     /**
-     * The raw distribution, for merging across silos.
+     * The raw distribution, for merging across hosts.
      *
      * Sparse, and built here rather than on `record()` — recording stays
      * allocation-free; this is snapshot-time work.
@@ -200,7 +200,7 @@ export function emptyHistogramDigest(): HistogramDigest {
  *
  * This is the whole point of shipping buckets: the merged distribution is
  * the cluster's real distribution, so percentiles taken from it are the
- * cluster's real percentiles. Averaging per-silo percentiles instead — the
+ * cluster's real percentiles. Averaging per-host percentiles instead — the
  * only thing `HistogramSnapshot` allows — produces a number that is not the
  * p99 of anything.
  *
@@ -281,7 +281,7 @@ export function digestSnapshot(digest: HistogramDigest | null | undefined): Hist
 /**
  * The one percentile walk, shared by the live histogram and a merged
  * digest — duplicating it is how a cluster-wide p99 quietly stops matching
- * the per-silo one it is supposed to generalise.
+ * the per-host one it is supposed to generalise.
  */
 function summarize(
     countAt: (bucket: number) => number,

@@ -10,15 +10,15 @@
  *  1. CLIENT env: swap each actor module wholesale for `__actorRef` stubs
  *     (values only — types stay the real module's, so the proxy is typed).
  *  2. Prod: emit `virtual:sigx-actors` — the lazy `{ type: () => import }`
- *     registry the server entry passes to `createSilo`.
+ *     registry the server entry passes to `createHost`.
  *  3. `requireGuards` build gate (default on).
- *  4. Dev: create/start a silo through the SSR module runner (module-graph
+ *  4. Dev: create/start a host through the SSR module runner (module-graph
  *     identity + HMR survival), mount the actor endpoint middleware, and
  *     deactivate types through storage on actor-file edits.
  */
 import type { Plugin, ViteDevServer } from 'vite';
-import type { ActorApp, ActorAppOptions } from '../silo/app';
-import type { Silo } from '../types';
+import type { ActorApp, ActorAppOptions } from '../host/app';
+import type { Host } from '../types';
 import type { ActorMissPolicy } from '../server/actor-endpoint';
 import { createFilter, normalizePath } from 'vite';
 import * as fs from 'node:fs';
@@ -60,7 +60,7 @@ export interface SigxActorsOptions {
      * default) — e.g. `'/src/actors.app.ts'`. THE source of truth: dev
      * loads the very module your production entry imports, so storage,
      * placement, codec handlers, defaults and every plugin are identical
-     * across the two. Omit and dev runs a bare in-memory silo.
+     * across the two. Omit and dev runs a bare in-memory host.
      *
      * It also makes the app-bound `defineActor` extractable, so actor
      * modules may import it from here instead of `@sigx/actors`.
@@ -71,7 +71,7 @@ export interface SigxActorsOptions {
     /** Body cap forwarded to the dev endpoint. */
     maxBodyBytes?: number;
     /**
-     * What the dev mount does with a call for a grain another silo owns.
+     * What the dev mount does with a call for an actor another host owns.
      * Default `'proxy'`, same as production.
      *
      * Forwarded so dev can reproduce a redirect setup rather than only
@@ -89,20 +89,20 @@ const DEFAULT_INCLUDE = ['**/*.actor.ts', '**/*.actor.tsx'];
 const DEFAULT_EXCLUDE = ['**/node_modules/**', '**/dist/**'];
 const DEFAULT_BASE = '/_sigx/actor';
 
-interface SiloModule {
-    createSilo(options: unknown): DevSilo;
+interface HostModule {
+    createHost(options: unknown): DevHost;
 }
 
 /**
  * The real runtime contracts, not local look-alikes. These are TYPE-only
  * imports so nothing from the runtime is bundled into the plugin, and
  * aliasing them means a change to either contract (say `createAppHandler`
- * needing `app.silo`) breaks here loudly instead of hiding behind a cast.
+ * needing `app.host`) breaks here loudly instead of hiding behind a cast.
  */
 type DevApp = ActorApp;
-/** Exactly what `withActors`/`createSilo` accept — not a stand-in. */
+/** Exactly what `withActors`/`createHost` accept — not a stand-in. */
 type DevActorRegistry = NonNullable<ActorAppOptions['actors']>;
-type DevSilo = Silo;
+type DevHost = Host;
 
 export function sigxActors(options: SigxActorsOptions = {}): Plugin {
     const filter = createFilter(
@@ -368,10 +368,10 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
             // Deactivate every type this file defines (old and new sets):
             // state flushes through storage; the next call re-activates
             // against the freshly loaded module.
-            const silo = peekDevSilo();
-            if (silo) {
+            const host = peekDevHost();
+            if (host) {
                 for (const actorType of new Set([...before, ...after])) {
-                    void silo.deactivateType(actorType).catch(() => {});
+                    void host.deactivateType(actorType).catch(() => {});
                 }
             }
             const mod = this.environment.moduleGraph.getModuleById(RESOLVED_VIRTUAL_ID);
@@ -380,31 +380,31 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
 
         configureServer(server) {
             // A Vite restart re-runs this with a fresh plugin instance; a
-            // silo from the previous server may still be stamped. Stop it so
+            // host from the previous server may still be stamped. Stop it so
             // mailboxes and timers don't leak across restarts.
             let devApp: DevApp | null = null;
-            const stale = peekDevSilo();
+            const stale = peekDevHost();
             if (stale) void stale.stop({ timeoutMs: 5_000 }).catch(() => {});
 
-            // Create the dev silo EAGERLY (before the first document render
+            // Create the dev host EAGERLY (before the first document render
             // — the #304 bug class): through the SSR module runner so the
-            // silo the render's actor() sees via the seam is the same module
+            // host the render's actor() sees via the seam is the same module
             // family the render runs in.
-            const siloReady = createDevSilo(server).catch((error: unknown) => {
+            const hostReady = createDevHost(server).catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
                 server.config.logger.error(
-                    `[sigx:actors] could not start the dev silo — actor calls will fail: ${message}`
+                    `[sigx:actors] could not start the dev host — actor calls will fail: ${message}`
                 );
                 return null;
             });
 
             server.httpServer?.once('close', () => {
-                void siloReady.then(async (silo) => {
-                    // Stop the APP when there is one: stopping only its silo
-                    // leaves `app.silo` set and the start promise cached, so
+                void hostReady.then(async (host) => {
+                    // Stop the APP when there is one: stopping only its host
+                    // leaves `app.host` set and the start promise cached, so
                     // the app would still look running to `createAppHandler`.
                     if (devApp) return devApp.stop({ timeoutMs: 5_000 }).catch(() => {});
-                    return silo?.stop({ timeoutMs: 5_000 }).catch(() => {});
+                    return host?.stop({ timeoutMs: 5_000 }).catch(() => {});
                 });
             });
 
@@ -418,7 +418,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                 }
             });
 
-            async function createDevSilo(devServer: ViteDevServer): Promise<DevSilo | null> {
+            async function createDevHost(devServer: ViteDevServer): Promise<DevHost | null> {
                 if (options.app) {
                     // THE unification: dev runs the very app module the
                     // production entry imports, so storage, placement, codec
@@ -446,23 +446,23 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                     return await app.start();
                 }
 
-                const siloModule = (await devServer.ssrLoadModule(
-                    '@sigx/actors/silo'
-                )) as unknown as SiloModule;
+                const hostModule = (await devServer.ssrLoadModule(
+                    '@sigx/actors/host'
+                )) as unknown as HostModule;
                 devServer.config.logger.info(
-                    '[sigx:actors] dev silo uses in-memory storage — actor state resets ' +
+                    '[sigx:actors] dev host uses in-memory storage — actor state resets ' +
                         'when an actor file is edited. Pass sigxActors({ app }) to run your ' +
                         'real app config in dev.',
                     { timestamp: true }
                 );
-                const silo = siloModule.createSilo({ actors: devRegistry(devServer) });
-                await silo.start();
-                return silo;
+                const host = hostModule.createHost({ actors: devRegistry(devServer) });
+                await host.start();
+                return host;
             }
 
             /**
              * Lazy per-type loaders through the module runner: edits are
-             * picked up because `deactivateType` also drops the silo's
+             * picked up because `deactivateType` also drops the host's
              * resolved-definition cache.
              */
             function devRegistry(devServer: ViteDevServer): DevActorRegistry {
@@ -493,8 +493,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                 res: ServerResponse,
                 next: (err?: unknown) => void
             ): Promise<void> {
-                const silo = await siloReady;
-                if (!silo) return next(new Error('[sigx:actors] dev silo failed to start'));
+                const host = await hostReady;
+                if (!host) return next(new Error('[sigx:actors] dev host failed to start'));
                 // Through the SSR module runner for module-graph identity.
                 const nodeEntry = (await devServer.ssrLoadModule(
                     '@sigx/actors/node'
@@ -512,7 +512,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                     return;
                 }
                 const handler = nodeEntry.createActorHandler({
-                    silo,
+                    host,
                     base,
                     origin: options.origin,
                     maxBodyBytes: options.maxBodyBytes,
@@ -524,10 +524,10 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
     };
 }
 
-/** The dev silo is reachable via its own seam — the runner and this plugin
+/** The dev host is reachable via its own seam — the runner and this plugin
  *  share `globalThis`, which is exactly why the seam is a global. */
-function peekDevSilo(): DevSilo | undefined {
-    return (globalThis as { __SIGX_ACTOR_SILO__?: DevSilo }).__SIGX_ACTOR_SILO__;
+function peekDevHost(): DevHost | undefined {
+    return (globalThis as { __SIGX_ACTOR_HOST__?: DevHost }).__SIGX_ACTOR_HOST__;
 }
 
 function safeRealpath(dir: string): string {

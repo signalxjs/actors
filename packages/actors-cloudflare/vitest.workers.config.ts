@@ -46,7 +46,7 @@ export default defineConfig({
             // Same map as the root config, so the suite runs against SOURCE
             // rather than a stale dist. MORE SPECIFIC FIRST — aliases match
             // by prefix in order.
-            '@sigx/actors/silo': resolve(root, 'packages/actors/src/silo/index.ts'),
+            '@sigx/actors/host': resolve(root, 'packages/actors/src/host/index.ts'),
             '@sigx/actors/server': resolve(root, 'packages/actors/src/server/index.ts'),
             '@sigx/actors/client': resolve(root, 'packages/actors/src/client/index.ts'),
             '@sigx/actors/app': resolve(root, 'packages/actors/src/app/index.ts'),

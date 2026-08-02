@@ -1,5 +1,5 @@
 /**
- * `httpTransport()` — the default silo-to-silo transport, and the only one
+ * `httpTransport()` — the default host-to-host transport, and the only one
  * that is WinterCG-clean: outbound is a fetch to the owner's internal
  * mount, inbound is a route contributed to the app's own listener. Body and
  * NDJSON framing are byte-identical to the public wire (same codec, caps,
@@ -11,23 +11,23 @@
  * on Cloudflare Workers, and why it stays the default.
  */
 import { ActorUnreachableError, isActorError } from '../errors';
-import type { ActorRoute } from '../silo/app';
+import type { ActorRoute } from '../host/app';
 import type { ActorCallContext, ActorDispatcher } from '../types';
 import { relayStream } from '../stream-relay';
 import { readNdjson, type WireError } from '../wire-shared';
-import { encodeEnvelope, signAuth, SILO_AUTH_HEADER, SILO_CALL_HEADER } from './envelope';
+import { encodeEnvelope, signAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from './envelope';
 import type {
-    SiloTransport,
-    SiloTransportConfig,
-    SiloTransportFactory,
-    SiloTransportRuntime
+    HostTransport,
+    HostTransportConfig,
+    HostTransportFactory,
+    HostTransportRuntime
 } from './seam';
 import {
-    handleSiloRequestForRuntime,
-    matchesSiloRequest,
-    type SiloEndpointOptions
-} from './silo-endpoint';
-import type { SiloDescriptor } from './types';
+    handleHostRequestForRuntime,
+    matchesHostRequest,
+    type HostEndpointOptions
+} from './host-endpoint';
+import type { HostDescriptor } from './types';
 import { watchSymbol } from './watch-symbol';
 
 export interface HttpTransportOptions {
@@ -38,37 +38,37 @@ export interface HttpTransportOptions {
      */
     fetch?: typeof globalThis.fetch;
     /** Forwarded to the internal mount (body caps, `onError`, `timeoutMs`). */
-    endpoint?: SiloEndpointOptions;
+    endpoint?: HostEndpointOptions;
 }
 
-/** This transport's key in `SiloDescriptor.addresses`. */
+/** This transport's key in `HostDescriptor.addresses`. */
 export const HTTP_TRANSPORT_NAME = 'http';
 
 /**
  * The peer's origin for THIS transport. Falls back to `address` — what a
- * silo from a build predating `addresses` publishes, and what every silo
+ * host from a build predating `addresses` publishes, and what every host
  * publishes for HTTP anyway, since the internal mount rides the same
  * listener as the public one.
  */
-function originFor(target: SiloDescriptor): string {
+function originFor(target: HostDescriptor): string {
     const raw = target.addresses?.[HTTP_TRANSPORT_NAME] ?? target.address;
     return raw.endsWith('/') ? raw.slice(0, -1) : raw;
 }
 
-export function httpTransport(options: HttpTransportOptions = {}): SiloTransportFactory {
-    return (config: SiloTransportConfig): SiloTransport => {
+export function httpTransport(options: HttpTransportOptions = {}): HostTransportFactory {
+    return (config: HostTransportConfig): HostTransport => {
         const doFetch = options.fetch ?? globalThis.fetch;
         const base = config.internalBase.endsWith('/')
             ? config.internalBase.slice(0, -1)
             : config.internalBase;
 
         // Captured at `start()`. The route closure is built now — plugin
-        // setup reads `routes` before the silo exists — but can only serve
-        // once there is a silo behind it.
-        let runtime: SiloTransportRuntime | null = null;
+        // setup reads `routes` before the host exists — but can only serve
+        // once there is a host behind it.
+        let runtime: HostTransportRuntime | null = null;
 
         const send = async (
-            target: SiloDescriptor,
+            target: HostDescriptor,
             symbol: string,
             payload: readonly unknown[],
             call: ActorCallContext,
@@ -77,11 +77,11 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
             const url = `${originFor(target)}${base}/${encodeURIComponent(symbol)}`;
             const headers: Record<string, string> = {
                 'content-type': 'application/json',
-                [SILO_CALL_HEADER]: encodeEnvelope(call, config.siloId)
+                [HOST_CALL_HEADER]: encodeEnvelope(call, config.hostId)
             };
             if (config.secret !== undefined) {
                 // Per-request HMAC bound to this symbol + callId (see envelope.ts).
-                headers[SILO_AUTH_HEADER] = await signAuth(config.secret, symbol, call.callId);
+                headers[HOST_AUTH_HEADER] = await signAuth(config.secret, symbol, call.callId);
             }
             try {
                 return await doFetch(url, {
@@ -92,7 +92,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
                 });
             } catch (error) {
                 if (signal?.aborted) throw error;
-                throw new ActorUnreachableError(`${target.siloId} (${originFor(target)})`, {
+                throw new ActorUnreachableError(`${target.hostId} (${originFor(target)})`, {
                     cause: error
                 });
             }
@@ -107,7 +107,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
          * kept in step by hand.
          */
         const streamOver = (
-            target: SiloDescriptor,
+            target: HostDescriptor,
             symbol: string,
             payload: readonly unknown[],
             call: ActorCallContext
@@ -133,7 +133,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
                         throw config.fromWireError(
                             res.status,
                             wire,
-                            `[sigx actors] silo stream ${symbol} to ${target.siloId} ` +
+                            `[sigx actors] host stream ${symbol} to ${target.hostId} ` +
                                 `failed with HTTP ${res.status}`
                         );
                     }
@@ -169,7 +169,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
             });
         };
 
-        const dispatcherFor = (target: SiloDescriptor): ActorDispatcher => ({
+        const dispatcherFor = (target: HostDescriptor): ActorDispatcher => ({
             async dispatch(ref, method, args, call) {
                 const res = await send(
                     target,
@@ -191,7 +191,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
                     throw config.fromWireError(
                         res.status,
                         parsed?.error,
-                        `[sigx actors] silo call ${ref.type}#${method} to ${target.siloId} ` +
+                        `[sigx actors] host call ${ref.type}#${method} to ${target.hostId} ` +
                             `failed with HTTP ${res.status}`
                     );
                 }
@@ -217,29 +217,29 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
         });
 
         const route: ActorRoute = {
-            name: 'cluster:silo',
-            match: (request) => matchesSiloRequest(request, base),
+            name: 'cluster:host',
+            match: (request) => matchesHostRequest(request, base),
             handle: (request) => {
                 if (!runtime) {
-                    // Routes only run on a started silo, so this is the narrow
+                    // Routes only run on a started host, so this is the narrow
                     // window between mounting and `start()`. It answers with
-                    // the `silo-shutdown` KIND, not a bare 503: the caller
+                    // the `host-shutdown` KIND, not a bare 503: the caller
                     // classifies on the kind, and an unclassifiable 503 is a
                     // hard failure where a retry would have converged.
                     return Promise.resolve(
                         new Response(
                             JSON.stringify({
                                 error: {
-                                    message: '[sigx actors] the silo is not started',
+                                    message: '[sigx actors] the host is not started',
                                     status: 503,
-                                    data: { kind: 'silo-shutdown' }
+                                    data: { kind: 'host-shutdown' }
                                 }
                             }),
                             { status: 503, headers: { 'content-type': 'application/json' } }
                         )
                     );
                 }
-                return handleSiloRequestForRuntime(request, {
+                return handleHostRequestForRuntime(request, {
                     ...options.endpoint,
                     runtime,
                     ...(config.secret !== undefined ? { secret: config.secret } : {})
@@ -262,7 +262,7 @@ export function httpTransport(options: HttpTransportOptions = {}): SiloTransport
             // No `stop()`: the mount rides the app's listener, which the host
             // owns and tears down. Keeping the runtime bound past `stop()` is
             // deliberate — a peer still calling in during a rolling deploy
-            // must reach the SILO and get its `silo-shutdown` (which the
+            // must reach the HOST and get its `host-shutdown` (which the
             // caller retries and re-routes on), not a mount that has gone
             // silent underneath it.
         };

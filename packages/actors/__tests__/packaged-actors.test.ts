@@ -13,7 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { actor, type ActorClientWith } from '@sigx/actors';
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { configureActors } from '@sigx/actors/client';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import { Greeter, Presence } from './fixtures/actors-package/server';
@@ -25,12 +25,12 @@ const ENDPOINT = 'http://packaged.test/_sigx/actor';
 describe('a package can ship actors the app registers', () => {
     it('registers several definitions from one package', async () => {
         const app = defineActorApp({ defaults: quiet }).withActors([Greeter, Presence]);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(Greeter, 'a').greet('world')).resolves.toBe('hello world');
-            await expect(silo.actor(Presence, 'a').setOnline(true)).resolves.toBe(true);
+            await expect(host.actor(Greeter, 'a').greet('world')).resolves.toBe('hello world');
+            await expect(host.actor(Presence, 'a').setOnline(true)).resolves.toBe(true);
             // Two actors, two types, one package.
-            expect(silo.stats().perType).toMatchObject({
+            expect(host.stats().perType).toMatchObject({
                 'acme/greeter': 1,
                 'acme/presence': 1
             });
@@ -42,7 +42,7 @@ describe('a package can ship actors the app registers', () => {
     it('refuses two different actors claiming one type', async () => {
         // `type` is the wire, directory AND storage key, so the loser's
         // callers would silently reach the winner's state. Caught where the
-        // rest of registration is validated: when the silo is built.
+        // rest of registration is validated: when the host is built.
         const clash = { ...Presence, type: 'acme/greeter' } as typeof Presence;
         const app = defineActorApp({ defaults: quiet }).withActors([Greeter, clash]);
         await expect(app.start()).rejects.toThrow(/registered as "acme\/greeter"/);
@@ -51,9 +51,9 @@ describe('a package can ship actors the app registers', () => {
     it('allows the same definition to be registered twice', async () => {
         // Re-exported through two barrels is not a conflict.
         const app = defineActorApp({ defaults: quiet }).withActors([Greeter, Greeter]);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(Greeter, 'x').greet('again')).resolves.toBe('hello again');
+            await expect(host.actor(Greeter, 'x').greet('again')).resolves.toBe('hello again');
         } finally {
             await app.stop();
         }
@@ -111,13 +111,13 @@ describe('the package does its own client swap', () => {
 
     it('drives a real call over the wire through the packaged ref', async () => {
         const app = defineActorApp({ defaults: quiet }).withActors([Greeter, Presence]);
-        const silo = await app.start();
+        const host = await app.start();
         configureActors({
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
                 expect(matchesActorRequest(request)).toBe(true);
-                return handleActorRequest(request, { silo, origin: false });
+                return handleActorRequest(request, { host, origin: false });
             }
         });
         try {
@@ -125,8 +125,8 @@ describe('the package does its own client swap', () => {
             // a consumer writes in the browser.
             const client = actor(GreeterRef, 'wire') as ActorClientWith<typeof Greeter>;
             await expect(client.greet('packaged')).resolves.toBe('hello packaged');
-            // ...and the call really landed on the silo's activation.
-            await expect(silo.actor(Greeter, 'wire').count()).resolves.toBe(1);
+            // ...and the call really landed on the host's activation.
+            await expect(host.actor(Greeter, 'wire').count()).resolves.toBe(1);
         } finally {
             configureActors(null);
             await app.stop();

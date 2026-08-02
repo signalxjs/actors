@@ -9,7 +9,7 @@
  *
  * The in-process harness pipes `Request`s straight into handlers, so it
  * cannot catch anything this bridge actually does: header copying, body
- * buffering, streamed responses, and disconnect→abort. Two silos on real
+ * buffering, streamed responses, and disconnect→abort. Two hosts on real
  * ports do.
  */
 import { afterEach, describe, expect, it } from 'vitest';
@@ -21,7 +21,7 @@ import {
     memoryStorage,
     type ActorApp,
     type ActorPlugin
-} from '@sigx/actors/silo';
+} from '@sigx/actors/host';
 import { cluster, memoryClusterHub, preferLocalPolicy } from '@sigx/actors/cluster';
 import { createAppHandler } from '@sigx/actors/node';
 import { createFetchHandler } from '@sigx/actors/server';
@@ -68,7 +68,7 @@ interface ServeOptions {
     extraPlugin?: ActorPlugin;
 }
 
-/** N silos on real localhost sockets, mounted with createAppHandler. */
+/** N hosts on real localhost sockets, mounted with createAppHandler. */
 async function serveCluster(
     n: number,
     storage: ActorStorage,
@@ -110,21 +110,21 @@ async function serveCluster(
 }
 
 describe('createAppHandler over real sockets', () => {
-    it('routes a cross-silo call through the plugin internal mount', async () => {
+    it('routes a cross-host call through the plugin internal mount', async () => {
         const storage = memoryStorage();
         const nodes = await serveCluster(2, storage);
         running = nodes;
 
-        // prefer-local puts 'a' on silo 1...
-        await expect(nodes[1]!.app.silo!.actor(Counter, 'a').increment(2)).resolves.toBe(2);
-        expect(nodes[1]!.app.silo!.stats().perType['Counter']).toBe(1);
+        // prefer-local puts 'a' on host 1...
+        await expect(nodes[1]!.app.host!.actor(Counter, 'a').increment(2)).resolves.toBe(2);
+        expect(nodes[1]!.app.host!.stats().perType['Counter']).toBe(1);
 
-        // ...so calling through silo 0 has to cross a real socket, over the
+        // ...so calling through host 0 has to cross a real socket, over the
         // internal mount the cluster plugin contributed.
-        await expect(nodes[0]!.app.silo!.actor(Counter, 'a').increment(3)).resolves.toBe(5);
+        await expect(nodes[0]!.app.host!.actor(Counter, 'a').increment(3)).resolves.toBe(5);
         // Still exactly one activation, on the owner.
-        expect(nodes[0]!.app.silo!.stats().activations).toBe(0);
-        expect(nodes[1]!.app.silo!.stats().perType['Counter']).toBe(1);
+        expect(nodes[0]!.app.host!.stats().activations).toBe(0);
+        expect(nodes[1]!.app.host!.stats().perType['Counter']).toBe(1);
     });
 
     it('falls through on an unparseable request target instead of 500ing', async () => {
@@ -164,7 +164,7 @@ describe('createAppHandler over real sockets', () => {
         const nodes = await serveCluster(2, storage);
         running = nodes;
 
-        await nodes[1]!.app.silo!.actor(Counter, 'streamer').increment(1);
+        await nodes[1]!.app.host!.actor(Counter, 'streamer').increment(1);
 
         // Consumed from the NON-owner: every chunk crosses the socket and
         // comes back through sendResponse's streaming path.
@@ -176,7 +176,7 @@ describe('createAppHandler over real sockets', () => {
             attached = resolve;
         });
         const watching = (async () => {
-            for await (const state of nodes[0]!.app.silo!.actor(Counter, 'streamer').watch()) {
+            for await (const state of nodes[0]!.app.host!.actor(Counter, 'streamer').watch()) {
                 seen.push((state as { count: number }).count);
                 if (seen.length === 1) attached();
                 if (seen.length >= 3) break;
@@ -184,8 +184,8 @@ describe('createAppHandler over real sockets', () => {
         })();
 
         await subscribed;
-        await nodes[1]!.app.silo!.actor(Counter, 'streamer').increment(10);
-        await nodes[1]!.app.silo!.actor(Counter, 'streamer').increment(100);
+        await nodes[1]!.app.host!.actor(Counter, 'streamer').increment(10);
+        await nodes[1]!.app.host!.actor(Counter, 'streamer').increment(100);
         await watching;
 
         expect(seen).toEqual([1, 11, 111]);
@@ -215,7 +215,7 @@ describe('createAppHandler over real sockets', () => {
 
         // Declared length is over the cap — rejected without reading.
         const declared = await fetch(
-            `http://127.0.0.1:${nodes[0]!.port}/_sigx/silo/Counter%23increment`,
+            `http://127.0.0.1:${nodes[0]!.port}/_sigx/host/Counter%23increment`,
             {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -230,7 +230,7 @@ describe('createAppHandler over real sockets', () => {
         // purpose: swallowing a fetch rejection would let this pass without
         // the request ever reaching the server.
         const streamed = await fetch(
-            `http://127.0.0.1:${nodes[0]!.port}/_sigx/silo/Counter%23increment`,
+            `http://127.0.0.1:${nodes[0]!.port}/_sigx/host/Counter%23increment`,
             {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -303,7 +303,7 @@ describe('createAppHandler over real sockets', () => {
             })
         );
         // Mounted but never started — the ordinary ordering for a cluster
-        // silo, whose listener must exist before it can advertise.
+        // host, whose listener must exist before it can advertise.
         const handler = createAppHandler(app, { origin: false });
         server.on('request', (req, res) => {
             void handler(req, res, () => res.writeHead(404).end());
@@ -427,7 +427,7 @@ describe('createFetchHandler (WinterCG)', () => {
             // the cluster's internal mount is a plugin route too — it exists,
             // and refuses an unauthenticated call rather than 404ing.
             const internal = await handler(
-                new Request('http://fetch.test/_sigx/silo/Counter%23increment', {
+                new Request('http://fetch.test/_sigx/host/Counter%23increment', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ args: ['k'] })

@@ -1,19 +1,19 @@
-# A Deployment — silo identity is minted per start, a restart is a new silo.
+# A Deployment — host identity is minted per start, a restart is a new host.
 {{- if not .Values.image.tag }}
 {{- fail "image.tag is required (immutable git-sha tags)" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "chat.fullname" . }}-silo
+  name: {{ include "chat.fullname" . }}-host
   labels:
     {{- include "chat.labels" . | nindent 4 }}
-    app.kubernetes.io/component: silo
+    app.kubernetes.io/component: host
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "chat.siloSelector" . | nindent 6 }}
+      {{- include "chat.hostSelector" . | nindent 6 }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -24,7 +24,7 @@ spec:
     metadata:
       labels:
         {{- include "chat.labels" . | nindent 8 }}
-        app.kubernetes.io/component: silo
+        app.kubernetes.io/component: host
     spec:
       # Always rendered (SSA relinquish lesson, #154): the default SA.
       serviceAccountName: default
@@ -42,7 +42,7 @@ spec:
              would nil-pointer the whole render. */}}
       {{- $spread := .Values.spread | default dict }}
       {{- if dig "enabled" true $spread }}
-      # WITHOUT this, replicaCount buys no capacity: every silo is a
+      # WITHOUT this, replicaCount buys no capacity: every host is a
       # single-threaded Node process, so three of them packed onto one
       # 2-vCPU node contend for ~1.9 cores and the public endpoint tops out
       # (measured: 1,738m on one node = 91% of it, while sibling nodes sat
@@ -55,10 +55,10 @@ spec:
           whenUnsatisfiable: {{ dig "whenUnsatisfiable" "ScheduleAnyway" $spread }}
           labelSelector:
             matchLabels:
-              {{- include "chat.siloSelector" . | nindent 14 }}
+              {{- include "chat.hostSelector" . | nindent 14 }}
       {{- end }}
       containers:
-        - name: silo
+        - name: host
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:

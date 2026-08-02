@@ -2,7 +2,7 @@
  * The dashboard's poll loop.
  *
  * This is the half of `top` that can be wrong without looking wrong: a
- * failed poll that blanks the screen, a slow silo that queues requests
+ * failed poll that blanks the screen, a slow host that queues requests
  * until something gives, or numbers that quietly stop updating while still
  * appearing live. None of that is visible in a screenshot, so it is what
  * carries tests.
@@ -21,9 +21,9 @@ const emptyStats = {
 function snapshotAt(at: number, activations = 1, calls = 10): MonitorSnapshot {
     return {
         at,
-        silos: [
+        hosts: [
             {
-                siloId: 'silo-a',
+                hostId: 'host-a',
                 address: 'x',
                 status: 'active',
                 uptimeMs: 1000,
@@ -98,7 +98,7 @@ describe('DashboardState', () => {
         let fail = false;
         const state = new DashboardState({
             source: fakeSource(() =>
-                fail ? Promise.reject(new Error('silo went away')) : Promise.resolve(snapshotAt(1000))
+                fail ? Promise.reject(new Error('host went away')) : Promise.resolve(snapshotAt(1000))
             )
         });
 
@@ -107,10 +107,10 @@ describe('DashboardState', () => {
 
         fail = true;
         await state.poll();
-        // A dashboard that blanks the moment a silo hiccups destroys
+        // A dashboard that blanks the moment a host hiccups destroys
         // exactly the context you need to understand the hiccup.
         expect(state.view.snapshot?.at).toBe(1000);
-        expect(state.view.error).toBe('silo went away');
+        expect(state.view.error).toBe('host went away');
 
         fail = false;
         await state.poll();
@@ -135,14 +135,14 @@ describe('DashboardState', () => {
 
         const first = state.poll();
         const second = state.poll();
-        // A 5s silo on a 1s interval would otherwise accumulate requests
+        // A 5s host on a 1s interval would otherwise accumulate requests
         // until something gives.
         expect(seen[0]!.aborted).toBe(true);
         expect(seen[1]!.aborted).toBe(false);
         releases[1]!();
         await Promise.all([first, second]);
         // The abort is not surfaced as a poll failure: the caller cancelled
-        // it, so there is nothing wrong with the silo.
+        // it, so there is nothing wrong with the host.
         expect(state.view.error).toBeNull();
         expect(state.view.snapshot?.at).toBe(1000);
         await state.stop();
@@ -181,7 +181,7 @@ describe('DashboardState', () => {
         await state.poll();
         // "No metrics plugin" is not "no traffic".
         expect(state.calls.values()).toEqual([null, null]);
-        // Gauges still work — they come off SiloStats, not off metrics().
+        // Gauges still work — they come off HostStats, not off metrics().
         expect(state.activations.latest()).toBe(1);
         await state.stop();
     });
@@ -229,19 +229,19 @@ describe('DashboardState', () => {
         expect(state.view.snapshot).toBeNull();
     });
 
-    it('forgets series for silos that left the cluster', async () => {
-        let siloId = 'silo-a';
+    it('forgets series for hosts that left the cluster', async () => {
+        let hostId = 'host-a';
         const state = new DashboardState({
             source: fakeSource(() => {
                 const snapshot = snapshotAt(1000);
                 return Promise.resolve({
                     ...snapshot,
-                    silos: [{ ...snapshot.silos[0]!, siloId }]
+                    hosts: [{ ...snapshot.hosts[0]!, hostId }]
                 });
             })
         });
         await state.poll();
-        siloId = 'silo-b';
+        hostId = 'host-b';
         await state.poll();
         // Nothing observable to assert beyond not growing without bound;
         // the point is that `retain` runs, which a leak test would catch

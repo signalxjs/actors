@@ -1,8 +1,8 @@
 /**
- * The silo-to-silo transport conformance suite: what "implements
- * `SiloTransport` correctly" means, as runnable cases.
+ * The host-to-host transport conformance suite: what "implements
+ * `HostTransport` correctly" means, as runnable cases.
  *
- * Every transport runs the SAME cases against its own N-silo harness, so a
+ * Every transport runs the SAME cases against its own N-host harness, so a
  * behaviour is a property of clustering rather than of whichever wire
  * happens to carry it. It ships against `httpTransport()` first, before any
  * second transport exists — the incumbent passing is what proves the suite
@@ -21,16 +21,16 @@
 import { mintCallId } from '../call-id';
 import { defineActor } from '../define';
 import { ActorStateConflictError, isActorError, type ActorErrorShape } from '../errors';
-import type { ActorCallContext, ActorContext, AnyActorDefinition, Silo } from '../types';
+import type { ActorCallContext, ActorContext, AnyActorDefinition, Host } from '../types';
 import type { ClusterPlacement } from './placement';
 import { clusterStats } from './stats';
-import type { PlacementPolicy, SiloDescriptor } from './types';
+import type { PlacementPolicy, HostDescriptor } from './types';
 
 // ---------------------------------------------------------------------------
 // The harness a transport supplies
 
 export interface ConformanceClusterOptions {
-    silos: number;
+    hosts: number;
     actors: readonly AnyActorDefinition[];
     /** `null` = an unauthenticated cluster (no shared secret). */
     secret?: string | null;
@@ -40,9 +40,9 @@ export interface ConformanceClusterOptions {
 
 export interface TransportConformanceHarness {
     readonly placements: readonly ClusterPlacement[];
-    readonly silos: readonly Silo[];
+    readonly hosts: readonly Host[];
     /**
-     * Wire-level unreachable while membership STILL lists the silo — the
+     * Wire-level unreachable while membership STILL lists the host — the
      * partition probe, and the only way to exercise `unreachable` apart
      * from a crash.
      */
@@ -50,7 +50,7 @@ export interface TransportConformanceHarness {
     /** Membership drops it AND the listener dies. No cleanup runs. */
     crash(index: number): void;
     /**
-     * Remove silo `index` from MEMBERSHIP ONLY, leaving every socket intact.
+     * Remove host `index` from MEMBERSHIP ONLY, leaving every socket intact.
      *
      * Without this, the reaping case cannot test what it claims: a crashed
      * peer's sockets close on their own, so link counts fall for reasons that
@@ -65,9 +65,9 @@ export interface TransportConformanceHarness {
      * that does must implement it, or the "a forged call is refused" case
      * cannot run.
      */
-    impostor?(target: SiloDescriptor): Promise<{ ok: boolean; status?: number }>;
+    impostor?(target: HostDescriptor): Promise<{ ok: boolean; status?: number }>;
     /**
-     * Live peer connections silo `index` currently holds. Absent for a
+     * Live peer connections host `index` currently holds. Absent for a
      * connectionless transport, and the link cases then skip visibly —
      * only a socket transport can fail them, which is exactly why they
      * belong in the shared suite rather than in one package's tests.
@@ -236,7 +236,7 @@ interface BackMethods {
 }
 
 /**
- * A→B→A across two silos. Re-entering the ORIGINAL activation while its turn
+ * A→B→A across two hosts. Re-entering the ORIGINAL activation while its turn
  * is still up-stack must be detected as a deadlock — which only works if the
  * call chain survived BOTH hops.
  */
@@ -283,11 +283,11 @@ const unaryRoundTrip: ConformanceCase = {
     name: 'unary round-trip through a non-owner, with codec-carried values',
     why: 'a transport that JSON.stringifies raw values silently drops every registered codec handler and re-opens __proto__',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            // selfSilo: whichever silo first touches a key owns it. Activate
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            // selfHost: whichever host first touches a key owns it. Activate
             // on 1, then call from 0 so every call crosses the wire.
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'k' }, 'increment', [1], call());
-            const total = await h.silos[0]!.dispatch(
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'k' }, 'increment', [1], call());
+            const total = await h.hosts[0]!.dispatch(
                 { type: ECHO, key: 'k' },
                 'increment',
                 [41],
@@ -296,7 +296,7 @@ const unaryRoundTrip: ConformanceCase = {
             assertEqual(total, 42, 'remote unary result');
 
             const when = new Date('2020-01-02T03:04:05.000Z');
-            const back = (await h.silos[0]!.dispatch(
+            const back = (await h.hosts[0]!.dispatch(
                 { type: ECHO, key: 'k' },
                 'echo',
                 [{ when, tags: new Map([['a', 1]]) }],
@@ -310,16 +310,16 @@ const unaryRoundTrip: ConformanceCase = {
 };
 
 const singleActivation: ConformanceCase = {
-    name: 'single activation under a race from every silo',
+    name: 'single activation under a race from every host',
     why: 'two activations of one key means two copies of the state, which is the invariant the whole system rests on',
     run: (create) => {
         const log: string[] = [];
         return withCluster(
             create,
-            { silos: 3, actors: [echoActor(log)], policy: selfSilo },
+            { hosts: 3, actors: [echoActor(log)], policy: selfHost },
             async (h) => {
                 const results = (await Promise.all(
-                    h.silos.map((s) => s.dispatch({ type: ECHO, key: 'race' }, 'increment', [1], call()))
+                    h.hosts.map((s) => s.dispatch({ type: ECHO, key: 'race' }, 'increment', [1], call()))
                 )) as number[];
                 assertEqual([...results].sort((a, b) => a - b), [1, 2, 3], 'every caller succeeded');
                 const activations = log.filter((e) => e === 'activate:race');
@@ -336,11 +336,11 @@ const streamRoundTrip: ConformanceCase = {
         const log: string[] = [];
         return withCluster(
             create,
-            { silos: 2, actors: [streamerActor(log)], policy: selfSilo },
+            { hosts: 2, actors: [streamerActor(log)], policy: selfHost },
             async (h) => {
-                await h.silos[1]!.dispatch({ type: STREAMER, key: 's' }, 'warm', [], call());
+                await h.hosts[1]!.dispatch({ type: STREAMER, key: 's' }, 'warm', [], call());
                 const seen: number[] = [];
-                const stream = h.silos[0]!.dispatchStream!(
+                const stream = h.hosts[0]!.dispatchStream!(
                     { type: STREAMER, key: 's' },
                     'countTo',
                     [4],
@@ -360,10 +360,10 @@ const streamCancellation: ConformanceCase = {
         const log: string[] = [];
         return withCluster(
             create,
-            { silos: 2, actors: [streamerActor(log)], policy: selfSilo },
+            { hosts: 2, actors: [streamerActor(log)], policy: selfHost },
             async (h) => {
-                await h.silos[1]!.dispatch({ type: STREAMER, key: 's' }, 'warm', [], call());
-                const stream = h.silos[0]!.dispatchStream!(
+                await h.hosts[1]!.dispatch({ type: STREAMER, key: 's' }, 'warm', [], call());
+                const stream = h.hosts[0]!.dispatchStream!(
                     { type: STREAMER, key: 's' },
                     'forever',
                     [],
@@ -385,16 +385,16 @@ const streamCancellation: ConformanceCase = {
 
 const watchRoundTrip: ConformanceCase = {
     name: 'a watch from a non-owner sees the owner mutate',
-    why: 'the receiving silo cannot tell a watch from a plain read by the method alone, so a transport that drops the intent silently serves a one-shot call instead of a subscription',
+    why: 'the receiving host cannot tell a watch from a plain read by the method alone, so a transport that drops the intent silently serves a one-shot call instead of a subscription',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'watched' }, 'get', [], call());
-            const iterator = h.silos[0]!
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'watched' }, 'get', [], call());
+            const iterator = h.hosts[0]!
                 .dispatchWatch!({ type: ECHO, key: 'watched' }, 'get', [], call())
                 [Symbol.asyncIterator]();
             try {
                 assertEqual((await iterator.next()).value, 0, 'the initial value');
-                await h.silos[1]!.dispatch({ type: ECHO, key: 'watched' }, 'increment', [7], call());
+                await h.hosts[1]!.dispatch({ type: ECHO, key: 'watched' }, 'increment', [7], call());
                 assertEqual((await iterator.next()).value, 7, "the owner's mutation arrives");
             } finally {
                 await iterator.return?.(undefined);
@@ -406,15 +406,15 @@ const watchCancellation: ConformanceCase = {
     name: "a watch disconnect releases the OWNER's keep-alive",
     why: 'the owner has no other way to learn the subscriber has gone — and an open watch counts as activity, so one never released pins that activation for the life of the process',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'pinned' }, 'get', [], call());
-            const iterator = h.silos[0]!
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'pinned' }, 'get', [], call());
+            const iterator = h.hosts[0]!
                 .dispatchWatch!({ type: ECHO, key: 'pinned' }, 'get', [], call())
                 [Symbol.asyncIterator]();
             await iterator.next();
 
             const pinned = (): boolean =>
-                h.silos[1]!.activations().some((a) => a.key === 'pinned' && a.keptAlive);
+                h.hosts[1]!.activations().some((a) => a.key === 'pinned' && a.keptAlive);
             assert(pinned(), 'the open watch keeps the owner activation alive');
 
             // A QUIET actor on purpose: nothing will arrive to resume the
@@ -431,11 +431,11 @@ const deadlinePropagation: ConformanceCase = {
     name: 'the deadline crosses the hop and the caller gives up on time',
     why: 'sending an absolute timestamp instead of remaining-ms makes every deadline wrong by the clock skew between hosts',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'slowpoke' }, 'get', [], call());
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'slowpoke' }, 'get', [], call());
             const started = Date.now();
             const error = await caught(() =>
-                h.silos[0]!.dispatch(
+                h.hosts[0]!.dispatch(
                     { type: ECHO, key: 'slowpoke' },
                     'slow',
                     [600],
@@ -458,20 +458,20 @@ const wrongHostConvergence: ConformanceCase = {
     name: 'a lost activation race redirects with an owner hint and converges',
     why: 'losing the owner hint means the redirect cannot be followed, and the call fails where it should have re-routed',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            // Racing front doors on one key: both silos try to claim, one
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            // Racing front doors on one key: both hosts try to claim, one
             // loses the directory race, throws wrong-host at itself, and
             // re-routes to the winner. Both calls must still succeed.
             const results = (await Promise.all([
-                h.silos[0]!.dispatch({ type: ECHO, key: 'shared' }, 'increment', [1], call()),
-                h.silos[1]!.dispatch({ type: ECHO, key: 'shared' }, 'increment', [1], call())
+                h.hosts[0]!.dispatch({ type: ECHO, key: 'shared' }, 'increment', [1], call()),
+                h.hosts[1]!.dispatch({ type: ECHO, key: 'shared' }, 'increment', [1], call())
             ])) as number[];
             assertEqual([...results].sort((a, b) => a - b), [1, 2], 'both racing calls succeed');
 
             const all = h.placements.map((p) => p.counters());
             const sum = (pick: (c: (typeof all)[number]) => number): number =>
                 all.reduce((total, c) => total + pick(c), 0);
-            assertEqual(sum((c) => c.claimConflicts), 1, 'exactly one silo lost the claim');
+            assertEqual(sum((c) => c.claimConflicts), 1, 'exactly one host lost the claim');
             assertEqual(sum((c) => c.wrongHostRedirects), 1, 'the loser consumed a redirect');
             assertEqual(sum((c) => c.routingFailures), 0, 'routing converged');
         })
@@ -483,14 +483,14 @@ const unreachableClassification: ConformanceCase = {
     run: (create) =>
         withCluster(
             create,
-            { silos: 2, actors: [echoActor()], policy: selfSilo, retryBackoffMs: 1 },
+            { hosts: 2, actors: [echoActor()], policy: selfHost, retryBackoffMs: 1 },
             async (h) => {
-                await h.silos[1]!.dispatch({ type: ECHO, key: 'gone' }, 'increment', [1], call());
+                await h.hosts[1]!.dispatch({ type: ECHO, key: 'gone' }, 'increment', [1], call());
                 // Membership still lists it; only the wire is dead. The
                 // caller cannot re-place, so the error must reach it named.
                 h.unbind(1);
                 const error = await caught(() =>
-                    h.silos[0]!.dispatch({ type: ECHO, key: 'gone' }, 'get', [], call())
+                    h.hosts[0]!.dispatch({ type: ECHO, key: 'gone' }, 'get', [], call())
                 );
                 assert(isActorError(error), `expected an actor error, got ${String(error)}`);
                 const kind = (error as ActorErrorShape).kind;
@@ -508,11 +508,11 @@ const crashReplacement: ConformanceCase = {
     run: (create) =>
         withCluster(
             create,
-            { silos: 2, actors: [echoActor()], policy: selfSilo, retryBackoffMs: 1 },
+            { hosts: 2, actors: [echoActor()], policy: selfHost, retryBackoffMs: 1 },
             async (h) => {
-                await h.silos[1]!.dispatch({ type: ECHO, key: 'survivor' }, 'increment', [7], call());
+                await h.hosts[1]!.dispatch({ type: ECHO, key: 'survivor' }, 'increment', [7], call());
                 h.crash(1);
-                const total = await h.silos[0]!.dispatch(
+                const total = await h.hosts[0]!.dispatch(
                     { type: ECHO, key: 'survivor' },
                     'increment',
                     [1],
@@ -527,17 +527,17 @@ const errorRebranding: ConformanceCase = {
     name: 'actor errors keep their brand across the hop; plain errors do not gain one',
     why: 'a caller must not be able to tell a remote hop from a local dispatch — and a peer must not be able to fake a redirect',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'boom' }, 'get', [], call());
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'boom' }, 'get', [], call());
 
             const branded = await caught(() =>
-                h.silos[0]!.dispatch({ type: ECHO, key: 'boom' }, 'throwActorError', [], call())
+                h.hosts[0]!.dispatch({ type: ECHO, key: 'boom' }, 'throwActorError', [], call())
             );
             assert(isActorError(branded), 'a remote actor error must satisfy isActorError');
             assertEqual((branded as ActorErrorShape).kind, 'state-conflict', 'kind survives the hop');
 
             const plain = await caught(() =>
-                h.silos[0]!.dispatch({ type: ECHO, key: 'boom' }, 'throwPlainError', [], call())
+                h.hosts[0]!.dispatch({ type: ECHO, key: 'boom' }, 'throwPlainError', [], call())
             );
             assert(
                 !isActorError(plain),
@@ -550,10 +550,10 @@ const methodNotFound: ConformanceCase = {
     name: 'an unknown method answers `method-not-found`',
     why: 'a transport that 500s here turns a caller bug into an opaque server failure',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'nm' }, 'get', [], call());
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'nm' }, 'get', [], call());
             const error = await caught(() =>
-                h.silos[0]!.dispatch({ type: ECHO, key: 'nm' }, 'noSuchMethod', [], call())
+                h.hosts[0]!.dispatch({ type: ECHO, key: 'nm' }, 'noSuchMethod', [], call())
             );
             assert(isActorError(error), `expected an actor error, got ${String(error)}`);
             assertEqual(
@@ -568,11 +568,11 @@ const prototypeMemberNotFound: ConformanceCase = {
     name: 'an inherited `Object.prototype` member is not a method either',
     why: 'the method table is an object literal, so `toString`/`constructor` used to DISPATCH — a transport must not resurrect surface nobody declared',
     run: (create) =>
-        withCluster(create, { silos: 2, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[1]!.dispatch({ type: ECHO, key: 'proto' }, 'get', [], call());
+        withCluster(create, { hosts: 2, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[1]!.dispatch({ type: ECHO, key: 'proto' }, 'get', [], call());
             for (const member of ['toString', 'constructor', 'valueOf', '__proto__']) {
                 const error = await caught(() =>
-                    h.silos[0]!.dispatch({ type: ECHO, key: 'proto' }, member, [], call())
+                    h.hosts[0]!.dispatch({ type: ECHO, key: 'proto' }, member, [], call())
                 );
                 assert(
                     isActorError(error),
@@ -588,20 +588,20 @@ const prototypeMemberNotFound: ConformanceCase = {
 };
 
 const deadlockChain: ConformanceCase = {
-    name: 'the call chain crosses hosts, so a cross-silo deadlock is detected',
+    name: 'the call chain crosses hosts, so a cross-host deadlock is detected',
     why: 'callChain is the first thing an ad-hoc frame format drops, and losing it turns a detected deadlock into a hang',
     run: (create) => {
         const { alpha, beta } = chainActors();
         return withCluster(
             create,
-            { silos: 2, actors: [alpha, beta], policy: selfSilo },
+            { hosts: 2, actors: [alpha, beta], policy: selfHost },
             async (h) => {
-                // Pin alpha/a to silo 0 and beta/b to silo 1, so a→b→a
+                // Pin alpha/a to host 0 and beta/b to host 1, so a→b→a
                 // crosses the wire twice and the chain must survive both.
-                await h.silos[0]!.dispatch({ type: alpha.type, key: 'a' }, 'warm', [], call());
-                await h.silos[1]!.dispatch({ type: beta.type, key: 'b' }, 'warm', [], call());
+                await h.hosts[0]!.dispatch({ type: alpha.type, key: 'a' }, 'warm', [], call());
+                await h.hosts[1]!.dispatch({ type: beta.type, key: 'b' }, 'warm', [], call());
                 const error = await caught(() =>
-                    h.silos[0]!.dispatch({ type: alpha.type, key: 'a' }, 'poke', [], call())
+                    h.hosts[0]!.dispatch({ type: alpha.type, key: 'a' }, 'poke', [], call())
                 );
                 assert(isActorError(error), `expected an actor error, got ${String(error)}`);
                 assertEqual((error as ActorErrorShape).kind, 'deadlock', 're-entrant cycle kind');
@@ -619,14 +619,14 @@ const opsStatsChannel: ConformanceCase = {
     name: 'the ops channel answers, and reading it does not move the counters',
     why: 'a stats fan-out routed through normal dispatch makes every observation change what it observes',
     run: (create) =>
-        withCluster(create, { silos: 3, actors: [echoActor()], policy: selfSilo }, async (h) => {
-            await h.silos[0]!.dispatch({ type: ECHO, key: 'x' }, 'increment', [1], call());
+        withCluster(create, { hosts: 3, actors: [echoActor()], policy: selfHost }, async (h) => {
+            await h.hosts[0]!.dispatch({ type: ECHO, key: 'x' }, 'increment', [1], call());
             const before = h.placements.map((p) => p.counters().inboundDispatches);
 
             const report = await clusterStats(h.placements[0]!, { timeoutMs: 2000 });
-            assertEqual(report.silos.length, 3, 'every silo answered');
+            assertEqual(report.hosts.length, 3, 'every host answered');
             assertEqual(report.partial, false, 'no member was unreachable');
-            for (const silo of report.silos) assertEqual(silo.v, 1, 'report payload version');
+            for (const host of report.hosts) assertEqual(host.v, 1, 'report payload version');
 
             const after = h.placements.map((p) => p.counters().inboundDispatches);
             assertEqual(after, before, 'reading stats must not count as an inbound dispatch');
@@ -637,7 +637,7 @@ const authRejection: ConformanceCase = {
     name: 'a forged call is refused, counted, and classified `unauthorized`',
     why: 'the status-shaped code is load-bearing off HTTP too — drop it and every auth failure degrades to a bare error during a secret rotation',
     run: async (create) => {
-        const harness = await create({ silos: 2, actors: [echoActor()], secret: 'right' });
+        const harness = await create({ hosts: 2, actors: [echoActor()], secret: 'right' });
         try {
             if (!harness.impostor) {
                 return { skipped: 'the harness cannot speak this transport with wrong credentials' };
@@ -668,17 +668,17 @@ const gracefulHandoff: ConformanceCase = {
     run: (create) =>
         withCluster(
             create,
-            { silos: 2, actors: [echoActor()], policy: selfSilo, retryBackoffMs: 5 },
+            { hosts: 2, actors: [echoActor()], policy: selfHost, retryBackoffMs: 5 },
             async (h) => {
                 const keys = ['h1', 'h2', 'h3'];
                 for (const key of keys) {
-                    await h.silos[0]!.dispatch({ type: ECHO, key }, 'increment', [1], call());
+                    await h.hosts[0]!.dispatch({ type: ECHO, key }, 'increment', [1], call());
                 }
-                // Traffic keeps arriving through silo 1 while silo 0 drains.
-                const stopping = h.silos[0]!.stop({ timeoutMs: 2000 });
+                // Traffic keeps arriving through host 1 while host 0 drains.
+                const stopping = h.hosts[0]!.stop({ timeoutMs: 2000 });
                 const results = (await Promise.all(
                     keys.map((key) =>
-                        h.silos[1]!.dispatch({ type: ECHO, key }, 'increment', [1], call())
+                        h.hosts[1]!.dispatch({ type: ECHO, key }, 'increment', [1], call())
                     )
                 )) as number[];
                 await stopping;
@@ -689,28 +689,28 @@ const gracefulHandoff: ConformanceCase = {
 
 const noLinkLeak: ConformanceCase = {
     name: 'no peer links survive stop()',
-    why: 'a connection-oriented transport that forgets to close leaks a socket per peer per silo restart',
+    why: 'a connection-oriented transport that forgets to close leaks a socket per peer per host restart',
     run: async (create) => {
-        const harness = await create({ silos: 2, actors: [echoActor()], policy: selfSilo });
+        const harness = await create({ hosts: 2, actors: [echoActor()], policy: selfHost });
         if (!harness.openLinks) {
             await harness.stop().catch(() => {});
             return { skipped: 'connectionless transport — it holds no links to leak' };
         }
         const links = harness.openLinks;
-        await harness.silos[0]!.dispatch({ type: ECHO, key: 'l' }, 'increment', [1], call());
-        await harness.silos[1]!.dispatch({ type: ECHO, key: 'l' }, 'increment', [1], call());
+        await harness.hosts[0]!.dispatch({ type: ECHO, key: 'l' }, 'increment', [1], call());
+        await harness.hosts[1]!.dispatch({ type: ECHO, key: 'l' }, 'increment', [1], call());
         await harness.stop();
-        for (let i = 0; i < harness.silos.length; i++) {
-            assertEqual(links(i), 0, `silo ${i} still holds peer links after stop()`);
+        for (let i = 0; i < harness.hosts.length; i++) {
+            assertEqual(links(i), 0, `host ${i} still holds peer links after stop()`);
         }
     }
 };
 
 const reapDeparted: ConformanceCase = {
-    name: 'links to a departed silo are reaped on the membership change alone',
-    why: 'silo ids are never reused, so a link to a departed peer can never be useful again — keeping it is a pure leak',
+    name: 'links to a departed host are reaped on the membership change alone',
+    why: 'host ids are never reused, so a link to a departed peer can never be useful again — keeping it is a pure leak',
     run: async (create) => {
-        const harness = await create({ silos: 2, actors: [echoActor()], policy: selfSilo });
+        const harness = await create({ hosts: 2, actors: [echoActor()], policy: selfHost });
         try {
             if (!harness.openLinks) {
                 return { skipped: 'connectionless transport — it holds no links to reap' };
@@ -726,8 +726,8 @@ const reapDeparted: ConformanceCase = {
                 };
             }
             const links = harness.openLinks;
-            await harness.silos[0]!.dispatch({ type: ECHO, key: 'r' }, 'increment', [1], call());
-            await harness.silos[1]!.dispatch({ type: ECHO, key: 'r' }, 'increment', [1], call());
+            await harness.hosts[0]!.dispatch({ type: ECHO, key: 'r' }, 'increment', [1], call());
+            await harness.hosts[1]!.dispatch({ type: ECHO, key: 'r' }, 'increment', [1], call());
             await waitFor(() =>
                 assert(links(0) > 0, 'the driver must hold a link before this case means anything')
             );
@@ -735,7 +735,7 @@ const reapDeparted: ConformanceCase = {
             // membership subscription can cause the link to be dropped.
             harness.dropMembership(1);
             await waitFor(() =>
-                assertEqual(links(0), 0, 'links to the departed silo must be dropped')
+                assertEqual(links(0), 0, 'links to the departed host must be dropped')
             );
         } finally {
             await harness.stop().catch(() => {});
@@ -743,8 +743,8 @@ const reapDeparted: ConformanceCase = {
     }
 };
 
-/** Deterministic placement: whichever silo first touches a key owns it. */
-const selfSilo: PlacementPolicy = {
+/** Deterministic placement: whichever host first touches a key owns it. */
+const selfHost: PlacementPolicy = {
     name: 'conformance-self',
     choose: (_ref, _view, self) => self
 };
@@ -776,4 +776,4 @@ export const transportConformance: readonly ConformanceCase[] = [
     reapDeparted
 ];
 
-export { selfSilo as conformancePolicy };
+export { selfHost as conformancePolicy };

@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor, isStorageConflict } from '@sigx/actors';
-import { createSilo, manualScheduler } from '@sigx/actors/silo';
+import { createHost, manualScheduler } from '@sigx/actors/host';
 import {
     durableObjectReminders,
     durableObjectStorage,
@@ -159,68 +159,68 @@ describe('durableObjectReminders', () => {
         })
     });
 
-    /** A silo whose reminders are the DO implementation. */
-    async function siloWithAlarms(now: () => number) {
+    /** A host whose reminders are the DO implementation. */
+    async function hostWithAlarms(now: () => number) {
         const storage = fakeStorage();
         const alarms = fakeAlarms();
         const reminders = durableObjectReminders({ storage, alarms, now });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Waking],
             storage: durableObjectStorage(storage),
             reminders,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await silo.start();
-        return { silo, alarms, reminders };
+        await host.start();
+        return { host, alarms, reminders };
     }
 
     it('arms the platform alarm instead of polling', async () => {
         let clock = 1_000;
-        const { silo, alarms, reminders } = await siloWithAlarms(() => clock);
+        const { host, alarms, reminders } = await hostWithAlarms(() => clock);
         try {
-            await silo.actor(Waking, 'a').armIn(500);
+            await host.actor(Waking, 'a').armIn(500);
             // No tick loop anywhere — the alarm carries the schedule.
             expect(alarms.at).toBe(1_500);
-            await expect(silo.actor(Waking, 'a').names()).resolves.toEqual(['wake']);
+            await expect(host.actor(Waking, 'a').names()).resolves.toEqual(['wake']);
 
             clock = 1_500;
             // The platform clears the alarm before invoking alarm().
             alarms.at = null;
             await reminders.onAlarm();
-            await expect(silo.actor(Waking, 'a').woke()).resolves.toBe(1);
+            await expect(host.actor(Waking, 'a').woke()).resolves.toBe(1);
             // One-shot: gone, and the alarm with it.
-            await expect(silo.actor(Waking, 'a').names()).resolves.toEqual([]);
+            await expect(host.actor(Waking, 'a').names()).resolves.toEqual([]);
             expect(alarms.at).toBeNull();
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
     it('re-arms a periodic reminder for its next due time', async () => {
         let clock = 0;
-        const { silo, alarms, reminders } = await siloWithAlarms(() => clock);
+        const { host, alarms, reminders } = await hostWithAlarms(() => clock);
         try {
-            await silo.actor(Waking, 'p').armIn(60_000, 60_000);
+            await host.actor(Waking, 'p').armIn(60_000, 60_000);
             expect(alarms.at).toBe(60_000);
 
             clock = 60_000;
             alarms.at = null;
             await reminders.onAlarm();
-            await expect(silo.actor(Waking, 'p').woke()).resolves.toBe(1);
+            await expect(host.actor(Waking, 'p').woke()).resolves.toBe(1);
             // Still registered, and the alarm moved on.
-            await expect(silo.actor(Waking, 'p').names()).resolves.toEqual(['wake']);
+            await expect(host.actor(Waking, 'p').names()).resolves.toEqual(['wake']);
             expect(alarms.at).toBe(120_000);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
     it('keeps cadence when an alarm fires late, without a catch-up burst', async () => {
         let clock = 0;
-        const { silo, alarms, reminders } = await siloWithAlarms(() => clock);
+        const { host, alarms, reminders } = await hostWithAlarms(() => clock);
         try {
-            await silo.actor(Waking, 'c').armIn(60_000, 60_000);
+            await host.actor(Waking, 'c').armIn(60_000, 60_000);
             expect(alarms.at).toBe(60_000);
 
             // Fires 5s late: the next one stays on the original cadence
@@ -236,23 +236,23 @@ describe('durableObjectReminders', () => {
             alarms.at = null;
             await reminders.onAlarm();
             expect(alarms.at).toBe(660_000);
-            await expect(silo.actor(Waking, 'c').woke()).resolves.toBe(2);
+            await expect(host.actor(Waking, 'c').woke()).resolves.toBe(2);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
     it('never pushes an armed alarm later', async () => {
         let clock = 0;
-        const { silo, alarms } = await siloWithAlarms(() => clock);
+        const { host, alarms } = await hostWithAlarms(() => clock);
         try {
-            await silo.actor(Waking, 'x').armIn(1_000);
+            await host.actor(Waking, 'x').armIn(1_000);
             expect(alarms.at).toBe(1_000);
             // A later reminder must not delay the one already due sooner.
-            await silo.actor(Waking, 'x').armIn(5_000);
+            await host.actor(Waking, 'x').armIn(5_000);
             expect(alarms.at).toBe(1_000);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
@@ -265,51 +265,51 @@ describe('durableObjectReminders', () => {
         const alarms = fakeAlarms();
 
         const first = durableObjectReminders({ storage, alarms, now: () => clock });
-        const siloA = createSilo({
+        const hostA = createHost({
             actors: [Waking],
             storage: durableObjectStorage(storage),
             reminders: first,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await siloA.start();
-        await siloA.actor(Waking, 'cold').armIn(1_000);
-        await siloA.stop({ timeoutMs: 1000 });
+        await hostA.start();
+        await hostA.actor(Waking, 'cold').armIn(1_000);
+        await hostA.stop({ timeoutMs: 1000 });
 
         // Everything in memory is gone; only the DO's storage survives.
         clock = 1_000;
         alarms.at = null;
         const revived = durableObjectReminders({ storage, alarms, now: () => clock });
-        const siloB = createSilo({
+        const hostB = createHost({
             actors: [Waking],
             storage: durableObjectStorage(storage),
             reminders: revived,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await siloB.start();
+        await hostB.start();
         try {
             // No apiFor() has been called on `revived` — the owner has to
             // come back from storage.
             await revived.onAlarm();
-            await expect(siloB.actor(Waking, 'cold').woke()).resolves.toBe(1);
+            await expect(hostB.actor(Waking, 'cold').woke()).resolves.toBe(1);
         } finally {
-            await siloB.stop({ timeoutMs: 1000 });
+            await hostB.stop({ timeoutMs: 1000 });
         }
     });
 
     it('refuses a second actor in the same Durable Object', async () => {
         let clock = 0;
-        const { silo } = await siloWithAlarms(() => clock);
+        const { host } = await hostWithAlarms(() => clock);
         try {
-            await silo.actor(Waking, 'first').armIn(1_000);
+            await host.actor(Waking, 'first').armIn(1_000);
             // One DO hosts one actor; a second identity means the request
             // was routed to the wrong object.
-            await expect(silo.actor(Waking, 'second').armIn(1_000)).rejects.toThrow(
+            await expect(host.actor(Waking, 'second').armIn(1_000)).rejects.toThrow(
                 /hosts Waking\/first/
             );
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
@@ -343,16 +343,16 @@ describe('durableObjectReminders', () => {
             now: () => clock,
             blockConcurrencyWhile: blockingGate()
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Rescheduling],
             storage: durableObjectStorage(storage),
             reminders,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 0, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(Rescheduling, 'r').arm();
+            await host.actor(Rescheduling, 'r').arm();
             clock = 100;
             alarms.at = null;
 
@@ -366,7 +366,7 @@ describe('durableObjectReminders', () => {
             // And the reschedule still took effect.
             expect(alarms.at).toBe(110);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
@@ -432,16 +432,16 @@ describe('durableObjectReminders', () => {
             })
         });
         const reminders = durableObjectReminders({ storage, alarms, now: () => clock });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Rescheduling],
             storage: durableObjectStorage(storage),
             reminders,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(Rescheduling, 'r').arm();
+            await host.actor(Rescheduling, 'r').arm();
             // Earliest of the two wins.
             expect(alarms.at).toBe(100);
 
@@ -456,9 +456,9 @@ describe('durableObjectReminders', () => {
             clock = 110;
             alarms.at = null;
             await reminders.onAlarm();
-            await expect(silo.actor(Rescheduling, 'r').fired()).resolves.toBe(2);
+            await expect(host.actor(Rescheduling, 'r').fired()).resolves.toBe(2);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
@@ -491,16 +491,16 @@ describe('durableObjectReminders', () => {
                 return blockConcurrencyWhile(fn);
             }
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Waking],
             storage: durableObjectStorage(storage),
             reminders,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(Waking, 'g').armIn(100);
+            await host.actor(Waking, 'g').armIn(100);
             clock = 100;
             alarms.at = null;
             await reminders.onAlarm();
@@ -509,29 +509,29 @@ describe('durableObjectReminders', () => {
             // ...and never nested, which would deadlock a real
             // blockConcurrencyWhile.
             expect(maxDepth).toBe(1);
-            await expect(silo.actor(Waking, 'g').woke()).resolves.toBe(1);
+            await expect(host.actor(Waking, 'g').woke()).resolves.toBe(1);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 
-    it('refuses an alarm before the silo bound its reminders', async () => {
+    it('refuses an alarm before the host bound its reminders', async () => {
         const reminders = durableObjectReminders({
             storage: fakeStorage(),
             alarms: fakeAlarms()
         });
         // Silent would be worse than loud: the platform has already cleared
         // the alarm, so a dropped periodic never fires again.
-        await expect(reminders.onAlarm()).rejects.toThrow(/before the silo bound/);
+        await expect(reminders.onAlarm()).rejects.toThrow(/before the host bound/);
     });
 
     it('keeps the runtime 60s period floor', async () => {
         let clock = 0;
-        const { silo } = await siloWithAlarms(() => clock);
+        const { host } = await hostWithAlarms(() => clock);
         try {
-            await expect(silo.actor(Waking, 'f').armIn(0, 1_000)).rejects.toThrow(/floor/);
+            await expect(host.actor(Waking, 'f').armIn(0, 1_000)).rejects.toThrow(/floor/);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 });

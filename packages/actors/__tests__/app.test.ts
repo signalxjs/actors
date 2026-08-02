@@ -1,13 +1,13 @@
 /**
  * `defineActorApp` — plugin composition. The point of the app layer is that
- * the seams `createSilo` keeps exclusive (one placement, one storage, one
+ * the seams `createHost` keeps exclusive (one placement, one storage, one
  * `PlacementBindings`) become composable, so most of what is asserted here
  * is ORDERING and the failure posture of each hook.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
     defineActor,
-    peekSilo,
+    peekHost,
     type ActorDispatcher,
     type ActorPlacement,
     type ActorPlacementStrategy,
@@ -19,7 +19,7 @@ import {
     type ActorPlugin,
     type DispatchMiddleware,
     type PluginRegistry
-} from '@sigx/actors/silo';
+} from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -64,9 +64,9 @@ describe('defineActorApp — lifecycle hook composition', () => {
             .use(plugin('a', (r) => r.onBeforeActivate((ref) => void seen.push(`a:${ref.key}`))))
             .use(plugin('b', (r) => r.onBeforeActivate((ref) => void seen.push(`b:${ref.key}`))));
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'k1').increment(1);
+            await host.actor(Counter, 'k1').increment(1);
             expect(seen).toEqual(['a:k1', 'b:k1']);
         } finally {
             await app.stop();
@@ -98,10 +98,10 @@ describe('defineActorApp — lifecycle hook composition', () => {
                 })
             );
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'k').increment(1);
-            await silo.deactivate({ type: 'Counter', key: 'k' });
+            await host.actor(Counter, 'k').increment(1);
+            await host.deactivate({ type: 'Counter', key: 'k' });
             // Claim first, release last — plugin hooks always see an
             // activation the placement already owns.
             expect(seen).toEqual([
@@ -123,11 +123,11 @@ describe('defineActorApp — lifecycle hook composition', () => {
                 })
             )
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(Counter, 'denied').increment(1)).rejects.toThrow();
-            // A refusal must not poison the silo for other keys.
-            await expect(silo.actor(Counter, 'ok').increment(1)).resolves.toBe(1);
+            await expect(host.actor(Counter, 'denied').increment(1)).rejects.toThrow();
+            // A refusal must not poison the host for other keys.
+            await expect(host.actor(Counter, 'ok').increment(1)).resolves.toBe(1);
         } finally {
             await app.stop();
         }
@@ -145,10 +145,10 @@ describe('defineActorApp — lifecycle hook composition', () => {
             )
             .use(plugin('after', (r) => r.onAfterDeactivate(() => void seen.push('after'))));
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'k').increment(1);
-            await silo.deactivate({ type: 'Counter', key: 'k' });
+            await host.actor(Counter, 'k').increment(1);
+            await host.deactivate({ type: 'Counter', key: 'k' });
             // 'after' is registered second, so it runs FIRST (mirror order)
             // and the throwing hook must not have prevented it.
             expect(seen).toEqual(['after']);
@@ -160,7 +160,7 @@ describe('defineActorApp — lifecycle hook composition', () => {
 
 describe('defineActorApp — custom placements', () => {
     it('lets a custom placement read the strategy an actor declared', async () => {
-        // Orleans's attribute form: the strategy lives ON the actor, not in
+        // The attribute form: the strategy lives ON the actor, not in
         // a central map the placement had to be constructed with.
         const pinned: ActorPlacementStrategy = { name: 'prefer-local' };
         const Session = defineActor({
@@ -179,7 +179,7 @@ describe('defineActorApp — custom placements', () => {
         let local: ActorDispatcher | null = null;
         const app = defineActorApp({ actors: [Session], defaults: quiet }).use(
             plugin('custom-placement', (r) =>
-                // The factory runs once the silo exists, so `definition()`
+                // The factory runs once the host exists, so `definition()`
                 // is available to resolve per-type strategies.
                 r.setPlacement((ctx) => ({
                     dispatcherFor: (ref) => {
@@ -198,9 +198,9 @@ describe('defineActorApp — custom placements', () => {
             )
         );
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(Session, 's1').touch()).resolves.toBe(1);
+            await expect(host.actor(Session, 's1').touch()).resolves.toBe(1);
             expect(resolved).toContain('Session:prefer-local');
         } finally {
             await app.stop();
@@ -228,9 +228,9 @@ describe('defineActorApp — dispatch middleware', () => {
             )
             .use(plugin('inner', (r) => r.useDispatch(tracing('inner', seen))));
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(Counter, 'k').increment(2)).resolves.toBe(2);
+            await expect(host.actor(Counter, 'k').increment(2)).resolves.toBe(2);
             expect(seen).toEqual(['outer:in', 'inner:in', 'inner:out', 'outer:out']);
         } finally {
             await app.stop();
@@ -253,10 +253,10 @@ describe('defineActorApp — dispatch middleware', () => {
         const app = defineActorApp({ actors: [Ticker], defaults: quiet }).use(
             plugin('trace', (r) => r.useDispatch(tracing('t', [])))
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
             const got: number[] = [];
-            for await (const n of silo.actor(Ticker, 'k').counts()) got.push(n);
+            for await (const n of host.actor(Ticker, 'k').counts()) got.push(n);
             expect(got).toEqual([1, 2]);
         } finally {
             await app.stop();
@@ -274,9 +274,9 @@ describe('defineActorApp — dispatch middleware', () => {
                 }))
             )
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'k').increment(1);
+            await host.actor(Counter, 'k').increment(1);
             expect(warn).toHaveBeenCalledWith(
                 expect.stringContaining('without `dispatchStream`')
             );
@@ -309,9 +309,9 @@ describe('defineActorApp — storage decoration', () => {
             .use(plugin('first', (r) => r.decorateStorage(tag('first'))))
             .use(plugin('second', (r) => r.decorateStorage(tag('second'))));
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Counter, 'k').increment(1);
+            await host.actor(Counter, 'k').increment(1);
             expect(seen).toEqual(['second:load', 'first:load']);
         } finally {
             await app.stop();
@@ -337,9 +337,9 @@ describe('defineActorApp — context extension', () => {
             .use(plugin('log', (r) => r.extendContext(() => ({ log: 'logger' }))))
             .use(plugin('who', (r) => r.extendContext((ref) => ({ who: ref.key }))));
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(probe, 'abc').read()).resolves.toBe('logger/abc');
+            await expect(host.actor(probe, 'abc').read()).resolves.toBe('logger/abc');
         } finally {
             await app.stop();
         }
@@ -361,9 +361,9 @@ describe('defineActorApp — context extension', () => {
             plugin('rogue', (r) => r.extendContext(() => ({ state: 'hijacked', save: 'nope' })))
         );
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(probe, 'k').read()).resolves.toBe(7);
+            await expect(host.actor(probe, 'k').read()).resolves.toBe(7);
             expect(warn).toHaveBeenCalledWith(
                 expect.stringContaining('tried to overwrite the built-in ctx.state')
             );
@@ -380,7 +380,7 @@ describe('defineActorApp — routes and app lifecycle', () => {
             plugin('mount', (r) =>
                 r.route({
                     name: 'cluster:internal',
-                    match: (request) => new URL(request.url).pathname.startsWith('/_sigx/silo/'),
+                    match: (request) => new URL(request.url).pathname.startsWith('/_sigx/host/'),
                     handle: async () => new Response('ok')
                 })
             )
@@ -404,10 +404,10 @@ describe('defineActorApp — routes and app lifecycle', () => {
                 })
             );
 
-        const silo = await app.start();
-        // The silo is live by the time onStart runs.
+        const host = await app.start();
+        // The host is live by the time onStart runs.
         expect(seen).toEqual(['start:a', 'start:b']);
-        await silo.actor(Counter, 'k').increment(1);
+        await host.actor(Counter, 'k').increment(1);
         await app.stop();
         expect(seen).toEqual(['start:a', 'start:b', 'stop:b', 'stop:a']);
     });
@@ -416,7 +416,7 @@ describe('defineActorApp — routes and app lifecycle', () => {
         const app = defineActorApp({ actors: [], defaults: quiet });
         const first = await app.start();
         expect(await app.start()).toBe(first);
-        expect(app.silo).toBe(first);
+        expect(app.host).toBe(first);
         expect(() => app.use(plugin('late', () => {}))).toThrow(/after the app has been started/);
         await app.stop();
         await app.stop();
@@ -432,9 +432,9 @@ describe('defineActorApp — routes and app lifecycle', () => {
         app.withActors([Counter]);
         expect(app.hasActors).toBe(true);
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(Counter, 'k').increment(2)).resolves.toBe(2);
+            await expect(host.actor(Counter, 'k').increment(2)).resolves.toBe(2);
         } finally {
             await app.stop();
         }
@@ -457,7 +457,7 @@ describe('defineActorApp — routes and app lifecycle', () => {
         app.withActors([Counter]);
         await app.start();
         try {
-            // By now the registry is baked into a running silo.
+            // By now the registry is baked into a running host.
             expect(() => app.withActors([Counter])).toThrow(/already has actors/);
             const fresh = defineActorApp({ defaults: quiet });
             void fresh.routes; // seals it
@@ -467,12 +467,12 @@ describe('defineActorApp — routes and app lifecycle', () => {
         }
     });
 
-    it('clears the silo on stop and refuses a restart', async () => {
+    it('clears the host on stop and refuses a restart', async () => {
         const app = defineActorApp({ actors: [], defaults: quiet });
         await app.start();
         await app.stop();
-        // A stopped app must not keep handing out a dead silo...
-        expect(app.silo).toBeNull();
+        // A stopped app must not keep handing out a dead host...
+        expect(app.host).toBeNull();
         // ...nor silently hand back the old one from a fresh start(): a
         // plugin placement's identity is minted per run.
         await expect(app.start()).rejects.toThrow(/cannot be restarted/);
@@ -490,22 +490,22 @@ describe('defineActorApp — routes and app lifecycle', () => {
             })
         );
         await expect(app.start()).rejects.toThrow('first start fails');
-        // The silo was ALREADY started when the hook threw. It must have
+        // The host was ALREADY started when the hook threw. It must have
         // been torn back down — the ambient seam is the witness, since
-        // silo.stop() is what clears it. A leaked silo would still be
+        // host.stop() is what clears it. A leaked host would still be
         // stamped here (and still running its sweeper and reminder tick).
-        expect(peekSilo()).toBeUndefined();
-        expect(app.silo).toBeNull();
+        expect(peekHost()).toBeUndefined();
+        expect(app.host).toBeNull();
         expect(rolledBack).toEqual(['onStop']);
 
         // The rejection must not be cached — a second start really retries.
-        const silo = await app.start();
+        const host = await app.start();
         expect(attempts).toBe(2);
-        expect(app.silo).toBe(silo);
+        expect(app.host).toBe(host);
         await app.stop();
     });
 
-    it('keeps the silo reachable and retryable when teardown fails', async () => {
+    it('keeps the host reachable and retryable when teardown fails', async () => {
         let failStop = true;
         const placement: ActorPlacement = {
             dispatcherFor: () => local!,
@@ -524,16 +524,16 @@ describe('defineActorApp — routes and app lifecycle', () => {
             .use(plugin('cluster', (r) => r.setPlacement(() => placement)))
             .use(plugin('hooks', (r) => r.onStop(() => void stopped.push('onStop'))));
 
-        const silo = await app.start();
+        const host = await app.start();
         await expect(app.stop()).rejects.toThrow('leave failed');
         // Must not claim to be down when it is not.
-        expect(app.silo).toBe(silo);
+        expect(app.host).toBe(host);
         // ...and the onStop hooks must not have run on a failed teardown.
         expect(stopped).toEqual([]);
 
         failStop = false;
         await app.stop();
-        expect(app.silo).toBeNull();
+        expect(app.host).toBeNull();
         expect(stopped).toEqual(['onStop']);
     });
 
@@ -541,8 +541,8 @@ describe('defineActorApp — routes and app lifecycle', () => {
         const app = defineActorApp({ actors: [], defaults: quiet });
         await app.stop();
         // Stopping something that was never running must not seal it.
-        const silo = await app.start();
-        expect(silo).toBeTruthy();
+        const host = await app.start();
+        expect(host).toBeTruthy();
         await app.stop();
     });
 });
@@ -570,9 +570,9 @@ describe('defineActorApp — context extension safety', () => {
             plugin('rogue', (r) => r.extendContext(() => hostile))
         );
 
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await expect(silo.actor(probe, 'k').read()).resolves.toBe('clean');
+            await expect(host.actor(probe, 'k').read()).resolves.toBe('clean');
             expect(({} as Record<string, unknown>).pwned).toBeUndefined();
             expect(warn).toHaveBeenCalledWith(expect.stringContaining('unsafe key "__proto__"'));
         } finally {

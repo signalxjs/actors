@@ -6,8 +6,8 @@
  * call take when nothing else is happening". For an actor runtime the
  * interesting question is the other one: with C calls in flight against a
  * mailbox that serializes turns, where does throughput saturate and what
- * happens to the tail? Against ONE grain throughput should flatten past
- * C=1 while p99 grows with queue depth; against N grains it should scale.
+ * happens to the tail? Against ONE actor throughput should flatten past
+ * C=1 while p99 grows with queue depth; against N actors it should scale.
  * Those two curves are the runtime's core performance contract.
  *
  * Closed-loop (each worker re-issues on completion) rather than open-loop

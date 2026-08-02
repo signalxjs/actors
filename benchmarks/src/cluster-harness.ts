@@ -1,28 +1,28 @@
 /**
- * An N-silo cluster in one process, with counted providers.
+ * An N-host cluster in one process, with counted providers.
  *
  * Adapted from `packages/actors/__tests__/harness.ts` (minus its vitest
  * assertion) and extended with op counting, because the question here is not
  * "how fast" but "how much work does the runtime ASK of the cluster
  * providers, as a function of N".
  *
- * That distinction matters: every silo shares one CPU here, so absolute
- * throughput is meaningless — a 100-silo run is 100 silos contending for one
+ * That distinction matters: every host shares one CPU here, so absolute
+ * throughput is meaningless — a 100-host run is 100 hosts contending for one
  * core. What IS exact is the algorithmic shape: directory calls per
  * activation, membership notifications per change, placement cost per
- * decision. Those are the numbers that decide whether 100 silos on 100 VMs
+ * decision. Those are the numbers that decide whether 100 hosts on 100 VMs
  * works, and they can be had for free on a laptop.
  *
  * What this deliberately CANNOT tell you: what those provider calls cost
  * against real Redis. `memoryClusterHub` answers `refresh()` from a local
  * map; the Redis provider answers it with one `SMEMBERS`, then one `HGET`
- * per id that came back — so a refresh against a cluster of M silos is
+ * per id that came back — so a refresh against a cluster of M hosts is
  * `M + 1` round trips, and 100 refreshes are `100 × (M + 1)`. The multiplier
  * is read from `packages/actors-redis/src/index.ts`, not measured, and
  * measuring it for real needs a Redis instance (Tier 2).
  */
-import { defineActorApp, memoryStorage } from '@sigx/actors/silo';
-import type { ActorApp, ActorStorage, Silo } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage } from '@sigx/actors/host';
+import type { ActorApp, ActorStorage, Host } from '@sigx/actors/host';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import { cluster, memoryClusterHub } from '@sigx/actors/cluster';
 import type {
@@ -35,10 +35,10 @@ import type {
 } from '@sigx/actors/cluster';
 import type { AnyActorDefinition } from '@sigx/actors';
 
-/** Deterministic silo defaults — no background churn, no call deadlines. */
+/** Deterministic host defaults — no background churn, no call deadlines. */
 export const quiet = { sweepIntervalMs: 3_600_000, reminderTickMs: 3_600_000, callTimeoutMs: 0 };
 
-/** Every silo activates its own new actors — pins locality for A/B tests. */
+/** Every host activates its own new actors — pins locality for A/B tests. */
 export const selfPolicy: PlacementPolicy = {
     name: 'self',
     choose: (_ref, _view, self) => self
@@ -57,13 +57,13 @@ export interface ProviderCounts {
     'membership.setStatus': number;
     'membership.leave': number;
     'membership.isAlive': number;
-    /** Change callbacks actually delivered to a silo. */
+    /** Change callbacks actually delivered to a host. */
     'membership.notify': number;
     'directory.lookup': number;
     'directory.claim': number;
     'directory.release': number;
     'directory.evict': number;
-    'directory.evictSilo': number;
+    'directory.evictHost': number;
 }
 
 function emptyCounts(): ProviderCounts {
@@ -79,7 +79,7 @@ function emptyCounts(): ProviderCounts {
         'directory.claim': 0,
         'directory.release': 0,
         'directory.evict': 0,
-        'directory.evictSilo': 0
+        'directory.evictHost': 0
     };
 }
 
@@ -111,7 +111,7 @@ function createCounter(): Counter {
     };
 }
 
-/** Wrap one silo's providers so every call is counted. */
+/** Wrap one host's providers so every call is counted. */
 function countProviders(inner: ClusterProviders, counter: Counter): ClusterProviders {
     const c = counter.counts;
     const membership: ClusterMembership = {
@@ -135,13 +135,13 @@ function countProviders(inner: ClusterProviders, counter: Counter): ClusterProvi
             c['membership.refresh']++;
             return inner.membership.refresh();
         },
-        isAlive: (siloId) => {
+        isAlive: (hostId) => {
             c['membership.isAlive']++;
-            return inner.membership.isAlive(siloId);
+            return inner.membership.isAlive(hostId);
         },
         onChange: (cb) =>
             inner.membership.onChange((view) => {
-                // The delivery, not the registration: this is the per-silo
+                // The delivery, not the registration: this is the per-host
                 // work a single membership change fans out into, and with a
                 // remote provider each delivery is a store round trip.
                 c['membership.notify']++;
@@ -166,11 +166,11 @@ function countProviders(inner: ClusterProviders, counter: Counter): ClusterProvi
             c['directory.evict']++;
             return inner.directory.evict(id, expected);
         },
-        ...(inner.directory.evictSilo
+        ...(inner.directory.evictHost
             ? {
-                  evictSilo: (siloId: string): Promise<number> => {
-                      c['directory.evictSilo']++;
-                      return inner.directory.evictSilo!(siloId);
+                  evictHost: (hostId: string): Promise<number> => {
+                      c['directory.evictHost']++;
+                      return inner.directory.evictHost!(hostId);
                   }
               }
             : {})
@@ -191,14 +191,14 @@ export interface ClusterOptions {
 }
 
 export interface ClusterHarness {
-    silos: Silo[];
+    hosts: Host[];
     placements: ClusterPlacement[];
     hub: MemoryClusterHub;
-    /** Provider calls across every silo, since the last `reset()`. */
+    /** Provider calls across every host, since the last `reset()`. */
     counter: Counter;
     fetch: typeof globalThis.fetch;
-    /** Add one silo to a running cluster — the membership-change probe. */
-    addSilo(): Promise<void>;
+    /** Add one host to a running cluster — the membership-change probe. */
+    addHost(): Promise<void>;
     stop(): Promise<void>;
 }
 
@@ -206,8 +206,8 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const hub = memoryClusterHub();
     const storage = options.storage ?? memoryStorage();
     const counter = createCounter();
-    const registry = new Map<string, { app: ActorApp; silo: Silo }>();
-    const silos: Silo[] = [];
+    const registry = new Map<string, { app: ActorApp; host: Host }>();
+    const hosts: Host[] = [];
     const placements: ClusterPlacement[] = [];
     const apps: ActorApp[] = [];
 
@@ -219,9 +219,9 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         // transport classifies as unreachable.
         if (!member) throw new TypeError(`fetch failed: connection refused to ${url.host}`);
         const route = member.app.routes.find((candidate) => candidate.match(request));
-        if (route) return route.handle(request, member.silo);
+        if (route) return route.handle(request, member.host);
         if (matchesActorRequest(request)) {
-            return handleActorRequest(request, { silo: member.silo, origin: false });
+            return handleActorRequest(request, { host: member.host, origin: false });
         }
         throw new Error(`unroutable request ${request.url}`);
     };
@@ -229,7 +229,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const spawn = async (index: number): Promise<void> => {
         const plugin = cluster({
             providers: countProviders(hub.providers(), counter),
-            advertise: `http://silo${index}.test`,
+            advertise: `http://host${index}.test`,
             ...(options.secret === null ? {} : { secret: options.secret ?? 'bench-secret' }),
             fetch: pipeFetch,
             ...(options.policy ? { policy: options.policy } : {}),
@@ -240,9 +240,9 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             storage,
             defaults: quiet
         }).use(plugin);
-        const silo = await app.start();
-        registry.set(`silo${index}.test`, { app, silo });
-        silos.push(silo);
+        const host = await app.start();
+        registry.set(`host${index}.test`, { app, host });
+        hosts.push(host);
         placements.push(plugin.placement);
         apps.push(app);
     };
@@ -250,14 +250,14 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     for (let i = 0; i < n; i++) await spawn(i);
 
     return {
-        silos,
+        hosts,
         placements,
         hub,
         counter,
         fetch: pipeFetch,
-        addSilo: () => spawn(silos.length),
+        addHost: () => spawn(hosts.length),
         stop: async () => {
-            // Settle, not throw: a benchmark tearing down 100 silos should
+            // Settle, not throw: a benchmark tearing down 100 hosts should
             // report its numbers even if one drain times out.
             await Promise.allSettled(apps.map((a) => a.stop({ timeoutMs: 2000 })));
         }

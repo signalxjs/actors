@@ -134,7 +134,7 @@ jobs:
           check "membership=k8s"      examples/aks-cluster/deploy/chart sigx-actors-test --set membership=k8s
           check "external redis"      examples/aks-cluster/deploy/chart sigx-actors-test --set redis.enabled=false --set redis.url=redis://ext:6379
           check "loadgen job"         examples/aks-cluster/deploy/chart sigx-actors-test --set loadgen.enabled=true --set loadgen.nameSuffix=ci
-          check "required spread"     examples/aks-cluster/deploy/chart sigx-actors-test --set affinity.siloSelfSpread=required
+          check "required spread"     examples/aks-cluster/deploy/chart sigx-actors-test --set affinity.hostSelfSpread=required
 
           echo "chat chart:"
           check "defaults"            examples/chat/deploy/chart sigx-chat

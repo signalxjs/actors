@@ -11,13 +11,13 @@ import {
 } from '@sigx/server/node';
 import { createActorResolver } from '../server/actor-endpoint';
 import type { ActorResolverOptions } from '../server/actor-endpoint';
-import type { Silo } from '../types';
+import type { Host } from '../types';
 
 export interface ActorHandlerOptions
     extends Omit<ServerFnHandlerOptions, 'resolve' | 'functions' | 'renderBoundaries' | 'base'>,
         ActorResolverOptions {
-    /** The running silo — explicit, never ambient. */
-    silo: Silo;
+    /** The running host — explicit, never ambient. */
+    host: Host;
     /** URL prefix the handler owns. Default `/_sigx/actor`. */
     base?: string;
 }
@@ -27,12 +27,12 @@ export interface ActorHandlerOptions
  * — mount it beside the serverFn handler, before the document handler.
  */
 export function createActorHandler(options: ActorHandlerOptions): NodeRequestHandler {
-    const { silo, base, onMiss, maxHops, ...rest } = options;
+    const { host, base, onMiss, maxHops, ...rest } = options;
     const mount = base ?? '/_sigx/actor';
     return createServerFnHandler({
         ...rest,
         base: mount,
-        resolve: createActorResolver(silo, {
+        resolve: createActorResolver(host, {
             base: mount,
             ...(onMiss !== undefined ? { onMiss } : {}),
             ...(maxHops !== undefined ? { maxHops } : {})
@@ -56,7 +56,7 @@ export interface DrainableServer {
 }
 
 export interface SignalHandlerOptions {
-    /** Passed to `silo.stop()`. */
+    /** Passed to `host.stop()`. */
     timeoutMs?: number;
     /** `false` leaves the process running after the drain — for tests. */
     exit?: boolean;
@@ -81,7 +81,7 @@ export interface SignalHandlerOptions {
      */
     server?: DrainableServer;
     /**
-     * Called the moment shutdown starts, before the silo drains.
+     * Called the moment shutdown starts, before the host drains.
      *
      * This is where a Node server marks responses `connection: close`, which
      * is THE mechanism that drains keep-alive pools safely: each client
@@ -94,7 +94,7 @@ export interface SignalHandlerOptions {
      *     if (stopping) res.setHeader('connection', 'close');
      *     handler(req, res);
      * });
-     * attachSignalHandlers(silo, { server, onStopBegin: () => (stopping = true) });
+     * attachSignalHandlers(host, { server, onStopBegin: () => (stopping = true) });
      * ```
      *
      * Why not just close the listener here instead? Because on Node >= 19
@@ -108,7 +108,7 @@ export interface SignalHandlerOptions {
      */
     onStopBegin?: () => void;
     /**
-     * Called if `silo.stop()` rejects. Shutdown continues either way — a
+     * Called if `host.stop()` rejects. Shutdown continues either way — a
      * reporting hook, not a veto.
      *
      * Exists so a failed drain can be logged before the process is gone.
@@ -120,10 +120,10 @@ export interface SignalHandlerOptions {
 
 /**
  * Wire SIGINT/SIGTERM to a graceful shutdown — drain the HTTP edge, then
- * `silo.stop()` (drain mailboxes, flush persistence) — followed by process
+ * `host.stop()` (drain mailboxes, flush persistence) — followed by process
  * exit. Returns a detach function.
  */
-export function attachSignalHandlers(silo: Silo, options?: SignalHandlerOptions): () => void {
+export function attachSignalHandlers(host: Host, options?: SignalHandlerOptions): () => void {
     let stopping = false;
     const onSignal = (): void => {
         if (stopping) return;
@@ -134,7 +134,7 @@ export function attachSignalHandlers(silo: Silo, options?: SignalHandlerOptions)
         //     so client pools retire each socket after the response it is
         //     already receiving. That is what actually drains them, and it
         //     interrupts nothing.
-        //  2. silo.stop()   — the actor drain. Pooled connections keep
+        //  2. host.stop()   — the actor drain. Pooled connections keep
         //     flowing throughout; peers whose dials are refused see
         //     `unreachable`, which is retryable by design.
         //  3. close() + closeAllConnections() — LAST. Closing the listener
@@ -149,7 +149,7 @@ export function attachSignalHandlers(silo: Silo, options?: SignalHandlerOptions)
             // A caller's own bookkeeping must not abort the shutdown.
         }
         let code = 0;
-        void silo
+        void host
             .stop({ timeoutMs: options?.timeoutMs })
             .catch((error: unknown) => {
                 // A failed drain must not exit 0 and vanish: on a terminated

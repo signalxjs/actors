@@ -36,7 +36,7 @@ export function wrapText(text: string, width: number, indent = ''): string[] {
             lines.push(prefix() + current);
             current = '';
         }
-        // A single word longer than the pane — a grain key, a URL — has to
+        // A single word longer than the pane — an actor key, a URL — has to
         // be cut, but it is cut visibly.
         let rest = word;
         while (displayWidth(rest) > room()) {

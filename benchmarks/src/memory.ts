@@ -3,7 +3,7 @@
  *
  * Two independent signals, both cheap:
  *  - `settleGc()` + `heapUsed()` for absolute footprint questions ("what
- *    does one grain cost?", "did that leak?"). Forcing GC is the only way
+ *    does one actor cost?", "did that leak?"). Forcing GC is the only way
  *    to make heapUsed mean anything — an unsettled heap is mostly garbage.
  *  - `observeGc()` for allocation PRESSURE. It rides every scenario because
  *    a change that doubles GC pause time is a regression even when mean

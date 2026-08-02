@@ -11,12 +11,12 @@
  * Deno.serve(createFetchHandler(app));
  * ```
  */
-import type { ActorApp } from '../silo/app';
-import type { Silo } from '../types';
+import type { ActorApp } from '../host/app';
+import type { Host } from '../types';
 import { handleActorRequest, matchesActorRequest } from './actor-endpoint';
 import type { ActorRequestOptions } from './actor-endpoint';
 
-export interface FetchHandlerOptions extends Omit<ActorRequestOptions, 'silo'> {
+export interface FetchHandlerOptions extends Omit<ActorRequestOptions, 'host'> {
     /** URL prefix of the public actor endpoint. Default `/_sigx/actor`. */
     base?: string;
     /**
@@ -43,33 +43,33 @@ export function createFetchHandler(
     const { base = '/_sigx/actor', fallback, ...actorOptions } = options;
 
     return async (request: Request): Promise<Response> => {
-        const silo = app.silo;
-        if (!silo) {
+        const host = app.host;
+        if (!host) {
             // Mounted but not running — 503, not 500 and not a fallthrough.
             return errorResponse(503, 'the actor app is not running');
         }
         for (const route of app.routes) {
-            if (route.match(request)) return route.handle(request, silo);
+            if (route.match(request)) return route.handle(request, host);
         }
         if (matchesActorRequest(request, base)) {
             // `base` is forwarded, not just consumed for matching: the
             // redirect composes the owner endpoint from it, and a mount on
             // a custom base must name ITS path, not the default.
-            return handleActorRequest(request, { ...actorOptions, base, silo });
+            return handleActorRequest(request, { ...actorOptions, base, host });
         }
         return (await fallback?.(request)) ?? errorResponse(404, 'not found');
     };
 }
 
-/** The silo behind a running app, for hand-rolled mounts. */
-export function requireSilo(app: ActorApp): Silo {
-    const silo = app.silo;
-    if (!silo) {
+/** The host behind a running app, for hand-rolled mounts. */
+export function requireHost(app: ActorApp): Host {
+    const host = app.host;
+    if (!host) {
         throw new Error(
             '[sigx actors] the app is not running — await app.start() before serving requests.'
         );
     }
-    return silo;
+    return host;
 }
 
 function errorResponse(status: number, message: string): Response {

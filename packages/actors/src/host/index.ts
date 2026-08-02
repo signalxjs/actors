@@ -1,9 +1,9 @@
 /**
- * `@sigx/actors/silo` — the server-only actor runtime: `createSilo`, the
+ * `@sigx/actors/host` — the server-only actor runtime: `createHost`, the
  * storage/placement seams, and the in-memory dev provider. Heavy by design;
  * the root entry never imports it.
  */
-export { createSilo, type CreateSiloOptions, type SiloDefaults } from './silo';
+export { createHost, type CreateHostOptions, type HostDefaults } from './host';
 export {
     defineActorApp,
     type ActorApp,
@@ -45,7 +45,7 @@ export {
 /**
  * The mergeable metrics shape and the folding over it.
  *
- * Exported because a dashboard merging a user-selected SUBSET of silos
+ * Exported because a dashboard merging a user-selected SUBSET of hosts
  * needs the same arithmetic `clusterStats()` uses. Without these it would
  * have to reimplement the log-linear bucket layout, which is exactly the
  * mistake `HISTOGRAM_LAYOUT` exists to catch.
@@ -85,6 +85,6 @@ export type {
     ActorTurnObserver,
     PlacementBindings,
     ActorScheduler,
-    Silo,
-    SiloStats
+    Host,
+    HostStats
 } from '../types';

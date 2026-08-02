@@ -6,8 +6,8 @@
  *
  * Guards run OUTSIDE the mailbox: a slow auth check never occupies the
  * actor's turn. Actor-to-actor calls (`ctx.actor`) are intra-system and do
- * NOT re-run guards — the system boundary already did (Orleans posture:
- * grain-to-grain calls are trusted).
+ * NOT re-run guards — the system boundary already did (actor-to-actor
+ * calls are trusted).
  */
 import type { ServerFnContext, ServerFnInfo } from '@sigx/server';
 import type { AnyActorDefinition } from './types';

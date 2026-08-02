@@ -1,6 +1,6 @@
 /**
  * `reportDigest` / `registry.digest()` — the seam that lets `cluster()` put
- * a silo's mergeable metrics into its `SiloReport`.
+ * a host's mergeable metrics into its `HostReport`.
  *
  * It exists as a SECOND seam rather than a read of the existing ops section
  * for two reasons, and both are asserted here: the ops section carries
@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, memoryStorage, metrics, type ActorPlugin } from '@sigx/actors/silo';
+import { defineActorApp, memoryStorage, metrics, type ActorPlugin } from '@sigx/actors/host';
 
 const Noop = defineActor({
     type: 'Noop',
@@ -46,9 +46,9 @@ describe('the digest seam', () => {
             }),
             metrics()
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Noop, 'a').bump();
+            await host.actor(Noop, 'a').bump();
             const digest = read!() as { v: number; calls: { total: number } };
             expect(digest.v).toBe(1);
             expect(digest.calls.total).toBe(1);
@@ -64,12 +64,12 @@ describe('the digest seam', () => {
                 read = () => registry.digest('metrics');
             })
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            // A silo with no `metrics()` is the ordinary case, not an error
+            // A host with no `metrics()` is the ordinary case, not an error
             // — which is why the field is simply absent from its report.
             expect(read!()).toBeUndefined();
-            expect(silo).toBeDefined();
+            expect(host).toBeDefined();
         } finally {
             await app.stop();
         }
@@ -92,11 +92,11 @@ describe('the digest seam', () => {
             }),
             metrics()
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
             expect(read!()).toBeUndefined();
             expect(opsCalls).toBe(0);
-            expect(silo).toBeDefined();
+            expect(host).toBeDefined();
         } finally {
             await app.stop();
         }
@@ -113,13 +113,13 @@ describe('the digest seam', () => {
             }),
             metrics()
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            // The one tool that explains a broken silo must not be broken
+            // The one tool that explains a broken host must not be broken
             // BY it.
             expect(read!('broken')).toBeUndefined();
             expect(read!('metrics')).toMatchObject({ v: 1 });
-            expect(silo).toBeDefined();
+            expect(host).toBeDefined();
         } finally {
             await app.stop();
         }
@@ -129,7 +129,7 @@ describe('the digest seam', () => {
         // A provider that reads its own digest is a bug, but it is ITS bug:
         // throwing here would take out the surrounding ops or cluster read,
         // which is the same mistake as letting a failing section 500 the
-        // endpoint that exists to explain a sick silo.
+        // endpoint that exists to explain a sick host.
         let read: (() => unknown) | null = null;
         const app = appWith(
             probe((registry) => {
@@ -138,14 +138,14 @@ describe('the digest seam', () => {
             }),
             metrics()
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
             expect(() => read!()).not.toThrow();
             expect(read!()).toBeUndefined();
             // …and the reader is usable again afterwards, so one bad
             // provider does not poison the next read.
             expect(read!()).toBeUndefined();
-            expect(silo).toBeDefined();
+            expect(host).toBeDefined();
         } finally {
             await app.stop();
         }
@@ -185,11 +185,11 @@ describe('the digest seam', () => {
                 read = () => registry.digest('spy', { types: 4 });
             })
         );
-        const silo = await app.start();
+        const host = await app.start();
         try {
             read!();
             expect(seen).toEqual({ types: 4 });
-            expect(silo).toBeDefined();
+            expect(host).toBeDefined();
         } finally {
             await app.stop();
         }
@@ -200,9 +200,9 @@ describe('metrics().digest()', () => {
     it('agrees with the snapshot it is derived from', async () => {
         const plugin = metrics();
         const app = appWith(plugin);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            for (let i = 0; i < 5; i++) await silo.actor(Noop, `g${i}`).bump();
+            for (let i = 0; i < 5; i++) await host.actor(Noop, `g${i}`).bump();
             const snapshot = plugin.snapshot();
             const digest = plugin.digest();
             expect(digest.calls.total).toBe(snapshot.calls.total);
@@ -218,9 +218,9 @@ describe('metrics().digest()', () => {
     it('keeps a capped breakdown summing to the total', async () => {
         const plugin = metrics();
         const app = appWith(plugin);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            for (let i = 0; i < 5; i++) await silo.actor(Noop, `g${i}`).bump();
+            for (let i = 0; i < 5; i++) await host.actor(Noop, `g${i}`).bump();
             // Two rows named, the rest folded — a breakdown whose rows
             // silently do not add up is worse than one that says "and this
             // much else".
@@ -235,9 +235,9 @@ describe('metrics().digest()', () => {
     it('leaves recent failures out unless asked', async () => {
         const plugin = metrics();
         const app = appWith(plugin);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Noop, 'a').bump();
+            await host.actor(Noop, 'a').bump();
             // 32 messages is bigger than the rest of the digest put
             // together, and it is drill-down material rather than something
             // a total is computed from.
@@ -251,9 +251,9 @@ describe('metrics().digest()', () => {
     it('carries no distributions when histograms are off', async () => {
         const plugin = metrics({ histograms: false });
         const app = appWith(plugin);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Noop, 'a').bump();
+            await host.actor(Noop, 'a').bump();
             const digest = plugin.digest();
             expect(digest.latency).toBeNull();
             expect(digest.turn).toBeNull();
@@ -267,9 +267,9 @@ describe('metrics().digest()', () => {
     it('reading the digest does not move the counters it reads', async () => {
         const plugin = metrics();
         const app = appWith(plugin);
-        const silo = await app.start();
+        const host = await app.start();
         try {
-            await silo.actor(Noop, 'a').bump();
+            await host.actor(Noop, 'a').bump();
             const before = plugin.digest();
             plugin.digest();
             plugin.digest();

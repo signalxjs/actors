@@ -4,7 +4,7 @@
  * the browser restores it without a single request.
  *
  * This is the test that proves the claim, and it is deliberately end-to-end:
- * a real in-process silo, a real document render, then a client mount
+ * a real in-process host, a real document render, then a client mount
  * against the emitted payload with `fetch` spied to catch a refetch.
  *
  * The client half mounts the BUILD-SWAPPED CLIENT REF, not the definition.
@@ -16,8 +16,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { component, defineApp, type App } from 'sigx';
 import { createSSR } from '@sigx/server-renderer';
-import { actorKey, defineActor, type Silo } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { actorKey, defineActor, type Host } from '@sigx/actors';
+import { createHost } from '@sigx/actors/host';
 import { __actorRef, configureActors } from '@sigx/actors/client';
 import { useActorState } from '@sigx/actors/app';
 
@@ -50,12 +50,12 @@ const CartRef = __actorRef(
     'http://actors.test/_sigx/actor'
 ) as unknown as typeof CartActor;
 
-const silos: Silo[] = [];
+const hosts: Host[] = [];
 const mounted: App<unknown>[] = [];
 
 afterEach(async () => {
     for (const app of mounted.splice(0)) app.unmount();
-    for (const silo of silos.splice(0)) await silo.stop();
+    for (const host of hosts.splice(0)) await host.stop();
     delete (globalThis as { __SIGX_ASYNC__?: unknown }).__SIGX_ASYNC__;
     document.body.innerHTML = '';
     dispatches = 0;
@@ -70,11 +70,11 @@ const Cart = component(() => {
 
 describe('SSR seeding', () => {
     it('resolves the read during the render and serializes it under the actor key', async () => {
-        const silo = createSilo({ actors: [CartActor], defaults: quiet });
-        await silo.start();
-        silos.push(silo);
-        await silo.actor(CartActor, 'seeded').total(); // activate
-        await silo.actor(CartActor, 'seeded').total();
+        const host = createHost({ actors: [CartActor], defaults: quiet });
+        await host.start();
+        hosts.push(host);
+        await host.actor(CartActor, 'seeded').total(); // activate
+        await host.actor(CartActor, 'seeded').total();
         dispatches = 0;
 
         const html = await createSSR().renderDocument(Cart({}), {
@@ -106,9 +106,9 @@ describe('SSR seeding', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [Guarded], defaults: quiet });
-        await silo.start();
-        silos.push(silo);
+        const host = createHost({ actors: [Guarded], defaults: quiet });
+        await host.start();
+        hosts.push(host);
 
         const errors: unknown[] = [];
         const Boom = component(() => {

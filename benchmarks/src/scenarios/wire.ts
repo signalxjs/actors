@@ -10,15 +10,15 @@
  * `dispatch/via-proxy` from this gives the per-request wire overhead.
  *
  * Guards are also priced here rather than in the dispatch ladder, because
- * they run OUTSIDE the mailbox and are not on `silo.dispatch` at all —
- * `silo.actor()` never invokes them. Comparing a guarded actor against an
+ * they run OUTSIDE the mailbox and are not on `host.dispatch` at all —
+ * `host.actor()` never invokes them. Comparing a guarded actor against an
  * unguarded one over this same path is the only way to see them, and it
  * needs no new runtime seam.
  */
 import { handleActorRequest } from '@sigx/actors/server';
 import { Guarded, Tiny, Unguarded } from '../actors.ts';
 import { closedLoop, sweepConcurrency } from '../loop.ts';
-import { createBenchSilo } from '../silo-fixture.ts';
+import { createBenchHost } from '../host-fixture.ts';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 const CONCURRENCIES = [1, 64] as const;
@@ -42,11 +42,11 @@ const endpointRoundtrip: Scenario = {
     name: 'wire/endpoint-roundtrip',
     description: 'handleActorRequest() with an in-memory Request — encode, JSON, revive, dispatch',
     async run(ctx: RunContext): Promise<Metric[]> {
-        const fixture = await createBenchSilo({ actors: [Tiny] });
+        const fixture = await createBenchHost({ actors: [Tiny] });
         try {
             const call = (): Promise<Response> =>
                 handleActorRequest(actorRequest(Tiny.type, 'noop', ['warm']), {
-                    silo: fixture.silo,
+                    host: fixture.host,
                     origin: false
                 });
             await assertOk(await call(), 'wire/endpoint-roundtrip');
@@ -65,7 +65,7 @@ const guardCost: Scenario = {
     name: 'wire/guard-chain',
     description: 'same wire call, unguarded vs a two-guard chain — what guards cost per request',
     async run(ctx: RunContext): Promise<Metric[]> {
-        const fixture = await createBenchSilo({ actors: [Unguarded, Guarded] });
+        const fixture = await createBenchHost({ actors: [Unguarded, Guarded] });
         try {
             const metrics: Metric[] = [];
             for (const [label, def] of [
@@ -74,7 +74,7 @@ const guardCost: Scenario = {
             ] as const) {
                 const call = (): Promise<Response> =>
                     handleActorRequest(actorRequest(def.type, 'noop', ['warm']), {
-                        silo: fixture.silo,
+                        host: fixture.host,
                         origin: false
                     });
                 await assertOk(await call(), `wire/guard-chain:${label}`);

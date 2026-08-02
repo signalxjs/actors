@@ -1,6 +1,6 @@
 /**
  * Shared actor types — the dispatch seam, storage contract, and definition
- * shapes. Split from index.ts so the silo, wire, and client entries can
+ * shapes. Split from index.ts so the host, wire, and client entries can
  * import types without pulling the public API module in.
  */
 import type { ServerFnGuard, ServerFnReadCache } from '@sigx/server';
@@ -91,8 +91,8 @@ export interface ActorDispatcher {
  * Observes each completed turn, splitting the two things a dispatch
  * middleware cannot tell apart: `queuedMs`, how long the message waited for
  * the mailbox, and `elapsedMs`, how long it then HELD the mailbox. That
- * split is the difference between "this grain is slow" (elapsed) and "this
- * grain is hot" (queued), which are opposite problems with opposite fixes —
+ * split is the difference between "this actor is slow" (elapsed) and "this
+ * actor is hot" (queued), which are opposite problems with opposite fixes —
  * and only the activation knows both, since a middleware sees just the sum.
  *
  * Positional parameters, not an options object: this runs on every turn, and
@@ -125,13 +125,13 @@ export type ActorTurnObserver = (
 ) => void;
 
 /**
- * A per-actor-type placement strategy — Orleans's `[PlacementStrategy]`
- * attribute, declared ON the actor rather than in a central map.
+ * A per-actor-type placement strategy, declared ON the actor rather than
+ * in a central map.
  *
  * Deliberately opaque here: choosing a host needs a membership view, which
  * is a cluster concept, and core must not depend on `./cluster`. Cluster
  * narrows this to `PlacementPolicy` (adding `choose()`); the single-node
- * host has one silo and ignores it. That keeps the declaration next to the
+ * host has one host and ignores it. That keeps the declaration next to the
  * actor while the algorithm stays in the layer that can implement it.
  */
 export interface ActorPlacementStrategy {
@@ -161,7 +161,7 @@ export interface ActorPlacementStrategy {
 }
 
 /**
- * Where a grain currently lives — the answer to `ActorPlacement.locate()`.
+ * Where an actor currently lives — the answer to `ActorPlacement.locate()`.
  *
  * A discriminated union rather than a nullable owner, so "it is here" cannot
  * be confused with "I don't know". "I don't know" is `undefined` INSTEAD of
@@ -181,7 +181,7 @@ export type ActorLocation =
 export interface ActorPlacement {
     dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher>;
     /**
-     * Where this grain lives, WITHOUT dispatching and WITHOUT activating —
+     * Where this actor lives, WITHOUT dispatching and WITHOUT activating —
      * what a mount asks before deciding to redirect rather than proxy.
      *
      * A placement that cannot answer either omits this or returns
@@ -192,29 +192,29 @@ export interface ActorPlacement {
      * can answer without allocating.
      *
      * The answer is a HINT and is allowed to be stale — by the time the
-     * caller acts on it the grain may have moved. That is safe because the
+     * caller acts on it the actor may have moved. That is safe because the
      * directory, not this, is the arbiter of single-activation.
      */
     locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
     /**
-     * Called once by `createSilo` with the silo's own local dispatcher and
-     * the silo itself, before `start()`. A distributed placement returns
+     * Called once by `createHost` with the host's own local dispatcher and
+     * the host itself, before `start()`. A distributed placement returns
      * bindings hooking the activation lifecycle (directory claims) and the
      * reminder tick; the default local placement doesn't implement it.
      */
-    bind?(local: ActorDispatcher, silo: Silo): PlacementBindings | void;
+    bind?(local: ActorDispatcher, host: Host): PlacementBindings | void;
     start?(): void | Promise<void>;
     /**
-     * Called by `silo.stop()` BEFORE the drain begins — a cluster placement
+     * Called by `host.stop()` BEFORE the drain begins — a cluster placement
      * announces `leaving` here so peers stop placing new actors on this
-     * silo while it hands its activations off.
+     * host while it hands its activations off.
      */
     beginStop?(): void | Promise<void>;
     stop?(): void | Promise<void>;
 }
 
 /**
- * What a placement's `bind()` hands back to the silo. Every member is
+ * What a placement's `bind()` hands back to the host. Every member is
  * optional; omitting all of them is the single-node behavior.
  */
 export interface PlacementBindings {
@@ -242,14 +242,14 @@ export interface PlacementBindings {
     strictChainPresence?: boolean;
     /**
      * Durable-reminder shard ownership — the reminder table is split into
-     * fixed hash shards and each tick a silo processes only the shards it
+     * fixed hash shards and each tick a host processes only the shards it
      * owns (a cluster answers via rendezvous hashing over the membership
-     * view, spreading reminder load; every silo still mutates any shard).
+     * view, spreading reminder load; every host still mutates any shard).
      * Default: own every shard.
      */
     ownsReminderShard?(shard: string): boolean | Promise<boolean>;
     /**
-     * The deactivation reason a graceful `silo.stop()` uses. A cluster
+     * The deactivation reason a graceful `host.stop()` uses. A cluster
      * placement answers `'migrated'`: the stop is a HANDOFF — claims are
      * released as activations drain and peers re-place them — not the end
      * of the actor system. Default `'shutdown'`.
@@ -304,19 +304,19 @@ export interface ActorStorage {
 }
 
 /**
- * What the silo hands a reminder implementation at bind time — everything
+ * What the host hands a reminder implementation at bind time — everything
  * it would otherwise have to be told twice (and could be told wrongly).
  */
 export interface ActorRemindersContext {
-    /** The silo's storage, AFTER any plugin decorators. */
+    /** The host's storage, AFTER any plugin decorators. */
     readonly storage: ActorStorage;
-    /** The silo's clock, so reminder ticks are drivable like everything else. */
+    /** The host's clock, so reminder ticks are drivable like everything else. */
     readonly scheduler: ActorScheduler;
-    /** Requested tick cadence, ms (`SiloDefaults.reminderTickMs`). */
+    /** Requested tick cadence, ms (`HostDefaults.reminderTickMs`). */
     readonly tickMs: number;
     /**
-     * Does THIS silo own the given reminder shard? A cluster answers via
-     * rendezvous hashing so N silos split the load; single-node owns all.
+     * Does THIS host own the given reminder shard? A cluster answers via
+     * rendezvous hashing so N hosts split the load; single-node owns all.
      * Meaningless to an implementation that does not shard.
      */
     ownsShard(shard: string): boolean | Promise<boolean>;
@@ -328,8 +328,8 @@ export interface ActorRemindersContext {
  * Durable reminders, as a seam.
  *
  * The default (`shardedReminders()`) keeps the table in `ActorStorage` under
- * a reserved type, split into fixed hash shards that silos divide between
- * them — which assumes MANY actors per silo. A runtime where that is false
+ * a reserved type, split into fixed hash shards that hosts divide between
+ * them — which assumes MANY actors per host. A runtime where that is false
  * replaces it: under Cloudflare's one-Durable-Object-per-actor model each
  * actor's reminders live in its own DO and fire from its own alarm, so
  * there is nothing to shard and nothing to poll.
@@ -354,7 +354,7 @@ export interface TimerOptions {
     period?: number;
     /**
      * Whether ticks count as activity for idle collection. Default false —
-     * Orleans posture: timers don't keep grains alive.
+     * timers don't keep actors alive.
      */
     keepAlive?: boolean;
 }
@@ -390,7 +390,7 @@ export interface TaskInfo {
 /**
  * Detached long-running work — `ctx.tasks`. A task runs OUTSIDE the mailbox
  * (reads interleave while it works) and holds a keep-alive ref so idle
- * collection skips the grain. State access happens only through the task
+ * collection skips the actor. State access happens only through the task
  * context's `turn()`, which is an ordinary serialized mailbox turn.
  */
 export interface TaskApi {
@@ -442,7 +442,7 @@ export interface ActorContextBase<S extends object> {
      */
     readonly state: S;
     /**
-     * Persist now (Orleans WriteStateAsync). Resolves when stored; throws
+     * Persist now. Resolves when stored; throws
      * `ActorStateConflictError` on an etag mismatch, which also discards
      * this activation.
      */
@@ -455,11 +455,11 @@ export interface ActorContextBase<S extends object> {
     readonly reminders: ReminderApi;
     /** Typed client for another actor; carries the call chain. */
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClient<D>;
-    /** Orleans DeactivateOnIdle: finish the queue, then deactivate. */
+    /** Finish the queue, then deactivate. */
     deactivate(): void;
     /**
      * Aborts when this activation begins deactivating (any reason,
-     * including silo shutdown) — BEFORE the mailbox drain, so long-running
+     * including host shutdown) — BEFORE the mailbox drain, so long-running
      * work can observe it and wind down inside the drain window.
      */
     readonly abortSignal: AbortSignal;
@@ -558,11 +558,11 @@ export interface ActorOptions<
     persistence?: 'explicit' | { mode: 'write-behind'; debounceMs?: number };
     /** Call-chain reentrancy. Default false: A→B→A throws ActorDeadlockError. */
     reentrant?: boolean;
-    /** Idle collection age for this type; overrides the silo default. */
+    /** Idle collection age for this type; overrides the host default. */
     idleAfterMs?: number;
     /**
-     * Where NEW activations of this type go — Orleans's placement attribute
-     * (`consistentHashPolicy()`, `preferLocalPolicy()`, or your own). Read by
+     * Where NEW activations of this type go (`consistentHashPolicy()`,
+     * `preferLocalPolicy()`, or your own). Read by
      * a cluster placement when it resolves a target, and it WINS over the
      * central `typePolicies` map; ignored single-node.
      */
@@ -583,7 +583,7 @@ export interface ActorOptions<
      * Methods that are HTTP-CACHEABLE READS: the endpoint accepts `GET` for
      * them and emits the `Cache-Control` these values describe, so browser,
      * CDN and reverse-proxy caches can absorb read traffic that would
-     * otherwise reach a grain.
+     * otherwise reach an actor.
      *
      * ```ts
      * reads: { summary: { maxAge: 5 }, price: { maxAge: 60, public: true } }
@@ -631,9 +631,9 @@ export interface ActorDefinition<
     /** Stream-method names, enumerated at definition time. */
     readonly streamNames: readonly string[];
     /**
-     * @internal the raw options — the silo's activation hook. The context
+     * @internal the raw options — the host's activation hook. The context
      * extension is erased to `any` here: a definition built against an app's
-     * `Ext` must still be a plain `ActorDefinition`, and the silo only ever
+     * `Ext` must still be a plain `ActorDefinition`, and the host only ever
      * *calls* these factories with the context it built.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -739,15 +739,15 @@ export type ActorResult<D, M extends PropertyKey> = D extends ActorDefinition<
     : never;
 
 // ---------------------------------------------------------------------------
-// The silo seam contract (what the wire layer and `actor()` consume)
+// The host seam contract (what the wire layer and `actor()` consume)
 
-export interface SiloStats {
+export interface HostStats {
     activations: number;
     queued: number;
     perType: Record<string, number>;
     /**
      * Slots mid-activation and mid-deactivation. NOT counted in
-     * `activations`, which only sees settled ones — so a silo in an
+     * `activations`, which only sees settled ones — so a host in an
      * activation storm reads as idle without these, which is precisely when
      * you are looking at it.
      */
@@ -775,18 +775,18 @@ export function resolveLimit(value: number | undefined, fallback: number): numbe
 }
 
 /**
- * What a silo that is not running reports. A FACTORY, not a shared frozen
- * constant: this lands in an ops snapshot and a `SiloReport`, both of which
+ * What a host that is not running reports. A FACTORY, not a shared frozen
+ * constant: this lands in an ops snapshot and a `HostReport`, both of which
  * a caller may reasonably transform in place.
  */
-export const emptySiloStats = (): SiloStats => ({
+export const emptyHostStats = (): HostStats => ({
     activations: 0,
     queued: 0,
     perType: {},
     transitional: { activating: 0, deactivating: 0 }
 });
 
-/** One live activation, as `Silo.activations()` reports it. */
+/** One live activation, as `Host.activations()` reports it. */
 export interface ActivationInfo {
     type: string;
     key: string;
@@ -799,7 +799,7 @@ export interface ActivationInfo {
     /** Held open — by a stream, a watch, or a running detached task — so
      *  idle sweeping skips it. When `tasks > 0`, the tasks are the reason. */
     keptAlive: boolean;
-    /** Detached task runs currently held by this activation — the grains
+    /** Detached task runs currently held by this activation — the actors
      *  hosting long-running work. Counted in `keptAlive` too. */
     tasks: number;
 }
@@ -808,12 +808,12 @@ export interface ActivationsOptions {
     /**
      * How many to return. Default 100.
      *
-     * Bounded on purpose, and low: a silo can hold millions of activations,
+     * Bounded on purpose, and low: a host can hold millions of activations,
      * and this walks them all to sort. It is a "top N" view, not an export.
      */
     limit?: number;
     /**
-     * `'queued'` (deepest mailbox first) — the hot grains.
+     * `'queued'` (deepest mailbox first) — the hot actors.
      * `'age'` (oldest first) — the long-lived ones.
      * `'idle'` (most idle first) — the next sweep's candidates.
      * Default `'queued'`.
@@ -823,17 +823,17 @@ export interface ActivationsOptions {
     type?: string;
 }
 
-export interface Silo extends ActorDispatcher {
+export interface Host extends ActorDispatcher {
     /** Definition lookup — the wire resolver's 404 authority. May load lazily. */
     definition(type: string): AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
     /**
-     * Where a grain lives, without dispatching or activating — delegates to
+     * Where an actor lives, without dispatching or activating — delegates to
      * the placement's `locate()`.
      *
-     * `undefined` means "cannot answer", which is what a single-node silo
+     * `undefined` means "cannot answer", which is what a single-node host
      * and any placement without `locate()` return. Callers must treat that
      * as "assume local / just dispatch", never as an error — one check
-     * covers both a placement that opts out and a silo built before the
+     * covers both a placement that opts out and a host built before the
      * seam existed.
      *
      * The endpoint uses this to answer 421 with the owner instead of
@@ -842,7 +842,7 @@ export interface Silo extends ActorDispatcher {
      */
     locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D>;
-    /** Starts sweeper + reminders and stamps the silo seam. Idempotent. */
+    /** Starts sweeper + reminders and stamps the host seam. Idempotent. */
     start(): Promise<void>;
     /** Drain, flush, clear the seam. Default timeout 30s. */
     stop(opts?: { timeoutMs?: number }): Promise<void>;
@@ -854,13 +854,13 @@ export interface Silo extends ActorDispatcher {
     deactivate(ref: ActorRef, reason?: DeactivationReason): Promise<void>;
     /** Deactivate every activation of one type (dev/HMR hook). */
     deactivateType(type: string): Promise<void>;
-    stats(): SiloStats;
+    stats(): HostStats;
     /**
      * The live activations themselves, bounded and sorted — what `stats()`
      * collapses into counts.
      *
-     * This is the "top grains" view: which keys are hot, which are old,
-     * which are about to be swept. Without it a dashboard can say a silo
+     * This is the "top actors" view: which keys are hot, which are old,
+     * which are about to be swept. Without it a dashboard can say a host
      * holds 12,000 activations with 400 queued turns and cannot say WHERE,
      * which is the only question worth asking at that point.
      *

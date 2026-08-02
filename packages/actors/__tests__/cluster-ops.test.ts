@@ -4,8 +4,8 @@
  *
  * Two invariants are load-bearing here and worth stating up front.
  *
- * **Counting.** Every counter moves on exactly the ONE silo where its event
- * happened, and the two sides of a cross-silo call get different names
+ * **Counting.** Every counter moves on exactly the ONE host where its event
+ * happened, and the two sides of a cross-host call get different names
  * (`remoteDispatches` on the caller, `inboundDispatches` on the owner). They
  * are reported side by side and never summed — the gap between them is
  * itself the signal. There is a test asserting the arithmetic.
@@ -13,7 +13,7 @@
  * **`metrics()` is not doubled.** `compositePlacement.bind()` hands the
  * placement the RAW local dispatcher, and `dispatchInbound` calls it
  * directly — so `useDispatch` middleware never sees an inbound hop. A
- * cross-silo call is therefore counted ONCE by `metrics()`, on the caller,
+ * cross-host call is therefore counted ONCE by `metrics()`, on the caller,
  * while the owner sees the turn. That split is asserted below so a future
  * refactor cannot silently turn it into a double count.
  */
@@ -21,12 +21,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import {
     clusterStats,
-    SILO_STATS_SYMBOL,
+    HOST_STATS_SYMBOL,
     signAuth,
-    SILO_CALL_HEADER,
+    HOST_CALL_HEADER,
     encodeEnvelope,
     type ClusterStatsReport,
-    type SiloReport
+    type HostReport
 } from '@sigx/actors/cluster';
 import {
     health,
@@ -35,8 +35,8 @@ import {
     type ActorPlugin,
     type MetricsPlugin,
     type OpsSnapshot
-} from '@sigx/actors/silo';
-import { reminderShardKeys } from '../src/silo/reminder-shards';
+} from '@sigx/actors/host';
+import { reminderShardKeys } from '../src/host/reminder-shards';
 import { createCluster, selfPolicy, type ClusterHarness } from './harness';
 
 let running: ClusterHarness | null = null;
@@ -62,36 +62,36 @@ const Counter = defineActor({
 });
 
 describe('cluster ops: clusterStats', () => {
-    it('reports every silo, and the totals are the sum of the parts', async () => {
+    it('reports every host, and the totals are the sum of the parts', async () => {
         const cluster = await createCluster(3, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        // selfPolicy: each silo activates its own, so the population spreads.
+        // selfPolicy: each host activates its own, so the population spreads.
         for (let i = 0; i < 3; i++) {
             for (let n = 0; n < i + 1; n++) {
-                await cluster.silos[i]!.actor(Counter, `s${i}-${n}`).increment(1);
+                await cluster.hosts[i]!.actor(Counter, `s${i}-${n}`).increment(1);
             }
         }
 
         const report = await clusterStats(cluster.placements[0]!);
-        expect(report.silos).toHaveLength(3);
+        expect(report.hosts).toHaveLength(3);
         expect(report.partial).toBe(false);
         expect(report.unreachable).toEqual([]);
-        expect(report.from).toBe(cluster.placements[0]!.identity.siloId);
+        expect(report.from).toBe(cluster.placements[0]!.identity.hostId);
         expect(report.view.size).toBe(3);
         expect(report.view.active).toBe(3);
 
-        const expected = cluster.silos.reduce((sum, s) => sum + s.stats().activations, 0);
+        const expected = cluster.hosts.reduce((sum, s) => sum + s.stats().activations, 0);
         expect(report.totals.activations).toBe(expected);
         expect(report.totals.activations).toBe(6);
         expect(report.totals.perType).toEqual({ Counter: 6 });
-        expect(report.totals.silos).toBe(3);
+        expect(report.totals.hosts).toBe(3);
 
-        // Each silo reports its OWN gauges, not the collector's.
-        for (const silo of report.silos) {
-            const index = cluster.placements.findIndex((p) => p.identity.siloId === silo.siloId);
-            expect(silo.stats.activations).toBe(cluster.silos[index]!.stats().activations);
-            expect(silo.status).toBe('active');
-            expect(silo.v).toBe(1);
+        // Each host reports its OWN gauges, not the collector's.
+        for (const host of report.hosts) {
+            const index = cluster.placements.findIndex((p) => p.identity.hostId === host.hostId);
+            expect(host.stats.activations).toBe(cluster.hosts[index]!.stats().activations);
+            expect(host.status).toBe('active');
+            expect(host.v).toBe(1);
         }
     });
 
@@ -107,38 +107,38 @@ describe('cluster ops: clusterStats', () => {
             // ticks that shard, two means views have diverged.
             expect(report.reminderShards[shard]).toHaveLength(1);
         }
-        // The #82 finding, made visible: how many silos do reminder work.
+        // The #82 finding, made visible: how many hosts do reminder work.
         const working = new Set(Object.values(report.reminderShards).flat());
         expect(working.size).toBeGreaterThan(1);
         expect(working.size).toBeLessThanOrEqual(3);
     });
 
-    it('a single-silo cluster owns all 16 shards and needs no network', async () => {
+    it('a single-host cluster owns all 16 shards and needs no network', async () => {
         const cluster = await createCluster(1, {
             actors: [Counter],
             onRequest: () => expect.unreachable('a solo fan-out must not hit the wire')
         });
         running = cluster;
         const report = await clusterStats(cluster.placements[0]!);
-        expect(report.silos).toHaveLength(1);
-        expect(report.silos[0]!.reminderShards).toHaveLength(16);
+        expect(report.hosts).toHaveLength(1);
+        expect(report.hosts[0]!.reminderShards).toHaveLength(16);
     });
 
-    it('a crashed silo is LISTED, not thrown — the report still arrives', async () => {
+    it('a crashed host is LISTED, not thrown — the report still arrives', async () => {
         const cluster = await createCluster(3, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        await cluster.silos[1]!.actor(Counter, 'gone').increment(1);
-        const dead = cluster.placements[1]!.identity.siloId;
+        await cluster.hosts[1]!.actor(Counter, 'gone').increment(1);
+        const dead = cluster.placements[1]!.identity.hostId;
         cluster.unbind(1); // address stops resolving, membership still lists it
 
         const report = await clusterStats(cluster.placements[0]!, { timeoutMs: 200 });
         expect(report.partial).toBe(true);
-        expect(report.silos.map((s) => s.siloId)).not.toContain(dead);
+        expect(report.hosts.map((s) => s.hostId)).not.toContain(dead);
         expect(report.unreachable).toHaveLength(1);
-        expect(report.unreachable[0]).toMatchObject({ siloId: dead, reason: 'unreachable' });
+        expect(report.unreachable[0]).toMatchObject({ hostId: dead, reason: 'unreachable' });
         // Totals are a lower bound, and `partial` is how you know.
-        expect(report.totals.silos).toBe(2);
-        // Shards only the dead silo claimed come back EMPTY rather than
+        expect(report.totals.hosts).toBe(2);
+        // Shards only the dead host claimed come back EMPTY rather than
         // vanishing — a missing key reads as "not measured".
         const orphaned = Object.entries(report.reminderShards).filter(([, o]) => o.length === 0);
         expect(orphaned.length).toBeGreaterThan(0);
@@ -152,7 +152,7 @@ describe('cluster ops: clusterStats', () => {
             // the test would prove nothing about the timeout.
             wrapFetch: (inner) => (input, init) => {
                 const request = new Request(input, init);
-                if (request.url.includes('silo1.test') && request.url.includes('stats')) {
+                if (request.url.includes('host1.test') && request.url.includes('stats')) {
                     const signal = init?.signal ?? request.signal;
                     return new Promise<Response>((_resolve, reject) => {
                         signal?.addEventListener('abort', () =>
@@ -169,9 +169,9 @@ describe('cluster ops: clusterStats', () => {
         const report = await clusterStats(cluster.placements[0]!, { timeoutMs: 30 });
         expect(report.partial).toBe(true);
         expect(report.unreachable[0]!.reason).toBe('timeout');
-        // The healthy silo still answered — one sick peer does not lose the
+        // The healthy host still answered — one sick peer does not lose the
         // rest of the report.
-        expect(report.silos).toHaveLength(1);
+        expect(report.hosts).toHaveLength(1);
     });
 
     it('reading stats does not move the counters it reads', async () => {
@@ -188,15 +188,15 @@ describe('cluster ops: clusterStats', () => {
 });
 
 describe('cluster ops: counters', () => {
-    it('counts a cross-silo call ONCE on each side, under different names', async () => {
+    it('counts a cross-host call ONCE on each side, under different names', async () => {
         const cluster = await createCluster(2, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        // Owned by silo 1 (selfPolicy), called through silo 0 → a real hop.
-        await cluster.silos[1]!.actor(Counter, 'remote').increment(1);
+        // Owned by host 1 (selfPolicy), called through host 0 → a real hop.
+        await cluster.hosts[1]!.actor(Counter, 'remote').increment(1);
         const callerBefore = cluster.placements[0]!.counters().remoteDispatches;
         const ownerBefore = cluster.placements[1]!.counters().inboundDispatches;
 
-        await cluster.silos[0]!.actor(Counter, 'remote').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'remote').increment(1);
 
         expect(cluster.placements[0]!.counters().remoteDispatches).toBe(callerBefore + 1);
         expect(cluster.placements[1]!.counters().inboundDispatches).toBe(ownerBefore + 1);
@@ -209,15 +209,15 @@ describe('cluster ops: counters', () => {
     it('claims, releases and the claimed gauge track the directory', async () => {
         const cluster = await createCluster(2, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        await cluster.silos[0]!.actor(Counter, 'a').increment(1);
-        await cluster.silos[0]!.actor(Counter, 'b').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'a').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'b').increment(1);
 
         const counters = cluster.placements[0]!.counters();
         expect(counters.directoryClaims).toBe(2);
         expect(counters.directoryReleases).toBe(0);
         expect(counters.claimed).toBe(2);
 
-        await cluster.silos[0]!.deactivate({ type: 'Counter', key: 'a' });
+        await cluster.hosts[0]!.deactivate({ type: 'Counter', key: 'a' });
         const after = cluster.placements[0]!.counters();
         expect(after.directoryReleases).toBe(1);
         expect(after.claimed).toBe(1);
@@ -226,14 +226,14 @@ describe('cluster ops: counters', () => {
     it('the route cache misses once and then hits', async () => {
         const cluster = await createCluster(2, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        await cluster.silos[1]!.actor(Counter, 'hot').increment(1);
+        await cluster.hosts[1]!.actor(Counter, 'hot').increment(1);
 
-        await cluster.silos[0]!.actor(Counter, 'hot').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'hot').increment(1);
         const first = cluster.placements[0]!.counters();
         expect(first.routeCacheMisses).toBeGreaterThan(0);
         expect(first.directoryLookups).toBeGreaterThan(0);
 
-        await cluster.silos[0]!.actor(Counter, 'hot').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'hot').increment(1);
         const second = cluster.placements[0]!.counters();
         expect(second.routeCacheHits).toBe(first.routeCacheHits + 1);
         // A cache hit costs no directory round-trip — that is the point.
@@ -244,25 +244,25 @@ describe('cluster ops: counters', () => {
     it('a lost activation race is counted as a claim conflict AND a redirect', async () => {
         const cluster = await createCluster(2, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        // Racing front doors on one key: both silos try to claim, one loses
+        // Racing front doors on one key: both hosts try to claim, one loses
         // the directory race, throws wrong-host at itself, and re-routes to
         // the winner. Both calls still succeed.
         const results = await Promise.all([
-            cluster.silos[0]!.actor(Counter, 'shared').increment(1),
-            cluster.silos[1]!.actor(Counter, 'shared').increment(1)
+            cluster.hosts[0]!.actor(Counter, 'shared').increment(1),
+            cluster.hosts[1]!.actor(Counter, 'shared').increment(1)
         ]);
         expect([...results].sort()).toEqual([1, 2]);
 
         const all = cluster.placements.map((p) => p.counters());
         const sum = (pick: (c: (typeof all)[number]) => number): number =>
             all.reduce((total, c) => total + pick(c), 0);
-        // Exactly one silo lost the claim, consumed its own 421 and retried.
+        // Exactly one host lost the claim, consumed its own 421 and retried.
         expect(sum((c) => c.claimConflicts)).toBe(1);
         expect(sum((c) => c.wrongHostRedirects)).toBe(1);
         expect(sum((c) => c.retries)).toBe(1);
         // Convergence: nobody exhausted their attempts.
         expect(sum((c) => c.routingFailures)).toBe(0);
-        // Both counts land on the SAME silo — the loser refused its own
+        // Both counts land on the SAME host — the loser refused its own
         // activation and then re-routed.
         const loser = all.find((c) => c.claimConflicts === 1)!;
         expect(loser.wrongHostRedirects).toBe(1);
@@ -271,20 +271,20 @@ describe('cluster ops: counters', () => {
     it('membership changes are counted — the store-load signal from #82', async () => {
         const cluster = await createCluster(3, { actors: [Counter] });
         running = cluster;
-        // Silo 0 was present for silos 1 and 2 joining.
+        // Host 0 was present for hosts 1 and 2 joining.
         expect(cluster.placements[0]!.counters().membershipChanges).toBeGreaterThanOrEqual(2);
         expect(cluster.placements[0]!.counters().membershipVersion).toBeGreaterThan(0);
     });
 
-    it('a departed silo is swept, and the sweep is counted', async () => {
+    it('a departed host is swept, and the sweep is counted', async () => {
         const cluster = await createCluster(2, { actors: [Counter], policy: selfPolicy });
         running = cluster;
-        await cluster.silos[1]!.actor(Counter, 'orphan').increment(1);
+        await cluster.hosts[1]!.actor(Counter, 'orphan').increment(1);
         cluster.crash(1);
         await new Promise((r) => setTimeout(r, 20));
 
         const counters = cluster.placements[0]!.counters();
-        expect(counters.siloSweeps).toBeGreaterThanOrEqual(1);
+        expect(counters.hostSweeps).toBeGreaterThanOrEqual(1);
         expect(counters.sweptEntries).toBeGreaterThanOrEqual(1);
     });
 
@@ -295,12 +295,12 @@ describe('cluster ops: counters', () => {
 
         const symbol = 'Counter#increment';
         const response = await cluster.fetch(
-            `http://silo1.test/_sigx/silo/${encodeURIComponent(symbol)}`,
+            `http://host1.test/_sigx/host/${encodeURIComponent(symbol)}`,
             {
                 method: 'POST',
                 headers: {
                     'content-type': 'application/json',
-                    [SILO_CALL_HEADER]: encodeEnvelope(
+                    [HOST_CALL_HEADER]: encodeEnvelope(
                         { callChain: [], callId: 'c1.forged' },
                         's.attacker'
                     ),
@@ -324,15 +324,15 @@ describe('cluster ops: readiness', () => {
         const app = cluster.apps[0]!;
         const probe = (): Promise<Response> => {
             const route = app.routes.find((r) =>
-                r.match(new Request('http://silo0.test/_sigx/health/ready'))
+                r.match(new Request('http://host0.test/_sigx/health/ready'))
             )!;
-            return route.handle(new Request('http://silo0.test/_sigx/health/ready'), app.silo!);
+            return route.handle(new Request('http://host0.test/_sigx/health/ready'), app.host!);
         };
 
         expect((await probe()).status).toBe(200);
 
         // beginStop announces `leaving` BEFORE the drain — which is exactly
-        // the window a balancer must stop sending traffic in, and the silo
+        // the window a balancer must stop sending traffic in, and the host
         // is still very much alive and answering.
         await cluster.placements[0]!.beginStop?.();
 
@@ -342,10 +342,10 @@ describe('cluster ops: readiness', () => {
         expect(body.checks.cluster.ready).toBe(false);
         expect(body.checks.cluster.detail).toMatch(/leaving/);
         // Still serving calls throughout the handoff.
-        await expect(cluster.silos[0]!.actor(Counter, 'x').increment(1)).resolves.toBe(1);
+        await expect(cluster.hosts[0]!.actor(Counter, 'x').increment(1)).resolves.toBe(1);
     });
 
-    it('a FENCED silo reports not-ready, though its published status still says active', async () => {
+    it('a FENCED host reports not-ready, though its published status still says active', async () => {
         const cluster = await createCluster(2, {
             actors: [Counter],
             plugins: () => [health()]
@@ -353,8 +353,8 @@ describe('cluster ops: readiness', () => {
         running = cluster;
         // Self-suspect: membership lost. `#fence()` deliberately leaves the
         // PUBLISHED status alone, so without this the balancer would keep
-        // feeding a silo that refuses every activation — a black hole.
-        cluster.hub.kill(cluster.placements[0]!.identity.siloId);
+        // feeding a host that refuses every activation — a black hole.
+        cluster.hub.kill(cluster.placements[0]!.identity.hostId);
         await new Promise((r) => setTimeout(r, 20));
 
         expect(cluster.placements[0]!.descriptor().status).toBe('active');
@@ -362,19 +362,19 @@ describe('cluster ops: readiness', () => {
 
         const app = cluster.apps[0]!;
         const route = app.routes.find((r) =>
-            r.match(new Request('http://silo0.test/_sigx/health/ready'))
+            r.match(new Request('http://host0.test/_sigx/health/ready'))
         )!;
         const response = await route.handle(
-            new Request('http://silo0.test/_sigx/health/ready'),
-            app.silo!
+            new Request('http://host0.test/_sigx/health/ready'),
+            app.host!
         );
         expect(response.status).toBe(503);
         expect((await response.json()).checks.cluster.detail).toMatch(/fenced/);
     });
 
-    it('a FENCED silo fails LIVENESS too — fenced is terminal, restart is the medicine', async () => {
+    it('a FENCED host fails LIVENESS too — fenced is terminal, restart is the medicine', async () => {
         // Leaving = draining = alive (restart would abort the handoff).
-        // Fenced = membership lost for THIS silo identity, every activation
+        // Fenced = membership lost for THIS host identity, every activation
         // refused, and no way back — a fenced pod that stays "live" is a
         // zombie no orchestrator will ever fix (#141: an outage of the
         // membership store left the whole cluster dead until a human
@@ -387,9 +387,9 @@ describe('cluster ops: readiness', () => {
 
         const probeLive = async (index: number) => {
             const app = cluster.apps[index]!;
-            const request = new Request(`http://silo${index}.test/_sigx/health`);
+            const request = new Request(`http://host${index}.test/_sigx/health`);
             const route = app.routes.find((r) => r.match(request))!;
-            return route.handle(request, app.silo!);
+            return route.handle(request, app.host!);
         };
 
         // Draining stays live: beginStop announces leaving, liveness 200.
@@ -397,7 +397,7 @@ describe('cluster ops: readiness', () => {
         expect((await probeLive(1)).status).toBe(200);
 
         // Fenced fails liveness.
-        cluster.hub.kill(cluster.placements[0]!.identity.siloId);
+        cluster.hub.kill(cluster.placements[0]!.identity.hostId);
         await new Promise((r) => setTimeout(r, 20));
         expect(cluster.placements[0]!.counters().status).toBe('fenced');
         const live = await probeLive(0);
@@ -407,7 +407,7 @@ describe('cluster ops: readiness', () => {
 });
 
 describe('cluster ops: the metrics split', () => {
-    it('counts a cross-silo call ONCE, on the caller — it is split, not doubled', async () => {
+    it('counts a cross-host call ONCE, on the caller — it is split, not doubled', async () => {
         const plugins: MetricsPlugin[] = [metrics(), metrics()];
         const cluster = await createCluster(2, {
             actors: [Counter],
@@ -415,13 +415,13 @@ describe('cluster ops: the metrics split', () => {
             plugins: (i) => [plugins[i]!]
         });
         running = cluster;
-        // Place it on silo 1, then call it from silo 0.
-        await cluster.silos[1]!.actor(Counter, 'split').increment(1);
+        // Place it on host 1, then call it from host 0.
+        await cluster.hosts[1]!.actor(Counter, 'split').increment(1);
         const callerBefore = plugins[0]!.snapshot().calls.total;
         const ownerBefore = plugins[1]!.snapshot().calls.total;
         const ownerTurnsBefore = plugins[1]!.snapshot().turnMs?.count ?? 0;
 
-        await cluster.silos[0]!.actor(Counter, 'split').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'split').increment(1);
 
         // The caller counted the call...
         expect(plugins[0]!.snapshot().calls.total).toBe(callerBefore + 1);
@@ -436,7 +436,7 @@ describe('cluster ops: the metrics split', () => {
 describe('cluster ops: the ops endpoint over a real cluster', () => {
     /** `ops()` wired the way an app actually wires it: the fan-out thunk
      *  closes over the placement `cluster()` built. Late-bound because the
-     *  placement does not exist until the harness has built the silo. */
+     *  placement does not exist until the harness has built the host. */
     const opsFor = (index: number, harness: () => ClusterHarness): ActorPlugin =>
         ops({
             secret: 'ops-secret',
@@ -445,11 +445,11 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
 
     const read = async (cluster: ClusterHarness, index: number, path: string) => {
         const app = cluster.apps[index]!;
-        const request = new Request(`http://silo.test${path}`, {
+        const request = new Request(`http://host.test${path}`, {
             headers: { authorization: 'Bearer ops-secret' }
         });
         const route = app.routes.find((candidate) => candidate.match(request))!;
-        return route.handle(request, cluster.silos[index]!);
+        return route.handle(request, cluster.hosts[index]!);
     };
 
     it('serves the whole cluster over /_sigx/ops/cluster', async () => {
@@ -462,7 +462,7 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
         harness = cluster;
         running = cluster;
         for (let i = 0; i < 3; i++) {
-            await cluster.silos[i]!.actor(Counter, `grain-${i}`).increment(1);
+            await cluster.hosts[i]!.actor(Counter, `actor-${i}`).increment(1);
         }
 
         const response = await read(cluster, 0, '/_sigx/ops/cluster');
@@ -470,10 +470,10 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
         const report = (await response.json()) as ClusterStatsReport;
         // The same answer `clusterStats()` gives in process — the route is a
         // transport for it, not a second implementation.
-        expect(report.silos).toHaveLength(3);
+        expect(report.hosts).toHaveLength(3);
         expect(report.partial).toBe(false);
         expect(report.totals.activations).toBe(3);
-        expect(report.from).toBe(cluster.placements[0]!.identity.siloId);
+        expect(report.from).toBe(cluster.placements[0]!.identity.hostId);
     });
 
     it('marks the report partial when a peer is down, rather than failing', async () => {
@@ -487,7 +487,7 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
         running = cluster;
         // Address stops resolving but membership still lists it — the case
         // where the fan-out MUST degrade rather than throw, since a
-        // dashboard that goes blank when one silo dies is worse than useless.
+        // dashboard that goes blank when one host dies is worse than useless.
         cluster.unbind(2);
 
         const response = await read(cluster, 0, '/_sigx/ops/cluster');
@@ -498,7 +498,7 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
         expect(report.unreachable[0]!.reason).toBe('unreachable');
     });
 
-    it('carries the local cluster report in the per-silo snapshot', async () => {
+    it('carries the local cluster report in the per-host snapshot', async () => {
         let harness: ClusterHarness | null = null;
         const cluster = await createCluster(2, {
             actors: [Counter],
@@ -507,11 +507,11 @@ describe('cluster ops: the ops endpoint over a real cluster', () => {
         });
         harness = cluster;
         running = cluster;
-        await cluster.silos[0]!.actor(Counter, 'local').increment(1);
+        await cluster.hosts[0]!.actor(Counter, 'local').increment(1);
 
         const body = (await (await read(cluster, 0, '/_sigx/ops')).json()) as OpsSnapshot;
-        const section = body.ops.cluster as SiloReport;
-        expect(section.siloId).toBe(cluster.placements[0]!.identity.siloId);
+        const section = body.ops.cluster as HostReport;
+        expect(section.hostId).toBe(cluster.placements[0]!.identity.hostId);
         expect(section.status).toBe('active');
         // `counters` is what makes the routing panels possible at all.
         expect(section.counters.membershipVersion).toBeGreaterThan(0);

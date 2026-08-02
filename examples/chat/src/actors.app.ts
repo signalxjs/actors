@@ -14,7 +14,7 @@
  * actor-file edit and a restart). This is a server-only module; the client
  * build stubs it, so the redis import never reaches the browser.
  */
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { fileStorage } from '@sigx/actors/node';
 import { redisStorage } from '@sigx/actors-redis';
 import { actors } from 'virtual:sigx-actors';

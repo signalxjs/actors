@@ -2,7 +2,7 @@
     "name": "sigx-actors-monorepo",
     "version": "0.1.0",
     "private": true,
-    "description": "Orleans-style virtual actors for SignalX",
+    "description": "Virtual actors for SignalX",
     "type": "module",
     "workspaces": [
         "packages/*"
@@ -60,8 +60,7 @@
         "sigx",
         "actors",
         "virtual-actors",
-        "orleans",
-        "grains",
+        "actors",
         "stateful"
     ],
     "author": "Andreas Ekdahl",

@@ -16,7 +16,7 @@ import {
     GrainsScreen,
     HealthScreen,
     OverviewScreen,
-    SilosScreen,
+    HostsScreen,
     type Pane
 } from '../src/dashboard/screens';
 import { cursorModel, demoState } from './fixture';
@@ -34,8 +34,8 @@ describe('eyeball', () => {
         const pane: Pane = { width: 78, height: 26 };
         const screens: [string, unknown][] = [
             ['OVERVIEW', <OverviewScreen state={state} pane={pane} />],
-            ['SILOS', <SilosScreen state={state} pane={pane} cursor={cursorModel(0)} />],
-            ['GRAINS', <GrainsScreen state={state} pane={pane} cursor={cursorModel(1)} />],
+            ['HOSTS', <HostsScreen state={state} pane={pane} cursor={cursorModel(0)} />],
+            ['ACTORS', <GrainsScreen state={state} pane={pane} cursor={cursorModel(1)} />],
             ['CLUSTER', <ClusterScreen state={state} pane={pane} />],
             ['HEALTH', <HealthScreen state={state} pane={pane} />]
         ];

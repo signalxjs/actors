@@ -1,7 +1,7 @@
 /**
  * `@sigx/actors/job` — durable long-running operations on virtual actors.
  *
- * One job = one grain (key = your run id): start it from a request
+ * One job = one actor (key = your run id): start it from a request
  * handler and return immediately; poll `status()`, subscribe to
  * `watch()`, `cancel()` it, fetch `result()` — from anywhere in the
  * cluster. Crash-resume, keep-alive and cancellation come from the

@@ -33,7 +33,7 @@ swap, `useActorState`, SSR — see `examples/chat`, which runs on Node.
 ## The shape worth copying
 
 `examples/counter` builds its app **at module scope**, which is right for a
-process that owns one silo. On Workers it is wrong, and quietly so: storage
+process that owns one host. On Workers it is wrong, and quietly so: storage
 and reminders come from a Durable Object's own `ctx.storage`, so they exist
 **per object**. A module-scope app binds whichever object constructed it first
 and then serves every other object from those seams.
@@ -41,7 +41,7 @@ and then serves every other object from those seams.
 So the app is a factory (`src/actors.app.ts`), and the host hands the seams in:
 
 ```ts
-export class ActorSilo extends createSiloDurableObject<Env>({
+export class ActorHost extends createHostDurableObject<Env>({
     actors,
     namespace: (env) => env.ACTORS,
     app: createApp          // receives the OBJECT's storage/reminders/defaults
@@ -68,7 +68,7 @@ carries a far smaller per-value limit. It is the one irreversible line in
 
 **`__DEV__` must be defined.** The runtime ships a dev and a production dist
 and expects the bundler to define its compile-time flag. Without
-`"define": { "__DEV__": "false" }` the silo throws `__DEV__ is not defined` on
+`"define": { "__DEV__": "false" }` the host throws `__DEV__ is not defined` on
 the first request. `pnpm dev` overrides it to `true` so local warnings appear.
 
 **`nodejs_compat` is required.** `@sigx/server` — the serverFn layer the wire
@@ -86,7 +86,7 @@ origins here instead of switching the check off.
 ## Eviction is not deactivation
 
 A Durable Object is evicted when idle, and eviction destroys the isolate, the
-silo and the activation **together** — so `onDeactivate` never runs. Anything
+host and the activation **together** — so `onDeactivate` never runs. Anything
 that must survive has to be written inside the turn (`ctx.save()`), which is
 why `Counter` saves on every increment. Nothing already saved is lost;
 nothing unsaved is kept, and there is no hook to save it in.

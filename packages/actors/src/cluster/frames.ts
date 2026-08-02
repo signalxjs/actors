@@ -1,7 +1,7 @@
 /**
  * `@sigx/actors/cluster/frames` — the wire shared by every
- * connection-oriented silo transport: the frame codec below, plus the
- * `SiloConnection` state machine re-exported at the bottom.
+ * connection-oriented host transport: the frame codec below, plus the
+ * `HostConnection` state machine re-exported at the bottom.
  *
  * It lives in the core package rather than in one transport because both
  * `@sigx/actors-tcp` and `@sigx/actors-ws` speak it, and `wire-shared.ts` is
@@ -247,7 +247,7 @@ export class FrameReader {
 // WebSocket transports need it — re-exported here so a transport package
 // imports one entry rather than reaching into internals.
 export {
-    SiloConnection,
+    HostConnection,
     DEFAULT_CREDIT,
     DEFAULT_MAX_FRAME_BYTES,
     type ConnectionOptions,

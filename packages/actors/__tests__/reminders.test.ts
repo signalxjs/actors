@@ -7,20 +7,20 @@ import {
     type ActorStorage
 } from '@sigx/actors';
 import {
-    createSilo,
+    createHost,
     manualScheduler,
     memoryStorage,
     shardedReminders,
     timerScheduler,
     REMINDER_TYPE,
-    type Silo
-} from '@sigx/actors/silo';
+    type Host
+} from '@sigx/actors/host';
 // The service class itself is internal — imported directly for the
 // concurrent-ticker CAS test.
-import { ReminderService } from '../src/silo/reminders';
-import { peekSilo, type ActorReminders, type ActorRemindersContext } from '@sigx/actors';
+import { ReminderService } from '../src/host/reminders';
+import { peekHost, type ActorReminders, type ActorRemindersContext } from '@sigx/actors';
 
-let running: Silo | null = null;
+let running: Host | null = null;
 afterEach(async () => {
     await running?.stop({ timeoutMs: 1000 });
     running = null;
@@ -51,7 +51,7 @@ function wakingActor(events: string[]) {
 describe('reminders', () => {
     it('rejects periods under the 60s floor', async () => {
         const events: string[] = [];
-        const silo = createSilo({
+        const host = createHost({
             actors: [wakingActor(events)],
             defaults: { reminderTickMs: 60_000, sweepIntervalMs: 60_000 }
         });
@@ -65,28 +65,28 @@ describe('reminders', () => {
                 }
             })
         });
-        const silo2 = createSilo({ actors: [bad], defaults: { reminderTickMs: 60_000 } });
-        await expect(silo2.actor(bad, 'k').go()).rejects.toThrow(/period must be >= 60000ms/);
-        void silo;
+        const host2 = createHost({ actors: [bad], defaults: { reminderTickMs: 60_000 } });
+        await expect(host2.actor(bad, 'k').go()).rejects.toThrow(/period must be >= 60000ms/);
+        void host;
     });
 
     it('a due reminder RE-ACTIVATES an idle actor and one-shots clear themselves', async () => {
         const events: string[] = [];
         const storage = memoryStorage();
         const def = wakingActor(events);
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             storage,
             defaults: { reminderTickMs: 25, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        running = silo;
-        await silo.start();
+        running = host;
+        await host.start();
 
-        const client = silo.actor(def, 'r1');
+        const client = host.actor(def, 'r1');
         await client.wakeMeIn(0);
         // Deactivate — the reminder must bring it back.
-        await silo.deactivateType('Waking');
-        expect(silo.stats().activations).toBe(0);
+        await host.deactivateType('Waking');
+        expect(host.stats().activations).toBe(0);
 
         await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
         // Re-activated by the reminder (a second activate event).
@@ -97,27 +97,27 @@ describe('reminders', () => {
         });
     });
 
-    it('reminders survive a silo restart on shared storage', async () => {
+    it('reminders survive a host restart on shared storage', async () => {
         const events: string[] = [];
         const storage = memoryStorage();
         const def = wakingActor(events);
-        const siloA = createSilo({
+        const hostA = createHost({
             actors: [def],
             storage,
             defaults: { reminderTickMs: 25, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await siloA.start();
-        await siloA.actor(def, 'r2').wakeMeIn(50);
-        await siloA.stop();
+        await hostA.start();
+        await hostA.actor(def, 'r2').wakeMeIn(50);
+        await hostA.stop();
         expect(events).not.toContain('reminder:wake');
 
-        const siloB = createSilo({
+        const hostB = createHost({
             actors: [def],
             storage,
             defaults: { reminderTickMs: 25, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        running = siloB;
-        await siloB.start();
+        running = hostB;
+        await hostB.start();
         await vi.waitFor(() => expect(events).toContain('reminder:wake'), { timeout: 3000 });
     });
 
@@ -133,15 +133,15 @@ describe('reminders', () => {
                 return { ownsReminderShard: () => leader };
             }
         };
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             storage: memoryStorage(),
             placement,
             defaults: { reminderTickMs: 25, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        running = silo;
-        await silo.start();
-        await silo.actor(def, 'g1').wakeMeIn(0);
+        running = host;
+        await host.start();
+        await host.actor(def, 'g1').wakeMeIn(0);
 
         // Several tick intervals pass while gated off: nothing fires.
         await new Promise((r) => setTimeout(r, 120));
@@ -155,13 +155,13 @@ describe('reminders', () => {
         const events: string[] = [];
         const def = wakingActor(events);
         const storage = memoryStorage();
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             storage,
             defaults: { reminderTickMs: 60_000, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
         for (const key of ['a', 'b', 'c', 'd', 'e']) {
-            await silo.actor(def, key).wakeMeIn(120_000);
+            await host.actor(def, key).wakeMeIn(120_000);
         }
         // Every reminder landed in a p<n> shard record.
         const found: string[] = [];
@@ -180,7 +180,7 @@ describe('reminders', () => {
         ).reduce((a, b) => a + b, 0);
         expect(total).toBe(5);
         // The same actor always resolves to the same shard: list() finds it.
-        await expect(silo.actor(def, 'a').listReminders()).resolves.toEqual(['wake']);
+        await expect(host.actor(def, 'a').listReminders()).resolves.toEqual(['wake']);
     });
 
     it('two tickers on the same shard fire a reminder exactly once (CAS, no lease)', async () => {
@@ -217,7 +217,7 @@ describe('reminders', () => {
     it('a tick that changes nothing writes nothing', async () => {
         // The tick loop visits every owned shard on every tick, whether or
         // not that shard holds anything. Persisting a table it did not
-        // change is pure write amplification: an idle silo would rewrite all
+        // change is pure write amplification: an idle host would rewrite all
         // 16 shard records every `reminderTickMs`, forever. With
         // `fileStorage` that also means 16 temp-file+rename pairs inside the
         // project tree every tick, which is what trips Vite's HMR reader.
@@ -271,7 +271,7 @@ describe('reminders', () => {
             load: (type, key) => base.load(type, key),
             save: async (type, key, state, expectedEtag) => {
                 // The reminder table has concurrent writers in a cluster —
-                // simulate another silo winning the first CAS.
+                // simulate another host winning the first CAS.
                 if (type === REMINDER_TYPE && conflicts === 0) {
                     conflicts++;
                     throw new ActorStorageConflict(type, key);
@@ -280,12 +280,12 @@ describe('reminders', () => {
             },
             clear: (type, key, expectedEtag) => base.clear(type, key, expectedEtag)
         };
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             storage,
             defaults: { reminderTickMs: 60_000, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        const client = silo.actor(def, 'cas');
+        const client = host.actor(def, 'cas');
         await expect(client.wakeMeIn(120_000)).resolves.toBeUndefined();
         expect(conflicts).toBe(1);
         await expect(client.listReminders()).resolves.toEqual(['wake']);
@@ -321,25 +321,25 @@ describe('reminders are pluggable', () => {
 
         const events: string[] = [];
         const def = wakingActor(events);
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             reminders: perActor,
             defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(def, 'a').wakeMeIn(0);
+            await host.actor(def, 'a').wakeMeIn(0);
             // Went to the plugin, not to `$sigx:reminders` in storage.
             expect(set).toEqual(['a/wake']);
 
-            // And the silo handed it a working delivery callback: firing it
+            // And the host handed it a working delivery callback: firing it
             // re-activates the actor and runs onReminder.
             await deliver!({ type: 'Waking', key: 'a' }, 'wake');
             expect(events).toContain('reminder:wake');
             // The stub honours the ReminderApi contract: names, not keys.
-            await expect(silo.actor(def, 'a').listReminders()).resolves.toEqual(['wake']);
+            await expect(host.actor(def, 'a').listReminders()).resolves.toEqual(['wake']);
         } finally {
-            await silo.stop({ timeoutMs: 1000 });
+            await host.stop({ timeoutMs: 1000 });
         }
     });
 });
@@ -359,17 +359,17 @@ describe('reminders lifecycle is strict', () => {
                 list: async () => []
             })
         };
-        const silo = createSilo({
+        const host = createHost({
             actors: [wakingActor([])],
             reminders: exploding,
             scheduler,
             defaults: { sweepIntervalMs: 1_000, callTimeoutMs: 0 }
         });
-        await expect(silo.start()).rejects.toThrow('alarm unavailable');
+        await expect(host.start()).rejects.toThrow('alarm unavailable');
         // The sweeper must NOT have been registered by a start that failed.
         expect(scheduler.pending).toBe(0);
-        // ...and the seam must not be stamped with a silo that is not running.
-        expect(peekSilo()).toBeUndefined();
+        // ...and the seam must not be stamped with a host that is not running.
+        expect(peekHost()).toBeUndefined();
     });
 
     it('makes concurrent start() calls a real barrier', async () => {
@@ -391,22 +391,22 @@ describe('reminders lifecycle is strict', () => {
                 list: async () => []
             })
         };
-        const silo = createSilo({
+        const host = createHost({
             actors: [wakingActor([])],
             reminders: slow,
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 1_000, callTimeoutMs: 0 }
         });
-        const first = silo.start();
+        const first = host.start();
         // Await ONLY the second caller: if it gets its own already-resolved
         // promise instead of the in-flight one, it returns before startup
         // has happened. (Awaiting both would hide that behind the first.)
-        const second = silo.start();
+        const second = host.start();
         setTimeout(release, 0);
         await second;
         expect(started).toBe(true);
         await first;
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('lets a stop racing an in-flight start tear it down anyway', async () => {
@@ -425,23 +425,23 @@ describe('reminders lifecycle is strict', () => {
                 list: async () => []
             })
         };
-        const silo = createSilo({
+        const host = createHost({
             actors: [wakingActor([])],
             reminders: slow,
             scheduler,
             defaults: { sweepIntervalMs: 1_000, callTimeoutMs: 0 }
         });
-        const starting = silo.start();
+        const starting = host.start();
         // Stop while the start is still in flight; it must not let that
         // start's continuation re-register the sweeper behind our back.
-        const stopping = silo.stop({ timeoutMs: 1000 });
+        const stopping = host.stop({ timeoutMs: 1000 });
         release();
         await Promise.all([starting, stopping]);
         expect(scheduler.pending).toBe(0);
-        expect(peekSilo()).toBeUndefined();
+        expect(peekHost()).toBeUndefined();
     });
 
-    it('refuses to bind one reminders instance to two silos', () => {
+    it('refuses to bind one reminders instance to two hosts', () => {
         const service = shardedReminders();
         const context = {
             storage: memoryStorage(),

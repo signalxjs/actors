@@ -16,7 +16,7 @@
     "compatibility_date": "2026-07-01",
     "compatibility_flags": ["nodejs_compat"],
     "durable_objects": {
-        "bindings": [{ "name": "ACTORS", "class_name": "TestSilo" }]
+        "bindings": [{ "name": "ACTORS", "class_name": "TestHost" }]
     },
-    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestSilo"] }]
+    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestHost"] }]
 }

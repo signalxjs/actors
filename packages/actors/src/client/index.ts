@@ -17,7 +17,7 @@
  * `{"chunk"}* ({"done"}|{"error"})` for stream methods. Errors are
  * re-created with the `__sigxServerFnError` brand so `isServerFnError`
  * matches them. The parsing/branding plumbing lives in `../wire-shared` —
- * shared with the silo-to-silo transport.
+ * shared with the host-to-host transport.
  *
  * Policy — retries, caching, invalidation, live subscriptions — deliberately
  * lives in `@sigx/actors/app`, not here: this entry's byte budget rides
@@ -79,9 +79,9 @@ export interface ActorCallInit {
      */
     endpoint?: string;
     /**
-     * The grain this call is for, when there is exactly ONE.
+     * The actor this call is for, when there is exactly ONE.
      *
-     * Absent for `$live#subscribe`, which multiplexes many grains onto one
+     * Absent for `$live#subscribe`, which multiplexes many actors onto one
      * request, and for any hand-built transport call. A transport or router
      * MUST read absence as "no routing opinion is possible", never as an
      * error.
@@ -163,8 +163,8 @@ export interface ActorTransportConfig {
     /** Fetch implementation; default is the global fetch. */
     fetch?: typeof globalThis.fetch;
     /**
-     * How the per-grain routing token is derived — the thing an edge load
-     * balancer hashes to send every call for one grain to one silo. Default
+     * How the per-actor routing token is derived — the thing an edge load
+     * balancer hashes to send every call for one actor to one host. Default
      * `'hash'`: an opaque hash of the actor id, so keys stay out of access
      * logs. See `../route`.
      *
@@ -180,7 +180,7 @@ export interface ActorTransportConfig {
 
 function endpointOf(config: ActorTransportConfig, init: ActorCallInit | undefined): string {
     // `init.route` FIRST: it is the only source that was told, rather than
-    // assumed, where this grain lives. Without this an app that called
+    // assumed, where this actor lives. Without this an app that called
     // `configureActors({ endpoint })` would silently defeat its own router.
     const target = init?.route ?? config.endpoint ?? init?.endpoint ?? '';
     return target.endsWith('/') ? target.slice(0, -1) : target;
@@ -207,7 +207,7 @@ async function send(
     // preflights on its own, so a caller who genuinely needs a simple
     // cross-origin GET also wants `route: 'none'` and no custom headers.
     if (init?.get !== true) headers['content-type'] = 'application/json';
-    // The routing token: the grain's type comes from the symbol, its key is
+    // The routing token: the actor's type comes from the symbol, its key is
     // wire arg 0 (the proxy splices it there). Both carriers get the SAME
     // token from one call, so a path segment and a header can never disagree.
     const hash = symbol.lastIndexOf('#');
@@ -217,13 +217,13 @@ async function send(
             : null;
     // The SAME bytes as the path segment — an LB hashes what it sees, so a
     // raw header beside an encoded path would route the two carriers to
-    // different silos. Encoding also keeps the value valid ASCII.
+    // different hosts. Encoding also keeps the value valid ASCII.
     if (token !== null) headers[ACTOR_ROUTE_HEADER] = encodeRouteToken(token);
     const path = routePath(endpointOf(config, init), token, symbol);
     const signal = init?.signal ? { signal: init.signal } : {};
     // A declared read goes out as GET with its arguments in `?args=`, which is
     // what lets a browser, a CDN or a reverse proxy answer it without the
-    // request ever reaching a grain. Same symbol, same routing token, same
+    // request ever reaching an actor. Same symbol, same routing token, same
     // codec — only the carrier differs.
     const [url, request]: [string, RequestInit] =
         init?.get === true
@@ -246,7 +246,7 @@ async function send(
 function skewHint(symbol: string, status: number): string {
     return status === 404
         ? `[sigx actors] the server does not know "${symbol}" — is the actor registered ` +
-              `with the silo, and are client and server builds from the same deploy?`
+              `with the host, and are client and server builds from the same deploy?`
         : `[sigx actors] call to "${symbol}" failed with HTTP ${status}`;
 }
 
@@ -376,7 +376,7 @@ export function __actorRef(
         // choice silently breaking calls it has no business touching.
         const { get: carrier, ...rest } = options ?? {};
         // `ref` LAST so it is authoritative: a caller's `.with({ ref })`
-        // cannot make a proxy route as some other grain.
+        // cannot make a proxy route as some other actor.
         const init: ActorCallInit = {
             ...rest,
             endpoint: options?.endpoint ?? endpoint,

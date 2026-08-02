@@ -2,37 +2,44 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **silo → host, grain → actor** (#233): the dashboard tabs and stats
+  headings now say hosts and actors, `SiloView`/`siloViewFromReport` are
+  `HostView`/`hostViewFromReport`, and the ops HTTP source sends
+  `?host=<id>` following the runtime's renamed ops contract.
+
 ### Added
 
-- **The cursor leads somewhere: `enter` opens a silo** (#121). Selecting a
-  row in the Silos table used to move a highlight and change nothing else,
-  because a `SiloReport` carried no metrics, no health and no grains for a
-  peer. It carries all three now, so `enter` opens that silo in full — its
-  calls, latency, readiness, checks, error kinds and the grains living on
+- **The cursor leads somewhere: `enter` opens a host** (#121). Selecting a
+  row in the Hosts table used to move a highlight and change nothing else,
+  because a `HostReport` carried no metrics, no health and no actors for a
+  peer. It carries all three now, so `enter` opens that host in full — its
+  calls, latency, readiness, checks, error kinds and the actors living on
   it — and `h` returns to the list with the cursor where it was (the shell claims `esc` for its own palette and view stack).
 
   The detail is requested only while the panel is open. A detail poll makes
-  every silo walk its activation table, so a dashboard that always asked
+  every host walk its activation table, so a dashboard that always asked
   would make the cluster pay for a panel nobody is looking at.
 
 - **Cluster-wide numbers, labelled as such** (#121). The Overview shows the
   merged `totals.metrics` when the fan-out produced them, headed
-  `cluster · N silo(s)`; the Grains and Health tabs are headed with the silo
+  `cluster · N host(s)`; the Actors and Health tabs are headed with the host
   they actually describe. `sigx actors stats` does the same —
-  `calls — cluster-wide (2 of 3 silos reporting)` versus
-  `calls — silo s.ab12 ONLY`.
+  `calls — cluster-wide (2 of 3 hosts reporting)` versus
+  `calls — host s.ab12 ONLY`.
 
   This is the second half of the issue's complaint. The numbers were not
-  wrong; they were unlabelled, so one silo's `calls total 382` printed
-  directly beneath `cluster silos 2` and read as a cluster figure.
+  wrong; they were unlabelled, so one host's `calls total 382` printed
+  directly beneath `cluster hosts 2` and read as a cluster figure.
 
-- **A `READY` column on the Silos table** (#121), because every silo's
+- **A `READY` column on the Hosts table** (#121), because every host's
   readiness now travels in the fan-out rather than only the polled one's.
-  `FATAL` is shown distinctly from `NO`: it means the silo cannot recover
+  `FATAL` is shown distinctly from `NO`: it means the host cannot recover
   and must be REPLACED, and reading it as "draining" is how a zombie pod
   sits there forever.
 
-- **The coverage caveat** (#121). When only some silos report metrics, the
+- **The coverage caveat** (#121). When only some hosts report metrics, the
   Overview and `stats` both say so — totals covering two thirds of a fleet
   look exactly like totals covering all of it.
 
@@ -81,7 +88,7 @@
   later. Reviewing the diff is reviewing the dashboard.
 
 - **`fatal`, the locate miss rate, and watch counts are on screen** (#121).
-  `HealthStatus.fatal` (#144) says a silo cannot recover and must be
+  `HealthStatus.fatal` (#144) says a host cannot recover and must be
   REPLACED, which read as ordinary not-ready before; `locateRemote/locates`
   (#138) is the edge-routing miss rate; `remoteWatches`/`inboundWatches`
   (#119) matter next to an activation count, because a watch holds a
@@ -93,7 +100,7 @@
   not say which tab was showing, so the workaround was to move them all.
   `@sigx/cli` 0.9 answers it (`activeTab`), so only the visible tab's cursor
   moves — and the table scrolls to follow it, which is the first time the
-  Silos cursor has done anything observable at all.
+  Hosts cursor has done anything observable at all.
 
 - **The queue and activation sparklines were labelled as rates** (#121).
   Both are gauges — how many there are right now — so `33/s` claimed a
@@ -112,7 +119,7 @@
   component" — so consecutive `<text>` siblings share a line. Every
   component emitted a `<box>` wrapping N sibling `<text>` rows expecting one
   line each, so they all ran together: `2activations` was a value welded to
-  the next row's label, and an entire silo table rendered on a single line
+  the next row's label, and an entire host table rendered on a single line
   running into its own header.
 
   Rows are block elements now, via a named `Line` component so the intent is
@@ -132,7 +139,7 @@
   cursor marker the header did not, so every column heading was off by one.
 
 - **Column widths were measured with `.length`, not display cells** (#121).
-  A wide glyph is two cells, so an ordinary grain key like `用户-42`
+  A wide glyph is two cells, so an ordinary actor key like `用户-42`
   (`.length` 5, width 7) under-padded its column and shifted everything to
   its right. Truncation now cuts by cells too, so a wide glyph is never
   split in half. Found by the `@sigx/terminal` maintainer while generalising
@@ -148,22 +155,22 @@
 ### Added
 
 - **A cluster to point it at** (#101). `examples/counter`'s cluster demo
-  now mounts `metrics()` and `ops()` on all three silos, and
+  now mounts `metrics()` and `ops()` on all three hosts, and
   `pnpm --filter counter-example cluster:serve` keeps them up under steady
   traffic instead of shutting down at the end.
 
   The traffic is shaped rather than uniform, because a dashboard rendering
-  a screen of zeroes demonstrates nothing: a hot grain that builds queue
-  depth, a spread of cold ones, a silo left `leaving` by the drain step, and
+  a screen of zeroes demonstrates nothing: a hot actor that builds queue
+  depth, a spread of cold ones, a host left `leaving` by the drain step, and
   one call in seven aimed at a method that does not exist — so the
   queue/turn split, the shard map and `errors.byKind` are all populated.
 
   The ops secret is separate from the cluster secret on purpose: they
-  authenticate different things to different people. One is silo-to-silo,
+  authenticate different things to different people. One is host-to-host,
   the other is an operator with a dashboard.
 
-- **`sigx actors top` — the dashboard** (#101). Five tabs (Overview, Silos,
-  Grains, Cluster, Health) hosted by `runShell` from `@sigx/cli/shell`,
+- **`sigx actors top` — the dashboard** (#101). Five tabs (Overview, Hosts,
+  Actors, Cluster, Health) hosted by `runShell` from `@sigx/cli/shell`,
   which exists for exactly this: a long-running plugin command that owns the
   screen. Using it rather than mounting our own app is what makes the tabs,
   status line, palette and teardown match every other sigx tool — and what
@@ -174,19 +181,19 @@
   to show everything, it is to make the wrong thing impossible to miss, so
   every screen leads with a banner for whatever is currently wrong: a failed
   poll, a `partial` fan-out, an **unclaimed reminder shard** (nothing is
-  ticking it, and nothing else surfaces that), a **fenced** silo (refusing
+  ticking it, and nothing else surfaces that), a **fenced** host (refusing
   activations while still published as `active`), or a non-zero
-  `authFailures` (a secret rotation that has not reached every silo).
+  `authFailures` (a secret rotation that has not reached every host).
 
   **A failed poll does not blank the screen.** The last good snapshot stays
   up, labelled as stale, with `poll FAILING` and an age in the status bar. A
-  dashboard that goes blank the moment a silo hiccups destroys exactly the
+  dashboard that goes blank the moment a host hiccups destroys exactly the
   context you need to understand the hiccup. The status bar also flags data
   older than three intervals, because stale numbers that still look live are
   the failure mode the whole line exists to prevent.
 
   Polling has back-pressure: an in-flight request is abandoned rather than
-  queued behind, so a 5s silo on a 1s interval does not accumulate requests
+  queued behind, so a 5s host on a 1s interval does not accumulate requests
   until something gives, and a late reply from an abandoned poll cannot
   clobber a newer answer. The timer is `unref`'d so Ctrl+C exits now rather
   than after the next interval.
@@ -197,7 +204,7 @@
   `/actors` palette command, merged into any other plugin's shell.
 
   Deliberately a pointer rather than a live panel. Rendering one would mean
-  opening a source, and the only zero-config source **starts a silo** — it
+  opening a source, and the only zero-config source **starts a host** — it
   joins membership, claims actors and ticks reminders. Doing that as a side
   effect of somebody else's dev server is a genuinely bad surprise, and "the
   monitor quietly became a cluster member" is not a sentence anyone should
@@ -256,29 +263,29 @@
   stacking `latency`, `queue` and `turn` is reading them against one axis.
 
 - **`@sigx/actors-cli`** (#101) — a `@sigx/cli` plugin that observes actor
-  silos, following the `@sigx/lynx-cli` precedent rather than shipping its
+  hosts, following the `@sigx/lynx-cli` precedent rather than shipping its
   own binary. `sigx` is already the command an app author runs, and the
   plugin model means these panes can merge into ANOTHER plugin's shell; a
   standalone binary could only ever be a separate window.
 
 - **`sigx actors stats`** — one snapshot, printed and gone: cluster totals,
-  per-silo state, the queue/turn latency split, error kinds, the slowest
-  methods by p99 turn time, and the hottest grains. `--json` emits the whole
+  per-host state, the queue/turn latency split, error kinds, the slowest
+  methods by p99 turn time, and the hottest actors. `--json` emits the whole
   normalized snapshot, on the principle that the point of `--json` is that
   something else does the summarising.
 
 - **`sigx actors health`** — liveness and readiness with **the exit code as
   the answer**: `0` ready, `1` reachable but not ready, `2` unreachable.
-  The last two are deliberately distinct — a silo answering "not ready" is
-  alive and handing off its activations, a silo answering nothing is a
+  The last two are deliberately distinct — a host answering "not ready" is
+  alive and handing off its activations, a host answering nothing is a
   different incident with a different fix, and collapsing them is how a
   rolling deploy becomes an outage.
 
 - **Two sources behind one seam.** `embeddedSource` loads the project's app
   module in-process: zero config, no secret, and strictly more visible than
-  the wire allows. `httpSource` polls a running silo's `ops()` endpoint,
+  the wire allows. `httpSource` polls a running host's `ops()` endpoint,
   loading no user code. `--url` picks the second, and it WINS over a local
-  module — passing a URL is an explicit statement about which silo you mean,
+  module — passing a URL is an explicit statement about which host you mean,
   and silently preferring a local one would monitor the wrong process while
   looking correct.
 
@@ -288,7 +295,7 @@
   the worse trade. An app exporting none of them still monitors; it shows
   fewer panels.
 
-  It also never stops a silo it merely attached to: whether the app was
+  It also never stops a host it merely attached to: whether the app was
   already running is read BEFORE starting it, because that is the only
   moment the answer is knowable, and closing the monitor must not drain
   someone else's activations.

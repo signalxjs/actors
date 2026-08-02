@@ -1,5 +1,5 @@
 /**
- * The silo-to-silo call envelope — one JSON header carrying the call
+ * The host-to-host call envelope — one JSON header carrying the call
  * metadata the PUBLIC wire deliberately has no fields for. Compat-critical:
  * mixed-version clusters exist during every rolling deploy, so the header
  * name, the `v` discipline, and the remaining-ms deadline semantics are
@@ -13,9 +13,11 @@
 import { timingSafeEquals } from '../timing-safe';
 import type { ActorCallContext } from '../types';
 
-export const SILO_CALL_HEADER = 'x-sigx-silo-call';
-export const SILO_AUTH_HEADER = 'x-sigx-cluster-auth';
-export const SILO_PROTO = 1;
+export const HOST_CALL_HEADER = 'x-sigx-host-call';
+export const HOST_AUTH_HEADER = 'x-sigx-cluster-auth';
+// Peers speaking an older vocabulary are already excluded by the
+// `/_sigx/host` route prefix, so v1 needs no bump for renames.
+export const HOST_PROTO = 1;
 /** Defensive forward-loop cap — redirect-not-proxy means hops stay at 1. */
 const MAX_HOPS = 8;
 
@@ -38,7 +40,7 @@ function asciiJson(value: unknown): string {
 
 export function encodeEnvelope(call: ActorCallContext, from: string): string {
     const envelope: WireEnvelope = {
-        v: SILO_PROTO,
+        v: HOST_PROTO,
         callId: call.callId,
         chain: call.callChain,
         ...(call.deadline !== undefined
@@ -62,12 +64,12 @@ export function decodeEnvelope(header: string): DecodedEnvelope {
     try {
         parsed = JSON.parse(header) as WireEnvelope;
     } catch {
-        throw new Error(`[sigx actors] malformed ${SILO_CALL_HEADER} header`);
+        throw new Error(`[sigx actors] malformed ${HOST_CALL_HEADER} header`);
     }
-    if (parsed.v !== SILO_PROTO) {
+    if (parsed.v !== HOST_PROTO) {
         throw new Error(
-            `[sigx actors] silo protocol version skew: got v${parsed.v}, this silo speaks ` +
-                `v${SILO_PROTO} — are all silos from compatible deploys?`
+            `[sigx actors] host protocol version skew: got v${parsed.v}, this host speaks ` +
+                `v${HOST_PROTO} — are all hosts from compatible deploys?`
         );
     }
     if (
@@ -81,10 +83,10 @@ export function decodeEnvelope(header: string): DecodedEnvelope {
     ) {
         // Compat-critical header: malformed fields fail loudly (a NaN
         // deadline or NaN hops would silently break timeout/loop caps).
-        throw new Error(`[sigx actors] malformed ${SILO_CALL_HEADER} header`);
+        throw new Error(`[sigx actors] malformed ${HOST_CALL_HEADER} header`);
     }
     if (parsed.hops > MAX_HOPS) {
-        throw new Error(`[sigx actors] silo call exceeded ${MAX_HOPS} hops — forwarding loop?`);
+        throw new Error(`[sigx actors] host call exceeded ${MAX_HOPS} hops — forwarding loop?`);
     }
     return {
         call: {
@@ -106,7 +108,7 @@ export function decodeEnvelope(header: string): DecodedEnvelope {
 // the signature to the symbol and callId means a captured header cannot
 // authorize a DIFFERENT call; the freshness window bounds how long any
 // capture stays usable. Replaying the identical request inside the window
-// is out of scope without a nonce store — run mTLS/VPC between silos for
+// is out of scope without a nonce store — run mTLS/VPC between hosts for
 // transport privacy (documented posture).
 //
 // Cost: ~9µs per sign/verify with the key cached (import is ~2ms, paid
@@ -144,11 +146,11 @@ async function hmacHex(
     callId: string,
     timestamp: number
 ): Promise<string> {
-    const message = `${SILO_PROTO}\n${symbol}\n${callId}\n${timestamp}`;
+    const message = `${HOST_PROTO}\n${symbol}\n${callId}\n${timestamp}`;
     return toHex(await crypto.subtle.sign('HMAC', await keyFor(secret), encoder.encode(message)));
 }
 
-/** Produce the auth header value for one outbound silo call. */
+/** Produce the auth header value for one outbound host call. */
 export async function signAuth(secret: string, symbol: string, callId: string): Promise<string> {
     const timestamp = Date.now();
     return `v1.${timestamp}.${await hmacHex(secret, symbol, callId, timestamp)}`;

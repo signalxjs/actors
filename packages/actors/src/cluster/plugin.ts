@@ -1,42 +1,42 @@
 /**
  * `cluster()` — clustering as an app plugin.
  *
- * Hand-wired, a clustered silo repeats itself: `secret` goes to both
- * `clusterPlacement` and `handleSiloRequest`, `internalBase` has to agree
- * with `matchesSiloRequest`'s default, and the internal mount is left to the
+ * Hand-wired, a clustered host repeats itself: `secret` goes to both
+ * `clusterPlacement` and `handleHostRequest`, `internalBase` has to agree
+ * with `matchesHostRequest`'s default, and the internal mount is left to the
  * entry to route. Nothing type-checks any of that agreement.
  *
  * As a plugin each value is declared ONCE and the internal mount travels
  * with it as a contributed route, so an adapter that mounts `app.routes`
- * gets silo-to-silo traffic for free. This is composition only — the
+ * gets host-to-host traffic for free. This is composition only — the
  * placement, endpoint and providers underneath are unchanged.
  */
-import type { ActorPlugin, HealthReport, PluginRegistry } from '../silo/app';
-import type { MetricsDigest } from '../silo/digest';
+import type { ActorPlugin, HealthReport, PluginRegistry } from '../host/app';
+import type { MetricsDigest } from '../host/digest';
 import { clusterPlacement, type ClusterPlacement } from './placement';
-import type { SiloTransportFactory } from './seam';
-import type { SiloEndpointOptions } from './silo-endpoint';
+import type { HostTransportFactory } from './seam';
+import type { HostEndpointOptions } from './host-endpoint';
 import { httpTransport } from './transport';
 import type { ClusterProviders, PlacementPolicy } from './types';
 
 export interface ClusterPluginOptions {
     /**
-     * Membership + directory for THIS silo, from a provider package
+     * Membership + directory for THIS host, from a provider package
      * (`redisCluster({ url })`, `memoryClusterHub().providers()`). A named
      * field rather than a spread, so the provider/config boundary stays
      * visible.
      */
     providers: ClusterProviders;
-    /** Peer-reachable origin of this silo's HTTP listener. */
+    /** Peer-reachable origin of this host's HTTP listener. */
     advertise: string;
     /**
-     * Origin a CLIENT can reach this silo's PUBLIC actor mount on, e.g.
-     * `https://silo-3.example.com` — published so peers can redirect a
+     * Origin a CLIENT can reach this host's PUBLIC actor mount on, e.g.
+     * `https://host-3.example.com` — published so peers can redirect a
      * caller here under `onMiss: 'redirect'`.
      *
      * Deliberately NOT defaulted from `advertise`, which is the internal
      * origin: a pod IP is unreachable from outside and disclosing it hands
-     * out internal topology. Unset means peers proxy for this silo instead
+     * out internal topology. Unset means peers proxy for this host instead
      * of redirecting to it.
      */
     publicAddress?: string;
@@ -45,10 +45,10 @@ export interface ClusterPluginOptions {
      * outbound transport and the internal mount's HMAC verification.
      */
     secret?: string;
-    /** Path prefix of the internal mount. Default `/_sigx/silo`. */
+    /** Path prefix of the internal mount. Default `/_sigx/host`. */
     internalBase?: string;
     /**
-     * How this silo reaches its peers. Default `httpTransport()`.
+     * How this host reaches its peers. Default `httpTransport()`.
      *
      * A LIST is a fallback chain, tried in order — the rolling-deploy
      * story: `[tcpTransport(), httpTransport()]` upgrades link by link as
@@ -60,7 +60,7 @@ export interface ClusterPluginOptions {
      * Configuring only socket transports means there is NO internal HTTP
      * mount — a smaller attack surface, and nothing to `curl`.
      */
-    transport?: SiloTransportFactory | readonly SiloTransportFactory[];
+    transport?: HostTransportFactory | readonly HostTransportFactory[];
     /**
      * Fetch implementation (tests pipe it straight into peers' handlers).
      * Sugar for `transport: httpTransport({ fetch })`; passing both throws.
@@ -83,23 +83,23 @@ export interface ClusterPluginOptions {
      * passing both throws, since it would otherwise silently apply to
      * nothing when the chain contains no HTTP transport.
      */
-    endpoint?: SiloEndpointOptions;
+    endpoint?: HostEndpointOptions;
 }
 
 export interface ClusterPlugin extends ActorPlugin {
     /**
-     * This silo's placement — for the operational primitives that have no
+     * This host's placement — for the operational primitives that have no
      * plugin equivalent: `identity`, `descriptor()`, `migrate(ref)`.
-     * Available immediately; the placement does not need the silo until
+     * Available immediately; the placement does not need the host until
      * `bind()`.
      */
     readonly placement: ClusterPlacement;
 }
 
 export function cluster(options: ClusterPluginOptions): ClusterPlugin {
-    const internalBase = options.internalBase ?? '/_sigx/silo';
+    const internalBase = options.internalBase ?? '/_sigx/host';
     if (!internalBase.startsWith('/')) {
-        // Silent otherwise, and doubly so: `matchesSiloRequest` compares
+        // Silent otherwise, and doubly so: `matchesHostRequest` compares
         // against a pathname (always leading-slash) so the route would never
         // match, AND peer dispatch URLs would be malformed.
         throw new Error(
@@ -136,7 +136,7 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
             ...(options.fetch ? { fetch: options.fetch } : {}),
             ...(options.endpoint ? { endpoint: options.endpoint } : {})
         });
-    // Built eagerly: a placement defers everything that needs the silo to
+    // Built eagerly: a placement defers everything that needs the host to
     // `bind()`, so there is nothing to wait for — and exposing it right away
     // keeps `migrate()`/`identity` reachable without starting the app. It is
     // also why the transport is an option here rather than its own plugin:
@@ -154,7 +154,7 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
         // section instead would re-enter this very report — `cluster()`
         // publishes `placement.report()` as the `'cluster'` ops section —
         // and would hand back percentiles, which is precisely the shape
-        // that cannot be merged across silos.
+        // that cannot be merged across hosts.
         metrics: (digestOptions) => readDigest?.(digestOptions) as MetricsDigest | undefined,
         advertise: options.advertise,
         ...(options.publicAddress !== undefined
@@ -179,19 +179,19 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
             registry.setPlacement(() => placement);
             readHealth = () => registry.health();
             readDigest = (digestOptions) => registry.digest('metrics', digestOptions);
-            // Readiness, so a `health()` endpoint drains this silo without
+            // Readiness, so a `health()` endpoint drains this host without
             // knowing clustering exists. `'leaving'` is the M4 handoff
             // window (announced BEFORE the drain, which is the whole point:
             // the load balancer stops sending while activations hand off).
             // `'fenced'` is the one that would otherwise be invisible —
             // `#fence()` leaves the PUBLISHED status at 'active' while
-            // every activation is refused, so a fenced silo is a black hole
+            // every activation is refused, so a fenced host is a black hole
             // the balancer would happily keep feeding.
             registry.reportHealth('cluster', () => {
                 const { status } = placement.counters();
                 return {
                     ready: status === 'active',
-                    // Fenced is TERMINAL for this silo identity (identities
+                    // Fenced is TERMINAL for this host identity (identities
                     // are minted per start, there is no rejoin path), so it
                     // must fail liveness — not just readiness — or the pod
                     // sits live-200/ready-503 forever after a membership
@@ -206,19 +206,19 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
                               : status
                 };
             });
-            // This silo's own report, for an `ops()` endpoint. Deliberately
+            // This host's own report, for an `ops()` endpoint. Deliberately
             // the LOCAL report and not a `clusterStats()` fan-out: a section
             // provider is sync and must stay cheap, and the fan-out is an
             // explicit second route precisely because it costs N peer
             // round-trips.
-            // Deliberately the BARE report: no digest, no grain list. The
+            // Deliberately the BARE report: no digest, no actor list. The
             // metrics section sits right beside this one in the same
             // snapshot, so including the digest here would ship the same
             // numbers twice — once as percentiles and once as buckets.
             registry.reportOps('cluster', () => placement.report());
             // The internal mount is no longer special-cased: it is whatever
             // the configured transports declare. A chain of socket
-            // transports declares nothing, and this silo then has no
+            // transports declares nothing, and this host then has no
             // internal HTTP surface at all.
             for (const route of placement.routes()) registry.route(route);
         }

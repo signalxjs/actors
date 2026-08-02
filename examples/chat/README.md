@@ -9,7 +9,7 @@ Production-shaped: with `REDIS_URL` set the same app clusters — Redis
 membership/directory (`redisCluster`), Redis actor state (`redisStorage`),
 and a **dual listener**: the public port serves only SSR, assets,
 serverFns and the actor endpoint (default same-origin policy, HMAC-signed
-HttpOnly sessions), while health/ops/silo mounts live on an internal port
+HttpOnly sessions), while health/ops/host mounts live on an internal port
 for probes, peers and `kubectl port-forward` only.
 
 ## Dev (single node, fileStorage, no env)

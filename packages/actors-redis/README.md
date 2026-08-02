@@ -7,24 +7,24 @@ Requires **Redis ≥ 7**; [`ioredis`](https://github.com/redis/ioredis)
 (≥ 5) is a peer dependency.
 
 ```ts
-import { createSilo } from '@sigx/actors/silo';
+import { createHost } from '@sigx/actors/host';
 import { clusterPlacement } from '@sigx/actors/cluster';
 import { redisCluster } from '@sigx/actors-redis';
 
-const silo = createSilo({
+const host = createHost({
     actors,
     storage,
     placement: clusterPlacement({
         ...redisCluster({ url: process.env.REDIS_URL }),
         advertise: 'http://10.0.4.7:7311',
-        secret: process.env.SILO_SECRET
+        secret: process.env.HOST_SECRET
     })
 });
 ```
 
 Pass an existing `ioredis` client instead of `url` to share the app's
-connection: `redisCluster({ client })`. Call `redisCluster()` once per silo
-— each call returns that silo's own membership handle (the directory is
+connection: `redisCluster({ client })`. Call `redisCluster()` once per host
+— each call returns that host's own membership handle (the directory is
 safely shared).
 
 ## Options
@@ -40,15 +40,15 @@ safely shared).
 ## Key layout
 
 ```
-{ns}:silo:{siloId}    HASH {d: descriptor JSON}   PX ttlMs, renewed each beat
-{ns}:silos            SET of siloIds              lazily pruned
+{ns}:host:{hostId}    HASH {d: descriptor JSON}   PX ttlMs, renewed each beat
+{ns}:hosts            SET of hostIds              lazily pruned
 {ns}:mver             INCR'd version counter      cheap view-poll compare
-{ns}:dir:{actorId}    "siloId\nactivationId"      no TTL (validity = owner liveness)
+{ns}:dir:{actorId}    "hostId\nactivationId"      no TTL (validity = owner liveness)
 {ns}:membership       pub/sub channel             change push (poll = fallback)
 ```
 
-A silo that cannot heartbeat past `ttlMs` self-fences (stops claiming
-actors, deactivates what it holds); directory entries of dead silos are
+A host that cannot heartbeat past `ttlMs` self-fences (stops claiming
+actors, deactivates what it holds); directory entries of dead hosts are
 evicted lazily on lookup. State integrity never rests on any of this — the
 actor runtime's storage etag CAS is the floor.
 
@@ -62,7 +62,7 @@ cluster-safe `ActorStorage` (`memoryStorage` dies with the process,
 `fileStorage` is single-process dev-only):
 
 ```ts
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { redisStorage } from '@sigx/actors-redis';
 
 const app = defineActorApp({

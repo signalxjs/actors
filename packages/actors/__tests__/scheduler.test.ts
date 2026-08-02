@@ -12,7 +12,7 @@ async function drain(): Promise<void> {
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { createSilo, manualScheduler, memoryStorage } from '@sigx/actors/silo';
+import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 
 const Counter = defineActor({
     type: 'Counter',
@@ -68,59 +68,59 @@ describe('manualScheduler', () => {
     });
 });
 
-describe('the silo drives its background work through the seam', () => {
+describe('the host drives its background work through the seam', () => {
     it('sweeps idle activations when time actually advances', async () => {
         const scheduler = manualScheduler();
-        const silo = createSilo({
+        const host = createHost({
             actors: [Counter],
             storage: memoryStorage(),
             scheduler,
             defaults: { idleAfterMs: 0, sweepIntervalMs: 1_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(Counter, 'k').increment(1);
-            expect(silo.stats().activations).toBe(1);
+            await host.actor(Counter, 'k').increment(1);
+            expect(host.stats().activations).toBe(1);
 
             // No wall-clock waiting, and no 60_000 sleight of hand: the
             // sweeper simply has not been ticked yet.
-            expect(silo.stats().activations).toBe(1);
+            expect(host.stats().activations).toBe(1);
             scheduler.advance(1_000);
             await drain();
-            expect(silo.stats().activations).toBe(0);
+            expect(host.stats().activations).toBe(0);
         } finally {
-            await silo.stop({ timeoutMs: 1_000 });
+            await host.stop({ timeoutMs: 1_000 });
         }
     });
 
     it('leaves nothing armed after stop()', async () => {
         const scheduler = manualScheduler();
-        const silo = createSilo({
+        const host = createHost({
             actors: [Counter],
             storage: memoryStorage(),
             scheduler,
             defaults: { sweepIntervalMs: 1_000, reminderTickMs: 1_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         // Sweeper + reminder tick.
         expect(scheduler.pending).toBe(2);
-        await silo.stop({ timeoutMs: 1_000 });
+        await host.stop({ timeoutMs: 1_000 });
         expect(scheduler.pending).toBe(0);
     });
 
     it('registers no sweeper at all when sweepIntervalMs is 0', async () => {
-        // For a runtime that evicts the whole silo when it goes idle — a
+        // For a runtime that evicts the whole host when it goes idle — a
         // Cloudflare Durable Object — the sweeper can never usefully fire,
         // and a permanent interval would pin the object in memory (and
         // billable) for as long as the actor exists.
         const scheduler = manualScheduler();
-        const silo = createSilo({
+        const host = createHost({
             actors: [Counter],
             storage: memoryStorage(),
             scheduler,
             defaults: { sweepIntervalMs: 0, reminderTickMs: 1_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
             // The reminder tick only — no sweeper.
             expect(scheduler.pending).toBe(1);
@@ -128,11 +128,11 @@ describe('the silo drives its background work through the seam', () => {
             // And idle collection genuinely does not happen: an activation
             // older than `idleAfterMs` survives an advance that would have
             // swept it.
-            await silo.actor(Counter, 'a').increment(1);
+            await host.actor(Counter, 'a').increment(1);
             scheduler.advance(600_000);
-            expect(silo.stats().activations).toBe(1);
+            expect(host.stats().activations).toBe(1);
         } finally {
-            await silo.stop({ timeoutMs: 1_000 });
+            await host.stop({ timeoutMs: 1_000 });
         }
     });
 
@@ -157,20 +157,20 @@ describe('the silo drives its background work through the seam', () => {
                 }
             })
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Ticker],
             storage: memoryStorage(),
             scheduler,
             defaults: { sweepIntervalMs: 10_000, reminderTickMs: 10_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(Ticker, 'k').arm();
+            await host.actor(Ticker, 'k').arm();
             scheduler.advance(250);
             await drain();
             expect(ticks).toEqual([1]);
         } finally {
-            await silo.stop({ timeoutMs: 1_000 });
+            await host.stop({ timeoutMs: 1_000 });
         }
     });
 
@@ -191,15 +191,15 @@ describe('the silo drives its background work through the seam', () => {
                 }
             })
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Ticker],
             storage: memoryStorage(),
             scheduler,
             defaults: { sweepIntervalMs: 10_000, reminderTickMs: 10_000, callTimeoutMs: 0 }
         });
-        await silo.start();
+        await host.start();
         try {
-            await silo.actor(Ticker, 'k').arm();
+            await host.actor(Ticker, 'k').arm();
             // due 50, then every 100 → 50, 150, 250. Drain between steps so
             // each fire gets its mailbox turn.
             for (const step of [50, 100, 100]) {
@@ -208,7 +208,7 @@ describe('the silo drives its background work through the seam', () => {
             }
             expect(ticks).toEqual([1, 2, 3]);
         } finally {
-            await silo.stop({ timeoutMs: 1_000 });
+            await host.stop({ timeoutMs: 1_000 });
         }
     });
 });

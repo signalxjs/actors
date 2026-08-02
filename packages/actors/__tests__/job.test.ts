@@ -7,7 +7,7 @@ import {
     JobStateError,
     type JobInfo
 } from '@sigx/actors/job';
-import { createSilo, memoryStorage, type Silo } from '@sigx/actors/silo';
+import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -39,7 +39,7 @@ async function until(cond: () => boolean | Promise<boolean>, ms = 3000): Promise
     }
 }
 
-let running: Silo | null = null;
+let running: Host | null = null;
 afterEach(async () => {
     vi.restoreAllMocks();
     await running?.stop({ timeoutMs: 1000 });
@@ -62,9 +62,9 @@ describe('defineJob: the state machine', () => {
                 return { sum };
             }
         });
-        const silo = createSilo({ actors: [SumJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(SumJob, 'run-1');
+        const host = createHost({ actors: [SumJob], defaults: quiet });
+        running = host;
+        const client = host.actor(SumJob, 'run-1');
 
         const started = await client.start({ upTo: 3 });
         expect(started.status).toBe('running');
@@ -93,9 +93,9 @@ describe('defineJob: the state machine', () => {
                 return input * 2;
             }
         });
-        const silo = createSilo({ actors: [JobDef], defaults: quiet });
-        running = silo;
-        const client = silo.actor(JobDef, 'run-1');
+        const host = createHost({ actors: [JobDef], defaults: quiet });
+        running = host;
+        const client = host.actor(JobDef, 'run-1');
 
         const seen: JobInfo[] = [];
         const done = gate();
@@ -123,9 +123,9 @@ describe('defineJob: the state machine', () => {
                 throw new Error('provider exploded');
             }
         });
-        const silo = createSilo({ actors: [BadJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(BadJob, 'run-1');
+        const host = createHost({ actors: [BadJob], defaults: quiet });
+        running = host;
+        const client = host.actor(BadJob, 'run-1');
         await client.start(undefined as never);
         await until(async () => (await client.status()).status === 'failed');
         expect((await client.status()).error?.message).toBe('provider exploded');
@@ -142,9 +142,9 @@ describe('defineJob: the state machine', () => {
                 return 1;
             }
         });
-        const silo = createSilo({ actors: [SlowJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(SlowJob, 'run-1');
+        const host = createHost({ actors: [SlowJob], defaults: quiet });
+        running = host;
+        const client = host.actor(SlowJob, 'run-1');
         await expect(client.result()).rejects.toThrow(JobNotDoneError); // pending
         await client.start(undefined as never);
         await expect(client.result()).rejects.toThrow(JobNotDoneError); // running
@@ -165,9 +165,9 @@ describe('defineJob: cancellation', () => {
                 return 'too late';
             }
         });
-        const silo = createSilo({ actors: [CancelJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(CancelJob, 'run-1');
+        const host = createHost({ actors: [CancelJob], defaults: quiet });
+        running = host;
+        const client = host.actor(CancelJob, 'run-1');
         await client.start(undefined as never);
         const info = await client.cancel();
         expect(info.status).toBe('cancelled'); // immediate, not eventual
@@ -197,9 +197,9 @@ describe('defineJob: late writes', () => {
                 return 'late';
             }
         });
-        const silo = createSilo({ actors: [LateJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(LateJob, 'run-1');
+        const host = createHost({ actors: [LateJob], defaults: quiet });
+        running = host;
+        const client = host.actor(LateJob, 'run-1');
         await client.start(undefined as never);
         await until(async () => (await client.status()).extra.notes.length === 1);
         await client.cancel();
@@ -212,7 +212,7 @@ describe('defineJob: late writes', () => {
 });
 
 describe('defineJob: crash-resume', () => {
-    it('a silo death resumes the run with attempts bumped and the checkpoint delivered', async () => {
+    it('a host death resumes the run with attempts bumped and the checkpoint delivered', async () => {
         const attempts: { attempt: number; resumedFrom: unknown }[] = [];
         const storage = memoryStorage();
         const ResumeJob = defineJob({
@@ -222,20 +222,20 @@ describe('defineJob: crash-resume', () => {
                 attempts.push({ attempt: job.attempt, resumedFrom: job.resumedFrom });
                 if (job.attempt === 1) {
                     await job.checkpoint({ cursor: 40 });
-                    await aborted(job.signal); // park until the silo dies
+                    await aborted(job.signal); // park until the host dies
                     return undefined as never; // interrupted — never completes
                 }
                 return { rows: input.rows, from: (job.resumedFrom as { cursor: number }).cursor };
             }
         });
-        const siloA = createSilo({ actors: [ResumeJob], storage, defaults: quiet });
-        await siloA.actor(ResumeJob, 'run-1').start({ rows: 100 });
+        const hostA = createHost({ actors: [ResumeJob], storage, defaults: quiet });
+        await hostA.actor(ResumeJob, 'run-1').start({ rows: 100 });
         await until(() => attempts.length === 1);
-        await within(siloA.stop({ timeoutMs: 5000 }), 2000);
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
 
-        const siloB = createSilo({ actors: [ResumeJob], storage, defaults: quiet });
-        running = siloB;
-        const client = siloB.actor(ResumeJob, 'run-1');
+        const hostB = createHost({ actors: [ResumeJob], storage, defaults: quiet });
+        running = hostB;
+        const client = hostB.actor(ResumeJob, 'run-1');
         await until(async () => (await client.status()).status === 'completed');
         expect(attempts).toHaveLength(2);
         expect(attempts[1]).toEqual({ attempt: 2, resumedFrom: { cursor: 40 } });
@@ -254,16 +254,16 @@ describe('defineJob: crash-resume', () => {
                 return undefined as never;
             }
         });
-        let silo = createSilo({ actors: [LoopJob], storage, defaults: quiet });
-        await silo.actor(LoopJob, 'run-1').start(undefined as never);
+        let host = createHost({ actors: [LoopJob], storage, defaults: quiet });
+        await host.actor(LoopJob, 'run-1').start(undefined as never);
         // Attempt 1 interrupted, attempt 2 interrupted, attempt 3 refused.
         for (let i = 0; i < 2; i++) {
-            await within(silo.stop({ timeoutMs: 5000 }), 2000);
-            silo = createSilo({ actors: [LoopJob], storage, defaults: quiet });
-            await silo.actor(LoopJob, 'run-1').status(); // activate → resume
+            await within(host.stop({ timeoutMs: 5000 }), 2000);
+            host = createHost({ actors: [LoopJob], storage, defaults: quiet });
+            await host.actor(LoopJob, 'run-1').status(); // activate → resume
         }
-        running = silo;
-        const client = silo.actor(LoopJob, 'run-1');
+        running = host;
+        const client = host.actor(LoopJob, 'run-1');
         await until(async () => (await client.status()).status === 'failed');
         expect((await client.status()).error?.message).toMatch(/gave up after 2 attempts/);
     });
@@ -284,15 +284,15 @@ describe('defineJob: pause / resume', () => {
                 return { doc: input.doc, approved: job.resumeData };
             }
         });
-        const siloA = createSilo({ actors: [Approval], storage, defaults: quiet });
-        const a = siloA.actor(Approval, 'run-1');
+        const hostA = createHost({ actors: [Approval], storage, defaults: quiet });
+        const a = hostA.actor(Approval, 'run-1');
         await a.start({ doc: 'contract' });
         await until(async () => (await a.status()).status === 'paused');
-        // Paused = no live task; survives a full silo restart with no resume.
-        await within(siloA.stop({ timeoutMs: 2000 }), 1500);
-        const siloB = createSilo({ actors: [Approval], storage, defaults: quiet });
-        running = siloB;
-        const b = siloB.actor(Approval, 'run-1');
+        // Paused = no live task; survives a full host restart with no resume.
+        await within(hostA.stop({ timeoutMs: 2000 }), 1500);
+        const hostB = createHost({ actors: [Approval], storage, defaults: quiet });
+        running = hostB;
+        const b = hostB.actor(Approval, 'run-1');
         expect((await b.status()).status).toBe('paused');
         expect(runs).toHaveLength(1);
 
@@ -310,9 +310,9 @@ describe('defineJob: pause / resume', () => {
             unguarded: true,
             run: async () => 1
         });
-        const silo = createSilo({ actors: [NopJob], defaults: quiet });
-        running = silo;
-        await expect(silo.actor(NopJob, 'run-1').resume()).rejects.toThrow(JobStateError);
+        const host = createHost({ actors: [NopJob], defaults: quiet });
+        running = host;
+        await expect(host.actor(NopJob, 'run-1').resume()).rejects.toThrow(JobStateError);
     });
 
     it('a paused wait can time out via job.reminders + onReminder control', async () => {
@@ -332,14 +332,14 @@ describe('defineJob: pause / resume', () => {
                 if (name === 'timeout') await control.resume({ timedOut: true });
             }
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Hitl],
             storage,
             defaults: { ...quiet, reminderTickMs: 25 }
         });
-        running = silo;
-        await silo.start();
-        const client = silo.actor(Hitl, 'run-1');
+        running = host;
+        await host.start();
+        const client = host.actor(Hitl, 'run-1');
         await client.start({ question: 'approve?' });
         await until(async () => (await client.status()).status === 'completed', 5000);
         expect(await client.result()).toEqual({ answer: { timedOut: true } });
@@ -358,9 +358,9 @@ describe('defineJob: extra state, retention, discard', () => {
                 return 1;
             }
         });
-        const silo = createSilo({ actors: [EventfulJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(EventfulJob, 'run-1');
+        const host = createHost({ actors: [EventfulJob], defaults: quiet });
+        running = host;
+        const client = host.actor(EventfulJob, 'run-1');
         await client.start(undefined as never);
         await until(async () => (await client.status()).status === 'completed');
         expect((await client.status()).extra.events).toEqual(['node:a', 'node:b']);
@@ -374,14 +374,14 @@ describe('defineJob: extra state, retention, discard', () => {
             retainMs: 40,
             run: async () => 'done'
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [Ephemeral],
             storage,
             defaults: { ...quiet, reminderTickMs: 25 }
         });
-        running = silo;
-        await silo.start();
-        const client = silo.actor(Ephemeral, 'run-1');
+        running = host;
+        await host.start();
+        const client = host.actor(Ephemeral, 'run-1');
         await client.start(undefined as never);
         await until(async () => (await client.status()).status === 'completed');
         // The one-shot retention reminder clears the record and deactivates.
@@ -399,9 +399,9 @@ describe('defineJob: extra state, retention, discard', () => {
                 return 1;
             }
         });
-        const silo = createSilo({ actors: [DiscardJob], defaults: quiet });
-        running = silo;
-        const client = silo.actor(DiscardJob, 'run-1');
+        const host = createHost({ actors: [DiscardJob], defaults: quiet });
+        running = host;
+        const client = host.actor(DiscardJob, 'run-1');
         await client.start(undefined as never);
         await expect(client.discard()).rejects.toThrow(JobStateError);
         release.open();

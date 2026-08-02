@@ -1,24 +1,24 @@
 /**
  * The whole round trip with NO Workers runtime.
  *
- * A fake namespace instantiates REAL `createSiloDurableObject` classes over a
+ * A fake namespace instantiates REAL `createHostDurableObject` classes over a
  * `Map`-backed storage and a one-field alarm, and a real
  * `createWorkerHandler` sits in front. So everything under test is shipped
- * code — the public wire, the placement, the internal mount, the silo, the
+ * code — the public wire, the placement, the internal mount, the host, the
  * reminder table — and only the platform is faked.
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, metrics } from '@sigx/actors/silo';
-import { encodeEnvelope, SILO_CALL_HEADER } from '@sigx/actors/cluster';
+import { defineActorApp, metrics } from '@sigx/actors/host';
+import { encodeEnvelope, HOST_CALL_HEADER } from '@sigx/actors/cluster';
 import {
-    createSiloDurableObject,
+    createHostDurableObject,
     createWorkerHandler,
     durableObjects,
     unhostedStorage,
     type DurableObjectNamespaceLike,
     type DurableObjectStateLike,
-    type SiloDurableObjectInstance
+    type HostDurableObjectInstance
 } from '@sigx/actors-cloudflare';
 
 const SEP = '\u0000';
@@ -95,11 +95,11 @@ function fakeState(name: string): DurableObjectStateLike & {
     return state;
 }
 
-function harness(appFactory?: Parameters<typeof createSiloDurableObject>[0]['app']) {
+function harness(appFactory?: Parameters<typeof createHostDurableObject>[0]['app']) {
     const states = new Map<string, ReturnType<typeof fakeState>>();
-    const hosts = new Map<string, SiloDurableObjectInstance>();
+    const hosts = new Map<string, HostDurableObjectInstance>();
 
-    const Host = createSiloDurableObject<Env>({
+    const Host = createHostDurableObject<Env>({
         actors: [Counter],
         namespace: (env) => env.ACTORS,
         ...(appFactory ? { app: appFactory } : {})
@@ -155,7 +155,7 @@ function harness(appFactory?: Parameters<typeof createSiloDurableObject>[0]['app
     return { states, hosts, namespace, env, worker, call, invoke, Host };
 }
 
-describe('createSiloDurableObject + createWorkerHandler', () => {
+describe('createHostDurableObject + createWorkerHandler', () => {
     it('serves the public wire end to end, into the right object', async () => {
         const h = harness();
         await expect(h.invoke('Counter#increment', ['a', 2])).resolves.toBe(2);
@@ -208,8 +208,8 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
         await reader.cancel();
     });
 
-    it('boots the silo from a COLD alarm and delivers the reminder', async () => {
-        // The eviction path: the platform wakes an object that has no silo in
+    it('boots the host from a COLD alarm and delivers the reminder', async () => {
+        // The eviction path: the platform wakes an object that has no host in
         // memory, and `onAlarm()` throws if the reminders were never bound.
         // Booting inside `alarm()` is what makes that survivable.
         const h = harness();
@@ -223,7 +223,7 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
         const state = h.states.get(name)!;
         expect(state.alarm).not.toBeNull();
 
-        // Evict: drop the instance, keep the durable state. The old silo held
+        // Evict: drop the instance, keep the durable state. The old host held
         // a live activation whose in-memory count would otherwise answer the
         // read below and hide whether the reminder did anything.
         h.hosts.delete(name);
@@ -239,7 +239,7 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
     it('refuses a call for an actor it does not host', async () => {
         // Not a race: ref -> object id is a pure function here, so this means
         // the two sides disagree about naming or bindings.
-        const Host = createSiloDurableObject<Env>({
+        const Host = createHostDurableObject<Env>({
             actors: [Counter],
             namespace: (env) => env.ACTORS
         });
@@ -258,7 +258,7 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
                     method: 'POST',
                     headers: {
                         'content-type': 'application/json',
-                        [SILO_CALL_HEADER]: encodeEnvelope(
+                        [HOST_CALL_HEADER]: encodeEnvelope(
                             { callChain: [], callId: 'c1.t.0' },
                             'test'
                         )
@@ -281,7 +281,7 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
         const nameless = fakeState('ignored');
         (nameless as { id: unknown }).id = { toString: () => 'abc123' };
         const host = new h.Host(nameless as never, h.env);
-        await expect(host.silo()).rejects.toThrow(/id has no name/);
+        await expect(host.host()).rejects.toThrow(/id has no name/);
     });
 
     it('404s a path that is not the actor mount', async () => {
@@ -303,7 +303,7 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
 
         expect(seen).toHaveLength(1);
         // The seams come from THIS object, not from a generic app: DO-backed
-        // storage, and no idle sweeper (the platform evicts the whole silo).
+        // storage, and no idle sweeper (the platform evicts the whole host).
         expect(seen[0]!.storage).toBeDefined();
         expect(seen[0]!.reminders).toBeDefined();
         expect((seen[0]!.defaults as { sweepIntervalMs?: number }).sweepIntervalMs).toBe(0);
@@ -330,7 +330,7 @@ describe('createSiloDurableObject + createWorkerHandler', () => {
         // a generic call failure, and the point is the message naming both
         // plugins.
         const host = new h.Host(fakeState(`Counter${SEP}a`), h.env);
-        await expect(host.silo()).rejects.toThrow(/cloudflare:durable-objects/);
+        await expect(host.host()).rejects.toThrow(/cloudflare:durable-objects/);
     });
 
 });

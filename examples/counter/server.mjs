@@ -16,7 +16,7 @@ import { Counter } from './src/counter.actor.ts';
 // THE SAME app module the dev server runs: storage, defaults and every
 // plugin shared, declared once. Only the registry differs — Vite hands the
 // plugin's over, this entry names its actors.
-const silo = await app.withActors([Counter]).start();
+const host = await app.withActors([Counter]).start();
 
 // One handler for the public endpoint and any plugin-contributed route.
 const actorHandler = createAppHandler(app);
@@ -45,7 +45,7 @@ const server = createServer((req, res) => {
 // Pass the server AND onStopBegin: stopping the actors is only half a
 // graceful shutdown, and `server` alone closes the listener at the end
 // without giving pools a chance to retire their sockets first.
-attachSignalHandlers(silo, { server, onStopBegin: () => (stopping = true) });
+attachSignalHandlers(host, { server, onStopBegin: () => (stopping = true) });
 
 server.listen(5199, () => {
     console.log('counter example on http://localhost:5199');

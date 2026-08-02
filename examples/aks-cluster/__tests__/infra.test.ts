@@ -10,7 +10,7 @@
  * passes encoded paths through, that the internal mounts are unreachable
  * from outside, that a signed cookie is the only way in, that a stream
  * outlives an idle proxy window, and — behind `INFRA_CHAOS=1` — that a
- * rolling restart drops nothing and a killed silo loses no committed state.
+ * rolling restart drops nothing and a killed host loses no committed state.
  *
  *   INFRA_URL=https://chat.example.net \
  *   INFRA_AUTH_SECRET=… INFRA_OPS_SECRET=… pnpm test:infra
@@ -118,8 +118,8 @@ describe.skipIf(!ready)('infra: the public surface is sealed', () => {
         ['/_sigx/health/ready', 'readiness'],
         ['/_sigx/ops', 'ops — bearer-authenticated, still not public'],
         ['/_sigx/ops/cluster', 'the cluster fan-out'],
-        ['/_sigx/silo', 'the silo-to-silo mount'],
-        ['/_sigx/silo/anything', 'anything under it']
+        ['/_sigx/host', 'the host-to-host mount'],
+        ['/_sigx/host/anything', 'anything under it']
     ])('404s %s (%s)', async (path) => {
         const res = await fetch(`${URL_BASE}${path}`);
         expect(res.status).toBe(404);
@@ -223,13 +223,13 @@ describe.skipIf(!ready)('infra: the app works end to end', () => {
         expect(html).toContain(room);
     });
 
-    it('reads a write back through the cluster (any silo answers for any grain)', async () => {
-        const room = `xsilo-${Date.now().toString(36)}`;
+    it('reads a write back through the cluster (any host answers for any actor)', async () => {
+        const room = `xhost-${Date.now().toString(36)}`;
         for (let i = 0; i < 3; i++) {
             const res = await actorCall('Room', 'post', [room, 'tester', `m${i}`]);
             expect(res.status).toBe(200);
         }
-        // Round-robin across silos means these reads land wherever; the
+        // Round-robin across hosts means these reads land wherever; the
         // directory makes them agree.
         for (let i = 0; i < 5; i++) {
             const res = await actorCall('Room', 'recent', [room, 20], { route: false });
@@ -283,17 +283,17 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: ops reports a healthy cluster', (
     // sealed-surface suite above.
     const opsUrl = process.env.INFRA_OPS_URL ?? 'http://127.0.0.1:7399';
 
-    it('every silo is active and the view agrees on its size', async () => {
+    it('every host is active and the view agrees on its size', async () => {
         const res = await fetch(`${opsUrl}/_sigx/ops/cluster`, {
             headers: { authorization: `Bearer ${OPS_SECRET}` }
         });
         expect(res.status).toBe(200);
         const body = (await res.json()) as {
             view: { size: number; active: number };
-            silos: { status: string }[];
+            hosts: { status: string }[];
         };
         expect(body.view.active).toBe(body.view.size);
-        expect(body.silos.every((s) => s.status === 'active')).toBe(true);
+        expect(body.hosts.every((s) => s.status === 'active')).toBe(true);
     });
 
     it('rejects an unauthenticated ops read', async () => {
@@ -352,8 +352,8 @@ describe.skipIf(!ready || !CHAOS)('infra: chaos — the invariants that actually
 
     it('a rolling restart under load loses no committed state', async () => {
         const result = await underLoad(async () => {
-            await kubectlAsync('rollout', 'restart', `deploy/${RELEASE}-silo`);
-            await kubectlAsync('rollout', 'status', `deploy/${RELEASE}-silo`, '--timeout=300s');
+            await kubectlAsync('rollout', 'restart', `deploy/${RELEASE}-host`);
+            await kubectlAsync('rollout', 'status', `deploy/${RELEASE}-host`, '--timeout=300s');
         }, { seconds: 90 });
         // Connection-level errors are expected at the edge (issue #142) —
         // what must hold is that nothing acknowledged was lost.
@@ -370,7 +370,7 @@ describe.skipIf(!ready || !CHAOS)('infra: chaos — the invariants that actually
     it('a hard pod kill loses no committed state', async () => {
         const result = await underLoad(async () => {
             const victim = await kubectlAsync(
-                'get', 'pods', '-l', 'app.kubernetes.io/component=silo',
+                'get', 'pods', '-l', 'app.kubernetes.io/component=host',
                 '-o', 'jsonpath={.items[0].metadata.name}'
             );
             await kubectlAsync('delete', 'pod', victim, '--grace-period=0', '--force');
@@ -383,9 +383,9 @@ describe.skipIf(!ready || !CHAOS)('infra: chaos — the invariants that actually
         );
     }, 600_000);
 
-    it('a Redis outage fences the silos and they recover unattended', async () => {
+    it('a Redis outage fences the hosts and they recover unattended', async () => {
         await kubectlAsync('scale', `deploy/${RELEASE}-redis`, '--replicas=0');
-        // Past the membership TTL every silo self-fences, which is now
+        // Past the membership TTL every host self-fences, which is now
         // FATAL (#141) — the kubelet restarts them.
         await new Promise((r) => setTimeout(r, 50_000));
         await kubectlAsync('scale', `deploy/${RELEASE}-redis`, '--replicas=1');

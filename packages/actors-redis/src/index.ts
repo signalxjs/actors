@@ -6,15 +6,15 @@
  *
  * Key layout under `{namespace}` (default `sigx`):
  *
- *   {ns}:silo:{siloId}    HASH {d: descriptor JSON}   PX ttlMs, renewed each beat
- *   {ns}:silos            SET of siloIds              lazily pruned on refresh
+ *   {ns}:host:{hostId}    HASH {d: descriptor JSON}   PX ttlMs, renewed each beat
+ *   {ns}:hosts            SET of hostIds              lazily pruned on refresh
  *   {ns}:mver             INCR'd version counter      cheap poll compare
- *   {ns}:dir:{actorId}    "siloId\nactivationId"      no TTL — validity is the
+ *   {ns}:dir:{actorId}    "hostId\nactivationId"      no TTL — validity is the
  *                                                     owner's liveness
  *   {ns}:membership       pub/sub channel             membership-change push
  *                                                     (poll is the fallback)
  *
- * Directory entries carry no TTL by design: one heartbeat per silo, not per
+ * Directory entries carry no TTL by design: one heartbeat per host, not per
  * activation. The storage etag CAS in the actor runtime remains the
  * integrity floor underneath all of this.
  */
@@ -25,8 +25,8 @@ import type {
     ClusterProviders,
     DirectoryEntry,
     MembershipView,
-    SiloDescriptor,
-    SiloStatus
+    HostDescriptor,
+    HostStatus
 } from '@sigx/actors/cluster';
 
 /** The subset of ioredis this package calls — accepts a shared app client. */
@@ -71,7 +71,7 @@ function resolve(options: RedisClusterOptions): Resolved {
     };
 }
 
-/** Membership + directory for ONE silo. */
+/** Membership + directory for ONE host. */
 export function redisCluster(options: RedisClusterOptions): ClusterProviders {
     const resolved = resolve(options);
     return {
@@ -100,13 +100,13 @@ export function redisMembership(
         ttlMs: options.ttlMs ?? 15_000,
         pollMs: options.pollMs ?? 5_000
     };
-    const setKey = `${ns}:silos`;
+    const setKey = `${ns}:hosts`;
     const mverKey = `${ns}:mver`;
     const channel = `${ns}:membership`;
-    const siloKey = (id: string): string => `${ns}:silo:${id}`;
+    const hostKey = (id: string): string => `${ns}:host:${id}`;
 
-    let self: SiloDescriptor | null = null;
-    let cached: MembershipView = { version: 0, silos: [] };
+    let self: HostDescriptor | null = null;
+    let cached: MembershipView = { version: 0, hosts: [] };
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let subscriber: RedisClient | null = null;
@@ -119,8 +119,8 @@ export function redisMembership(
         if (!self) return;
         await client
             .multi()
-            .hset(siloKey(self.siloId), 'd', JSON.stringify(self))
-            .pexpire(siloKey(self.siloId), ttlMs)
+            .hset(hostKey(self.hostId), 'd', JSON.stringify(self))
+            .pexpire(hostKey(self.hostId), ttlMs)
             .exec();
         lastOkMs = Date.now();
         suspected = false;
@@ -137,9 +137,9 @@ export function redisMembership(
     const refresh = async (): Promise<MembershipView> => {
         const [verRaw, ids] = await Promise.all([client.get(mverKey), client.smembers(setKey)]);
         const pipeline = client.pipeline();
-        for (const id of ids) pipeline.hget(siloKey(id), 'd');
+        for (const id of ids) pipeline.hget(hostKey(id), 'd');
         const rows = (await pipeline.exec()) ?? [];
-        const silos: SiloDescriptor[] = [];
+        const hosts: HostDescriptor[] = [];
         const dead: string[] = [];
         rows.forEach(([err, value], i) => {
             if (err || typeof value !== 'string') {
@@ -147,7 +147,7 @@ export function redisMembership(
                 return;
             }
             try {
-                silos.push(JSON.parse(value) as SiloDescriptor);
+                hosts.push(JSON.parse(value) as HostDescriptor);
             } catch {
                 dead.push(ids[i]!);
             }
@@ -156,7 +156,7 @@ export function redisMembership(
             // Lazy prune: expired heartbeats leave set members behind.
             await client.srem(setKey, ...dead).catch(noop);
         }
-        const next: MembershipView = { version: Number(verRaw ?? 0), silos };
+        const next: MembershipView = { version: Number(verRaw ?? 0), hosts };
         const changed = next.version !== cached.version || dead.length > 0;
         cached = next;
         if (changed) for (const cb of changeCbs) cb(next);
@@ -167,7 +167,7 @@ export function redisMembership(
         async join(descriptor) {
             self = descriptor;
             await writeSelf();
-            await client.sadd(setKey, descriptor.siloId);
+            await client.sadd(setKey, descriptor.hostId);
             await bumpVersion();
             await refresh();
             beat = setInterval(() => {
@@ -188,7 +188,7 @@ export function redisMembership(
             subscriber.on('message', () => void refresh().catch(noop));
             await subscriber.subscribe(channel).catch(noop);
         },
-        async setStatus(status: SiloStatus) {
+        async setStatus(status: HostStatus) {
             if (!self) return;
             self = { ...self, status };
             await writeSelf();
@@ -203,13 +203,13 @@ export function redisMembership(
                 subscriber = null;
             }
             if (!self) return;
-            const id = self.siloId;
+            const id = self.hostId;
             self = null;
             // Removal and version bump commit atomically; the push is
             // best-effort on top (the poll covers a lost publish).
             const results = await client
                 .multi()
-                .del(siloKey(id))
+                .del(hostKey(id))
                 .srem(setKey, id)
                 .incr(mverKey)
                 .exec();
@@ -218,8 +218,8 @@ export function redisMembership(
         },
         view: () => cached,
         refresh,
-        async isAlive(siloId) {
-            return (await client.exists(siloKey(siloId))) === 1;
+        async isAlive(hostId) {
+            return (await client.exists(hostKey(hostId))) === 1;
         },
         onChange(cb) {
             changeCbs.add(cb);
@@ -242,8 +242,8 @@ if cur == ARGV[1] then redis.call('DEL', KEYS[1]); return 1 end
 return 0
 `;
 
-/** Delete the key only if its value is owned by the silo (prefix match on
- *  the "siloId\n" value format) — the evictSilo sweep primitive. */
+/** Delete the key only if its value is owned by the host (prefix match on
+ *  the "hostId\n" value format) — the evictHost sweep primitive. */
 const DEL_IF_OWNER = `
 local cur = redis.call('GET', KEYS[1])
 if cur and string.sub(cur, 1, string.len(ARGV[1])) == ARGV[1] then
@@ -253,12 +253,12 @@ return 0
 `;
 
 const entryValue = (entry: DirectoryEntry): string =>
-    `${entry.siloId}\n${entry.activationId}`;
+    `${entry.hostId}\n${entry.activationId}`;
 
 function parseEntry(value: string): DirectoryEntry | null {
     const nl = value.indexOf('\n');
     if (nl <= 0) return null;
-    return { siloId: value.slice(0, nl), activationId: value.slice(nl + 1) };
+    return { hostId: value.slice(0, nl), activationId: value.slice(nl + 1) };
 }
 
 export function redisDirectory(
@@ -287,11 +287,11 @@ export function redisDirectory(
             const removed = await client.eval(COMPARE_DEL, 1, dirKey(actorId), entryValue(expected));
             return removed === 1;
         },
-        async evictSilo(siloId) {
+        async evictHost(hostId) {
             // Cursor SCAN over the directory prefix + per-key owner-checked
             // delete. Assumes a single logical Redis (the demo/default
             // deployment); on Redis Cluster, run against each node.
-            const prefix = `${siloId}\n`;
+            const prefix = `${hostId}\n`;
             let cursor = '0';
             let removed = 0;
             do {

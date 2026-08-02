@@ -6,7 +6,7 @@
  * the JSX layer over them produces terminal output at all — that the
  * intrinsics resolve to `@sigx/terminal`'s rather than the DOM's, and that
  * each screen survives the states it will really meet: no snapshot yet, a
- * failed poll, a partial fan-out, a fenced silo.
+ * failed poll, a partial fan-out, a fenced host.
  *
  * Assertions are on the TEXT, not on the styling. Colour is a theme token
  * resolved at paint time, and pinning it here would fail the first time
@@ -20,10 +20,10 @@ import {
     GrainsScreen,
     HealthScreen,
     OverviewScreen,
-    SilosScreen
+    HostsScreen
 } from '../src/dashboard/screens';
 import { DashboardState } from '../src/dashboard/state';
-import type { ClusterView, MonitorSnapshot, MonitorSource, SiloView } from '../src/source/types';
+import type { ClusterView, MonitorSnapshot, MonitorSource, HostView } from '../src/source/types';
 
 const emptyStats = {
     activations: 3,
@@ -32,8 +32,8 @@ const emptyStats = {
     transitional: { activating: 0, deactivating: 0 }
 };
 
-const silo = (over: Partial<SiloView> = {}): SiloView => ({
-    siloId: 'silo-a',
+const host = (over: Partial<HostView> = {}): HostView => ({
+    hostId: 'host-a',
     address: 'http://a:3000',
     status: 'active',
     uptimeMs: 65_000,
@@ -48,9 +48,9 @@ const silo = (over: Partial<SiloView> = {}): SiloView => ({
     ...over
 });
 
-/** Cluster totals with the metrics/health tallies a silo build reports. */
+/** Cluster totals with the metrics/health tallies a host build reports. */
 const clusterTotals = (over: Partial<ClusterView['totals']> = {}): ClusterView['totals'] => ({
-    silos: 2,
+    hosts: 2,
     activations: 3,
     queued: 1,
     perType: {},
@@ -73,7 +73,7 @@ const hist = (p99: number) => ({
 function snapshot(over: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
     return {
         at: 1_700_000_000_000,
-        silos: [silo()],
+        hosts: [host()],
         cluster: null,
         metrics: {
             windowMs: 1000,
@@ -110,7 +110,7 @@ function snapshot(over: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
         activations: [
             { type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004, idleMs: 0, keptAlive: false, tasks: 0 }
         ],
-        health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, silo: null },
+        health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, host: null },
         partial: false,
         ...over
     };
@@ -168,12 +168,12 @@ describe('screens render', () => {
         // The queue/turn split, which is the panel's whole reason to exist.
         expect(out).toContain('queue');
         expect(out).toContain('turn');
-        expect(out).toContain('high queue = a hot grain');
+        expect(out).toContain('high queue = a hot actor');
     });
 
     it('says "connecting" rather than drawing zeroes before the first poll', () => {
         const state = new DashboardState({ source: inertSource });
-        // Zeroes would be a claim about the silo; this is a claim about us.
+        // Zeroes would be a claim about the host; this is a claim about us.
         expect(draw(<OverviewScreen state={state} />)).toContain('connecting');
     });
 
@@ -193,67 +193,67 @@ describe('screens render', () => {
         expect(out).toContain('connection refused');
     });
 
-    it('calls out a fenced silo, which a load balancer cannot see', () => {
-        const state = stateWith({ silos: [silo({ status: 'fenced' })] });
-        const out = draw(<SilosScreen state={state} cursor={cursorModel(0)} />);
+    it('calls out a fenced host, which a load balancer cannot see', () => {
+        const state = stateWith({ hosts: [host({ status: 'fenced' })] });
+        const out = draw(<HostsScreen state={state} cursor={cursorModel(0)} />);
         expect(out).toContain('FENCED');
         expect(out).toContain('refusing activations');
-        expect(out).toContain('silo-a');
+        expect(out).toContain('host-a');
     });
 
-    it('puts each silo on its own line, under a header', () => {
+    it('puts each host on its own line, under a header', () => {
         const state = stateWith({
-            silos: [silo(), silo({ siloId: 'silo-b' }), silo({ siloId: 'silo-c' })]
+            hosts: [host(), host({ hostId: 'host-b' }), host({ hostId: 'host-c' })]
         });
-        const out = rows(<SilosScreen state={state} cursor={cursorModel(0)} />);
-        const header = out.findIndex((line) => line.includes('SILO') && line.includes('STATUS'));
+        const out = rows(<HostsScreen state={state} cursor={cursorModel(0)} />);
+        const header = out.findIndex((line) => line.includes('HOST') && line.includes('STATUS'));
         expect(header).toBeGreaterThan(-1);
-        // Three silos, three lines after the header and its rule — not one
+        // Three hosts, three lines after the header and its rule — not one
         // line holding all three, which is what shipped.
-        expect(out[header + 2]).toContain('silo-a');
-        expect(out[header + 3]).toContain('silo-b');
-        expect(out[header + 4]).toContain('silo-c');
-        expect(out[header + 2]).not.toContain('silo-b');
-        expect(out[header]).not.toContain('silo-a');
+        expect(out[header + 2]).toContain('host-a');
+        expect(out[header + 3]).toContain('host-b');
+        expect(out[header + 4]).toContain('host-c');
+        expect(out[header + 2]).not.toContain('host-b');
+        expect(out[header]).not.toContain('host-a');
     });
 
     it('lists unreachable peers with their classified reason', () => {
         const state = stateWith({
             partial: true,
             cluster: {
-                from: 'silo-a',
+                from: 'host-a',
                 view: { version: 4, size: 2, active: 1 },
                 totals: clusterTotals(),
-                reminderShards: { p0: ['silo-a'] },
+                reminderShards: { p0: ['host-a'] },
                 unreachable: [
-                    { siloId: 'silo-b', address: 'http://b:3000', reason: 'timeout', message: 'no answer' }
+                    { hostId: 'host-b', address: 'http://b:3000', reason: 'timeout', message: 'no answer' }
                 ]
             }
         });
-        const out = draw(<SilosScreen state={state} cursor={cursorModel(0)} />);
+        const out = draw(<HostsScreen state={state} cursor={cursorModel(0)} />);
         expect(out).toContain('unreachable');
-        expect(out).toContain('silo-b');
+        expect(out).toContain('host-b');
         expect(out).toContain('timeout');
     });
 
-    it('keeps every silo on its own line whichever row is selected', () => {
+    it('keeps every host on its own line whichever row is selected', () => {
         // A cursor that changes nothing on screen is the same as no cursor.
         // Where the selection SHOWS is asserted in `layout.test.tsx`, which
         // can see the viewport; here it is enough that selecting a row does
         // not disturb the structure around it.
         const state = stateWith({
-            silos: [silo(), silo({ siloId: 'silo-b' }), silo({ siloId: 'silo-c' })]
+            hosts: [host(), host({ hostId: 'host-b' }), host({ hostId: 'host-c' })]
         });
         for (const index of [0, 1, 2]) {
-            const out = rows(<SilosScreen state={state} cursor={cursorModel(index)} />);
-            const header = out.findIndex((line) => line.includes('SILO') && line.includes('STATUS'));
-            expect(out[header + 2]).toContain('silo-a');
-            expect(out[header + 3]).toContain('silo-b');
-            expect(out[header + 4]).toContain('silo-c');
+            const out = rows(<HostsScreen state={state} cursor={cursorModel(index)} />);
+            const header = out.findIndex((line) => line.includes('HOST') && line.includes('STATUS'));
+            expect(out[header + 2]).toContain('host-a');
+            expect(out[header + 3]).toContain('host-b');
+            expect(out[header + 4]).toContain('host-c');
         }
     });
 
-    it('draws the grain table and the slowest methods', () => {
+    it('draws the actor table and the slowest methods', () => {
         const out = draw(<GrainsScreen state={stateWith()} cursor={cursorModel(0)} />);
         expect(out).toContain('user-42');
         expect(out).toContain('Cart#checkout');
@@ -268,7 +268,7 @@ describe('screens render', () => {
     it('shows routing counters side by side and flags unclaimed shards', () => {
         const state = stateWith({
             cluster: {
-                from: 'silo-a',
+                from: 'host-a',
                 view: { version: 4, size: 2, active: 2 },
                 totals: clusterTotals({
                     counters: {
@@ -290,7 +290,7 @@ describe('screens render', () => {
                         claimConflicts: 0,
                         directoryReleases: 0,
                         directoryEvictions: 0,
-                        siloSweeps: 0,
+                        hostSweeps: 0,
                         sweptEntries: 0,
                         wrongHostRedirects: 0,
                         unreachableRetries: 0,
@@ -303,7 +303,7 @@ describe('screens render', () => {
                         routeCacheSize: 3
                     }
                 }),
-                reminderShards: { p0: ['silo-a'], p1: [], p2: ['silo-a', 'silo-b'] },
+                reminderShards: { p0: ['host-a'], p1: [], p2: ['host-a', 'host-b'] },
                 unreachable: []
             }
         });
@@ -324,7 +324,7 @@ describe('screens render', () => {
                 fatal: false,
                 uptimeMs: 1000,
                 checks: { cluster: { ready: false, detail: 'leaving — draining' } },
-                silo: null
+                host: null
             }
         });
         const out = draw(<HealthScreen state={state} />);

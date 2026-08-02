@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineActor, SiloShutdownError } from '@sigx/actors';
-import { createSilo, manualScheduler, memoryStorage } from '@sigx/actors/silo';
+import { defineActor, HostShutdownError } from '@sigx/actors';
+import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -65,8 +65,8 @@ describe('tasks: detached execution', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        const client = silo.actor(worker, 'a');
+        const host = createHost({ actors: [worker], defaults: quiet });
+        const client = host.actor(worker, 'a');
         await client.begin();
         await within(working.opened, 1000);
         // The mailbox is free mid-task: an ordinary read resolves NOW.
@@ -74,7 +74,7 @@ describe('tasks: detached execution', () => {
         expect(await client.running()).toEqual(['run']);
         release.open();
         await within(finished.opened, 1000);
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('turn() runs as an ordinary serialized turn: mutations land, changes() fires', async () => {
@@ -104,8 +104,8 @@ describe('tasks: detached execution', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [counter], defaults: quiet });
-        const client = silo.actor(counter, 'a');
+        const host = createHost({ actors: [counter], defaults: quiet });
+        const client = host.actor(counter, 'a');
 
         // Subscribe BEFORE starting, so every turn's change is observed —
         // live progress during a running task is the whole point.
@@ -125,7 +125,7 @@ describe('tasks: detached execution', () => {
         expect(seen).toEqual([1, 2, 3]);
         expect(await client.read()).toBe(3);
         await iterator.return?.();
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('start is single-flight per name', async () => {
@@ -145,14 +145,14 @@ describe('tasks: detached execution', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        const client = silo.actor(worker, 'a');
+        const host = createHost({ actors: [worker], defaults: quiet });
+        const client = host.actor(worker, 'a');
         await client.begin();
         await client.begin();
         await client.begin();
         expect(entries).toHaveLength(1);
         release.open();
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('rejects an unknown task name, and a start without a tasks: section', async () => {
@@ -175,10 +175,10 @@ describe('tasks: detached execution', () => {
                 begin: () => ctx.tasks.start('run')
             })
         });
-        const silo = createSilo({ actors: [withTasks, without], defaults: quiet });
-        await expect(silo.actor(withTasks, 'a').begin()).rejects.toThrow(/nope/);
-        await expect(silo.actor(without, 'a').begin()).rejects.toThrow(/tasks/);
-        await silo.stop({ timeoutMs: 1000 });
+        const host = createHost({ actors: [withTasks, without], defaults: quiet });
+        await expect(host.actor(withTasks, 'a').begin()).rejects.toThrow(/nope/);
+        await expect(host.actor(without, 'a').begin()).rejects.toThrow(/tasks/);
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('save()/clearState() from a detached task body reject — turn() is the door', async () => {
@@ -208,13 +208,13 @@ describe('tasks: detached execution', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        await silo.actor(worker, 'a').begin();
+        const host = createHost({ actors: [worker], defaults: quiet });
+        await host.actor(worker, 'a').begin();
         await until(() => outcomes.length === 3);
         expect(outcomes[0]).toMatch(/save\(\).*DETACHED/s);
         expect(outcomes[1]).toMatch(/clearState\(\).*DETACHED/s);
         expect(outcomes[2]).toBe('turn-save-ok');
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('a prototype member is not a task — "toString" is a clean not-found', async () => {
@@ -229,11 +229,11 @@ describe('tasks: detached execution', () => {
                 async run() {}
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        const client = silo.actor(worker, 'a');
+        const host = createHost({ actors: [worker], defaults: quiet });
+        const client = host.actor(worker, 'a');
         await expect(client.begin('toString')).rejects.toThrow(/toString/);
         await expect(client.begin('constructor')).rejects.toThrow(/constructor/);
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('a thrown task is terminal: it leaves list() and the actor keeps serving', async () => {
@@ -253,13 +253,13 @@ describe('tasks: detached execution', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [boom], defaults: quiet });
-        const client = silo.actor(boom, 'a');
+        const host = createHost({ actors: [boom], defaults: quiet });
+        const client = host.actor(boom, 'a');
         await client.begin();
         await until(() => errors.mock.calls.some((c) => String(c[0]).includes('task "explode"')));
         expect(await client.running()).toBe(0);
         expect(await client.bump()).toBe(1); // not poisoned
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 });
 
@@ -282,14 +282,14 @@ describe('tasks: cancellation and deactivation', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        const client = silo.actor(worker, 'a');
+        const host = createHost({ actors: [worker], defaults: quiet });
+        const client = host.actor(worker, 'a');
         await client.begin();
         await client.cancel();
         await until(() => reasons.length === 1);
         expect(reasons).toEqual(['cancelled']);
         expect(await client.running()).toBe(0);
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('cancelling from a method turn does not deadlock a task that turn()s on wind-down', async () => {
@@ -315,13 +315,13 @@ describe('tasks: cancellation and deactivation', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        const client = silo.actor(worker, 'a');
+        const host = createHost({ actors: [worker], defaults: quiet });
+        const client = host.actor(worker, 'a');
         await client.begin();
         await within(client.cancel(), 1000);
         await within(done.opened, 1000);
         expect(await client.read()).toBe('cancelled');
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('cancel wakes a task parked inside ctx.changes() on a quiet actor', async () => {
@@ -347,8 +347,8 @@ describe('tasks: cancellation and deactivation', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [watcher], defaults: quiet });
-        const client = silo.actor(watcher, 'a');
+        const host = createHost({ actors: [watcher], defaults: quiet });
+        const client = host.actor(watcher, 'a');
         await client.begin();
         await client.bump();
         await until(() => observed.length === 1);
@@ -356,7 +356,7 @@ describe('tasks: cancellation and deactivation', () => {
         await within(exited.opened, 1000); // the for-await ended, body ran on
         await until(async () => (await client.running()) === 0);
         expect(observed).toEqual([1]);
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 
     it('deactivation wakes a parked feed too — the wind-down checkpoint still lands', async () => {
@@ -382,14 +382,14 @@ describe('tasks: cancellation and deactivation', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [watcher], storage, defaults: quiet });
-        const client = silo.actor(watcher, 'a');
+        const host = createHost({ actors: [watcher], storage, defaults: quiet });
+        const client = host.actor(watcher, 'a');
         await client.begin();
         await until(async () => (await client.read()).phase === 'following');
-        await within(silo.stop({ timeoutMs: 5000 }), 2000);
+        await within(host.stop({ timeoutMs: 5000 }), 2000);
 
-        // Asserted on STORAGE, not through a fresh silo: activating the
-        // grain again would RESUME the interrupted run (that's the
+        // Asserted on STORAGE, not through a fresh host: activating the
+        // actor again would RESUME the interrupted run (that's the
         // durability contract) and its first turn would overwrite the
         // phase before a read could see it.
         const record = await storage.load('FeedWindDown', 'a');
@@ -423,22 +423,22 @@ describe('tasks: cancellation and deactivation', () => {
                 }
             })
         });
-        const silo = createSilo({ actors: [worker], storage, defaults: quiet });
-        const client = silo.actor(worker, 'a');
+        const host = createHost({ actors: [worker], storage, defaults: quiet });
+        const client = host.actor(worker, 'a');
         await client.begin();
         // Wait for the task's first turn to land — it is then parked on its
         // abort signal, the state the stop must find it in.
         await until(async () => (await client.read()) === 'running');
-        await within(silo.stop({ timeoutMs: 5000 }), 2000);
+        await within(host.stop({ timeoutMs: 5000 }), 2000);
         expect(reasons).toEqual(['shutdown']);
 
         // On storage (see the feed test above for why not via a fresh
-        // silo) — and the interrupted run RESUMES there: its restart flips
+        // host) — and the interrupted run RESUMES there: its restart flips
         // the phase back to 'running', which is the durability contract
         // doing its job.
         const record = await storage.load('Checkpointer', 'a');
         expect((record?.state as { phase: string }).phase).toBe('wound-down');
-        const next = createSilo({ actors: [worker], storage, defaults: quiet });
+        const next = createHost({ actors: [worker], storage, defaults: quiet });
         await until(async () => (await next.actor(worker, 'a').read()) === 'running');
         await next.stop({ timeoutMs: 1000 });
     });
@@ -458,18 +458,18 @@ describe('tasks: cancellation and deactivation', () => {
                 }
             })
         });
-        const silo = createSilo({
+        const host = createHost({
             actors: [worker],
             defaults: { ...quiet, taskGraceMs: 30 }
         });
-        await silo.actor(worker, 'a').begin();
-        await within(silo.stop({ timeoutMs: 5000 }), 2000);
+        await host.actor(worker, 'a').begin();
+        await within(host.stop({ timeoutMs: 5000 }), 2000);
         expect(
             warns.mock.calls.some((c) => String(c[0]).includes('ignored their abort signal'))
         ).toBe(true);
     });
 
-    it('starting a task during deactivation throws SiloShutdownError', async () => {
+    it('starting a task during deactivation throws HostShutdownError', async () => {
         const outcomes: unknown[] = [];
         const worker = defineActor({
             type: 'LateStarter',
@@ -485,15 +485,15 @@ describe('tasks: cancellation and deactivation', () => {
                         await ctx.tasks.start('other');
                         outcomes.push('started');
                     } catch (error) {
-                        outcomes.push(error instanceof SiloShutdownError);
+                        outcomes.push(error instanceof HostShutdownError);
                     }
                 },
                 async other() {}
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        await silo.actor(worker, 'a').begin();
-        await within(silo.stop({ timeoutMs: 5000 }), 2000);
+        const host = createHost({ actors: [worker], defaults: quiet });
+        await host.actor(worker, 'a').begin();
+        await within(host.stop({ timeoutMs: 5000 }), 2000);
         expect(outcomes).toEqual([true]);
     });
 
@@ -506,18 +506,18 @@ describe('tasks: cancellation and deactivation', () => {
                 park: () => aborted(ctx.abortSignal).then(() => 'released')
             })
         });
-        const silo = createSilo({ actors: [worker], defaults: quiet });
-        const parked = silo.actor(worker, 'a').park();
+        const host = createHost({ actors: [worker], defaults: quiet });
+        const parked = host.actor(worker, 'a').park();
         await new Promise((r) => setTimeout(r, 10)); // let the turn start
         // Under the OLD ordering (abort after drain) this would hang until
         // the stop deadline force-dropped the activation.
-        await within(silo.stop({ timeoutMs: 60_000 }), 2000);
+        await within(host.stop({ timeoutMs: 60_000 }), 2000);
         expect(await within(parked, 1000)).toBe('released');
     });
 });
 
 describe('tasks: keep-alive', () => {
-    it('the idle sweep skips a grain with a running task, and collects it after settle', async () => {
+    it('the idle sweep skips an actor with a running task, and collects it after settle', async () => {
         const release = gate();
         const worker = defineActor({
             type: 'KeepAlive',
@@ -534,26 +534,26 @@ describe('tasks: keep-alive', () => {
             })
         });
         const scheduler = manualScheduler();
-        const silo = createSilo({
+        const host = createHost({
             actors: [worker],
             scheduler,
             defaults: { ...quiet, sweepIntervalMs: 1000 }
         });
-        await silo.start();
-        await silo.actor(worker, 'k').begin();
+        await host.start();
+        await host.actor(worker, 'k').begin();
         scheduler.advance(1000);
         await new Promise((r) => setTimeout(r, 20));
-        expect(silo.stats().activations).toBe(1); // running task holds it
+        expect(host.stats().activations).toBe(1); // running task holds it
         // And the operator can SEE why it is held.
-        const row = silo.activations()[0]!;
+        const row = host.activations()[0]!;
         expect(row.tasks).toBe(1);
         expect(row.keptAlive).toBe(true);
 
         release.open();
         await until(() => {
             scheduler.advance(1000);
-            return silo.stats().activations === 0;
+            return host.stats().activations === 0;
         });
-        await silo.stop({ timeoutMs: 1000 });
+        await host.stop({ timeoutMs: 1000 });
     });
 });

@@ -10,7 +10,7 @@ import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
 
 /**
- * Tier 2 forks a process per silo and binds real ports, so it is slow and
+ * Tier 2 forks a process per host and binds real ports, so it is slow and
  * touches the machine in ways the rest of the suite does not. Opt-in via
  * `BENCH_TIER2=1` (or `pnpm bench:tier2`) rather than a flag, so `pnpm bench`
  * stays exactly as fast and as side-effect-free as it was.
@@ -54,7 +54,7 @@ export function tier2Hint(filters: readonly string[]): string | null {
     const wanted = filters.some((f) => TIER2_NAMES.some((name) => name.includes(f)));
     if (!wanted) return null;
     return (
-        `Tier-2 scenarios are opt-in — they fork a process per silo and bind real ports. Run:\n` +
+        `Tier-2 scenarios are opt-in — they fork a process per host and bind real ports. Run:\n` +
         `  BENCH_TIER2=1 pnpm bench:run ${filters.join(' ')}`
     );
 }

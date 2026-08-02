@@ -1,17 +1,17 @@
 # ClusterIP. The ingress routes ONLY the public port; internal is on the
-# Service purely for `kubectl port-forward svc/<release>-silo 7311:7311`
+# Service purely for `kubectl port-forward svc/<release>-host 7311:7311`
 # ergonomics (ops dashboard) — nothing routes it externally.
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "chat.fullname" . }}-silo
+  name: {{ include "chat.fullname" . }}-host
   labels:
     {{- include "chat.labels" . | nindent 4 }}
-    app.kubernetes.io/component: silo
+    app.kubernetes.io/component: host
 spec:
   type: ClusterIP
   selector:
-    {{- include "chat.siloSelector" . | nindent 4 }}
+    {{- include "chat.hostSelector" . | nindent 4 }}
   ports:
     - name: public
       port: {{ .Values.ports.public }}

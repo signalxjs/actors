@@ -1,7 +1,7 @@
 apiVersion: v2
 name: sigx-actors-test
 description: >-
-  Multi-silo @sigx/actors cluster for the AKS scale-out/perf test: N silo
+  Multi-host @sigx/actors cluster for the AKS scale-out/perf test: N host
   pods, an in-cluster Redis (membership/directory/actor state), and an
   optional load-generator Job — all from one image, everything values-driven.
 type: application

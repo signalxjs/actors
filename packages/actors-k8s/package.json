@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors-k8s",
     "version": "0.1.0",
-    "description": "Kubernetes membership provider for @sigx/actors — silo liveness via coordination.k8s.io Leases, no extra store",
+    "description": "Kubernetes membership provider for @sigx/actors — host liveness via coordination.k8s.io Leases, no extra store",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -28,8 +28,7 @@
         "cluster",
         "kubernetes",
         "lease",
-        "membership",
-        "orleans"
+        "membership"
     ],
     "author": "Andreas Ekdahl",
     "license": "MIT",

@@ -1,6 +1,6 @@
 /**
- * `createSilo` — composition root: registry, codec-bound storage, local
- * host, sweeper, reminders, and the `__SIGX_ACTOR_SILO__` seam lifecycle.
+ * `createHost` — composition root: registry, codec-bound storage, local
+ * host, sweeper, reminders, and the `__SIGX_ACTOR_HOST__` seam lifecycle.
  */
 import {
     encodeWithHandlers,
@@ -8,7 +8,7 @@ import {
     type TypeHandler
 } from '@sigx/serialize';
 import { isActorDefinition } from '../define';
-import { clearSilo, stampSilo } from '../seam';
+import { clearHost, stampHost } from '../seam';
 import type {
     ActivationInfo,
     ActivationsOptions,
@@ -24,8 +24,8 @@ import type {
     DeactivationReason,
     PlacementBindings,
     ActorScheduler,
-    Silo,
-    SiloStats
+    Host,
+    HostStats
 } from '../types';
 import { actorId } from '../types';
 import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } from './activation';
@@ -35,7 +35,7 @@ import { taskLedger } from './tasks';
 import { memoryStorage } from './storage-memory';
 import { timerScheduler } from './scheduler';
 
-export interface SiloDefaults {
+export interface HostDefaults {
     /** Idle collection age, ms. Default 20 min — single-node processes
      *  redeploy often and reactivation is one storage load. */
     idleAfterMs?: number;
@@ -44,9 +44,9 @@ export interface SiloDefaults {
     callTimeoutMs?: number;
     /**
      * Sweeper cadence, ms. Default 60s. `0` disables idle collection —
-     * for a runtime that evicts the whole silo when it goes idle, where a
+     * for a runtime that evicts the whole host when it goes idle, where a
      * sweeper can never usefully fire. A Cloudflare Durable Object is the
-     * case: eviction destroys the isolate, the silo and the activation
+     * case: eviction destroys the isolate, the host and the activation
      * together, and nothing keeps the object resident except in-flight work,
      * which is exactly what the sweeper skips. There a permanent interval is
      * worse than useless — a pending timer holds the object in memory and
@@ -60,7 +60,7 @@ export interface SiloDefaults {
     /**
      * How long deactivation waits for a detached task to observe its abort
      * signal and settle, ms, before closing the mailbox anyway. Default
-     * 10s. Counts against `silo.stop()`'s own `timeoutMs`, so keep it
+     * 10s. Counts against `host.stop()`'s own `timeoutMs`, so keep it
      * smaller than that.
      */
     taskGraceMs?: number;
@@ -72,7 +72,7 @@ export interface SiloDefaults {
     devSerializeChecks?: boolean;
 }
 
-export interface CreateSiloOptions {
+export interface CreateHostOptions {
     /**
      * Explicit registration — an array of definitions, or the lazy
      * `virtual:sigx-actors` map (`{ [type]: () => import(...) }`).
@@ -103,19 +103,19 @@ export interface CreateSiloOptions {
     /**
      * Extra members merged onto every activation's `ctx`. Built-in members
      * are never overwritten. `defineActorApp` folds every plugin's
-     * `extendContext` into this one function; hand-rolled silos can pass it
+     * `extendContext` into this one function; hand-rolled hosts can pass it
      * directly.
      */
     extendContext?: (ref: ActorRef) => object | undefined;
     /**
      * Observe every dispatched turn's queue wait and execution time.
      * `defineActorApp` folds every plugin's `observeTurns` into this one
-     * function; hand-rolled silos can pass it directly. Omit it and the
+     * function; hand-rolled hosts can pass it directly. Omit it and the
      * dispatch path is unchanged — the timestamps are only taken when an
      * observer exists.
      */
     onTurn?: ActorTurnObserver;
-    defaults?: SiloDefaults;
+    defaults?: HostDefaults;
 }
 
 interface ResolvedDefaults {
@@ -128,11 +128,11 @@ interface ResolvedDefaults {
     devSerializeChecks: boolean;
 }
 
-export function createSilo(options: CreateSiloOptions): Silo {
-    return new SiloImpl(options);
+export function createHost(options: CreateHostOptions): Host {
+    return new HostImpl(options);
 }
 
-class SiloImpl implements Silo {
+class HostImpl implements Host {
     #defaults: ResolvedDefaults;
     #storage: ActorStorage;
     #types: readonly TypeHandler[];
@@ -153,7 +153,7 @@ class SiloImpl implements Silo {
     #startPromise: Promise<void> | null = null;
     #stopped = false;
 
-    constructor(options: CreateSiloOptions) {
+    constructor(options: CreateHostOptions) {
         this.#defaults = {
             idleAfterMs: options.defaults?.idleAfterMs ?? 20 * 60_000,
             callTimeoutMs: options.defaults?.callTimeoutMs ?? 30_000,
@@ -165,7 +165,7 @@ class SiloImpl implements Silo {
         };
         if (!options.storage && __DEV__) {
             console.warn(
-                '[sigx actors] createSilo() without `storage` uses in-memory storage — actor ' +
+                '[sigx actors] createHost() without `storage` uses in-memory storage — actor ' +
                     'state and reminders die with the process. Pass a storage provider for ' +
                     'anything beyond tests.'
             );
@@ -177,7 +177,7 @@ class SiloImpl implements Silo {
         if (Array.isArray(options.actors)) {
             for (const def of options.actors as readonly AnyActorDefinition[]) {
                 if (!isActorDefinition(def)) {
-                    throw new Error('[sigx actors] createSilo({ actors }) got a non-definition.');
+                    throw new Error('[sigx actors] createHost({ actors }) got a non-definition.');
                 }
                 const claimed = this.#registry.get(def.type);
                 if (claimed && claimed !== def) {
@@ -285,10 +285,10 @@ class SiloImpl implements Silo {
     }
 
     /**
-     * Where a grain lives, without dispatching.
+     * Where an actor lives, without dispatching.
      *
      * Always PRESENT — it is the return value that says whether there is an
-     * answer. A single-node silo, or any placement without `locate()`,
+     * answer. A single-node host, or any placement without `locate()`,
      * yields `undefined`, which callers read as "cannot answer, just
      * dispatch". Testing for the method alone is therefore not enough.
      */
@@ -298,7 +298,7 @@ class SiloImpl implements Silo {
 
     /**
      * External calls without a deadline (the wire endpoint builds a bare
-     * context) inherit the silo's `callTimeoutMs`, same as in-process
+     * context) inherit the host's `callTimeoutMs`, same as in-process
      * external calls. In-chain calls keep their inherited deadline as-is.
      */
     #withDefaultDeadline(call: ActorCallContext): ActorCallContext {
@@ -486,7 +486,7 @@ class SiloImpl implements Silo {
 
     start(): Promise<void> {
         if (this.#started) return Promise.resolve();
-        // Concurrent callers share ONE start, so `await silo.start()` is a
+        // Concurrent callers share ONE start, so `await host.start()` is a
         // real barrier for every one of them rather than resolving early
         // for all but the first. Same shape as ActorApp.start().
         if (this.#startPromise) return this.#startPromise;
@@ -512,7 +512,7 @@ class SiloImpl implements Silo {
             await this.#reminders.start();
         } catch (error) {
             // The placement already joined — undo that rather than leave
-            // this silo advertised but not really running.
+            // this host advertised but not really running.
             try {
                 await this.#placement.stop?.();
             } catch (stopError) {
@@ -525,7 +525,7 @@ class SiloImpl implements Silo {
             }
             throw error;
         }
-        // `0` = no idle collection (see `SiloDefaults.sweepIntervalMs`).
+        // `0` = no idle collection (see `HostDefaults.sweepIntervalMs`).
         if (this.#defaults.sweepIntervalMs > 0) {
             this.#stopSweeper = this.#scheduler.every(this.#defaults.sweepIntervalMs, () =>
                 this.#local.sweep(Date.now(), this.#defaults.idleAfterMs)
@@ -533,7 +533,7 @@ class SiloImpl implements Silo {
         }
         this.#started = true;
         this.#stopped = false;
-        stampSilo(this);
+        stampHost(this);
     }
 
     async stop(opts?: { timeoutMs?: number }): Promise<void> {
@@ -581,7 +581,7 @@ class SiloImpl implements Silo {
             this.#bindings?.stopReason ?? 'shutdown'
         );
         await this.#placement.stop?.();
-        clearSilo(this);
+        clearHost(this);
     }
 
     deactivate(ref: ActorRef, reason?: DeactivationReason): Promise<void> {
@@ -638,7 +638,7 @@ class SiloImpl implements Silo {
         };
     }
 
-    stats(): SiloStats {
+    stats(): HostStats {
         return this.#local.stats();
     }
 

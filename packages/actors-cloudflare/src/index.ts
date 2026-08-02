@@ -4,7 +4,7 @@
  * The model is **one Durable Object per actor**. Cloudflare already
  * guarantees a single instance of a DO globally and serializes its
  * requests, which is exactly the virtual-actor contract — so this package
- * needs no membership, no directory, and no authenticated silo-to-silo
+ * needs no membership, no directory, and no authenticated host-to-host
  * mount. Those exist in `@sigx/actors/cluster` to rebuild a guarantee the
  * platform hands us here for free.
  *
@@ -30,11 +30,11 @@ export {
     type DurableObjectPlacementOptions
 } from './placement';
 export {
-    createSiloDurableObject,
+    createHostDurableObject,
     type DurableAppOptions,
     type DurableObjectStateLike,
-    type SiloDurableObjectInstance,
-    type SiloDurableObjectOptions
+    type HostDurableObjectInstance,
+    type HostDurableObjectOptions
 } from './host';
 export {
     createWorkerHandler,

@@ -1,9 +1,9 @@
 /**
- * `@sigx/actors-tcp` — an Orleans-style TCP transport for `@sigx/actors`.
+ * `@sigx/actors-tcp` — a framed TCP transport for `@sigx/actors`.
  *
- * Orleans silos talk over persistent TCP with binary framing rather than
- * HTTP, and this is that shape for this runtime: one multiplexed connection
- * per peer instead of one per in-flight request.
+ * Peers talk over persistent TCP with binary framing rather than HTTP:
+ * one multiplexed connection per peer instead of one per in-flight
+ * request.
  *
  * **Why this exists, stated honestly.** It is not about latency. The
  * measurements in `benchmarks/BASELINES.md` put per-call HMAC at 1.19× over a
@@ -35,18 +35,18 @@ import {
     signAuth,
     watchSymbol,
     type MembershipView,
-    type SiloDescriptor,
-    type SiloTransport,
-    type SiloTransportConfig,
-    type SiloTransportFactory,
-    type SiloTransportRuntime
+    type HostDescriptor,
+    type HostTransport,
+    type HostTransportConfig,
+    type HostTransportFactory,
+    type HostTransportRuntime
 } from '@sigx/actors/cluster';
 import { ActorUnreachableError } from '@sigx/actors';
 import type { ActorCallContext, ActorDispatcher, ActorRef } from '@sigx/actors';
 import {
     encodeFrame,
     FrameType,
-    SiloConnection,
+    HostConnection,
     DEFAULT_CREDIT,
     DEFAULT_MAX_FRAME_BYTES
 } from '@sigx/actors/cluster/frames';
@@ -54,7 +54,7 @@ import { socketLink } from './link';
 
 export { DEFAULT_CREDIT, DEFAULT_MAX_FRAME_BYTES } from '@sigx/actors/cluster/frames';
 
-/** This transport's key in `SiloDescriptor.addresses`. */
+/** This transport's key in `HostDescriptor.addresses`. */
 export const TCP_TRANSPORT_NAME = 'tcp';
 
 export interface TcpTransportOptions {
@@ -94,34 +94,34 @@ function parseTcpAddress(address: string): { host: string; port: number } | null
     };
 }
 
-export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFactory {
-    return (config: SiloTransportConfig): SiloTransport => {
+export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFactory {
+    return (config: HostTransportConfig): HostTransport => {
         const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
         const credit = options.credit ?? DEFAULT_CREDIT;
         const keepAliveMs = options.keepAliveMs ?? 15_000;
 
-        let runtime: SiloTransportRuntime | null = null;
+        let runtime: HostTransportRuntime | null = null;
         let server: Server | null = null;
         let keepAlive: ReturnType<typeof setInterval> | null = null;
-        /** siloId → the connection we use for it. */
-        const links = new Map<string, SiloConnection>();
-        /** siloId → in-flight dial, so N concurrent calls share one connect. */
-        const dialing = new Map<string, Promise<SiloConnection>>();
+        /** hostId → the connection we use for it. */
+        const links = new Map<string, HostConnection>();
+        /** hostId → in-flight dial, so N concurrent calls share one connect. */
+        const dialing = new Map<string, Promise<HostConnection>>();
         /** Connections accepted before their HELLO named them. */
-        const pendingInbound = new Set<SiloConnection>();
+        const pendingInbound = new Set<HostConnection>();
 
-        const register = (siloId: string, connection: SiloConnection): void => {
-            const existing = links.get(siloId);
+        const register = (hostId: string, connection: HostConnection): void => {
+            const existing = links.get(hostId);
             if (existing && existing !== connection && !existing.closed) {
-                // Simultaneous dial: both sides opened at once. Orleans
-                // settles this without an extra round trip, and so do we —
-                // the LEXICOGRAPHICALLY SMALLER siloId is the designated
+                // Simultaneous dial: both sides opened at once. Settled
+                // without an extra round trip — the
+                // LEXICOGRAPHICALLY SMALLER hostId is the designated
                 // dialer and its outbound connection wins. Both ends compute
                 // the same answer from ids they already exchanged, so
                 // exactly one connection survives.
-                const weDial = config.siloId < siloId;
+                const weDial = config.hostId < hostId;
                 const keepExisting = weDial
-                    ? existing.peerSiloId === siloId && isOutbound(existing)
+                    ? existing.peerHostId === hostId && isOutbound(existing)
                     : !isOutbound(existing);
                 if (keepExisting) {
                     connection.send({
@@ -136,46 +136,46 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                 }
                 existing.close('superseded by the designated dialer');
             }
-            links.set(siloId, connection);
+            links.set(hostId, connection);
         };
 
-        const outbound = new WeakSet<SiloConnection>();
-        const isOutbound = (connection: SiloConnection): boolean => outbound.has(connection);
+        const outbound = new WeakSet<HostConnection>();
+        const isOutbound = (connection: HostConnection): boolean => outbound.has(connection);
 
-        const hello = (connection: SiloConnection, type: number): void => {
+        const hello = (connection: HostConnection, type: number): void => {
             connection.send({
                 type,
                 flags: 0,
                 status: 0,
                 corrId: 0,
-                payload: { siloId: config.siloId, epoch: config.epoch, proto: 1 }
+                payload: { hostId: config.hostId, epoch: config.epoch, proto: 1 }
             });
         };
 
-        const adopt = (socket: Socket, dialer: boolean, expectedSiloId?: string): SiloConnection => {
-            const connection: SiloConnection = new SiloConnection({
+        const adopt = (socket: Socket, dialer: boolean, expectedHostId?: string): HostConnection => {
+            const connection: HostConnection = new HostConnection({
                 config,
                 link: socketLink(socket),
                 dialer,
                 maxFrameBytes,
                 credit,
                 runtime: () => runtime,
-                onPeer: (siloId) => {
+                onPeer: (hostId) => {
                     pendingInbound.delete(connection);
-                    if (expectedSiloId && siloId !== expectedSiloId) {
+                    if (expectedHostId && hostId !== expectedHostId) {
                         // We dialled the address a peer advertised and a
-                        // DIFFERENT silo answered — a stale directory entry
+                        // DIFFERENT host answered — a stale directory entry
                         // or a recycled port. Refuse rather than route to it.
                         connection.close(
-                            `expected ${expectedSiloId} at this address, got ${siloId}`
+                            `expected ${expectedHostId} at this address, got ${hostId}`
                         );
                         return;
                     }
-                    register(siloId, connection);
+                    register(hostId, connection);
                 },
                 onClose: () => {
                     pendingInbound.delete(connection);
-                    const id = connection.peerSiloId;
+                    const id = connection.peerHostId;
                     if (id && links.get(id) === connection) links.delete(id);
                 }
             });
@@ -183,12 +183,12 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
             return connection;
         };
 
-        const dial = async (target: SiloDescriptor): Promise<SiloConnection> => {
+        const dial = async (target: HostDescriptor): Promise<HostConnection> => {
             const address = target.addresses?.[TCP_TRANSPORT_NAME];
             const parsed = address ? parseTcpAddress(address) : null;
-            if (!parsed) throw new Error(`[sigx actors] ${target.siloId} advertises no tcp address`);
+            if (!parsed) throw new Error(`[sigx actors] ${target.hostId} advertises no tcp address`);
             const socket = connect({ host: parsed.host, port: parsed.port });
-            const connection = adopt(socket, true, target.siloId);
+            const connection = adopt(socket, true, target.hostId);
             try {
                 await new Promise<void>((resolve, reject) => {
                     socket.once('connect', resolve);
@@ -200,27 +200,27 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                 // actor error kind: anything it cannot classify is a hard
                 // failure where evict-refresh-retry would have converged.
                 connection.close('connect failed');
-                throw new ActorUnreachableError(`${target.siloId} (${address})`, { cause });
+                throw new ActorUnreachableError(`${target.hostId} (${address})`, { cause });
             }
             hello(connection, FrameType.HELLO);
-            links.set(target.siloId, connection);
+            links.set(target.hostId, connection);
             return connection;
         };
 
-        const linkTo = (target: SiloDescriptor): Promise<SiloConnection> => {
-            const existing = links.get(target.siloId);
+        const linkTo = (target: HostDescriptor): Promise<HostConnection> => {
+            const existing = links.get(target.hostId);
             if (existing && !existing.closed) return Promise.resolve(existing);
-            const inFlight = dialing.get(target.siloId);
+            const inFlight = dialing.get(target.hostId);
             if (inFlight) return inFlight;
             // One dial per peer however many callers arrive at once — the
             // whole point is a single connection, so racing dials would
             // defeat it before the simultaneous-dial rule ever ran.
-            const promise = dial(target).finally(() => dialing.delete(target.siloId));
-            dialing.set(target.siloId, promise);
+            const promise = dial(target).finally(() => dialing.delete(target.hostId));
+            dialing.set(target.hostId, promise);
             return promise;
         };
 
-        const dispatcherFor = (target: SiloDescriptor): ActorDispatcher | null => {
+        const dispatcherFor = (target: HostDescriptor): ActorDispatcher | null => {
             // A ROUTING answer, not a failure: a peer that advertises no tcp
             // address is reached by the next transport in the chain. This is
             // what makes a rolling deploy possible.
@@ -231,7 +231,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                 payloadArgs: readonly unknown[],
                 call: ActorCallContext
             ): Promise<{
-                connection: SiloConnection;
+                connection: HostConnection;
                 symbol: string;
                 payload: unknown;
                 envelope: string;
@@ -242,7 +242,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                     connection,
                     symbol,
                     payload: config.codec.encode(payloadArgs),
-                    envelope: encodeEnvelope(call, config.siloId),
+                    envelope: encodeEnvelope(call, config.hostId),
                     auth:
                         config.secret === undefined
                             ? undefined
@@ -310,7 +310,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
         return {
             name: TCP_TRANSPORT_NAME,
 
-            async start(rt: SiloTransportRuntime): Promise<string> {
+            async start(rt: HostTransportRuntime): Promise<string> {
                 runtime = rt;
                 const listener = createServer();
                 listener.on('connection', (socket) => {
@@ -353,14 +353,14 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
             dispatcherFor,
 
             onMembership(view: MembershipView): void {
-                // Silo ids are minted per START and never reused, so a peer
+                // Host ids are minted per START and never reused, so a peer
                 // that has left can never come back under the same id and
                 // its connection can never be useful again.
-                const live = new Set(view.silos.map((s) => s.siloId));
-                for (const [siloId, connection] of [...links]) {
-                    if (!live.has(siloId)) {
+                const live = new Set(view.hosts.map((s) => s.hostId));
+                for (const [hostId, connection] of [...links]) {
+                    if (!live.has(hostId)) {
                         connection.close('peer left the cluster');
-                        links.delete(siloId);
+                        links.delete(hostId);
                     }
                 }
             },
@@ -368,9 +368,9 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
             async stop(): Promise<void> {
                 if (keepAlive) clearInterval(keepAlive);
                 keepAlive = null;
-                for (const connection of [...links.values()]) connection.close('silo stopping');
+                for (const connection of [...links.values()]) connection.close('host stopping');
                 links.clear();
-                for (const connection of [...pendingInbound]) connection.close('silo stopping');
+                for (const connection of [...pendingInbound]) connection.close('host stopping');
                 pendingInbound.clear();
                 const listener = server;
                 server = null;
@@ -386,7 +386,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): SiloTransportFa
                 for (const connection of links.values()) if (!connection.closed) count++;
                 return count;
             }
-        } as SiloTransport & { openLinks(): number };
+        } as HostTransport & { openLinks(): number };
     };
 }
 

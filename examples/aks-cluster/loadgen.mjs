@@ -1,9 +1,9 @@
 /**
  * The load generator — a closed loop against the public wire endpoint,
- * runnable as a k8s Job (same image as the silo, different command) or
+ * runnable as a k8s Job (same image as the host, different command) or
  * locally. Everything is env-driven:
  *
- *   TARGET_URL        http://silo-service:7311                REQUIRED
+ *   TARGET_URL        http://host-service:7311                REQUIRED
  *   MODE              counter | crunch | mixed | verify       default counter
  *   CONCURRENCY       closed-loop workers                     default 32
  *   DURATION_S        run length per rung                     default 60
@@ -119,7 +119,7 @@ if (MODE === 'verify') {
  * MODE=jobs — the long-running-worker scenario. Starts JOB_COUNT SweepJob
  * runs (steps × stepMs each, one checkpoint per step) and polls until
  * every job is terminal or JOB_TIMEOUT_S passes. This is the workload the
- * failover scenarios kill silos under: every job must still complete, and
+ * failover scenarios kill hosts under: every job must still complete, and
  * sumAttempts > completed is the proof that crash-resume actually ran.
  * Keys are RUN_ID-prefixed so repeated runs never collide with retained
  * terminal records. start() is idempotent, so RETRY_CONN_ERRORS is safe.
@@ -196,7 +196,7 @@ if (MODE === 'jobs') {
         failed: all.filter((i) => i.status === 'failed').length,
         cancelled: all.filter((i) => i.status === 'cancelled').length,
         // Anything non-terminal at the deadline (or unpollable) is stuck —
-        // the failure mode where a dead silo's job never got revived.
+        // the failure mode where a dead host's job never got revived.
         stuck: JOB_COUNT - all.filter((i) => TERMINAL.has(i.status)).length,
         sumAttempts,
         // Every started job costs one attempt; anything beyond that was a

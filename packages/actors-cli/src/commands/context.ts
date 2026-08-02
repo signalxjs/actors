@@ -21,7 +21,7 @@ export interface ActorsArgs {
     verb?: string;
     /** Dashboard poll interval, ms. `top` only. */
     interval?: number;
-    /** Origin of a running silo. Its presence selects HTTP mode. */
+    /** Origin of a running host. Its presence selects HTTP mode. */
     url?: string;
     secret?: string;
     base?: string;

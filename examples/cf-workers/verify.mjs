@@ -2,7 +2,7 @@
  * Prove a deployment works, from outside it.
  *
  * Deliberately NOT a copy of `examples/aks-cluster/loadgen.mjs`. That file
- * sweeps concurrency across N silos to find where *your* cluster stops
+ * sweeps concurrency across N hosts to find where *your* cluster stops
  * scaling. On Workers, Cloudflare owns placement and scaling — a sweep would
  * be measuring Cloudflare, and publishing the numbers as a `@sigx/actors`
  * result would be misleading.

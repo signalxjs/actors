@@ -2,7 +2,7 @@
  * `ActorReminders` over a Durable Object alarm.
  *
  * The default `shardedReminders()` keeps one table split into fixed hash
- * shards and polls it, because a silo hosts many actors and needs to find
+ * shards and polls it, because a host hosts many actors and needs to find
  * whose reminder is due. A DO hosts exactly ONE actor, so there is nothing
  * to search and nothing to poll: the reminders live in this object's own
  * storage and the platform wakes us at the earliest due time.
@@ -131,7 +131,7 @@ export function durableObjectReminders(
         bind(bound) {
             if (context) {
                 throw new Error(
-                    '[sigx actors-cloudflare] these reminders are already bound to a silo.'
+                    '[sigx actors-cloudflare] these reminders are already bound to a host.'
                 );
             }
             context = bound;
@@ -223,12 +223,12 @@ export function durableObjectReminders(
             if (!bound) {
                 // Returning quietly would DROP whatever was due, and the
                 // platform has already cleared the alarm — so a periodic
-                // reminder would never fire again. Start the silo before
+                // reminder would never fire again. Start the host before
                 // wiring alarm() to this. Raised OUTSIDE the gate: a throw
                 // inside one resets the object.
                 throw new Error(
-                    '[sigx actors-cloudflare] onAlarm() before the silo bound its reminders — ' +
-                        'await the silo/app start inside the Durable Object before handling alarms.'
+                    '[sigx actors-cloudflare] onAlarm() before the host bound its reminders — ' +
+                        'await the host/app start inside the Durable Object before handling alarms.'
                 );
             }
 

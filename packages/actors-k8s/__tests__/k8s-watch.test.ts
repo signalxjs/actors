@@ -9,18 +9,18 @@ import { kubeClient } from '../src/client';
 import { buildLease, type LeaseObject } from '../src/lease';
 import { listWatchLoop, ndjsonLines, type ListWatchLoop } from '../src/watch';
 import { fakeKube, type FakeKube } from './fake-kube';
-import type { SiloDescriptor } from '@sigx/actors/cluster';
+import type { HostDescriptor } from '@sigx/actors/cluster';
 
 const LABELS = { 'sigx.dev/cluster': 'default' };
 const SELECTOR = 'sigx.dev/cluster=default';
 
-function descriptor(siloId: string): SiloDescriptor {
-    return { siloId, epoch: 1, address: `http://${siloId}:7311`, status: 'active' };
+function descriptor(hostId: string): HostDescriptor {
+    return { hostId, epoch: 1, address: `http://${hostId}:7311`, status: 'active' };
 }
 
-function lease(fake: FakeKube, siloId: string): LeaseObject {
-    return buildLease(descriptor(siloId), {
-        name: `sigx-${siloId}`,
+function lease(fake: FakeKube, hostId: string): LeaseObject {
+    return buildLease(descriptor(hostId), {
+        name: `sigx-${hostId}`,
         namespace: 'test',
         labels: LABELS,
         ttlMs: 15_000,

@@ -1,30 +1,30 @@
 /**
- * `@sigx/actors` — Orleans-style virtual actors for SignalX.
+ * `@sigx/actors` — virtual actors for SignalX.
  *
  * The root entry is ISOMORPHIC and light: `defineActor` (a pure
  * declaration), `actor()` (typed client — wire proxy in the browser,
  * in-process dispatch on the server), and the shared types/errors. The
- * runtime lives in `@sigx/actors/silo`; this entry never imports it — the
- * server branch reaches the running silo through the `__SIGX_ACTOR_SILO__`
+ * runtime lives in `@sigx/actors/host`; this entry never imports it — the
+ * server branch reaches the running host through the `__SIGX_ACTOR_HOST__`
  * seam only.
  */
 import type { ServerFnContext } from '@sigx/server';
 import { isActorDefinition } from './define';
 import { runGuards } from './guards';
 import { resolveServerContext } from './context';
-import { currentSilo } from './seam';
+import { currentHost } from './seam';
 import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './types';
 
 export { defineActor, isActorDefinition } from './define';
 export { actorKey, ACTOR_KEY_NS, type ActorKeyArg } from './actor-key';
-export { currentSilo, peekSilo } from './seam';
+export { currentHost, peekHost } from './seam';
 export {
     ActorError,
     ActorDeadlockError,
     ActorActivationError,
     ActorStateConflictError,
     ActorMethodNotFoundError,
-    SiloShutdownError,
+    HostShutdownError,
     ActorCallTimeoutError,
     ActorWrongHostError,
     ActorUnreachableError,
@@ -63,8 +63,8 @@ export type {
     ActorTask,
     ActorTaskContext,
     ActorTaskTable,
-    Silo,
-    SiloStats,
+    Host,
+    HostStats,
     TaskApi,
     TaskInfo,
     TimerHandle,
@@ -93,7 +93,7 @@ function isClientRef(value: unknown): value is ClientRefLike {
  *  - **server** (serverFns, SSR render, scripts): `def` is the real
  *    definition; the actor's `use`/`methodUse` guard chains run against the
  *    ambient request context, then the call dispatches in-process through
- *    the running silo (no HTTP hop).
+ *    the running host (no HTTP hop).
  *
  * The actor need not exist — first dispatch activates it (and its state)
  * lazily; it never has to be created or destroyed explicitly.
@@ -122,7 +122,7 @@ export function useActor<D extends AnyActorDefinition>(def: D, key: string): Act
 
 /**
  * Server-side client: guards first (outside the mailbox), then in-process
- * dispatch through the silo seam. Streams run guards before the first pull.
+ * dispatch through the host seam. Streams run guards before the first pull.
  */
 function serverClient<D extends AnyActorDefinition>(
     def: D,
@@ -144,11 +144,11 @@ function serverClient<D extends AnyActorDefinition>(
                 member = (...args: unknown[]) => guardedStream(def, key, prop, args, options);
             } else {
                 member = async (...args: unknown[]) => {
-                    const silo = currentSilo();
+                    const host = currentHost();
                     await runGuards(def, prop, contextFor(options));
                     const raw = options?.signal
-                        ? silo.actor(def, key).with({ signal: options.signal })
-                        : silo.actor(def, key);
+                        ? host.actor(def, key).with({ signal: options.signal })
+                        : host.actor(def, key);
                     return (raw as Record<string, (...a: unknown[]) => Promise<unknown>>)[prop](
                         ...args
                     );
@@ -176,11 +176,11 @@ function guardedStream(
     options: ActorCallOptions | undefined
 ): AsyncIterable<unknown> {
     const open = async (): Promise<AsyncIterator<unknown>> => {
-        const silo = currentSilo();
+        const host = currentHost();
         await runGuards(def, method, contextFor(options));
         const raw = options?.signal
-            ? silo.actor(def, key).with({ signal: options.signal })
-            : silo.actor(def, key);
+            ? host.actor(def, key).with({ signal: options.signal })
+            : host.actor(def, key);
         const stream = (
             raw as Record<string, (...a: unknown[]) => AsyncIterable<unknown>>
         )[method](...args);

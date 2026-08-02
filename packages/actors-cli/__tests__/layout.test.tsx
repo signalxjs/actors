@@ -23,10 +23,10 @@ import {
     GrainsScreen,
     HealthScreen,
     OverviewScreen,
-    SilosScreen,
+    HostsScreen,
     type Pane
 } from '../src/dashboard/screens';
-import { PANES, cursorModel, demoState, silo } from './fixture';
+import { PANES, cursorModel, demoState, host } from './fixture';
 
 /** Render to the line array the terminal actually receives. */
 export function lines(node: unknown): string[] {
@@ -47,8 +47,8 @@ function screensAt(pane: Pane): [string, unknown][] {
     const state = demoState();
     return [
         ['Overview', <OverviewScreen state={state} pane={pane} />],
-        ['Silos', <SilosScreen state={state} pane={pane} cursor={cursorModel(0)} />],
-        ['Grains', <GrainsScreen state={state} pane={pane} cursor={cursorModel(1)} />],
+        ['Hosts', <HostsScreen state={state} pane={pane} cursor={cursorModel(0)} />],
+        ['Actors', <GrainsScreen state={state} pane={pane} cursor={cursorModel(1)} />],
         ['Cluster', <ClusterScreen state={state} pane={pane} />],
         ['Health', <HealthScreen state={state} pane={pane} />]
     ];
@@ -75,24 +75,24 @@ describe.each(Object.entries(PANES))('every screen fits a %s pane', (_name, pane
 describe('rows render as lines', () => {
     it('gives the overview totals one line per pair', () => {
         const out = content(<OverviewScreen state={demoState()} pane={PANES.wide} />);
-        const silos = out.findIndex((line) => line.startsWith('silos'));
-        expect(silos).toBeGreaterThan(-1);
-        // Concatenated, these read "silos 2activations 32queued 2" — which
+        const hosts = out.findIndex((line) => line.startsWith('hosts'));
+        expect(hosts).toBeGreaterThan(-1);
+        // Concatenated, these read "hosts 2activations 32queued 2" — which
         // is what shipped.
-        expect(out[silos]).toContain('2');
-        expect(out[silos]).not.toContain('activations');
-        expect(out[silos + 1]).toContain('activations');
-        expect(out[silos + 2]).toContain('queued');
+        expect(out[hosts]).toContain('2');
+        expect(out[hosts]).not.toContain('activations');
+        expect(out[hosts + 1]).toContain('activations');
+        expect(out[hosts + 2]).toContain('queued');
     });
 
-    it('gives the silo table a header line plus one line per silo', () => {
+    it('gives the host table a header line plus one line per host', () => {
         const state = demoState();
         state.view.snapshot = {
             ...state.view.snapshot!,
-            silos: [silo(), silo({ siloId: 's.b' }), silo({ siloId: 's.c' })]
+            hosts: [host(), host({ hostId: 's.b' }), host({ hostId: 's.c' })]
         };
-        const out = content(<SilosScreen state={state} pane={PANES.wide} cursor={cursorModel(0)} />);
-        const header = out.findIndex((line) => line.includes('SILO') && line.includes('STATUS'));
+        const out = content(<HostsScreen state={state} pane={PANES.wide} cursor={cursorModel(0)} />);
+        const header = out.findIndex((line) => line.includes('HOST') && line.includes('STATUS'));
         expect(header).toBeGreaterThan(-1);
         // A row must not carry the next row's data, nor the header its rows.
         expect(out[header]).not.toContain('s.2sme5hx2');
@@ -103,22 +103,22 @@ describe('rows render as lines', () => {
 
     it('windows the table to the pane rather than drawing every row', () => {
         const state = demoState();
-        const many = Array.from({ length: 200 }, (_, i) => silo({ siloId: `s.${i}` }));
-        state.view.snapshot = { ...state.view.snapshot!, silos: many };
-        const out = lines(<SilosScreen state={state} pane={PANES.narrow} cursor={cursorModel(0)} />);
-        // 200 silos in a 20-row pane: the viewport is what `height` buys,
+        const many = Array.from({ length: 200 }, (_, i) => host({ hostId: `s.${i}` }));
+        state.view.snapshot = { ...state.view.snapshot!, hosts: many };
+        const out = lines(<HostsScreen state={state} pane={PANES.narrow} cursor={cursorModel(0)} />);
+        // 200 hosts in a 20-row pane: the viewport is what `height` buys,
         // and without it the frame would be ten screens long.
         expect(out.length).toBeLessThanOrEqual(PANES.narrow.height);
         expect(out.some((line) => line.includes('s.0'))).toBe(true);
         expect(out.some((line) => line.includes('s.199'))).toBe(false);
     });
 
-    it('keeps a wide-glyph grain key inside the pane', () => {
+    it('keeps a wide-glyph actor key inside the pane', () => {
         const state = demoState();
         state.view.snapshot = {
             ...state.view.snapshot!,
             activations: [
-                // A grain key is user data. Measured by `.length` this looks
+                // An actor key is user data. Measured by `.length` this looks
                 // to FIT while overflowing the terminal — the exact bug
                 // display-cell measurement exists for, so an assertion using
                 // `.length` could never have caught it.
@@ -133,7 +133,7 @@ describe('rows render as lines', () => {
     it('scrolls the viewport to wherever the cursor is', () => {
         // The cursor has to DO something — a selection that never changes
         // what is on screen is the same as no selection, which is what the
-        // Silos table shipped with.
+        // Hosts table shipped with.
         //
         // Asserted through the viewport rather than through the `❯` marker:
         // `DataTable` draws that only while it holds focus, and in a shell
@@ -141,10 +141,10 @@ describe('rows render as lines', () => {
         // The row is coloured instead, and where the window lands is the
         // part that is observable as structure rather than as styling.
         const state = demoState();
-        const many = Array.from({ length: 200 }, (_, i) => silo({ siloId: `s.${i}` }));
-        state.view.snapshot = { ...state.view.snapshot!, silos: many };
-        const top = content(<SilosScreen state={state} pane={PANES.wide} cursor={cursorModel(0)} />).join('\n');
-        const deep = content(<SilosScreen state={state} pane={PANES.wide} cursor={cursorModel(150)} />).join('\n');
+        const many = Array.from({ length: 200 }, (_, i) => host({ hostId: `s.${i}` }));
+        state.view.snapshot = { ...state.view.snapshot!, hosts: many };
+        const top = content(<HostsScreen state={state} pane={PANES.wide} cursor={cursorModel(0)} />).join('\n');
+        const deep = content(<HostsScreen state={state} pane={PANES.wide} cursor={cursorModel(150)} />).join('\n');
         expect(top).toContain('s.0 ');
         expect(top).not.toContain('s.150');
         expect(deep).toContain('s.150');

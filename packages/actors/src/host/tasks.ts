@@ -1,12 +1,12 @@
 /**
- * The task ledger — what makes a detached task survive its silo.
+ * The task ledger — what makes a detached task survive its host.
  *
  * One reserved storage record per actor (`$sigx:tasks` / actorId) listing
  * the runs currently in flight: `{ [name]: { input?, startedAt, restarts } }`.
  * A liveness reminder under the same reserved name is armed while the
- * ledger is non-empty; when the owning silo dies, the reminder shards are
+ * ledger is non-empty; when the owning host dies, the reminder shards are
  * re-owned by the survivors, the next tick delivers through placement, the
- * grain re-activates wherever the cluster puts it, and activation restarts
+ * actor re-activates wherever the cluster puts it, and activation restarts
  * every ledgered run. At-least-once by contract: the runtime resumes the
  * FUNCTION, user code resumes the WORK from its own checkpointed state.
  *
@@ -50,7 +50,7 @@ export interface TaskLedgerApi {
 
 const MUTATE_ATTEMPTS = 3;
 
-/** The ledger over one actor's reserved record. `codec` is the silo's
+/** The ledger over one actor's reserved record. `codec` is the host's
  *  state codec, so `input` survives the same vocabulary state does. */
 export function taskLedger(
     storage: ActorStorage,

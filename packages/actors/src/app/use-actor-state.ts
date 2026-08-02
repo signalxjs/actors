@@ -20,7 +20,7 @@
  *     entire answer to "ten components reading one actor = ten POSTs".
  *
  * SSR seeding therefore needs NO code here: on the server the fetcher's
- * `actor()` dispatches in-process through the silo seam, `useData` resolves
+ * `actor()` dispatches in-process through the host seam, `useData` resolves
  * during the render, and core's state-serialization plugin writes the value
  * into the page under the same canonical key the client then reads.
  */
@@ -263,7 +263,7 @@ function isOptionBag(value: unknown): boolean {
  *    story exists to get right.
  *  - **A dead feed degrades to "not live", not "broken".** A subscription
  *    error surfaces only when the cell has nothing of its own to show; with a
- *    value in hand the page keeps rendering it, because a silo whose placement
+ *    value in hand the page keeps rendering it, because a host whose placement
  *    cannot watch (501) must not take a working read down with it.
  */
 function liveView(

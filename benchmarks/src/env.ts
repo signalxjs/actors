@@ -22,7 +22,7 @@ export interface BenchEnv {
     /**
      * Tier 3 only: the DEPLOYMENT's shape, supplied via `INFRA_SHAPE` by
      * whoever knows it (`testenv.mjs` computes it from the live release).
-     * Empty for Tier 1/2. Compared verbatim and never guessed: three silos
+     * Empty for Tier 1/2. Compared verbatim and never guessed: three hosts
      * packed on one node and three spread across three look identical in
      * every report and differ by more than 2x in throughput, so a silent
      * comparison across shapes is a confident wrong answer.

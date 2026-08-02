@@ -1,6 +1,6 @@
 /**
- * `onMiss` — what the PUBLIC mount does with a call for a grain another
- * silo owns.
+ * `onMiss` — what the PUBLIC mount does with a call for an actor another
+ * host owns.
  *
  * Two properties carry the whole design, and both have a test that fails
  * loudly if they regress:
@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { actor, defineActor } from '@sigx/actors';
 import { __actorRef, configureActors, routedFetchTransport } from '@sigx/actors/client';
-import { createSilo } from '@sigx/actors/silo';
+import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { createCluster, type ClusterHarness } from './harness';
 
@@ -38,7 +38,7 @@ const Counter = defineActor({
     })
 });
 
-const PUBLIC = (i: number) => `http://silo${i}.test`;
+const PUBLIC = (i: number) => `http://host${i}.test`;
 
 let harness: ClusterHarness | undefined;
 
@@ -49,14 +49,14 @@ afterEach(async () => {
     vi.restoreAllMocks();
 });
 
-/** Place `key`, then return the index of a silo that does NOT own it. */
+/** Place `key`, then return the index of a host that does NOT own it. */
 async function placeAndFindNonOwner(h: ClusterHarness, key: string): Promise<number> {
-    await h.silos[0]!.dispatch({ type: 'Counter', key }, 'bump', [], call());
-    for (let i = 0; i < h.silos.length; i++) {
+    await h.hosts[0]!.dispatch({ type: 'Counter', key }, 'bump', [], call());
+    for (let i = 0; i < h.hosts.length; i++) {
         const at = await h.placements[i]!.locate({ type: 'Counter', key });
         if (!at.local) return i;
     }
-    throw new Error('every silo claims to own the grain');
+    throw new Error('every host claims to own the actor');
 }
 
 function call() {
@@ -75,7 +75,7 @@ describe('onMiss: proxy (the default)', () => {
 
         urls.length = 0;
         await expect(actor(Ref, 'c1').bump()).resolves.toBe(2);
-        // One PUBLIC request; the internal hop is the silo's business.
+        // One PUBLIC request; the internal hop is the host's business.
         expect(urls.filter((u) => u.includes('/_sigx/actor'))).toHaveLength(1);
     });
 });
@@ -89,7 +89,7 @@ describe('onMiss: redirect', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'c2');
 
-        const before = harness.silos.map((s) => s.stats().activations);
+        const before = harness.hosts.map((s) => s.stats().activations);
         const remoteBefore = harness.placements.map((p) => p.counters().remoteDispatches);
 
         const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
@@ -100,15 +100,15 @@ describe('onMiss: redirect', () => {
 
         expect(response.status).toBe(421);
         const body = (await response.json()) as {
-            error: { data: { kind: string; owner: { siloId: string; endpoint: string } } };
+            error: { data: { kind: string; owner: { hostId: string; endpoint: string } } };
         };
         expect(body.error.data.kind).toBe('wrong-host');
-        expect(body.error.data.owner.endpoint).toMatch(/^http:\/\/silo\d\.test\/_sigx\/actor$/);
+        expect(body.error.data.owner.endpoint).toMatch(/^http:\/\/host\d\.test\/_sigx\/actor$/);
         expect(response.headers.get('x-sigx-actor-owner')).toBe(body.error.data.owner.endpoint);
 
         // THE property: no activation moved, and nothing was forwarded. A
         // client (or a proxy) auto-retrying this 421 cannot double-apply.
-        expect(harness.silos.map((s) => s.stats().activations)).toEqual(before);
+        expect(harness.hosts.map((s) => s.stats().activations)).toEqual(before);
         expect(harness.placements.map((p) => p.counters().remoteDispatches)).toEqual(
             remoteBefore
         );
@@ -134,8 +134,8 @@ describe('onMiss: redirect', () => {
         expect(response.status).toBe(421);
         expect(text).toContain('https://public-');
         // The pod IP must not appear anywhere in what a client receives.
-        expect(text).not.toContain('silo0.test');
-        expect(text).not.toContain('silo1.test');
+        expect(text).not.toContain('host0.test');
+        expect(text).not.toContain('host1.test');
         expect(text).not.toContain('"address"');
     });
 
@@ -158,19 +158,19 @@ describe('onMiss: redirect', () => {
     });
 
     it('proxies when the placement cannot locate at all', async () => {
-        // A single-node silo has no `locate()`, so the seam stays optional
+        // A single-node host has no `locate()`, so the seam stays optional
         // and the mount simply behaves as it always did.
-        const silo = createSilo({ actors: [Counter] });
+        const host = createHost({ actors: [Counter] });
         const response = await handleActorRequest(
             new Request('http://s.test/_sigx/actor/Counter%23bump', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: ['solo'] })
             }),
-            { silo, origin: false, onMiss: 'redirect' }
+            { host, origin: false, onMiss: 'redirect' }
         );
         expect(response.status).toBe(200);
-        await silo.stop();
+        await host.stop();
     });
 
     it('proxies once the caller has already followed maxHops redirects', async () => {
@@ -187,11 +187,11 @@ describe('onMiss: redirect', () => {
             body: JSON.stringify({ args: ['c5'] })
         });
         // The loop is bounded by the SERVER too, not only by a cooperating
-        // client: two silos disagreeing about ownership must not ping-pong.
+        // client: two hosts disagreeing about ownership must not ping-pong.
         expect(response.status).toBe(200);
     });
 
-    it('never redirects $live — one response, many grains', async () => {
+    it('never redirects $live — one response, many actors', async () => {
         harness = await createCluster(2, {
             actors: [Counter],
             onMiss: 'redirect',
@@ -288,7 +288,7 @@ describe('the client follows, and remembers', () => {
     });
 
     it('forgets a learned endpoint that stops answering, and recovers', async () => {
-        // Without this, one dead silo strands every client that learned it.
+        // Without this, one dead host strands every client that learned it.
         const urls: string[] = [];
         harness = await createCluster(3, {
             actors: [Counter],
@@ -327,7 +327,7 @@ describe('the client follows, and remembers', () => {
     });
 });
 
-/** Which silo currently owns `key`, via the public `locate()` seam. */
+/** Which host currently owns `key`, via the public `locate()` seam. */
 async function ownerIndex(h: ClusterHarness, key: string): Promise<number | undefined> {
     for (let i = 0; i < h.placements.length; i++) {
         const at = await h.placements[i]!.locate({ type: 'Counter', key });
@@ -339,17 +339,17 @@ async function ownerIndex(h: ClusterHarness, key: string): Promise<number | unde
 describe('the locate() seam', () => {
     it('answers without activating anything', async () => {
         harness = await createCluster(2, { actors: [Counter] });
-        const before = harness.silos.map((s) => s.stats().activations);
+        const before = harness.hosts.map((s) => s.stats().activations);
 
         const at = await harness.placements[0]!.locate({ type: 'Counter', key: 'never-run' });
 
         expect(typeof at.local).toBe('boolean');
-        // Asking WHERE must not create the grain — the endpoint calls this
+        // Asking WHERE must not create the actor — the endpoint calls this
         // on every miss, and activating there would defeat placement.
-        expect(harness.silos.map((s) => s.stats().activations)).toEqual(before);
+        expect(harness.hosts.map((s) => s.stats().activations)).toEqual(before);
     });
 
-    it('says local for a grain this silo owns, remote for one it does not', async () => {
+    it('says local for an actor this host owns, remote for one it does not', async () => {
         harness = await createCluster(2, { actors: [Counter] });
         const from = await placeAndFindNonOwner(harness, 'loc1');
         const owner = from === 0 ? 1 : 0;
@@ -360,32 +360,32 @@ describe('the locate() seam', () => {
 
         const remote = await harness.placements[from]!.locate({ type: 'Counter', key: 'loc1' });
         expect(remote.local).toBe(false);
-        if (!remote.local) expect(remote.owner.siloId).toBeTruthy();
+        if (!remote.local) expect(remote.owner.hostId).toBeTruthy();
     });
 
     it('carries publicAddress through the composite placement', async () => {
         // Regression: `compositePlacement` forwards a fixed set of methods,
         // so a new one is silently dropped — and `locate` being dropped
-        // makes every app-built silo (i.e. every real one) proxy forever
+        // makes every app-built host (i.e. every real one) proxy forever
         // while looking correctly configured.
         harness = await createCluster(2, { actors: [Counter], publicAddress: PUBLIC });
         const from = await placeAndFindNonOwner(harness, 'loc2');
 
-        expect(harness.silos[from]!.locate).toBeTypeOf('function');
-        const at = await harness.silos[from]!.locate!({ type: 'Counter', key: 'loc2' });
+        expect(harness.hosts[from]!.locate).toBeTypeOf('function');
+        const at = await harness.hosts[from]!.locate!({ type: 'Counter', key: 'loc2' });
         expect(at).toBeDefined();
         expect(at!.local).toBe(false);
         if (at && !at.local) {
-            expect(at.owner.publicAddress).toMatch(/^http:\/\/silo\d\.test$/);
+            expect(at.owner.publicAddress).toMatch(/^http:\/\/host\d\.test$/);
             // Both origins travel together; picking is the consumer's job.
-            expect(at.owner.address).toMatch(/^http:\/\/silo\d\.test$/);
+            expect(at.owner.address).toMatch(/^http:\/\/host\d\.test$/);
         }
     });
 
     it('publishes publicAddress in the membership descriptor', async () => {
         harness = await createCluster(2, { actors: [Counter], publicAddress: PUBLIC });
-        expect(harness.placements[0]!.descriptor().publicAddress).toBe('http://silo0.test');
-        expect(harness.placements[1]!.descriptor().publicAddress).toBe('http://silo1.test');
+        expect(harness.placements[0]!.descriptor().publicAddress).toBe('http://host0.test');
+        expect(harness.placements[1]!.descriptor().publicAddress).toBe('http://host1.test');
     });
 
     it('omits publicAddress entirely when unset', async () => {
@@ -405,10 +405,10 @@ describe('the 421 the client gives up on stays readable', () => {
         const body = JSON.stringify({
             error: {
                 status: 421,
-                message: '[sigx actors] Counter/x is owned by silo-9',
+                message: '[sigx actors] Counter/x is owned by host-9',
                 data: {
                     kind: 'wrong-host',
-                    owner: { siloId: 'silo-9', endpoint: 'http://silo-9.test/_sigx/actor' }
+                    owner: { hostId: 'host-9', endpoint: 'http://host-9.test/_sigx/actor' }
                 }
             }
         });
@@ -420,7 +420,7 @@ describe('the 421 the client gives up on stays readable', () => {
         }));
         const Ref = __actorRef('Counter', 'http://edge.test/_sigx/actor') as typeof Counter;
 
-        await expect(actor(Ref, 'x').bump()).rejects.toThrow('is owned by silo-9');
+        await expect(actor(Ref, 'x').bump()).rejects.toThrow('is owned by host-9');
     });
 });
 

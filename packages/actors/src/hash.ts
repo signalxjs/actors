@@ -5,7 +5,7 @@
  * with DIFFERENT stability contracts, and neither should be able to change
  * the other's:
  *
- * - `silo/reminder-shards` pins it as STORAGE IDENTITY. An actorId must map
+ * - `host/reminder-shards` pins it as STORAGE IDENTITY. An actorId must map
  *   to the same shard forever or reminders silently vanish on upgrade.
  * - `route` uses it for the wire routing token, where a change costs a
  *   one-deploy locality dip and nothing else.

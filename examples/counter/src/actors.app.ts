@@ -8,7 +8,7 @@
  * and loads under plain Node too — which is what lets `server.mjs` share it
  * and why actor modules can safely import the bound `defineActor` below.
  */
-import { defineActorApp } from '@sigx/actors/silo';
+import { defineActorApp } from '@sigx/actors/host';
 import { fileStorage } from '@sigx/actors/node';
 
 export const app = defineActorApp({

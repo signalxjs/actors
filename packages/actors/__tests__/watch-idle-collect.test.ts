@@ -1,11 +1,11 @@
 /**
- * Does the idle timer collect a grain whose watch consumer has gone?
+ * Does the idle timer collect an actor whose watch consumer has gone?
  *
- * The Orleans model is that a grain outlives its last caller and deactivates
+ * The virtual-actor model is that an actor outlives its last caller and deactivates
  * on an idle timer — it does NOT die the moment a client disconnects. This
  * runtime copies that (`idleAfterMs`).
  *
- * So the question is not "was the grain collected immediately", it is whether
+ * So the question is not "was the actor collected immediately", it is whether
  * a departed consumer leaves the activation ELIGIBLE for that timer at all.
  * `keptAlive` does not delay collection, it exempts from it:
  *
@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { createSilo, manualScheduler, memoryStorage } from '@sigx/actors/silo';
+import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 
 const Counter = defineActor({
@@ -37,12 +37,12 @@ const Counter = defineActor({
     })
 });
 
-/** A silo whose idle collection can be driven exactly. */
-function silo() {
+/** A host whose idle collection can be driven exactly. */
+function host() {
     const scheduler = manualScheduler();
     return {
         scheduler,
-        s: createSilo({
+        s: createHost({
             actors: [Counter],
             storage: memoryStorage(),
             scheduler,
@@ -68,11 +68,11 @@ describe('idle collection after a watch consumer leaves', () => {
     it('CONTROL: collects a plain idle activation', async () => {
         // Proves the sweeper and the timer work at all, so the case below
         // cannot be dismissed as a misconfigured test.
-        const { scheduler, s } = silo();
+        const { scheduler, s } = host();
         await s.start();
         try {
             await handleActorRequest(call('Counter#increment', ['plain', 1]), {
-                silo: s,
+                host: s,
                 origin: false
             });
             expect(s.stats().activations).toBe(1);
@@ -85,12 +85,12 @@ describe('idle collection after a watch consumer leaves', () => {
         }
     });
 
-    it('collects the grain after its watch consumer has gone', async () => {
-        const { scheduler, s } = silo();
+    it('collects the actor after its watch consumer has gone', async () => {
+        const { scheduler, s } = host();
         await s.start();
         try {
             const res = await handleActorRequest(call('Counter#watch', ['watched']), {
-                silo: s,
+                host: s,
                 origin: false
             });
             const reader = res.body!.getReader();
@@ -113,7 +113,7 @@ describe('idle collection after a watch consumer leaves', () => {
                 await drain();
             }
 
-            // Orleans-style: not instant, but the timer must eventually get it.
+            // Idle collection: not instant, but the timer must eventually get it.
             expect(s.stats().activations).toBe(0);
         } finally {
             await s.stop({ timeoutMs: 1_000 });

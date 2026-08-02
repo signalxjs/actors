@@ -1,7 +1,7 @@
 /**
  * The per-activation mailbox — turn-based concurrency as a promise chain.
  *
- * Guarantees (the Orleans core promise, restated for JS):
+ * Guarantees (the virtual-actor core promise, restated for JS):
  *  - One turn at a time per activation. A turn is one method invocation from
  *    dequeue to promise settlement; no two turns of one activation ever
  *    interleave, so plain field mutation on actor state is race-free.
@@ -9,7 +9,7 @@
  *    holds every queued message until it settles (non-reentrant default).
  *  - A failed turn never poisons the queue: the next turn runs regardless.
  */
-import { SiloShutdownError } from '../errors';
+import { HostShutdownError } from '../errors';
 
 export class Mailbox {
     #tail: Promise<unknown> = Promise.resolve();
@@ -27,7 +27,7 @@ export class Mailbox {
 
     /** Enqueue one turn; returns that turn's own settlement. */
     run<T>(turn: () => T | Promise<T>): Promise<T> {
-        if (this.#closed) return Promise.reject(new SiloShutdownError());
+        if (this.#closed) return Promise.reject(new HostShutdownError());
         this.#depth++;
         const result = this.#tail.then(
             () => turn(),

@@ -22,7 +22,7 @@ import type { ActorScheduler } from '../types';
 
 /**
  * The default: `setTimeout`/`setInterval` from the host, `unref`'d where
- * that exists so a silo never holds a Node process open on its own.
+ * that exists so a host never holds a Node process open on its own.
  *
  * WinterCG-clean — both globals are standard, and `unref` is
  * optional-chained. It is the right choice anywhere with a long-lived

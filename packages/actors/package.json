@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors",
     "version": "0.1.0",
-    "description": "Orleans-style virtual actors for SignalX \u2014 addressable, single-threaded, persistent server state",
+    "description": "Virtual actors for SignalX \u2014 addressable, single-threaded, persistent server state",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -12,11 +12,11 @@
             "production": "./dist/index.prod.js",
             "import": "./dist/index.js"
         },
-        "./silo": {
-            "types": "./dist/silo/index.d.ts",
-            "development": "./dist/silo.js",
-            "production": "./dist/silo.prod.js",
-            "import": "./dist/silo.js"
+        "./host": {
+            "types": "./dist/host/index.d.ts",
+            "development": "./dist/host.js",
+            "production": "./dist/host.prod.js",
+            "import": "./dist/host.js"
         },
         "./server": {
             "types": "./dist/server/index.d.ts",
@@ -80,8 +80,7 @@
         "sigx",
         "actors",
         "virtual-actors",
-        "orleans",
-        "grains",
+        "actors",
         "stateful",
         "server"
     ],

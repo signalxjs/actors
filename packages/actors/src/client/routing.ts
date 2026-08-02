@@ -8,9 +8,9 @@
  * The invariant everything here rests on: **routing is an optimization and
  * is never load-bearing for correctness.** A router that answers wrongly,
  * stalely, or not at all costs a network hop — never a wrong answer,
- * because the silo that receives a misrouted call still forwards or
+ * because the host that receives a misrouted call still forwards or
  * redirects it, and the directory remains the sole arbiter of who owns a
- * grain. That is what makes it safe to let arbitrary user code choose an
+ * actor. That is what makes it safe to let arbitrary user code choose an
  * endpoint on the hot path, and it is why `resolve()` throwing is caught
  * and ignored rather than propagated.
  */
@@ -20,7 +20,7 @@ import { actorId } from '../types';
 import { fetchTransport } from './index';
 import type { ActorCallInit, ActorTransport, ActorTransportConfig } from './index';
 
-/** What a router is told about the call it is routing, beyond the grain. */
+/** What a router is told about the call it is routing, beyond the actor. */
 export interface ActorRouteContext {
     /** `Cart#addItem`. */
     readonly symbol: string;
@@ -40,10 +40,10 @@ export interface ActorRouteContext {
 }
 
 export interface ActorRouterStats {
-    /** Grains currently mapped to an endpoint. */
+    /** Actors currently mapped to an endpoint. */
     size: number;
     /** `learn()` calls since construction — events, NOT distinct endpoints;
-     *  re-learning one grain counts again. */
+     *  re-learning one actor counts again. */
     learned: number;
 }
 
@@ -51,21 +51,21 @@ export interface ActorRouter {
     /** Diagnostic label, e.g. `'learning'`. */
     readonly name: string;
     /**
-     * The endpoint for this grain, or `null` for "no opinion — use the
+     * The endpoint for this actor, or `null` for "no opinion — use the
      * default". Sync: this runs on every call, and a router that needs to
      * await something should answer from cache and fill in the background
      * rather than put a round trip in front of every dispatch.
      */
     resolve(ref: ActorRef, ctx: ActorRouteContext): string | null;
-    /** The cluster said this grain lives there — a 421 taught us. */
+    /** The cluster said this actor lives there — a 421 taught us. */
     learn?(ref: ActorRef, endpoint: string): void;
     /**
      * Drop what is now wrong: entries pointing at `endpoint`, or everything
      * when it is omitted.
      *
      * The argument matters. Blanket invalidation throws away a whole cache
-     * because one silo changed; the cluster's own route cache only prunes
-     * entries naming the silo that left, and this is that idea.
+     * because one host changed; the cluster's own route cache only prunes
+     * entries naming the host that left, and this is that idea.
      */
     invalidate?(endpoint?: string): void;
     stats?(): ActorRouterStats;
@@ -92,11 +92,11 @@ export interface RoutedTransport extends ActorTransport {
 // ---------------------------------------------------------------------------
 // Reading a redirect
 
-/** Where a `421` said the grain actually lives. */
+/** Where a `421` said the actor actually lives. */
 export interface ActorRouteRedirect {
-    /** A CALLABLE actor endpoint base, e.g. `https://silo-7.example.com/_sigx/actor`. */
+    /** A CALLABLE actor endpoint base, e.g. `https://host-7.example.com/_sigx/actor`. */
     readonly endpoint: string;
-    readonly siloId?: string;
+    readonly hostId?: string;
 }
 
 /**
@@ -107,20 +107,20 @@ export interface ActorRouteRedirect {
  */
 export function actorRedirect(error: unknown): ActorRouteRedirect | null {
     const data = (error as { data?: unknown })?.data as
-        | { kind?: string; owner?: { endpoint?: unknown; siloId?: unknown } }
+        | { kind?: string; owner?: { endpoint?: unknown; hostId?: unknown } }
         | undefined;
     if (data?.kind !== 'wrong-host') return null;
     const endpoint = data.owner?.endpoint;
     if (typeof endpoint !== 'string' || endpoint === '') return null;
-    const siloId = data.owner?.siloId;
-    return { endpoint, ...(typeof siloId === 'string' ? { siloId } : {}) };
+    const hostId = data.owner?.hostId;
+    return { endpoint, ...(typeof hostId === 'string' ? { hostId } : {}) };
 }
 
 /**
  * Is this failure a reason to STOP believing a learned endpoint?
  *
  * A transport error with no status is a dial that never landed; a 5xx is a
- * silo that answered but is unwell. Both mean "the place we were told about
+ * host that answered but is unwell. Both mean "the place we were told about
  * may be gone", and both are worth one retry against the default. A 4xx is
  * not: that is the application answering, and re-sending it elsewhere would
  * turn a clean error into a confusing one.
@@ -147,7 +147,7 @@ interface RouteCache {
 
 /**
  * A bounded, insertion-ordered `Map`: the first key is the oldest WRITE, and
- * re-learning a grain moves it to the back. Reads do NOT refresh position,
+ * re-learning an actor moves it to the back. Reads do NOT refresh position,
  * so this is FIFO-by-write rather than a true LRU — the same behaviour as
  * the cluster's own `#routeCache`, and deliberately so: two implementations
  * of one idea would drift, and eviction here costs a redirect, not an error.
@@ -202,24 +202,24 @@ export function staticRouter(endpoint?: string): ActorRouter {
 }
 
 export interface LearningRouterOptions {
-    /** Grain→endpoint pairs to remember. Default 10 000; 0 disables. */
+    /** Actor→endpoint pairs to remember. Default 10 000; 0 disables. */
     maxEntries?: number;
 }
 
 /**
  * Starts with no opinion and gets better as it runs: every `421` teaches it
- * where one grain lives, and it goes straight there next time.
+ * where one actor lives, and it goes straight there next time.
  *
  * The shipped non-trivial default, because it needs nothing — no membership
- * feed, no configuration, no ability to reach silos directly, no agreement
+ * feed, no configuration, no ability to reach hosts directly, no agreement
  * with the cluster's placement. It only needs the server to be answering
  * redirects (`onMiss: 'redirect'` or `'auto'`).
  *
  * No TTL and no negative caching, deliberately: staleness is self-correcting
  * — a wrong entry produces one redirect, which replaces it. And no
- * persistence, because a route that survives a deploy that moved every silo
+ * persistence, because a route that survives a deploy that moved every host
  * is worse than no route, while the win it would buy is one round trip per
- * grain per session.
+ * actor per session.
  */
 export function learningRouter(options?: LearningRouterOptions): ActorRouter {
     const cache = routeCache(options?.maxEntries);
@@ -279,7 +279,7 @@ const DEFAULT_MAX_REDIRECTS = 2;
 
 /**
  * Wrap a transport so a router chooses each call's endpoint, and a `421`
- * teaches that router where the grain really lives.
+ * teaches that router where the actor really lives.
  *
  * The retry loop lives here rather than in `fetchTransport` so a custom
  * transport gets the same behaviour for free — which is the point of having
@@ -371,7 +371,7 @@ export function routedTransport(
      * it redirects exactly the callers that can act on it. `x-sigx-actor-hops`
      * lets the server bound the chain too — a redirect loop has to be
      * impossible, not merely unlikely, and a client that ignores its own cap
-     * (or is not ours) must not be able to bounce between two silos that
+     * (or is not ours) must not be able to bounce between two hosts that
      * disagree about ownership.
      */
     const initFor = (
@@ -419,12 +419,12 @@ export function routedTransport(
             if (attempt >= maxRedirects) throw error;
             stats.redirects++;
             // `learn` ONLY — deliberately no invalidate(route) here. A 421
-            // proves that THIS grain moved, not that the endpoint we tried
-            // is gone, and `invalidate(endpoint)` prunes every grain mapped
+            // proves that THIS actor moved, not that the endpoint we tried
+            // is gone, and `invalidate(endpoint)` prunes every actor mapped
             // there. Evicting them would throw away good routes on every
             // redirect and re-cost a round trip each. Endpoint-wide
             // invalidation is for the unreachable/5xx path below, which is
-            // the case that really does implicate the whole silo.
+            // the case that really does implicate the whole host.
             quietly('learn', () => router.learn?.(ref, hint.endpoint));
             return hint.endpoint;
         }
@@ -446,7 +446,7 @@ export function routedTransport(
 
         async call(symbol, args, init) {
             const ref = init?.ref;
-            // No single grain — `$live` multiplexes many onto one request,
+            // No single actor — `$live` multiplexes many onto one request,
             // and a hand-built call may carry no ref at all.
             if (!ref) return inner.call(symbol, args, init);
 
@@ -513,12 +513,12 @@ export function routedTransport(
 
 export interface RoutedFetchConfig extends ActorTransportConfig {
     /**
-     * Follow `421` wrong-host redirects, remembering where each grain lives
+     * Follow `421` wrong-host redirects, remembering where each actor lives
      * so only the FIRST call to it pays the extra round trip.
      *
      * Shorthand for `router: learningRouter()`. Without the memo a redirect
      * costs TWO client round trips versus one plus an internal hop — worse
-     * than letting the silo proxy — so following and remembering ship
+     * than letting the host proxy — so following and remembering ship
      * together or not at all.
      *
      * Note the server must be mounted with `onMiss: 'redirect'` or `'auto'`
@@ -529,7 +529,7 @@ export interface RoutedFetchConfig extends ActorTransportConfig {
      */
     follow?: boolean | { maxHops?: number; cache?: number };
     /**
-     * Choose each call's endpoint per grain.
+     * Choose each call's endpoint per actor.
      *
      * Replaces the router `follow` would have installed — but NOT the rest
      * of it: `follow.maxHops` still bounds the redirect chain, because that

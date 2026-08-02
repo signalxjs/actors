@@ -4,7 +4,7 @@
  *
  * The load-bearing property is negative — **a router can never fail a
  * call.** Routing is an optimization; a router that throws, answers
- * staleness, or points at a dead silo costs a hop, never an answer. Several
+ * staleness, or points at a dead host costs a hop, never an answer. Several
  * tests here exist only to hold that line, because the natural
  * implementation of each would propagate.
  */
@@ -44,11 +44,11 @@ const Ref = __actorRef('Cart', ENDPOINT, ['ticks']) as typeof Cart;
 afterEach(() => configureActors(null));
 
 /** A 421 shaped exactly as the public endpoint sends it. */
-function wrongHost(endpoint: string, siloId = 's1'): Error {
-    return Object.assign(new Error(`[sigx actors] owned by ${siloId}`), {
+function wrongHost(endpoint: string, hostId = 's1'): Error {
+    return Object.assign(new Error(`[sigx actors] owned by ${hostId}`), {
         __sigxServerFnError: true,
         status: 421,
-        data: { kind: 'wrong-host', owner: { siloId, endpoint } }
+        data: { kind: 'wrong-host', owner: { hostId, endpoint } }
     });
 }
 
@@ -106,13 +106,13 @@ describe('the ref reaches the router', () => {
         };
         configureActors(routedTransport(stub(), router));
         // `.with()` sets call options; it must not be able to make this
-        // proxy route as a different grain.
+        // proxy route as a different actor.
         await actor(Ref, 'real').with({ headers: { x: '1' } }).add('x');
         expect(seen).toEqual(['real']);
     });
 
     it('is absent for $live, so the router is bypassed entirely', async () => {
-        // $live multiplexes many grains onto one request — there is no single
+        // $live multiplexes many actors onto one request — there is no single
         // owner to route to, so it must not be routed at all. The live layer
         // calls the transport directly, with no ref, which is what this does.
         let asked = 0;
@@ -221,7 +221,7 @@ describe('following a redirect', () => {
     });
 
     it('is bounded, and surfaces the last 421 rather than looping', async () => {
-        // A cluster whose silos disagree about ownership must not ping-pong.
+        // A cluster whose hosts disagree about ownership must not ping-pong.
         const inner = stub(() => wrongHost('http://elsewhere.test/_sigx/actor'));
         configureActors(routedTransport(inner, learningRouter(), { maxRedirects: 2 }));
         await expect(actor(Ref, 'c1').add('x')).rejects.toThrow(/owned by/);
@@ -240,15 +240,15 @@ describe('following a redirect', () => {
     });
 });
 
-describe('a redirect only implicates ONE grain', () => {
-    it('does not evict other grains cached at the same endpoint', async () => {
+describe('a redirect only implicates ONE actor', () => {
+    it('does not evict other actors cached at the same endpoint', async () => {
         // Regression: the redirect path used to `invalidate(oldRoute)`, and
-        // `learningRouter.invalidate(endpoint)` prunes EVERY grain mapped
-        // there. So one 421 threw away every good route sharing that silo,
-        // re-costing a round trip each. A 421 proves this grain moved — it
+        // `learningRouter.invalidate(endpoint)` prunes EVERY actor mapped
+        // there. So one 421 threw away every good route sharing that host,
+        // re-costing a round trip each. A 421 proves this actor moved — it
         // says nothing about its neighbours.
-        const shared = 'http://silo-a.test/_sigx/actor';
-        const moved = 'http://silo-b.test/_sigx/actor';
+        const shared = 'http://host-a.test/_sigx/actor';
+        const moved = 'http://host-b.test/_sigx/actor';
         const router = learningRouter();
         router.learn!({ type: 'Cart', key: 'stays' }, shared);
         router.learn!({ type: 'Cart', key: 'moves' }, shared);
@@ -265,8 +265,8 @@ describe('a redirect only implicates ONE grain', () => {
 
     it('DOES drop the whole endpoint when it is unreachable', async () => {
         // The other half of the rule: a dial that never landed implicates
-        // the silo, not one grain.
-        const dead = 'http://silo-dead.test/_sigx/actor';
+        // the host, not one actor.
+        const dead = 'http://host-dead.test/_sigx/actor';
         const router = learningRouter();
         router.learn!({ type: 'Cart', key: 'a' }, dead);
         router.learn!({ type: 'Cart', key: 'b' }, dead);
@@ -376,7 +376,7 @@ describe('actorRedirect', () => {
     it('reads a wrong-host 421', () => {
         expect(actorRedirect(wrongHost('http://o/_sigx/actor', 's9'))).toEqual({
             endpoint: 'http://o/_sigx/actor',
-            siloId: 's9'
+            hostId: 's9'
         });
     });
 

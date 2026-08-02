@@ -29,10 +29,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- /* dig: survives --reuse-values from before this key. */}}
-      {{- if dig "awayFromSilos" true (.Values.redis | default dict) }}
+      {{- if dig "awayFromHosts" true (.Values.redis | default dict) }}
       # Preferred, not required: Redis is cheap (single-digit millicores
       # here) so sharing a node is survivable, but given a choice it should
-      # not compete with a silo's event loop — and a required rule would
+      # not compete with a host's event loop — and a required rule would
       # risk an unschedulable Redis on a busy pool.
       affinity:
         podAntiAffinity:
@@ -42,7 +42,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
                 labelSelector:
                   matchLabels:
-                    {{- include "chat.siloSelector" . | nindent 20 }}
+                    {{- include "chat.hostSelector" . | nindent 20 }}
       {{- end }}
       containers:
         - name: redis

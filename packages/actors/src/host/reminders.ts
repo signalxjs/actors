@@ -8,9 +8,9 @@
  * `{ [actorId]: { [name]: { nextDue, period } } }`. The interface
  * deliberately promises no more than "fires at or after `nextDue`".
  *
- * A silo ticks only the shards it OWNS (`ownsShard`, from the placement —
+ * A host ticks only the shards it OWNS (`ownsShard`, from the placement —
  * a cluster answers via rendezvous hashing over the membership view;
- * single-node owns everything). No lease is needed: even when two silos
+ * single-node owns everything). No lease is needed: even when two hosts
  * transiently both believe they own a shard, the per-record etag CAS makes
  * firing at-most-once — the losing ticker reloads an already-advanced
  * table and finds nothing due.
@@ -32,7 +32,7 @@ import { reminderShardKeys, reminderShardOf } from './reminder-shards';
 export const REMINDER_TYPE = '$sigx:reminders';
 const MIN_PERIOD_MS = 60_000;
 /** Etag-conflict retries per mutation — shards have multiple writers
- *  once silos cluster (every silo mutates; the owner ticks). */
+ *  once hosts cluster (every host mutates; the owner ticks). */
 const MUTATE_ATTEMPTS = 3;
 
 interface ReminderEntry {
@@ -53,12 +53,12 @@ export class ReminderService implements ActorReminders {
 
     bind(context: ActorRemindersContext): void {
         if (this.#context) {
-            // One instance per silo. Re-binding would leave the tick loop
-            // running against the previous silo's storage and scheduler
+            // One instance per host. Re-binding would leave the tick loop
+            // running against the previous host's storage and scheduler
             // while answering with the new one's — fail fast instead.
             throw new Error(
-                '[sigx actors] this reminders instance is already bound to a silo — ' +
-                    'construct a new one per silo.'
+                '[sigx actors] this reminders instance is already bound to a host — ' +
+                    'construct a new one per host.'
             );
         }
         this.#context = context;
@@ -75,7 +75,7 @@ export class ReminderService implements ActorReminders {
 
     #require(): ActorRemindersContext {
         if (!this.#context) {
-            throw new Error('[sigx actors] reminders used before bind() — this is a silo bug.');
+            throw new Error('[sigx actors] reminders used before bind() — this is a host bug.');
         }
         return this.#context;
     }
@@ -139,7 +139,7 @@ export class ReminderService implements ActorReminders {
     }
 
     async #mutateNow(shard: string, edit: (table: ReminderTable) => void): Promise<void> {
-        // Reload-and-reapply on etag conflict: with N silos over shared
+        // Reload-and-reapply on etag conflict: with N hosts over shared
         // storage a shard legitimately has concurrent writers, and every
         // edit here is expressed against the CURRENT table, so replaying it
         // on a fresh load is safe.
@@ -150,7 +150,7 @@ export class ReminderService implements ActorReminders {
             // A no-op edit must not write. The tick loop reaches every owned
             // shard on every tick and most of them have nothing due, so
             // saving unconditionally would rewrite all 16 shard records
-            // every `reminderTickMs` on a silo with no reminders at all —
+            // every `reminderTickMs` on a host with no reminders at all —
             // and bump an etag no reader can distinguish from a real change.
             // (Serializing costs no more than the `save` it replaces.)
             if (JSON.stringify(table) === before) return;
@@ -206,7 +206,7 @@ export class ReminderService implements ActorReminders {
             }
         });
         // Persisted first (above); now fire. The CAS is what keeps this
-        // at-most-once even if another silo ticks the same shard: the
+        // at-most-once even if another host ticks the same shard: the
         // conflicting ticker reloads an advanced table and collects nothing.
         // Failures are the actor's to log — a reminder dispatch error must
         // not kill the loop.

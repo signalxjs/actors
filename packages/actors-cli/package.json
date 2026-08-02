@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors-cli",
     "version": "0.1.0",
-    "description": "sigx CLI plugin for @sigx/actors — observe and monitor silos, grains and clusters from the terminal",
+    "description": "sigx CLI plugin for @sigx/actors — observe and monitor hosts, actors and clusters from the terminal",
     "type": "module",
     "main": "./dist/plugin.js",
     "types": "./dist/plugin.d.ts",
@@ -33,7 +33,6 @@
         "sigx-cli-plugin",
         "actors",
         "virtual-actors",
-        "orleans",
         "observability",
         "monitoring",
         "tui",

@@ -3,7 +3,7 @@
  *
  * The case that matters is a counter going BACKWARDS. Core exposes
  * monotonic totals with no windowing, so a dashboard must diff them — and
- * `metrics().reset()`, a silo restart, or a peer dropping out of a fan-out
+ * `metrics().reset()`, a host restart, or a peer dropping out of a fan-out
  * all make the previous total meaningless. Reporting a negative rate, or a
  * huge positive one from treating the new value as the delta, is worse than
  * reporting nothing: both look like real traffic.
@@ -19,7 +19,7 @@ describe('rateBetween', () => {
     });
 
     it('returns a GAP when the counter went backwards', () => {
-        // reset() ran, or the silo restarted. The previous total describes a
+        // reset() ran, or the host restarted. The previous total describes a
         // different lifetime, so there is no rate to report for this window.
         expect(rateBetween({ at: 1000, value: 500 }, { at: 2000, value: 10 })).toBeNull();
     });
@@ -75,7 +75,7 @@ describe('RateTracker', () => {
         expect(tracker.size).toBe(3);
         tracker.retain(['s1', 's3']);
         expect(tracker.size).toBe(2);
-        // A silo that left and came back starts fresh rather than diffing
+        // A host that left and came back starts fresh rather than diffing
         // against its pre-departure total.
         expect(tracker.observe('s2', 2000, 100)).toBeNull();
     });

@@ -15,7 +15,7 @@
     "forceConsistentCasingInFileNames": true,
     "paths": {
       "@sigx/actors": ["./packages/actors/src/index.ts"],
-      "@sigx/actors/silo": ["./packages/actors/src/silo/index.ts"],
+      "@sigx/actors/host": ["./packages/actors/src/host/index.ts"],
       "@sigx/actors/server": ["./packages/actors/src/server/index.ts"],
       "@sigx/actors/node": ["./packages/actors/src/node/index.ts"],
       "@sigx/actors/client": ["./packages/actors/src/client/index.ts"],

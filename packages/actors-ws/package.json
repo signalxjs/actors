@@ -1,7 +1,7 @@
 {
     "name": "@sigx/actors-ws",
     "version": "0.1.0",
-    "description": "WebSocket transport for @sigx/actors \u2014 silo-to-silo frames over one port, proxy-friendly",
+    "description": "WebSocket transport for @sigx/actors \u2014 host-to-host frames over one port, proxy-friendly",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -27,8 +27,7 @@
         "virtual-actors",
         "cluster",
         "websocket",
-        "transport",
-        "orleans"
+        "transport"
     ],
     "author": "Andreas Ekdahl",
     "license": "MIT",

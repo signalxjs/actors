@@ -1,10 +1,10 @@
 /**
  * `renderStats` — the non-interactive output.
  *
- * Pure by construction so it can be tested without a terminal or a silo,
+ * Pure by construction so it can be tested without a terminal or a host,
  * which matters because this is the output CI and ssh sessions actually
  * see. The assertions are about what must never be silently omitted: a
- * partial fan-out, an unclaimed reminder shard, a silo that is not active.
+ * partial fan-out, an unclaimed reminder shard, a host that is not active.
  */
 import { describe, expect, it } from 'vitest';
 import { renderStats } from '../src/commands/stats';
@@ -21,9 +21,9 @@ const emptyStats = {
 function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
     return {
         at: 1_700_000_000_000,
-        silos: [
+        hosts: [
             {
-                siloId: 'silo-a',
+                hostId: 'host-a',
                 address: 'http://a:3000',
                 status: 'active',
                 uptimeMs: 65_000,
@@ -55,36 +55,36 @@ describe('renderStats', () => {
         expect(index).toBeGreaterThan(-1);
         // Before any totals: the numbers below it are lower bounds and still
         // look plausible, which is exactly why the caveat cannot trail them.
-        expect(index).toBeLessThan(output.findIndex((line) => line.includes('silos')));
+        expect(index).toBeLessThan(output.findIndex((line) => line.includes('hosts')));
         expect(output[index]).toMatch(/LOWER BOUND/);
     });
 
-    it('flags a silo that is not active', () => {
+    it('flags a host that is not active', () => {
         const output = render(
             snapshot({
-                silos: [
-                    { ...snapshot().silos[0]!, status: 'leaving' },
-                    { ...snapshot().silos[0]!, siloId: 'silo-b', status: 'fenced' }
+                hosts: [
+                    { ...snapshot().hosts[0]!, status: 'leaving' },
+                    { ...snapshot().hosts[0]!, hostId: 'host-b', status: 'fenced' }
                 ]
             })
         );
-        expect(output).toMatch(/! silo-a {2}leaving/);
-        expect(output).toMatch(/! silo-b {2}fenced/);
+        expect(output).toMatch(/! host-a {2}leaving/);
+        expect(output).toMatch(/! host-b {2}fenced/);
     });
 
-    it('does not flag an active or single-node silo', () => {
-        expect(render(snapshot())).not.toMatch(/! silo-a/);
-        expect(render(snapshot({ silos: [{ ...snapshot().silos[0]!, status: 'unknown' }] }))).not.toMatch(
-            /! silo-a/
+    it('does not flag an active or single-node host', () => {
+        expect(render(snapshot())).not.toMatch(/! host-a/);
+        expect(render(snapshot({ hosts: [{ ...snapshot().hosts[0]!, status: 'unknown' }] }))).not.toMatch(
+            /! host-a/
         );
     });
 
     it('shows in-flight slots, which the totals do not count', () => {
         const output = render(
             snapshot({
-                silos: [
+                hosts: [
                     {
-                        ...snapshot().silos[0]!,
+                        ...snapshot().hosts[0]!,
                         stats: { ...emptyStats, transitional: { activating: 7, deactivating: 2 } }
                     }
                 ]
@@ -97,10 +97,10 @@ describe('renderStats', () => {
         const output = render(
             snapshot({
                 cluster: {
-                    from: 'silo-a',
+                    from: 'host-a',
                     view: { version: 3, size: 2, active: 2 },
                     totals: {
-                        silos: 2,
+                        hosts: 2,
                         activations: 0,
                         queued: 0,
                         perType: {},
@@ -108,7 +108,7 @@ describe('renderStats', () => {
                         metrics: null,
                         health: { ready: 2, notReady: 0, fatal: 0, unknown: 0 }
                     },
-                    reminderShards: { p0: ['silo-a'], p1: [], p2: ['silo-a', 'silo-b'] },
+                    reminderShards: { p0: ['host-a'], p1: [], p2: ['host-a', 'host-b'] },
                     unreachable: []
                 }
             })
@@ -195,7 +195,7 @@ describe('format', () => {
 
     it('marks a truncated key rather than cutting it silently', () => {
         expect(ellipsis('short', 10)).toBe('short');
-        expect(ellipsis('a-very-long-grain-key', 8)).toBe('a-very-…');
+        expect(ellipsis('a-very-long-actor-key', 8)).toBe('a-very-…');
         expect(ellipsis('x', 0)).toBe('');
     });
 });

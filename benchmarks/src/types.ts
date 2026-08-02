@@ -66,7 +66,7 @@ export interface Scenario {
     /**
      * One repetition. The runner calls this once as warmup (discarded) and
      * then `--runs` times, taking the median of each metric. Must be
-     * self-contained: create and tear down its own silos.
+     * self-contained: create and tear down its own hosts.
      */
     run(ctx: RunContext): Promise<Metric[]>;
 }

@@ -3,7 +3,7 @@
  *
  *  - `sigx()`       owns the client/ssr environments and the builder order
  *  - `sigxServer()` extracts `*.server.ts` serverFns and swaps them for stubs
- *  - `sigxActors()` extracts `*.actor.ts` actors, runs the dev silo, and
+ *  - `sigxActors()` extracts `*.actor.ts` actors, runs the dev host, and
  *                   mounts the actor endpoint
  *
  * They compose with no coordination beyond `sigxActors` reading

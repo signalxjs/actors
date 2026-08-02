@@ -1,5 +1,5 @@
 /**
- * One multiplexed silo-to-silo connection.
+ * One multiplexed host-to-host connection.
  *
  * Both directions of a link share this: the dialer and the acceptor run the
  * same demultiplexer, so a connection carries calls in either direction and
@@ -23,12 +23,12 @@ import {
     type Frame
 } from './frames';
 import { decodeEnvelope, verifyAuth } from './envelope';
-import type { SiloCallMode, SiloTransportConfig, SiloTransportRuntime } from './seam';
+import type { HostCallMode, HostTransportConfig, HostTransportRuntime } from './seam';
 import { parseWatchOptions } from './watch-symbol';
 import type { ActorCallContext } from '../types';
 
 /**
- * The byte-level link a `SiloConnection` runs over — the ONLY thing that
+ * The byte-level link a `HostConnection` runs over — the ONLY thing that
  * differs between the TCP and WebSocket transports.
  *
  * `messageOriented` is the whole distinction: a WebSocket already delivers
@@ -53,16 +53,16 @@ export const DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_CREDIT = 32;
 
 export interface ConnectionOptions {
-    config: SiloTransportConfig;
+    config: HostTransportConfig;
     link: FrameLink;
     /** True on the side that opened the socket — decides corrId parity. */
     dialer: boolean;
     maxFrameBytes: number;
     credit: number;
-    /** Present once the silo is running; inbound calls need it. */
-    runtime(): SiloTransportRuntime | null;
+    /** Present once the host is running; inbound calls need it. */
+    runtime(): HostTransportRuntime | null;
     /** The peer's id, once the handshake has established it. */
-    onPeer(siloId: string, epoch: number): void;
+    onPeer(hostId: string, epoch: number): void;
     onClose(): void;
 }
 
@@ -86,12 +86,12 @@ interface InboundStream {
     wake?: () => void;
 }
 
-export class SiloConnection {
+export class HostConnection {
     readonly #o: ConnectionOptions;
     readonly #reader: FrameReader;
     #nextCorr: number;
     #closed = false;
-    #peerSiloId = '';
+    #peerHostId = '';
     /** Backpressure at the connection level: stop pumping until `drain`. */
     #writable = true;
     readonly #drainWaiters = new Set<() => void>();
@@ -116,8 +116,8 @@ export class SiloConnection {
         });
     }
 
-    get peerSiloId(): string {
-        return this.#peerSiloId;
+    get peerHostId(): string {
+        return this.#peerHostId;
     }
 
     get closed(): boolean {
@@ -368,10 +368,10 @@ export class SiloConnection {
         switch (frame.type) {
             case FrameType.HELLO:
             case FrameType.WELCOME: {
-                const p = frame.payload as { siloId?: string; epoch?: number };
-                if (typeof p?.siloId === 'string') {
-                    this.#peerSiloId = p.siloId;
-                    this.#o.onPeer(p.siloId, p.epoch ?? 0);
+                const p = frame.payload as { hostId?: string; epoch?: number };
+                if (typeof p?.hostId === 'string') {
+                    this.#peerHostId = p.hostId;
+                    this.#o.onPeer(p.hostId, p.epoch ?? 0);
                 }
                 return;
             }
@@ -397,7 +397,7 @@ export class SiloConnection {
                 const error = this.#o.config.fromWireError(
                     frame.status || 500,
                     wire,
-                    wire?.message ?? '[sigx actors] silo call failed'
+                    wire?.message ?? '[sigx actors] host call failed'
                 );
                 const unary = this.#unary.get(frame.corrId);
                 if (unary) {
@@ -456,8 +456,8 @@ export class SiloConnection {
         const corrId = frame.corrId;
         const p = frame.payload as { s?: string; e?: string; a?: unknown; c?: number; h?: string };
         if (!runtime) {
-            this.#fail(corrId, 503, '[sigx actors] the silo is not started', {
-                kind: 'silo-shutdown'
+            this.#fail(corrId, 503, '[sigx actors] the host is not started', {
+                kind: 'host-shutdown'
             });
             return;
         }
@@ -530,7 +530,7 @@ export class SiloConnection {
         const decodedArgs = this.#o.config.codec.decode(p?.a) as unknown[];
         const [key, ...rest] = decodedArgs;
         if (typeof key !== 'string' || key.length === 0) {
-            throw new Error('[sigx actors] silo call needs a non-empty string key');
+            throw new Error('[sigx actors] host call needs a non-empty string key');
         }
         return {
             call: { ...decoded.call },
@@ -541,13 +541,13 @@ export class SiloConnection {
 
     async #serveStream(
         corrId: number,
-        runtime: SiloTransportRuntime,
+        runtime: HostTransportRuntime,
         ref: { type: string; key: string },
         method: string,
         args: unknown[],
         call: ActorCallContext,
         initialCredit: number,
-        mode: SiloCallMode,
+        mode: HostCallMode,
         /** The WIRE symbol, so a rejection names what the caller actually
          *  sent (`$watch:Counter#read`) rather than the bare method. */
         symbol: string
@@ -627,7 +627,7 @@ export class SiloConnection {
         // silently re-sending a non-idempotent actor method to a host that
         // may no longer own the actor is a correctness bug, not a retry.
         const error = Object.assign(
-            new Error(`[sigx actors] silo connection lost (${reason})`),
+            new Error(`[sigx actors] host connection lost (${reason})`),
             { __sigxActorError: true as const, kind: 'unreachable' as const }
         );
         for (const pending of this.#unary.values()) pending.reject(error);

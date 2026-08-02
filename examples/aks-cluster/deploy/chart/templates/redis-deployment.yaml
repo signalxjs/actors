@@ -1,6 +1,6 @@
-# One Redis, its own node (mutual required anti-affinity vs silos): it
-# carries the actor state, and colocation would both skew silo perf
-# numbers and let silos starve it. Recreate strategy — the PVC is RWO.
+# One Redis, its own node (mutual required anti-affinity vs hosts): it
+# carries the actor state, and colocation would both skew host perf
+# numbers and let hosts starve it. Recreate strategy — the PVC is RWO.
 {{- if .Values.redis.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -30,11 +30,11 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if eq .Values.affinity.redisAntiSilo "required" }}
+      {{- if eq .Values.affinity.redisAntiHost "required" }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
-            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "silo") | nindent 14 }}
+            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "host") | nindent 14 }}
       {{- end }}
       containers:
         - name: redis

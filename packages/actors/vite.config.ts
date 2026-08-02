@@ -8,7 +8,7 @@ import type { ConfigEnv, UserConfig } from 'vite';
 const base = defineLibConfig({
     entry: {
         index: 'src/index.ts',
-        silo: 'src/silo/index.ts',
+        host: 'src/host/index.ts',
         server: 'src/server/index.ts',
         node: 'src/node/index.ts',
         client: 'src/client/index.ts',

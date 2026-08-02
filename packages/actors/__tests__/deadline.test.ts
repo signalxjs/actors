@@ -5,8 +5,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { defineActor, isActorError } from '@sigx/actors';
-import { createSilo, type Silo } from '@sigx/actors/silo';
-import { CallDeadlines } from '../src/silo/deadlines';
+import { createHost, type Host } from '@sigx/actors/host';
+import { CallDeadlines } from '../src/host/deadlines';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000 };
 
@@ -33,21 +33,21 @@ function probeActor() {
     });
 }
 
-async function stopped(silo: Silo): Promise<void> {
+async function stopped(host: Host): Promise<void> {
     // Stuck turns never drain; force-drop them quickly.
-    await silo.stop({ timeoutMs: 50 });
+    await host.stop({ timeoutMs: 50 });
 }
 
 describe('call deadlines', () => {
     it('a stuck actor still times out on the far (30s default) path', async () => {
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
         const def = probeActor();
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             defaults: { ...quiet, callTimeoutMs: 30_000 }
         });
         try {
-            const p = silo.actor(def, 's').stuck();
+            const p = host.actor(def, 's').stuck();
             const assertion = expect(p).rejects.toSatisfy(
                 (e: unknown) =>
                     isActorError(e) &&
@@ -59,18 +59,18 @@ describe('call deadlines', () => {
             await assertion;
         } finally {
             vi.useRealTimers();
-            await stopped(silo);
+            await stopped(host);
         }
     });
 
     it('the far path creates no per-call host timer', async () => {
         const def = probeActor();
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             defaults: { ...quiet, callTimeoutMs: 30_000 }
         });
         try {
-            const client = silo.actor(def, 't');
+            const client = host.actor(def, 't');
             await client.noop(); // activation + first-call machinery priced out
             const real = globalThis.setTimeout;
             let timers = 0;
@@ -86,19 +86,19 @@ describe('call deadlines', () => {
             // One shared arm (plus at most a re-arm), never one per call.
             expect(timers).toBeLessThanOrEqual(2);
         } finally {
-            await stopped(silo);
+            await stopped(host);
         }
     });
 
     it('a settled call is cleaned up: the deadline passing rejects only the stuck one', async () => {
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
         const def = probeActor();
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             defaults: { ...quiet, callTimeoutMs: 30_000 }
         });
         try {
-            const client = silo.actor(def, 'mixed');
+            const client = host.actor(def, 'mixed');
             const fine = client.noop();
             const stuck = client.stuck();
             const settled = expect(fine).resolves.toBe(0);
@@ -110,13 +110,13 @@ describe('call deadlines', () => {
             await rejected;
         } finally {
             vi.useRealTimers();
-            await stopped(silo);
+            await stopped(host);
         }
     });
 
     it('an already-expired deadline rejects with 0ms, runs the turn, and leaves no unhandled rejection', async () => {
         const def = probeActor();
-        const silo = createSilo({ actors: [def], defaults: { ...quiet, callTimeoutMs: 0 } });
+        const host = createHost({ actors: [def], defaults: { ...quiet, callTimeoutMs: 0 } });
         const unhandled: unknown[] = [];
         const onUnhandled = (reason: unknown): void => {
             unhandled.push(reason);
@@ -128,20 +128,20 @@ describe('call deadlines', () => {
             // The method both mutates state and REJECTS — the caller has
             // already been rejected with the timeout, so the turn's own
             // rejection must be swallowed, not surface as unhandled.
-            await expect(silo.dispatch(ref, 'bumpThenFail', [], expired)).rejects.toSatisfy(
+            await expect(host.dispatch(ref, 'bumpThenFail', [], expired)).rejects.toSatisfy(
                 (e: unknown) =>
                     isActorError(e) && e.kind === 'call-timeout' && (e as Error).message.includes('0ms')
             );
             // The turn is never killed: the state change landed.
             await expect(
-                silo.dispatch(ref, 'get', [], { callChain: [], callId: 'test' })
+                host.dispatch(ref, 'get', [], { callChain: [], callId: 'test' })
             ).resolves.toBe(1);
             // Let any orphaned rejection surface.
             await new Promise((r) => setTimeout(r, 20));
             expect(unhandled).toEqual([]);
         } finally {
             process.off('unhandledRejection', onUnhandled);
-            await stopped(silo);
+            await stopped(host);
         }
     });
 
@@ -212,12 +212,12 @@ describe('call deadlines', () => {
     it('the shared timer disarms once idle instead of ticking forever', async () => {
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
         const def = probeActor();
-        const silo = createSilo({
+        const host = createHost({
             actors: [def],
             defaults: { ...quiet, callTimeoutMs: 30_000 }
         });
         try {
-            const client = silo.actor(def, 'idle');
+            const client = host.actor(def, 'idle');
             const p = client.noop();
             await vi.advanceTimersByTimeAsync(0);
             await p;
@@ -230,7 +230,7 @@ describe('call deadlines', () => {
             spy.mockRestore();
         } finally {
             vi.useRealTimers();
-            await stopped(silo);
+            await stopped(host);
         }
     });
 });

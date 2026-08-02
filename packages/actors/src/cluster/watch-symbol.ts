@@ -20,7 +20,7 @@
  *
  * Reserving the prefix is safe: `defineActor` refuses a type starting with
  * `$`, and the mount resolves reserved symbols before any definition
- * lookup — exactly the pattern `$sigx:silo#stats` already established.
+ * lookup — exactly the pattern `$sigx:host#stats` already established.
  */
 export const WATCH_SYMBOL_PREFIX = '$watch:';
 
@@ -57,13 +57,13 @@ export function parseWatchOptions(
     // it an array is waved through and read as `{}` — no throttle, no
     // complaint, and nothing to point at when the rate turns out wrong.
     if (typeof raw !== 'object' || Array.isArray(raw)) {
-        throw badWatchOption(`silo watch "${symbol}" options must be an object or null`);
+        throw badWatchOption(`host watch "${symbol}" options must be an object or null`);
     }
     const throttleMs = (raw as { throttleMs?: unknown }).throttleMs;
     if (throttleMs === undefined) return {};
     if (typeof throttleMs !== 'number' || !Number.isFinite(throttleMs) || throttleMs < 0) {
         throw badWatchOption(
-            `silo watch "${symbol}" got throttleMs=${String(throttleMs)}; it must be a ` +
+            `host watch "${symbol}" got throttleMs=${String(throttleMs)}; it must be a ` +
                 `finite number of milliseconds, 0 or more`
         );
     }

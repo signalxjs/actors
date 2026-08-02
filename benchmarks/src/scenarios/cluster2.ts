@@ -1,5 +1,5 @@
 /**
- * TIER 2 — N silos as real OS processes over real loopback sockets.
+ * TIER 2 — N hosts as real OS processes over real loopback sockets.
  *
  * Everything else in this suite is Tier 1: one process, `pipeFetch`, zero
  * sockets. That is the right way to measure algorithmic shape, and it makes
@@ -38,8 +38,8 @@ const KEYS = ['k0', 'k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7'];
 const targets = KEYS.map((key) => ({ type: BENCH_TYPE, key }));
 
 /**
- * Ownership is deterministic: every silo activates its own new actors, so
- * warming on silo `owner` guarantees every call from any other silo crosses
+ * Ownership is deterministic: every host activates its own new actors, so
+ * warming on host `owner` guarantees every call from any other host crosses
  * the wire. Without that, locality would silently vary run to run and the
  * socket counts would be meaningless.
  */
@@ -50,7 +50,7 @@ async function warmOn(rig: Rig, owner: number): Promise<void> {
 interface Measured {
     opsPerSec: number;
     ops: number;
-    /** Summed over every silo that received traffic. */
+    /** Summed over every host that received traffic. */
     accepted: number;
     peak: number;
     inbound: number;
@@ -75,7 +75,7 @@ async function measure(
 ): Promise<Measured> {
     // Settle before measuring. `warmOn` activates the actors on their owner,
     // but it is the DRIVER's route cache that decides whether the measured
-    // window touches the directory — and that only fills once this silo has
+    // window touches the directory — and that only fills once this host has
     // actually dispatched to each target. Without this the fixed startup cost
     // (one resolution per concurrent worker) lands inside the window and the
     // guard below reads it as store traffic, which it is not.
@@ -124,7 +124,7 @@ function guardStoreOps(label: string, m: Measured): void {
  * sizes to `concurrency x peers` rather than to the peer count. If that is
  * right, sockets grow linearly with concurrency and flat-line with nothing.
  *
- * Sockets are counted by ACCEPTS on the receiving side — if a silo accepted
+ * Sockets are counted by ACCEPTS on the receiving side — if a host accepted
  * K connections from a peer, that peer opened K. No hook into undici, and
  * cross-checked against libuv's own TCP handle table.
  */
@@ -135,7 +135,7 @@ const socketScaling: Scenario = {
     async run(ctx: RunContext): Promise<Metric[]> {
         const metrics: Metric[] = [];
         const concurrencies = ctx.quick ? [1, 8] : [1, 8, 64];
-        const rig = await startRig({ silos: 2, secret: null });
+        const rig = await startRig({ hosts: 2, secret: null });
         try {
             await warmOn(rig, 1);
             for (const concurrency of concurrencies) {
@@ -214,7 +214,7 @@ const transportMatrix: Scenario = {
             ['hmac', 'tier2-secret'],
             ['no-hmac', null]
         ] as const) {
-            const rig = await startRig({ silos: 2, secret });
+            const rig = await startRig({ hosts: 2, secret });
             try {
                 await warmOn(rig, 1);
                 for (const concurrency of concurrencies) {
@@ -284,7 +284,7 @@ const transportMatrix: Scenario = {
  * `connections: null` and `pipelining: 1`. `bounded` caps the pool per origin.
  *
  * The `h2` arm sets `allowH2` on the client, and **measures identical to the
- * matching `bounded` arm**: the rig's silos serve over `createAppHandler` →
+ * matching `bounded` arm**: the rig's hosts serve over `createAppHandler` →
  * `node:http`, which is HTTP/1.1 only, so nothing negotiates and undici falls
  * back. It is kept as a control that documents that fact rather than as a
  * multiplexing test — real h2 would need a `node:http2` server first.
@@ -318,7 +318,7 @@ const dispatcherMatrix: Scenario = {
               ] as const);
         for (const [kind, connections] of arms) {
             const rig = await startRig({
-                silos: 2,
+                hosts: 2,
                 secret: null,
                 dispatcher: kind,
                 connections
@@ -391,7 +391,7 @@ const transportDecision: Scenario = {
         ] as const;
         for (const [label, kind, connections] of arms) {
             const rig = await startRig({
-                silos: 2,
+                hosts: 2,
                 secret: 'decision-secret',
                 dispatcher: kind,
                 connections

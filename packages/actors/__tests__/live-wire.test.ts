@@ -8,8 +8,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServerFnError } from '@sigx/server';
-import { defineActor, type Silo } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { defineActor, type Host } from '@sigx/actors';
+import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { DEFAULT_LIVE_PING_MS, subscribeAll } from '../src/server/live-endpoint';
 
@@ -47,23 +47,23 @@ const Secret = defineActor({
     })
 });
 
-const running: Silo[] = [];
+const running: Host[] = [];
 
-function silo(): Silo {
-    const s = createSilo({ actors: [Cart, Secret], defaults: quiet });
+function host(): Host {
+    const s = createHost({ actors: [Cart, Secret], defaults: quiet });
     running.push(s);
     return s;
 }
 
 /** POST the subscribe symbol and return the raw NDJSON reader. */
-async function subscribe(s: Silo, subs: unknown[]): Promise<Response> {
+async function subscribe(s: Host, subs: unknown[]): Promise<Response> {
     return handleActorRequest(
         new Request(`${ENDPOINT}/${encodeURIComponent('$live#subscribe')}`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: [subs] })
         }),
-        { silo: s, origin: false }
+        { host: s, origin: false }
     );
 }
 
@@ -99,7 +99,7 @@ afterEach(async () => {
 
 describe('$live over the wire', () => {
     it('multiplexes two actors on one response, tagged by index', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
         await s.actor(Cart, 'a').add('x');
 
@@ -117,7 +117,7 @@ describe('$live over the wire', () => {
     });
 
     it('pushes only the index whose actor changed', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await subscribe(s, [
@@ -136,7 +136,7 @@ describe('$live over the wire', () => {
     });
 
     it('a guard rejection fails ONLY its own subscription', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await subscribe(s, [
@@ -150,7 +150,7 @@ describe('$live over the wire', () => {
     });
 
     it('an unknown actor type fails only its own subscription', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await subscribe(s, [
@@ -172,7 +172,7 @@ describe('$live over the wire', () => {
         // subscribed: a branded actor error carries no `status` of its own,
         // so without classifying it first this arrives as a masked 500 and
         // sends the caller hunting a server fault that is really its typo.
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await subscribe(s, [
@@ -192,7 +192,7 @@ describe('$live over the wire', () => {
     it('a prototype member reports 404 too — a live watch is not a back door', async () => {
         // `openWatch` funnels through the same `#invoke`, so `Cart#toString`
         // used to push a real VALUE onto the live channel.
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await subscribe(s, [
@@ -210,7 +210,7 @@ describe('$live over the wire', () => {
     });
 
     it('rejects every malformed subscription shape with a 400, never a 500', async () => {
-        const s = silo();
+        const s = host();
         await s.start();
 
         // A non-object entry must not reach the property reads and throw a
@@ -243,7 +243,7 @@ describe('$live over the wire', () => {
         // so the watch and its keep-alive were pinned for the life of the
         // process. This is the property a live page depends on most: tabs
         // close far more often than they mutate.
-        const s = silo();
+        const s = host();
         await s.start();
 
         const response = await subscribe(s, [{ t: 'Cart', k: 'quiet', m: 'total' }]);
@@ -264,10 +264,10 @@ describe('$live over the wire', () => {
 
     it('pings a quiet connection, and the mount asks for one by default', async () => {
         // The frame exists so an idle connection survives the proxy and
-        // mobile-NAT idle timeouts that sit between a browser and the silo.
+        // mobile-NAT idle timeouts that sit between a browser and the host.
         // It was declared, documented and never emitted: the mount called
         // `subscribeAll` without `pingMs` and the default was 0.
-        const s = silo();
+        const s = host();
         await s.start();
 
         const rq = { abortSignal: new AbortController().signal } as unknown as Parameters<

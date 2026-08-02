@@ -17,8 +17,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { component, defineApp, signal, type App } from 'sigx';
 import { createSSR } from '@sigx/server-renderer';
-import { defineActor, type Silo } from '@sigx/actors';
-import { createSilo } from '@sigx/actors/silo';
+import { defineActor, type Host } from '@sigx/actors';
+import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { actorsPlugin, useActorState, useActorsContext, type LiveChannel } from '@sigx/actors/app';
 import { __actorRef, configureActors, fetchTransport } from '@sigx/actors/client';
@@ -52,17 +52,17 @@ const RoomActor = defineActor({
 
 const RoomRef = __actorRef('Room', ENDPOINT) as unknown as typeof RoomActor;
 
-const silos: Silo[] = [];
+const hosts: Host[] = [];
 const mounted: App<unknown>[] = [];
 /** Every wire symbol the client asked for, in order. */
 let wire: string[] = [];
 
-async function startSilo(): Promise<Silo> {
-    const silo = createSilo({ actors: [RoomActor], defaults: quiet });
-    await silo.start();
-    silos.push(silo);
+async function startHost(): Promise<Host> {
+    const host = createHost({ actors: [RoomActor], defaults: quiet });
+    await host.start();
+    hosts.push(host);
     configureActors(null);
-    return silo;
+    return host;
 }
 
 /**
@@ -70,7 +70,7 @@ async function startSilo(): Promise<Silo> {
  * crossed it. The abort link matters: without it, closing a live connection
  * would leave the server-side watch (and its keep-alive) open.
  */
-function transportFor(silo: Silo): Parameters<typeof actorsPlugin>[0] {
+function transportFor(host: Host): Parameters<typeof actorsPlugin>[0] {
     return {
         transport: {
             endpoint: ENDPOINT,
@@ -78,7 +78,7 @@ function transportFor(silo: Silo): Parameters<typeof actorsPlugin>[0] {
                 const request = new Request(input, init);
                 wire.push(decodeURIComponent(new URL(request.url).pathname.split('/').pop()!));
                 const response = await handleActorRequest(request, {
-                    silo,
+                    host,
                     origin: false,
                     // A ping would be invisible to the consumer anyway; off so
                     // the frames in this file are only the ones under test.
@@ -105,19 +105,19 @@ function transportFor(silo: Silo): Parameters<typeof actorsPlugin>[0] {
 }
 
 /** Mount a setup function as an app with the actors plugin installed. */
-function mount<T>(silo: Silo, setup: () => T, options?: Parameters<typeof actorsPlugin>[0]): T {
+function mount<T>(host: Host, setup: () => T, options?: Parameters<typeof actorsPlugin>[0]): T {
     let captured!: T;
     const Root = component(() => {
         captured = setup();
         return () => null;
     });
-    const host = document.createElement('div');
-    document.body.appendChild(host);
+    const el = document.createElement('div');
+    document.body.appendChild(el);
     const app = defineApp(Root({})).use(
-        actorsPlugin(options ?? transportFor(silo))
+        actorsPlugin(options ?? transportFor(host))
     ) as App<unknown>;
     mounted.push(app);
-    app.mount(host as never);
+    app.mount(el as never);
     return captured;
 }
 
@@ -125,7 +125,7 @@ const reads = (): number => wire.filter((symbol) => symbol === 'Room#count').len
 
 afterEach(async () => {
     for (const app of mounted.splice(0)) app.unmount();
-    for (const silo of silos.splice(0)) await silo.stop({ timeoutMs: 1000 });
+    for (const host of hosts.splice(0)) await host.stop({ timeoutMs: 1000 });
     document.body.innerHTML = '';
     configureActors(null);
     wire = [];
@@ -133,8 +133,8 @@ afterEach(async () => {
 
 describe('useActorState({ live: true })', () => {
     it("shows another client's write, with no second read", async () => {
-        const silo = await startSilo();
-        const state = mount(silo, () =>
+        const host = await startHost();
+        const state = mount(host, () =>
             useActorState(RoomRef, 'r1', 'count', { live: true })
         ) as AsyncState<number>;
 
@@ -143,7 +143,7 @@ describe('useActorState({ live: true })', () => {
         expect(wire).toContain('$live#subscribe');
 
         // Somebody else entirely — no action, no invalidation, no refresh.
-        await silo.actor(RoomActor, 'r1').post('hello');
+        await host.actor(RoomActor, 'r1').post('hello');
 
         await vi.waitFor(() => expect(state.value).toBe(1), { timeout: 2000 });
         expect(state.state).toBe('ready');
@@ -153,16 +153,16 @@ describe('useActorState({ live: true })', () => {
     });
 
     it('leaves the read working when the live feed cannot be established', async () => {
-        // A silo whose placement cannot watch answers 501 for the whole
+        // A host whose placement cannot watch answers 501 for the whole
         // subscribe. The read itself is fine, and must stay fine: "not live"
         // is a degradation, not a failure.
-        const silo = await startSilo();
+        const host = await startHost();
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const original = silo.dispatchWatch;
-        Reflect.deleteProperty(silo as unknown as Record<string, unknown>, 'dispatchWatch');
-        (silo as unknown as Record<string, unknown>).dispatchWatch = undefined;
+        const original = host.dispatchWatch;
+        Reflect.deleteProperty(host as unknown as Record<string, unknown>, 'dispatchWatch');
+        (host as unknown as Record<string, unknown>).dispatchWatch = undefined;
 
-        const state = mount(silo, () =>
+        const state = mount(host, () =>
             useActorState(RoomRef, 'r2', 'count', { live: true })
         ) as AsyncState<number>;
 
@@ -173,7 +173,7 @@ describe('useActorState({ live: true })', () => {
         expect(state.state).toBe('ready');
         expect(state.error).toBeNull();
 
-        (silo as unknown as Record<string, unknown>).dispatchWatch = original;
+        (host as unknown as Record<string, unknown>).dispatchWatch = original;
         warn.mockRestore();
     });
 
@@ -186,13 +186,13 @@ describe('useActorState({ live: true })', () => {
         // Driven through a transport's OWN `live()` — the same seam a WebSocket
         // transport would use — because a per-subscription failure has to be
         // delivered on demand, which no real feed will do to order.
-        const silo = await startSilo();
+        const host = await startHost();
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         let fail: ((error: Error) => void) | undefined;
-        const base = transportFor(silo)!.transport as Parameters<typeof fetchTransport>[0];
+        const base = transportFor(host)!.transport as Parameters<typeof fetchTransport>[0];
 
         const state = mount(
-            silo,
+            host,
             () => useActorState(RoomRef, 'r6', 'nothing', { live: true }) as AsyncState<null>,
             {
                 transport: {
@@ -223,12 +223,12 @@ describe('useActorState({ live: true })', () => {
     });
 
     it('follows a reactive key: the old subscription goes, the new one seeds', async () => {
-        const silo = await startSilo();
-        await silo.actor(RoomActor, 'b').post('x');
+        const host = await startHost();
+        await host.actor(RoomActor, 'b').post('x');
 
         const selected = signal({ id: 'a' });
         let channel!: LiveChannel;
-        const state = mount(silo, () => {
+        const state = mount(host, () => {
             channel = useActorsContext().live;
             return useActorState(RoomRef, () => [selected.id, 'count'] as const, { live: true });
         }) as AsyncState<number>;
@@ -243,14 +243,14 @@ describe('useActorState({ live: true })', () => {
         expect(channel.stats().subscriptions).toBe(1);
 
         // …and it is watching 'b' now, so 'b' pushes reach the component.
-        await silo.actor(RoomActor, 'b').post('y');
+        await host.actor(RoomActor, 'b').post('y');
         await vi.waitFor(() => expect(state.value).toBe(2), { timeout: 2000 });
     });
 
     it('unsubscribes on unmount, releasing the watch on the server', async () => {
-        const silo = await startSilo();
+        const host = await startHost();
         let channel!: LiveChannel;
-        mount(silo, () => {
+        mount(host, () => {
             channel = useActorsContext().live;
             return useActorState(RoomRef, 'r3', 'count', { live: true });
         });
@@ -259,10 +259,10 @@ describe('useActorState({ live: true })', () => {
         for (const app of mounted.splice(0)) app.unmount();
 
         expect(channel.stats().subscriptions).toBe(0);
-        // The keep-alive an open watch holds is released, so the grain becomes
-        // collectable again — a page of closed tabs must not pin a silo.
+        // The keep-alive an open watch holds is released, so the actor becomes
+        // collectable again — a page of closed tabs must not pin a host.
         await vi.waitFor(
-            () => expect(silo.activations().every((a) => !a.keptAlive)).toBe(true),
+            () => expect(host.activations().every((a) => !a.keptAlive)).toBe(true),
             { timeout: 2000 }
         );
     });
@@ -272,32 +272,32 @@ describe('useActorState({ live: true })', () => {
         // invalidates on success, the cell refetches the post-write truth, and
         // the push for that same mutation is still behind the watch throttle.
         // Preferring the push there would show the writer their OLD value.
-        const silo = await startSilo();
-        const state = mount(silo, () =>
+        const host = await startHost();
+        const state = mount(host, () =>
             useActorState(RoomRef, 'r4', 'count', { live: true })
         ) as AsyncState<number>;
 
         await vi.waitFor(() => expect(state.value).toBe(0), { timeout: 2000 });
         await vi.waitFor(() => expect(wire).toContain('$live#subscribe'), { timeout: 2000 });
 
-        await silo.actor(RoomActor, 'r4').post('one');
+        await host.actor(RoomActor, 'r4').post('one');
         await vi.waitFor(() => expect(state.value).toBe(1), { timeout: 2000 });
 
         // A fresh read lands a newer value than the push we are holding.
-        await silo.actor(RoomActor, 'r4').post('two');
+        await host.actor(RoomActor, 'r4').post('two');
         await state.refresh();
         expect(state.value).toBe(2);
     });
 
     it('a remount restores the pushed value, not the last fetched one', async () => {
-        const silo = await startSilo();
-        const state = mount(silo, () =>
+        const host = await startHost();
+        const state = mount(host, () =>
             useActorState(RoomRef, 'r5', 'count', { live: true })
         ) as AsyncState<number>;
         await vi.waitFor(() => expect(state.value).toBe(0), { timeout: 2000 });
         await vi.waitFor(() => expect(wire).toContain('$live#subscribe'), { timeout: 2000 });
 
-        await silo.actor(RoomActor, 'r5').post('one');
+        await host.actor(RoomActor, 'r5').post('one');
         await vi.waitFor(() => expect(state.value).toBe(1), { timeout: 2000 });
         const before = reads();
 
@@ -305,7 +305,7 @@ describe('useActorState({ live: true })', () => {
         // without refetching, so the blob had better hold the pushed value —
         // otherwise the remount paints the pre-push number.
         for (const app of mounted.splice(0)) app.unmount();
-        const again = mount(silo, () =>
+        const again = mount(host, () =>
             useActorState(RoomRef, 'r5', 'count', { live: true })
         ) as AsyncState<number>;
 
@@ -319,9 +319,9 @@ describe('useActorState({ live: true })', () => {
         // plain one with unknown keys) must still reach `actorKey`'s argument
         // check and be told, rather than have it swallowed as options and
         // silently address a different key.
-        const silo = await startSilo();
+        const host = await startHost();
         const bad = (value: unknown): void => {
-            mount(silo, () =>
+            mount(host, () =>
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 useActorState(RoomRef, 'r7', 'count', value as any)
             );
@@ -341,7 +341,7 @@ describe('useActorState({ live: true })', () => {
         // only thing keeping the connection shut is the real mechanism: the
         // subscription lives in `onMounted`, which a server render never runs.
         // Move it into setup and this test fails.
-        const silo = await startSilo();
+        const host = await startHost();
         let channel!: LiveChannel;
         const Live = component(() => {
             channel = useActorsContext().live;
@@ -349,7 +349,7 @@ describe('useActorState({ live: true })', () => {
             return () => state.match({ ready: (n) => `count: ${n}`, pending: () => 'loading' });
         });
 
-        const app = defineApp(Live({})).use(actorsPlugin(transportFor(silo))) as App<unknown>;
+        const app = defineApp(Live({})).use(actorsPlugin(transportFor(host))) as App<unknown>;
         const html = await createSSR().renderDocument(app, {
             template: '<html><body><!--ssr-outlet--></body></html>'
         });

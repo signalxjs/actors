@@ -1,20 +1,20 @@
 /**
- * The mergeable half of `metrics()` — what a silo can hand a peer so that
+ * The mergeable half of `metrics()` — what a host can hand a peer so that
  * the CLUSTER's numbers can be computed rather than guessed.
  *
  * `ActorMetricsSnapshot` is for a human: it carries derived percentiles,
- * message strings, and a window that only makes sense for the silo that
- * produced it. None of that adds up across silos — averaging p99s produces
- * a figure describing no call that ever happened, and summing two silos'
+ * message strings, and a window that only makes sense for the host that
+ * produced it. None of that adds up across hosts — averaging p99s produces
+ * a figure describing no call that ever happened, and summing two hosts'
  * `windowMs` means nothing at all.
  *
  * A digest is for `clusterStats()`: additive counters, plus the raw
  * distributions the percentiles get re-derived from after they are summed.
  *
  * Deliberately dependency-free — types and pure folding, no plugin, no
- * silo, no cluster. That is what lets `cluster/stats.ts` import it without
+ * host, no cluster. That is what lets `cluster/stats.ts` import it without
  * dragging the metrics plugin into a bundle that never uses one, and what
- * lets a client (a dashboard merging a user-selected subset of silos) reuse
+ * lets a client (a dashboard merging a user-selected subset of hosts) reuse
  * the exact same arithmetic instead of reimplementing the bucket layout.
  */
 import type { ActorErrorKind } from '../errors';
@@ -57,13 +57,13 @@ export interface RecentActorError {
 }
 
 /**
- * One silo's mergeable metrics.
+ * One host's mergeable metrics.
  *
  * Everything here is additive EXCEPT `windowMs` and `layout`, which are
- * facts about the reporting silo.
+ * facts about the reporting host.
  */
 export interface MetricsDigest {
-    /** Digest wire version, separate from `SiloReport.v` so this half can
+    /** Digest wire version, separate from `HostReport.v` so this half can
      *  evolve without touching the report envelope. */
     v: 1;
     /**
@@ -75,8 +75,8 @@ export interface MetricsDigest {
      */
     layout: string;
     /**
-     * This silo's collection window, ms. NOT additive — each silo has its
-     * own, and one silo having been `reset()` is the fact it carries. A
+     * This host's collection window, ms. NOT additive — each host has its
+     * own, and one host having been `reset()` is the fact it carries. A
      * rate is derived by differencing polls, never by dividing by this.
      */
     windowMs: number;
@@ -132,7 +132,7 @@ export interface MetricsAccumulator {
 const OTHER = '(other)';
 
 /**
- * Fold silos' digests into one set of cluster-wide numbers.
+ * Fold hosts' digests into one set of cluster-wide numbers.
  *
  * Distributions are collected and summed at the END rather than merged
  * pairwise, so the result does not depend on the order peers answered in.
