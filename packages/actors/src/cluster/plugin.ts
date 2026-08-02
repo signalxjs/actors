@@ -13,7 +13,11 @@
  */
 import type { ActorPlugin, HealthReport, PluginRegistry } from '../host/app';
 import type { MetricsDigest } from '../host/digest';
-import { clusterPlacement, type ClusterPlacement } from './placement';
+import {
+    clusterPlacement,
+    type ClusterPlacement,
+    type RebalanceOptions
+} from './placement';
 import type { HostTransportFactory } from './seam';
 import type { HostEndpointOptions } from './host-endpoint';
 import { httpTransport } from './transport';
@@ -84,6 +88,15 @@ export interface ClusterPluginOptions {
      * nothing when the chain contains no HTTP transport.
      */
     endpoint?: HostEndpointOptions;
+    /**
+     * Run `placement.rebalance()` on a cadence — OFF unless configured.
+     * `intervalMs` default 60 000; the rest are `RebalanceOptions`. Each
+     * host sheds only its own excess (down to the cluster mean, bounded by
+     * `maxMoves` per round), so the correction is slow, decentralized, and
+     * composes with whatever placement policy re-places the shed actors —
+     * pair it with `activationCountPolicy()` and they land on cold hosts.
+     */
+    rebalance?: RebalanceOptions & { intervalMs?: number };
 }
 
 export interface ClusterPlugin extends ActorPlugin {
@@ -221,6 +234,32 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
             // transports declares nothing, and this host then has no
             // internal HTTP surface at all.
             for (const route of placement.routes()) registry.route(route);
+
+            if (options.rebalance) {
+                const { intervalMs = 60_000, ...round } = options.rebalance;
+                let timer: ReturnType<typeof setInterval> | null = null;
+                // Single-flight: a round that outlives the interval (slow
+                // probes, many drains) must not stack the next one behind
+                // it — churn is exactly what a slow correction must not do.
+                let running = false;
+                registry.onStart(() => {
+                    // `rebalance()` is total — it reports instead of
+                    // throwing — so the loop needs no error plumbing.
+                    timer = setInterval(() => {
+                        if (running) return;
+                        running = true;
+                        void placement.rebalance(round).finally(() => {
+                            running = false;
+                        });
+                    }, intervalMs);
+                    // A background correction must never hold a process open.
+                    (timer as { unref?: () => void }).unref?.();
+                });
+                registry.onStop(() => {
+                    if (timer !== null) clearInterval(timer);
+                    timer = null;
+                });
+            }
         }
     };
 }

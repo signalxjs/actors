@@ -13,7 +13,9 @@ export {
     preferLocalPolicy,
     randomPlacementPolicy,
     type ClusterPlacement,
-    type ClusterPlacementOptions
+    type ClusterPlacementOptions,
+    type RebalanceOptions,
+    type RebalanceReport
 } from './placement';
 export { activationCountPolicy, type ActivationCountPolicyOptions } from './load-policy';
 export {

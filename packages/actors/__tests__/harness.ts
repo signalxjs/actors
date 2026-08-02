@@ -29,6 +29,7 @@ import {
     matchesHostRequest,
     memoryClusterHub,
     type ClusterPlacement,
+    type ClusterPluginOptions,
     type MemoryClusterHub,
     type PlacementPolicy
 } from '@sigx/actors/cluster';
@@ -77,6 +78,8 @@ export interface ClusterOptions {
     onRequest?: (url: string) => void;
     /** Miss policy for the PUBLIC actor mount. Default `'proxy'`. */
     onMiss?: ActorMissPolicy;
+    /** Forwarded to `cluster({ rebalance })` on every host. */
+    rebalance?: ClusterPluginOptions['rebalance'];
     /** Client-reachable origin of host `i`. The pipe already resolves
      *  `host<i>.test`, so a redirect is genuinely followable in-process. */
     publicAddress?: (index: number) => string;
@@ -151,7 +154,8 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             ...(options.retries !== undefined ? { retries: options.retries } : {}),
             ...(options.retryBackoffMs !== undefined
                 ? { retryBackoffMs: options.retryBackoffMs }
-                : {})
+                : {}),
+            ...(options.rebalance ? { rebalance: options.rebalance } : {})
         });
         let app = defineActorApp({
             actors: options.actors,

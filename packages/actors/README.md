@@ -2028,6 +2028,47 @@ contained; `choose()` must keep working un-attached.
 Precedence, highest first: `defineActor({ placement })` →
 `cluster({ typePolicies })` → `cluster({ policy })` → random.
 
+#### Rebalancing
+
+Placement only ever decides where a **new** activation goes; once a
+workload has gone lumpy — a skewed LB, a scale-up that left old hosts
+full, `preferLocalPolicy()` under the wrong edge — the actors do not move
+back on their own. Rebalancing is the correction, and it is **off unless
+configured**:
+
+```ts
+cluster({
+    providers, advertise,
+    policy: activationCountPolicy(),          // where shed actors land
+    rebalance: { intervalMs: 60_000 }         // { threshold, maxMoves, minIdleMs, timeoutMs }
+})
+```
+
+Each host runs `placement.rebalance()` on the cadence: probe peer loads
+over the ops channel, and if this host is over `threshold × mean`
+(default 1.2), `migrate()` a bounded batch (`maxMoves`, default 10) of
+its **idlest** activations — skipping anything kept alive by a stream,
+watch or task, anything with queued turns, and anything active within
+`minIdleMs` (default 60 s). A migrated actor's claim is released and it
+re-activates wherever placement puts it on its next call, state intact —
+pair the loop with `activationCountPolicy()` and shed actors land on the
+cold hosts.
+
+The properties that make it safe to leave on:
+
+- **A host sheds its own actors only, down to the mean, never past it** —
+  the receivers' own rounds handle the rest, so the correction is slow,
+  decentralized, and cannot oscillate (a two-host cluster will not trade
+  one actor back and forth: rounds also require `own - mean ≥ 1`).
+- **It never acts on missing data.** Unreachable peers are excluded from
+  the mean, and a round with no answering peer does nothing — a
+  partitioned host must not dump its actors on nobody.
+- **One round is total and observable**: `rebalance()` reports
+  `{ own, peers, mean, moved, reason? }` rather than throwing, ops
+  tooling can invoke it directly, and the `rebalanceRounds` /
+  `rebalanceMigrations` counters surface in `counters()` and
+  `clusterStats()`.
+
 #### Which transport should you use?
 
 Measured, not argued — the full table and the gate are in

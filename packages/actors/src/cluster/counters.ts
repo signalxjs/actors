@@ -91,6 +91,14 @@ export interface ClusterCounterTotals {
     membershipChanges: number;
     selfFences: number;
 
+    // --- rebalancing ------------------------------------------------------
+    /** `rebalance()` rounds attempted on this host (everything past the
+     *  not-active guard, including rounds with no answering peer — so a
+     *  partitioned host's cadence stays visible). */
+    rebalanceRounds: number;
+    /** Activations this host shed via `migrate()` in rebalance rounds. */
+    rebalanceMigrations: number;
+
     // --- gauges that still sum meaningfully -------------------------------
     /** Actors currently claimed by (and therefore active on) this host. */
     claimed: number;
@@ -139,6 +147,8 @@ export function createCounters(): ClusterCounterTotals {
         transportFallbacks: 0,
         membershipChanges: 0,
         selfFences: 0,
+        rebalanceRounds: 0,
+        rebalanceMigrations: 0,
         claimed: 0,
         routeCacheSize: 0
     };

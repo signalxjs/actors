@@ -153,6 +153,34 @@ function clampRequest(value: unknown, fallback: number, ceiling: number): number
     return Math.max(0, Math.min(ceiling, Math.floor(value)));
 }
 
+export interface RebalanceOptions {
+    /** Act only when own load exceeds `threshold × cluster mean`. Default
+     *  1.2 — a 20% overshoot, wide enough that ordinary churn never trips
+     *  it. */
+    threshold?: number;
+    /** Most activations shed per round. Default 10 — rebalancing is a slow
+     *  correction, not a stampede. */
+    maxMoves?: number;
+    /** Only activations idle at least this long are candidates. Default
+     *  60 000 — an actor answering traffic is where it should be. */
+    minIdleMs?: number;
+    /** Per-peer load-probe budget, ms. Default 1000. */
+    timeoutMs?: number;
+}
+
+export interface RebalanceReport {
+    /** This host's activation count when the round ran. */
+    own: number;
+    /** Peers that answered a load probe (the mean's denominator, minus 1). */
+    peers: number;
+    /** Cluster mean over this host plus the answering peers. */
+    mean: number;
+    /** Activations actually shed this round. */
+    moved: number;
+    /** Why nothing moved, when nothing did. */
+    reason?: 'balanced' | 'no-peers' | 'no-candidates' | 'not-active';
+}
+
 export interface ClusterPlacement extends ActorPlacement {
     readonly identity: HostIdentity;
     /** This host's current membership descriptor. */
@@ -167,6 +195,15 @@ export interface ClusterPlacement extends ActorPlacement {
      * on top of this.
      */
     migrate(ref: ActorRef): Promise<void>;
+    /**
+     * ONE load-driven rebalance round, for this host's own activations only
+     * (a host can shed, never steal): probe peer loads, and if this host is
+     * over `threshold × mean`, `migrate()` a bounded batch of its idlest
+     * unheld activations. Total — never throws; the report says what
+     * happened and, when nothing moved, why. `cluster({ rebalance })` runs
+     * it on a cadence; ops tooling and tests call it directly.
+     */
+    rebalance(options?: RebalanceOptions): Promise<RebalanceReport>;
     /**
      * Where this actor lives, resolved WITHOUT dispatching and WITHOUT
      * activating — the public endpoint's `onMiss: 'redirect'` asks this
@@ -506,6 +543,88 @@ class ClusterPlacementImpl implements ClusterPlacement {
     async migrate(ref: ActorRef): Promise<void> {
         if (!this.#claimed.has(actorId(ref))) return;
         await this.#host?.deactivate(ref, 'migrated');
+    }
+
+    async rebalance(options: RebalanceOptions = {}): Promise<RebalanceReport> {
+        const threshold = options.threshold ?? 1.2;
+        const maxMoves = Math.max(1, options.maxMoves ?? 10);
+        const minIdleMs = options.minIdleMs ?? 60_000;
+        const timeoutMs = options.timeoutMs ?? 1_000;
+
+        const host = this.#host;
+        if (!host || this.#fenced || this.#status !== 'active') {
+            return { own: 0, peers: 0, mean: 0, moved: 0, reason: 'not-active' };
+        }
+        const stats = host.stats();
+        const own = stats.activations + stats.transitional.activating;
+        const peers = this.view().hosts.filter(
+            (h) => h.status === 'active' && h.hostId !== this.identity.hostId
+        );
+        // Probe loads; only ANSWERS enter the mean. Acting on missing data
+        // is how a partitioned host would dump its actors on nobody.
+        const answers: number[] = [];
+        let next = 0;
+        const worker = async (): Promise<void> => {
+            while (next < peers.length) {
+                const peer = peers[next++]!;
+                try {
+                    const report = await this.peerReport(peer, timeoutMs);
+                    answers.push(
+                        report.stats.activations + report.stats.transitional.activating
+                    );
+                } catch {
+                    // Unreachable or mixed-version — excluded, not zeroed.
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(8, peers.length) }, worker));
+        // Counted from here on — including a round that found nobody to
+        // ask — so a partitioned host's cadence stays visible in the
+        // counters rather than reading as a loop that never ran.
+        this.#counters.rebalanceRounds++;
+        if (answers.length === 0) {
+            return { own, peers: 0, mean: own, moved: 0, reason: 'no-peers' };
+        }
+
+        const mean = (own + answers.reduce((a, b) => a + b, 0)) / (1 + answers.length);
+        // Both guards matter: the ratio keeps small absolute imbalances
+        // quiet, and the `- 1` keeps a two-host cluster from trading one
+        // actor back and forth forever.
+        if (own <= threshold * mean || own - mean < 1) {
+            return { own, peers: answers.length, mean, moved: 0, reason: 'balanced' };
+        }
+        // Shed only down to the mean, never past it — the receiving hosts'
+        // own rounds handle the rest. Idlest first; an actor answering
+        // traffic, holding a stream/watch/task, or with queued turns is
+        // where it should be.
+        const budget = Math.min(maxMoves, Math.floor(own - mean));
+        const candidates = host
+            .activations({ sortBy: 'idle', limit: maxMoves * 4 })
+            .filter((a) => !a.keptAlive && a.queued === 0 && a.idleMs >= minIdleMs)
+            .slice(0, budget);
+        if (candidates.length === 0) {
+            return { own, peers: answers.length, mean, moved: 0, reason: 'no-candidates' };
+        }
+        let moved = 0;
+        for (const candidate of candidates) {
+            try {
+                // Sequential: each migrate drains a mailbox, and a round is
+                // a slow correction — parallel drains would spike exactly
+                // the host that is already the busiest.
+                await this.migrate({ type: candidate.type, key: candidate.key });
+                moved++;
+                this.#counters.rebalanceMigrations++;
+            } catch (error) {
+                if (__DEV__) {
+                    console.warn(
+                        `[sigx actors] rebalance: migrating ${candidate.type}/` +
+                            `${candidate.key} failed:`,
+                        error
+                    );
+                }
+            }
+        }
+        return { own, peers: answers.length, mean, moved };
     }
 
     /**

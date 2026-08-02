@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Automatic rebalancing — `cluster({ rebalance })` and
+  `placement.rebalance()`** (#241, closing it). Off unless configured.
+  Each host runs one round per `intervalMs` (default 60 s): probe peer
+  loads over the ops channel, and when over `threshold × mean` (default
+  1.2), `migrate()` a bounded batch (`maxMoves`, default 10) of its
+  idlest activations — skipping kept-alive, queued, and recently-active
+  (`minIdleMs`, default 60 s) ones. A host sheds only its own actors,
+  only down to the mean (plus an `own - mean ≥ 1` floor, so a two-host
+  cluster cannot trade one actor forever), and never acts on missing
+  data: unreachable peers are excluded from the mean, and no answering
+  peer means no action. One round is total — it resolves to
+  `{ own, peers, mean, moved, reason? }` rather than throwing — and
+  callable directly for ops tooling and tests. New counters:
+  `rebalanceRounds`, `rebalanceMigrations`.
+
 - **`activationCountPolicy()` — load-aware placement** (#241). Steers NEW
   activations toward the least-loaded host: a load view refreshed out of
   band over the authenticated host-to-host ops channel (`refreshMs`
