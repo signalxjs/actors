@@ -12,6 +12,7 @@ import type {
     ActorStreamTable
 } from './types';
 import { warnIfInheritedTable } from './own-member';
+import { topicNameObjection } from './topics';
 
 /**
  * Inert probe handed to the `streams` factory at definition time so its
@@ -81,12 +82,45 @@ export function defineActor<
     }
 
     validateReads(options, streamNames);
+    validateSubscriptions(options);
 
     return {
         type: options.type,
         streamNames,
         __sigxActor: options
     };
+}
+
+/**
+ * Check the `subscriptions:` declaration — definition-time throws in every
+ * build, because a topic name is a wire commitment (it rides dispatch
+ * symbols cross-host) and a non-callable handler would otherwise surface
+ * only when the first event arrives, on whichever host that happens to be.
+ */
+function validateSubscriptions(options: {
+    type: string;
+    subscriptions?: Record<string, unknown>;
+}): void {
+    if (!options.subscriptions) return;
+    if (__DEV__) warnIfInheritedTable(options.subscriptions, 'subscriptions', options.type);
+    for (const [name, sub] of Object.entries(options.subscriptions)) {
+        const where = `[sigx actors] actor "${options.type}" subscription ${JSON.stringify(name)}`;
+        const objection = topicNameObjection(name);
+        if (objection !== null) {
+            throw new Error(`${where}: the topic name ${objection}.`);
+        }
+        if (typeof sub === 'function') continue;
+        const shaped = sub as { key?: unknown; handle?: unknown } | null;
+        if (typeof shaped?.handle !== 'function') {
+            throw new Error(
+                `${where} needs a handler — a function, or \`{ key?, handle }\` with a ` +
+                    `\`handle\` function.`
+            );
+        }
+        if (shaped.key !== undefined && typeof shaped.key !== 'function') {
+            throw new Error(`${where} has a \`key\` that is not a function.`);
+        }
+    }
 }
 
 /**

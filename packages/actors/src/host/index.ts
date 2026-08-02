@@ -63,6 +63,7 @@ export { memoryStorage } from './storage-memory';
 export { timerScheduler, manualScheduler, type ManualScheduler } from './scheduler';
 export { Mailbox } from './mailbox';
 export { REMINDER_METHOD } from './activation';
+export { TOPIC_METHOD } from './topics';
 export { REMINDER_TYPE, shardedReminders } from './reminders';
 export {
     TASKS_TYPE,

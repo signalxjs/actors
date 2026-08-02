@@ -9,6 +9,12 @@ import {
 } from '@sigx/serialize';
 import { isActorDefinition } from '../define';
 import { clearHost, stampHost } from '../seam';
+import { assertTopic } from '../topics';
+import {
+    buildTopicIndex,
+    publishToSubscribers,
+    type TopicSubscriberEntry
+} from './topics';
 import type {
     ActivationInfo,
     ActivationsOptions,
@@ -25,7 +31,10 @@ import type {
     PlacementBindings,
     ActorScheduler,
     Host,
-    HostStats
+    HostStats,
+    PublishOptions,
+    Topic,
+    TopicPublishReport
 } from '../types';
 import { actorId } from '../types';
 import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } from './activation';
@@ -148,6 +157,7 @@ class HostImpl implements Host {
     #scheduler: ActorScheduler;
     #host!: ActivationHost;
     #turnObservers = new Set<ActorTurnObserver>();
+    #topicIndex: Promise<Map<string, TopicSubscriberEntry[]>> | null = null;
     #stopSweeper: (() => void) | null = null;
     #started = false;
     #startPromise: Promise<void> | null = null;
@@ -243,6 +253,8 @@ class HostImpl implements Host {
                     revive: (value) => reviveWithHandlers(value, this.#types)
                 }),
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
+            publish: (topic, payload, call, publisher) =>
+                this.#publish(topic, payload, call ?? this.#externalCall(), publisher),
             onFault: (activation: Activation) => {
                 void this.#local.deactivate(activation.ref, 'conflict');
             },
@@ -401,6 +413,57 @@ class HostImpl implements Host {
 
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D> {
         return this.#client(def, key, () => null) as ActorClientWith<D>;
+    }
+
+    // -----------------------------------------------------------------------
+    // Topics
+
+    publish<T>(
+        topic: Topic<T>,
+        payload: T,
+        options?: PublishOptions
+    ): Promise<TopicPublishReport> {
+        return this.#publish(topic, payload, this.#externalCall(options?.signal), undefined);
+    }
+
+    async #publish(
+        topic: Topic,
+        payload: unknown,
+        call: ActorCallContext,
+        publisher: ActorRef | undefined
+    ): Promise<TopicPublishReport> {
+        // Re-checked here, not only in topic(): a publish may be handed a
+        // hand-built object, and a malformed name must fail the caller, not
+        // reach the wire.
+        assertTopic(topic);
+        const index = await this.#subscriberIndex();
+        const entries = index.get(topic.name) ?? [];
+        return publishToSubscribers(entries, topic, payload, call, publisher, (ref, m, args, c) =>
+            this.dispatch(ref, m, args, c)
+        );
+    }
+
+    /**
+     * topic name → subscribing types, derived from the registry. Memoized in
+     * production (the deploy is static); rebuilt per publish in `__DEV__`,
+     * where HMR can add or edit a definition after the first publish. A
+     * rejected build (a lazy loader failed) is never cached — the loader
+     * must stay retryable, same rule as `#startPromise`.
+     */
+    #subscriberIndex(): Promise<Map<string, TopicSubscriberEntry[]>> {
+        if (__DEV__) {
+            return buildTopicIndex(this.#registry.keys(), (type) => this.definition(type));
+        }
+        if (!this.#topicIndex) {
+            const building = buildTopicIndex(this.#registry.keys(), (type) =>
+                this.definition(type)
+            ).catch((error: unknown) => {
+                if (this.#topicIndex === building) this.#topicIndex = null;
+                throw error;
+            });
+            this.#topicIndex = building;
+        }
+        return this.#topicIndex;
     }
 
     #externalCall(signal?: AbortSignal): ActorCallContext {

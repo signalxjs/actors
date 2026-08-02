@@ -30,7 +30,10 @@ import {
     type TaskApi,
     type TaskInfo,
     type TimerHandle,
-    type TimerOptions
+    type TimerOptions,
+    type Topic,
+    type TopicEvent,
+    type TopicPublishReport
 } from '../types';
 import {
     TASK_REMINDER,
@@ -38,6 +41,7 @@ import {
     type TaskLedgerApi,
     type TaskLedgerEntry
 } from './tasks';
+import { TOPIC_METHOD, subscriptionFor, subscriptionHandler } from './topics';
 
 /** Reserved dispatch method routing to `onReminder`. */
 export const REMINDER_METHOD = '$sigx:reminder';
@@ -95,6 +99,18 @@ export interface ActivationHost {
         key: string,
         parentCall: () => ActorCallContext | null
     ): ActorClient<D>;
+    /**
+     * The topics fan-out — `ctx.publish` delegates here. `call` carries the
+     * publishing turn's chain (so a subscription cycling back is a detected
+     * deadlock); null means no turn was in progress and the host builds a
+     * fresh external context.
+     */
+    publish(
+        topic: Topic,
+        payload: unknown,
+        call: ActorCallContext | null,
+        publisher: ActorRef
+    ): Promise<TopicPublishReport>;
     /** A save hit a conflict: forget this activation after the current turn. */
     onFault(activation: Activation): void;
     /** `ctx.deactivate()` was requested and the queue just emptied. */
@@ -682,6 +698,26 @@ export class Activation {
                 return undefined;
             }
             return opts.onReminder(this.#ctx, name);
+        }
+        if (method === TOPIC_METHOD) {
+            const event = args[0] as TopicEvent;
+            const handler = subscriptionHandler(
+                subscriptionFor(this.def, event?.topic?.name ?? '')
+            );
+            if (!handler) {
+                // A deploy skew: a peer still publishing to a subscription
+                // this build removed. Best-effort delivery drops it — the
+                // reminder posture, minus the clear (nothing is stored).
+                if (__DEV__) {
+                    console.warn(
+                        `[sigx actors] a topic event for "${event?.topic?.name}" arrived on ` +
+                            `${actorLabel(this.ref)}, which declares no subscription to it — ` +
+                            `dropped.`
+                    );
+                }
+                return undefined;
+            }
+            return handler(this.#ctx, event);
         }
         // OWN keys only — see `ownFn`. A prototype member is not a method.
         const fn = ownFn<AnyFn>(this.#methods, method);
@@ -1281,6 +1317,31 @@ export class Activation {
                         abortSignal: current.abortSignal
                     };
                 });
+            },
+            publish<T>(topicRef: Topic<T>, payload: T): Promise<TopicPublishReport> {
+                // Same chain rule as ctx.actor(): the outbound context
+                // appends SELF, so a subscription that cycles back into this
+                // actor is a detected deadlock in the report, not a hang —
+                // the publishing turn is awaiting the fan-out, so an
+                // undetected cycle could never complete.
+                const current = self.#currentCall;
+                if (!current && __DEV__) {
+                    console.warn(
+                        `[sigx actors] ctx.publish() called on ${actorLabel(self.ref)} with ` +
+                            `no turn in progress (a detached callback?) — the publish starts ` +
+                            `a fresh chain, so a subscription cycling back here cannot be ` +
+                            `detected as a deadlock.`
+                    );
+                }
+                const call = current
+                    ? {
+                          callChain: [...current.callChain, self.id],
+                          callId: current.callId,
+                          deadline: current.deadline,
+                          abortSignal: current.abortSignal
+                      }
+                    : null;
+                return self.#host.publish(topicRef, payload, call, self.ref);
             },
             deactivate(): void {
                 self.#deactivateRequested = true;

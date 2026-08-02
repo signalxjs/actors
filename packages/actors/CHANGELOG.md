@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Topics — actor-to-actor pub/sub** (#239). `topic(name, key?)` declares a
+  topic; a `subscriptions:` table on `defineActor` receives its events; and
+  `ctx.publish` / `host.publish()` / `publishTopic()` fan one event out to
+  every subscribing type, resolving to a settlement report
+  (`{ subscribers, delivered, failures }`).
+
+  Subscriptions are **implicit and declarative** — the subscriber set is a
+  pure function of the deploy, derived from the host's registry, and a
+  publish activates idle subscribers exactly the way a reminder delivery
+  does. Each delivery is an ordinary dispatch of the reserved method
+  `$sigx:topic` through placement, so a remotely-owned subscriber rides the
+  existing internal transport (HMAC envelope, deadline propagation, branded
+  errors) with **zero topic-specific wire machinery**; the cost model is one
+  dispatch per subscribing type.
+
+  **Delivery is best-effort, at-most-once, and settled.** The publisher
+  awaits every handler turn (intrinsic backpressure, bounded by the call
+  deadline) and never throws for a subscriber: a throwing handler, an
+  unreachable host, or a detected cycle each land as one `failures` entry.
+  `ctx.publish` carries the publishing turn's call chain, so a subscription
+  that dispatches back into a non-reentrant publisher is a `deadlock`
+  failure rather than a hang. Nothing is persisted or retried — a durable
+  mode is an explicit non-goal for v1, with API room reserved
+  (`PublishOptions`), and `ctx.topics.*` stays free for a future explicit
+  subscribe.
+
+  An entry may map the subscriber key — `{ key: () => 'aggregate', handle }`
+  makes one singleton receive every topic key's events. Handlers are
+  ordinary turns (mutate state, `ctx.save()`), are not wire-callable, and
+  never appear on the client. Topic names are validated like actor types
+  (definition-time throws in every build): no `#`/NUL, no leading `$`/`@`.
+
 ### Fixed
 
 - **The public actor endpoint no longer dispatches runtime-reserved

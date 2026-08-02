@@ -3,12 +3,15 @@
  * methods promise-wrapped, streams as AsyncIterable, `.with` preserved.
  */
 import { describe, expectTypeOf, it } from 'vitest';
-import { actor, defineActor } from '@sigx/actors';
+import { actor, defineActor, publishTopic, topic } from '@sigx/actors';
 import type {
     ActorContext,
     ActorContextBase,
     ActorPlacementStrategy,
-    AnyActorDefinition
+    AnyActorDefinition,
+    Topic,
+    TopicEvent,
+    TopicPublishReport
 } from '@sigx/actors';
 import { defineActorApp, type ActorPlugin } from '@sigx/actors/host';
 
@@ -208,5 +211,62 @@ describe('plugin ctx extension inference', () => {
         expectTypeOf(Logged).toMatchTypeOf<AnyActorDefinition>();
         // and the client inference is unchanged by the extension
         expectTypeOf(actor(Logged, 'k').bump).returns.toEqualTypeOf<Promise<number>>();
+    });
+});
+
+describe('topics typing', () => {
+    const chat = topic<{ from: string; text: string }>('chat');
+
+    it('phantom-types the publish payload', () => {
+        expectTypeOf(topic<number>('n')).toEqualTypeOf<Topic<number>>();
+        const client = defineActor({
+            type: 'Publisher',
+            unguarded: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                async post() {
+                    // payload must match the topic's phantom type
+                    // @ts-expect-error wrong payload type
+                    void ctx.publish(chat, 42);
+                    return ctx.publish(chat, { from: 'a', text: 'hi' });
+                }
+            })
+        });
+        void client;
+        // host-side publish carries the same constraint
+        expectTypeOf(publishTopic<number>).parameter(1).toEqualTypeOf<number>();
+        expectTypeOf(publishTopic(chat, { from: 'a', text: 'hi' })).toEqualTypeOf<
+            Promise<TopicPublishReport>
+        >();
+    });
+
+    it('types subscription handlers with the actor state and keeps them off the client', () => {
+        const Sub = defineActor({
+            type: 'Sub',
+            unguarded: true,
+            state: () => ({ seen: 0 }),
+            methods: (ctx) => ({
+                async seen() {
+                    return ctx.state.seen;
+                }
+            }),
+            subscriptions: {
+                chat: (ctx, event) => {
+                    expectTypeOf(ctx.state.seen).toEqualTypeOf<number>();
+                    expectTypeOf(event).toEqualTypeOf<TopicEvent>();
+                },
+                mapped: {
+                    key: (topicKey) => {
+                        expectTypeOf(topicKey).toEqualTypeOf<string>();
+                        return 'aggregate';
+                    },
+                    handle: (ctx) => void ctx.state.seen++
+                }
+            }
+        });
+        const client = actor(Sub, 'k');
+        expectTypeOf(client.seen).returns.toEqualTypeOf<Promise<number>>();
+        // @ts-expect-error subscription handlers are not client-callable
+        void client.chat;
     });
 });

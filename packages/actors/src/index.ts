@@ -18,6 +18,7 @@ import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './ty
 export { defineActor, isActorDefinition } from './define';
 export { actorKey, ACTOR_KEY_NS, type ActorKeyArg } from './actor-key';
 export { currentHost, peekHost } from './seam';
+export { topic, publishTopic } from './topics';
 export {
     ActorError,
     ActorDeadlockError,
@@ -65,10 +66,17 @@ export type {
     ActorTaskTable,
     Host,
     HostStats,
+    PublishOptions,
     TaskApi,
     TaskInfo,
     TimerHandle,
-    TimerOptions
+    TimerOptions,
+    Topic,
+    TopicDeliveryFailure,
+    TopicEvent,
+    TopicPublishReport,
+    TopicSubscription,
+    TopicSubscriptionHandler
 } from './types';
 
 /** The client-ref brand the build transform's `__actorRef` stubs carry. */

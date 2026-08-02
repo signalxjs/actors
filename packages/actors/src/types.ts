@@ -4,7 +4,7 @@
  * import types without pulling the public API module in.
  */
 import type { ServerFnGuard, ServerFnReadCache } from '@sigx/server';
-import type { ActorOwnerHint } from './errors';
+import type { ActorErrorKind, ActorOwnerHint } from './errors';
 
 /** Identity of one virtual actor. Serializable; never holds memory. */
 export interface ActorRef {
@@ -423,6 +423,86 @@ export type DeactivationReason =
     | 'activation-failed'
     | 'migrated';
 
+// ---------------------------------------------------------------------------
+// Topics — actor-to-actor pub/sub
+
+/**
+ * A topic identity: a NAME (the namespace a `subscriptions:` entry binds to)
+ * and a KEY (which subscriber instance receives the event — by default the
+ * subscriber's own actor key). Built by `topic()`, which validates both.
+ *
+ * The type parameter is phantom: it types the payload on the publish side
+ * and never exists at runtime.
+ */
+export interface Topic<T = unknown> {
+    readonly name: string;
+    readonly key: string;
+    /** @internal phantom — payload type only; never set. */
+    readonly __payload?: T;
+}
+
+/** What a subscription handler receives — the whole delivery, not just the
+ *  payload, so one handler can serve several topic keys. */
+export interface TopicEvent<T = unknown> {
+    readonly topic: { readonly name: string; readonly key: string };
+    readonly payload: T;
+    /** Epoch-ms at publish. */
+    readonly at: number;
+    /** The publishing actor, when published from a turn (`ctx.publish`);
+     *  absent for `host.publish()` / `publishTopic()`. */
+    readonly publisher?: ActorRef;
+}
+
+/** One subscriber a publish could not deliver to. The publisher NEVER
+ *  throws for a subscriber's failure — it lands here instead. */
+export interface TopicDeliveryFailure {
+    readonly type: string;
+    readonly key: string;
+    readonly message: string;
+    /** The branded classification, when the failure was an actor error —
+     *  `'deadlock'`, `'call-timeout'`, `'unreachable'`, … */
+    readonly kind?: ActorErrorKind;
+}
+
+/**
+ * What `publish()` resolves to. Delivery is BEST-EFFORT, at-most-once:
+ * "delivered" means the subscriber's handler turn settled without throwing,
+ * bounded by the call deadline. Nothing is persisted, retried, or replayed.
+ */
+export interface TopicPublishReport {
+    /** Subscriber refs targeted (the deploy's subscribing types). */
+    readonly subscribers: number;
+    readonly delivered: number;
+    readonly failures: readonly TopicDeliveryFailure[];
+}
+
+/** Options for `host.publish()` / `publishTopic()`. A bag from day one so a
+ *  future delivery mode has somewhere to live. */
+export interface PublishOptions {
+    signal?: AbortSignal;
+}
+
+/** A `subscriptions:` handler — an ordinary mailbox turn, free to mutate
+ *  state and `ctx.save()`. */
+export type TopicSubscriptionHandler<
+    S extends object,
+    Ext extends object = Record<never, never>
+> = (ctx: ActorContext<S, Ext>, event: TopicEvent) => void | Promise<void>;
+
+/**
+ * One `subscriptions:` entry: the handler alone (subscriber key = topic
+ * key), or `{ key, handle }` where `key` maps the topic key to the
+ * subscriber key — `() => 'aggregate'` makes one singleton receive every
+ * key's events.
+ */
+export type TopicSubscription<S extends object, Ext extends object = Record<never, never>> =
+    | TopicSubscriptionHandler<S, Ext>
+    | {
+          /** Map topic key → subscriber key. Default: identity. */
+          key?: (topicKey: string) => string;
+          handle: TopicSubscriptionHandler<S, Ext>;
+      };
+
 /**
  * The built-in half of the per-activation context — created once per
  * activation and closed over by the `methods`/`streams` factories.
@@ -455,6 +535,13 @@ export interface ActorContextBase<S extends object> {
     readonly reminders: ReminderApi;
     /** Typed client for another actor; carries the call chain. */
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClient<D>;
+    /**
+     * Publish to a topic. Settles when every subscriber's handler turn has
+     * settled; subscriber failures land in the report, never here. Carries
+     * this turn's call chain, so a subscription cycling back into this
+     * actor is a detected deadlock (a `failures` entry), not a hang.
+     */
+    publish<T>(topic: Topic<T>, payload: T): Promise<TopicPublishReport>;
     /** Finish the queue, then deactivate. */
     deactivate(): void;
     /**
@@ -610,6 +697,25 @@ export interface ActorOptions<
      * enumerated at definition time (for wire routing) with an inert probe.
      */
     streams?: (ctx: ActorContext<S, Ext>) => St;
+    /**
+     * Implicit topic subscriptions — this type receives every publish to the
+     * named topics, with no registration and nothing stored: the subscriber
+     * set is a pure function of the deploy. A publish ACTIVATES an idle
+     * subscriber, exactly as a reminder delivery does.
+     *
+     * ```ts
+     * subscriptions: {
+     *   'chat-messages': (ctx, event) => { ... },   // subscriber key = topic key
+     *   'presence': { key: () => 'aggregate', handle: (ctx, event) => { ... } },
+     * }
+     * ```
+     *
+     * Handlers run as ordinary mailbox turns (mutate state, `ctx.save()`).
+     * They are NOT wire-callable and never appear on the client. A handler
+     * that throws fails only its own delivery — the publisher sees a
+     * `failures` entry, other subscribers are untouched.
+     */
+    subscriptions?: Record<string, TopicSubscription<S, Ext>>;
     /**
      * Detached long-running work, started via `ctx.tasks.start(name,
      * input?)`. A task body runs OUTSIDE the mailbox — other calls
@@ -842,6 +948,13 @@ export interface Host extends ActorDispatcher {
      */
     locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
     actor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D>;
+    /**
+     * Publish to a topic from OUTSIDE any actor (a serverFn, a script, a
+     * timer). An external call: fresh chain, default deadline. See
+     * `ActorContextBase.publish` for the in-turn form, which carries the
+     * caller's chain.
+     */
+    publish<T>(topic: Topic<T>, payload: T, options?: PublishOptions): Promise<TopicPublishReport>;
     /** Starts sweeper + reminders and stamps the host seam. Idempotent. */
     start(): Promise<void>;
     /** Drain, flush, clear the seam. Default timeout 30s. */

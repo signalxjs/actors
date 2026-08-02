@@ -582,6 +582,92 @@ declared*, multiplexes every live read on the page onto one connection, and
 reconnects on its own. `streams:` is for a feed that is not a read of current
 state: a log tail, a progress sequence, an event history.
 
+## Topics (actor-to-actor pub/sub)
+
+An actor that changes something often needs to tell N interested actors
+without knowing who they are. Declare the interest on the *subscriber* and
+publish from anywhere on the server:
+
+```ts
+import { topic } from '@sigx/actors';
+
+export const chatMessages = topic<{ from: string; text: string }>('chat-messages');
+// per-room: topic('chat-messages', roomId)
+
+// The subscriber declares its interest — nothing registers, nothing is stored.
+export const RoomFeed = defineActor({
+    type: 'RoomFeed',
+    use: [sessionGuard],
+    state: () => ({ recent: [] as { from: string; text: string }[] }),
+    methods: (ctx) => ({
+        async recent() {
+            return ctx.snapshot().recent;
+        }
+    }),
+    subscriptions: {
+        // subscriber key = topic key, so RoomFeed/room-1 gets room-1's events
+        'chat-messages': async (ctx, event) => {
+            ctx.state.recent.push(event.payload as { from: string; text: string });
+            await ctx.save();
+        }
+    }
+});
+
+// Publish from another actor's turn…
+const report = await ctx.publish(topic('chat-messages', ctx.key), { from, text });
+// …or from a serverFn / script via the running host:
+await publishTopic(topic('chat-messages', roomId), { from, text });
+```
+
+Subscriptions are **implicit and declarative**: the subscriber set is a pure
+function of the deploy — every registered type whose `subscriptions:` names
+the topic. A publish **activates idle subscribers** exactly the way a
+reminder delivery does, and each delivery is an ordinary dispatch of the
+reserved `$sigx:topic` method through placement, so a subscriber owned by
+another host is reached over the internal transport (HMAC, deadlines,
+branded errors — all of it) with no topic-specific wire machinery. The cost
+model is S dispatches per publish, S = subscribing *types*, not activations.
+
+**Delivery is best-effort, at-most-once, and settled.** `publish()` resolves
+when every subscriber's handler turn has settled and reports what happened:
+
+```ts
+const { subscribers, delivered, failures } = await ctx.publish(chatMessages, msg);
+// failures: [{ type, key, message, kind? }] — a throwing handler, a dead
+// host, a detected deadlock. The publisher NEVER throws for a subscriber.
+```
+
+Nothing is persisted or retried; a subscriber that was down missed the
+event. Backpressure is intrinsic — the publisher awaits the turns, bounded
+by its call deadline. FIFO holds per publisher→subscriber pair **only when
+the publisher awaits its publishes sequentially**; concurrent publishes have
+no relative order.
+
+The details worth knowing:
+
+- **Key mapping.** An entry may be `{ key: (topicKey) => subscriberKey,
+  handle }` — `key: () => 'aggregate'` makes one singleton receive every
+  key's events. The default is identity: topic key = subscriber key.
+- **Cycles are deadlocks, not hangs.** `ctx.publish` carries the publishing
+  turn's call chain, so a subscription that dispatches back into a
+  non-reentrant publisher fails that delivery with `kind: 'deadlock'` in
+  the report — the publisher is awaiting the fan-out, so an undetected
+  cycle could never complete. `reentrant: true` delivers inline instead.
+- **Handlers are turns.** They mutate state and `ctx.save()` like any
+  method; a throwing handler fails only its own delivery and does not
+  fault the activation. Handlers are not wire-callable and never appear on
+  the client.
+- **Pages observe topics through a projection.** A subscriber actor folds
+  events into state; the page reads it with
+  `useActorState(RoomFeed, roomId, 'recent', { live: true })` — the
+  existing live channel pushes after every handler turn. No new wire.
+- **Rolling deploys skew the subscriber set.** A host publishes to the
+  subscribers *its* registry declares, so a newly-added subscribing type
+  misses publishes from not-yet-rolled hosts until the deploy completes —
+  consistent with best-effort delivery.
+- **Hot topics pin subscribers active**: every delivery is activity, so a
+  busy topic resets its subscribers' idle clocks (`idleAfterMs`).
+
 ## Tasks (long-running operations)
 
 A method call holds the mailbox until it settles — fine for milliseconds,
@@ -2022,7 +2108,14 @@ counters — see [Health & readiness](#health--readiness) above.
   (`useActorState(…, { live: true })`); full `[Reentrant]` arbitrary
   interleaving is not offered — `reentrant: true` is call-chain re-entry
   only.
-- Reserved names: actor types starting with `$sigx:` and the method name
-  `$sigx:reminder`. `$sigx:host#stats` is the cluster's ops channel and is
-  answered before any definition lookup, so an actor type named `$sigx:host`
-  would simply be uncallable across hosts.
+- Reserved names: actor types starting with `$sigx:`, topic names starting
+  with `$` or `@`, and the method names `$sigx:reminder` and `$sigx:topic`.
+  `$sigx:host#stats` is the cluster's ops channel and is answered before any
+  definition lookup, so an actor type named `$sigx:host` would simply be
+  uncallable across hosts. The public endpoint refuses every
+  `$sigx:`-prefixed method outright — those are the runtime's own deliveries,
+  and they arrive over the authenticated internal mount only.
+- **Topic delivery is best-effort, at-most-once.** No persistence, no retry,
+  no replay — a durable mode is an explicit non-goal for v1 and has API room
+  reserved (`PublishOptions`). Explicit runtime subscribe/unsubscribe is
+  likewise deferred; `ctx.topics.*` stays free for it.
