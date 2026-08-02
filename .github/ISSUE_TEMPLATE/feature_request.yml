@@ -42,6 +42,7 @@ body:
       options:
         - "@sigx/actors"
         - "@sigx/actors-redis"
+        - "@sigx/actors-pg"
         - "@sigx/actors-k8s"
         - "@sigx/actors-cloudflare"
         - "@sigx/actors-cli"

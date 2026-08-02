@@ -28,6 +28,7 @@
       "@sigx/actors-ws": ["./packages/actors-ws/src/index.ts"],
       "@sigx/actors-k8s": ["./packages/actors-k8s/src/index.ts"],
       "@sigx/actors-tcp": ["./packages/actors-tcp/src/index.ts"],
+      "@sigx/actors-pg": ["./packages/actors-pg/src/index.ts"],
       "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"],
       "@sigx/actors-cloudflare": ["./packages/actors-cloudflare/src/index.ts"],
       "@sigx/actors-cli/source": ["./packages/actors-cli/src/source/index.ts"],

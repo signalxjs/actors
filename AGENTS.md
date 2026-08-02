@@ -238,6 +238,16 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `@sigx/actors/cluster`, and `redisStorage` (etag-CAS `ActorStorage` —
   the cluster-safe persistence option). ioredis ≥5 as a peer dependency;
   provider tests are env-gated on `REDIS_URL`.
+- `packages/actors-pg` → `@sigx/actors-pg` — Postgres (≥13) providers, for
+  the team whose one durable store is SQL: `pgStorage` (etag-CAS
+  `ActorStorage`, single-statement CAS, `jsonb` state), `pgMembership`
+  (TTL heartbeat judged on the DATABASE clock, LISTEN/NOTIFY push with
+  poll fallback, signature-based change detection so silent deaths
+  converge without a version bump), `pgDirectory` (claim/CAD/`evictHost`),
+  `pgCluster` bundling the two, and `pgSchemaSql()`/`ensurePgSchema()` —
+  DDL is explicit, the providers never issue it. `pg` ≥8 as a peer
+  dependency; provider tests are env-gated on `PG_URL` (a dedicated CI
+  job provides a postgres service).
 - `packages/actors-k8s` → `@sigx/actors-k8s` — Kubernetes membership
   provider for `@sigx/actors/cluster`: `k8sMembership()`, host liveness via
   a coordination.k8s.io Lease per host (renewed on the heartbeat cadence)
