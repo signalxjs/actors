@@ -6,6 +6,7 @@ import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
 import { stateScenarios } from './state.ts';
+import { topicScenarios } from './topics.ts';
 import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
 
@@ -30,6 +31,7 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...lifecycleScenarios,
     ...memoryScenarios,
     ...clusterScenarios,
+    ...topicScenarios,
     ...redisScenarios,
     ...(TIER2_ENABLED ? tier2Scenarios : []),
     // Tier 3 measures a DEPLOYMENT, not this process — a different kind of

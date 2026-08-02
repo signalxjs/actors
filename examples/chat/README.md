@@ -5,6 +5,14 @@ that run on both transports, serverFns beside the actor endpoint,
 hydration with no refetch, and `useActorState(…, { live: true })` keeping
 every open tab live over ONE connection. Open two tabs and type in one.
 
+It also shows the **topics projection pattern**: every room publishes to
+the `room-activity` topic (`ctx.publish` in `room.actor.ts`), one singleton
+`ActivityFeed` actor subscribes with a key mapping (`key: () => 'all'`,
+`activity.actor.ts`) and folds the events into a bounded recent list, and
+the page observes that projection live. Open `/room/other` in a second tab
+and post — the "across all rooms" panel in the first tab updates, though
+that page never heard of the other room.
+
 Production-shaped: with `REDIS_URL` set the same app clusters — Redis
 membership/directory (`redisCluster`), Redis actor state (`redisStorage`),
 and a **dual listener**: the public port serves only SSR, assets,

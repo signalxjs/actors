@@ -15,6 +15,7 @@
  * `setTopic` needs no attribution, so it is called directly.
  */
 import { defineActor } from './actors.app';
+import { roomActivity } from './activity.actor';
 import { requireUser } from './guards';
 
 export interface Message {
@@ -42,12 +43,17 @@ export const RoomActor = defineActor({
         async post(from: string, text: string): Promise<number> {
             ctx.state.messages.push({ from, text, at: new Date() });
             await ctx.save();
+            // Announce to whoever declared interest (see activity.actor.ts).
+            // Awaited: publish settles when every subscriber's turn has, and
+            // a subscriber failure lands in the report, never here.
+            await ctx.publish(roomActivity(ctx.key), { what: 'message' });
             return ctx.state.messages.length;
         },
         /** Unattributed write — safe to call straight from the browser. */
         async setTopic(text: string): Promise<string> {
             ctx.state.topic = text;
             await ctx.save();
+            await ctx.publish(roomActivity(ctx.key), { what: 'topic' });
             return ctx.state.topic;
         }
     })

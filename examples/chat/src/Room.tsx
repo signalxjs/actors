@@ -7,8 +7,10 @@ import { component, errorScope, signal, useAction, useData } from 'sigx';
 import { useActorAction, useActorState, useActorsContext } from '@sigx/actors/app';
 import { actorKey } from '@sigx/actors';
 import { RoomActor } from './room.actor';
+import { ActivityFeed } from './activity.actor';
 import { me, postMessage, signIn, signOut } from './chat.server';
 import type { Message } from './room.actor';
+import type { ActivityEntry } from './activity.actor';
 
 export const Room = component<{ room?: string }>((ctx) => {
     const room = ctx.props.room ?? 'general';
@@ -37,6 +39,11 @@ export const Room = component<{ room?: string }>((ctx) => {
     // from the document alone.
     const messages = useActorState(RoomActor, room, 'recent', 20, { live: true });
     const topic = useActorState(RoomActor, room, 'topic', { live: true });
+    // The topics projection: every room publishes to `room-activity`, ONE
+    // singleton ActivityFeed folds those events, and this read observes it —
+    // so activity in OTHER rooms shows up here without this page knowing
+    // those rooms exist. Same live channel as the two reads above.
+    const activity = useActorState(ActivityFeed, 'all', 'recent', 8, { live: true });
 
     // Unattributed write — straight to the actor.
     const setTopic = useActorAction(RoomActor, room, 'setTopic');
@@ -115,6 +122,28 @@ export const Room = component<{ room?: string }>((ctx) => {
                 />
                 <button disabled={post.loading}>send</button>
             </form>
+
+            <aside class="activity">
+                <h2>across all rooms</h2>
+                <ul>
+                    {activity.match({
+                        pending: () => <li>…</li>,
+                        error: (e) => <li class="error">{e.message}</li>,
+                        ready: (list: ActivityEntry[]) =>
+                            list.length === 0 ? (
+                                <li class="empty">nothing yet</li>
+                            ) : (
+                                [...list].reverse().map((a) => (
+                                    <li>
+                                        <b>#{a.room}</b>{' '}
+                                        {a.what === 'message' ? 'a new message' : 'topic changed'}{' '}
+                                        <time>{a.at.toLocaleTimeString()}</time>
+                                    </li>
+                                ))
+                            )
+                    })}
+                </ul>
+            </aside>
 
             <footer>
                 {session.match({

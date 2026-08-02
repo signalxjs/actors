@@ -178,7 +178,9 @@ per-machine and gitignored for exactly that reason.
 - **`exact` metrics gate, at zero tolerance, and FAIL the check.** Invariants
   rather than measurements — `directory_ops` per activation, `microtask_turns`
   per dispatch, `notifications` per join, the `prefer-local` locality
-  guarantees — so a shared runner judges them as well as a quiet desk. In that
+  guarantees, the topics fan-out counts (`deliveries_per_publish`,
+  `remote_dispatches_per_publish`) — so a shared runner judges them as well as
+  a quiet desk. In that
   same identical-commit run, every one came back bit-identical while 215 other
   metrics drifted. Adding `exact: true` to a metric that is not deterministic
   *by construction* (anything on `randomPlacementPolicy()`, on
@@ -209,7 +211,9 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 ## Packages
 
 - `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Nine
-  runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`), `./host` (defineActorApp
+  runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`, plus
+  topics — `topic()`/`publishTopic()`, the `subscriptions:` table and
+  `ctx.publish` for actor-to-actor pub/sub), `./host` (defineActorApp
   + the plugin model, createHost, runtime, memoryStorage), `./server`
   (WinterCG wire endpoint, `onMiss` proxy/redirect/auto for actors another
   host owns, plus `actorRouteToken()` — read-only; the endpoint never
@@ -284,7 +288,9 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `useActorState`, a guard running on both transports, a serverFn calling
   an actor in-process, hydration with no refetch, and
   `useActorState(…, { live: true })` — one multiplexed `$live` connection
-  for the page — so every open tab stays live. Dev and
+  for the page — so every open tab stays live — and a topics-fed cross-room
+  activity feed (rooms publish `room-activity`, a singleton `ActivityFeed`
+  projects it, the page observes the projection live). Dev and
   prod start the same app module. Production-shaped: `REDIS_URL` clusters
   it (redisStorage + redisCluster) behind a dual listener (public SSR/
   actor/fn surface vs internal health/ops/host), with HMAC-signed HttpOnly
