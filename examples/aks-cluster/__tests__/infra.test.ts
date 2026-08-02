@@ -26,6 +26,9 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+// The one thing this suite does import from the app: the serverFn id is
+// emitted by the build, so pasting it in is how it rots. See post-fn.mjs.
+import { postMessageFnId } from '../../chat/deploy/post-fn.mjs';
 
 const URL_BASE = process.env.INFRA_URL?.replace(/\/$/, '');
 const AUTH_SECRET = process.env.INFRA_AUTH_SECRET;
@@ -34,6 +37,23 @@ const CHAOS = process.env.INFRA_CHAOS === '1';
 const NS = process.env.INFRA_NS ?? 'sigx-chat';
 const CONTEXT = process.env.INFRA_CONTEXT ?? '';
 const RELEASE = process.env.INFRA_RELEASE ?? 'chat';
+
+/**
+ * The knobs the deployment may have been brought up with. Each gates the
+ * suite that asserts it, so a default deployment stays green — and each is
+ * also part of `INFRA_SHAPE`, so the perf half refuses to compare across
+ * them. `testenv.mjs` exports all of these from the live release.
+ */
+const MAX_ACTIVATIONS = Number(process.env.INFRA_MAX_ACTIVATIONS ?? 0);
+const SWEEP_INTERVAL_MS = Number(process.env.INFRA_SWEEP_INTERVAL_MS ?? 60_000);
+const REBALANCE = process.env.INFRA_REBALANCE === '1';
+const REBALANCE_THRESHOLD = Number(process.env.INFRA_REBALANCE_THRESHOLD ?? 1.2);
+const PLACEMENT = process.env.INFRA_PLACEMENT ?? 'prefer-local';
+/** A room written by the PREVIOUS image — see the migrateState suite. */
+const MIGRATED_ROOM = process.env.INFRA_MIGRATED_ROOM ?? '';
+
+/** The reserved wire symbol for the multiplexed live mount. */
+const LIVE_SYMBOL = '$live#subscribe';
 
 /** Sign a session the way the app's guard verifies it. */
 const cookieFor = (name: string): string => {
@@ -87,6 +107,87 @@ const dataOf = async (res: Response): Promise<unknown> => (await res.json()).dat
 const errorOf = async (res: Response): Promise<{ status?: number; message?: string }> =>
     (await res.json()).error ?? {};
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Poll until `ok()` or the budget runs out; throws rather than passing. */
+async function waitFor(
+    ok: () => boolean | Promise<boolean>,
+    timeoutMs: number,
+    everyMs = 250
+): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        if (await ok()) return;
+        if (Date.now() >= deadline) throw new Error(`timed out after ${timeoutMs}ms`);
+        await sleep(everyMs);
+    }
+}
+
+// --- the NDJSON envelope ----------------------------------------------------
+
+/** One wire line. `chunk` carries a `$live` frame: `{i,v}`, `{i,e}` or `{p:1}`. */
+interface LiveLine {
+    chunk?: { i?: number; v?: unknown; e?: { status: number }; p?: number };
+    done?: number;
+    error?: { status?: number; message?: string };
+}
+
+/** Parse a held-open NDJSON response line by line. */
+async function* ndjson(res: Response): AsyncGenerator<LiveLine> {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (;;) {
+            const nl = buffer.indexOf('\n');
+            if (nl < 0) break;
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (line) yield JSON.parse(line) as LiveLine;
+        }
+    }
+}
+
+// --- ops ---------------------------------------------------------------------
+
+/** Where the internal listener is reachable — a port-forward, never the
+ *  public host (see the sealed-surface suite). */
+const OPS_URL = process.env.INFRA_OPS_URL ?? 'http://127.0.0.1:7399';
+
+/** Only the parts of `ClusterStatsReport` this suite reads. */
+interface ClusterReport {
+    view: { size: number; active: number };
+    hosts: { hostId: string; status: string; stats: { activations: number } }[];
+    partial: boolean;
+    totals: {
+        hosts: number;
+        activations: number;
+        counters: {
+            directoryLookups: number;
+            directoryClaims: number;
+            directoryReleases: number;
+            rebalanceRounds: number;
+            rebalanceMigrations: number;
+        };
+        metrics: { activations: { byReason: Record<string, number> } } | null;
+    };
+}
+
+async function clusterReport(): Promise<ClusterReport> {
+    const res = await fetch(`${OPS_URL}/_sigx/ops/cluster`, {
+        headers: { authorization: `Bearer ${OPS_SECRET}` }
+    });
+    if (!res.ok) throw new Error(`ops/cluster answered ${res.status}`);
+    return (await res.json()) as ClusterReport;
+}
+
+/** Live activations per host id. */
+const spreadOf = (report: ClusterReport): Map<string, number> =>
+    new Map(report.hosts.map((h) => [h.hostId, h.stats.activations]));
+
 const kubectl = (...args: string[]): string =>
     execFileSync('kubectl', [...(CONTEXT ? ['--context', CONTEXT] : []), '-n', NS, ...args], {
         encoding: 'utf8'
@@ -107,6 +208,21 @@ const kubectlAsync = async (...args: string[]): Promise<string> => {
 };
 
 const ready = Boolean(URL_BASE && AUTH_SECRET);
+
+/**
+ * Does this deployment carry the `Digest` worker pool?
+ *
+ * Probed rather than env-gated, because the suite's whole posture is that it
+ * works against ANY deployment of this app — including one built before
+ * `defineWorker` existed, which answers 404 for the type. Top-level so the
+ * answer is in hand when `describe.skipIf` is evaluated; a `beforeAll` runs
+ * too late to skip anything.
+ */
+const workersAvailable = ready
+    ? await actorCall('Digest', 'summarize', ['probe', 'x', 1])
+          .then((res) => res.status === 200)
+          .catch(() => false)
+    : false;
 
 describe.skipIf(!ready)('infra: the public surface is sealed', () => {
     // Nothing under /_sigx except the actor and serverFn endpoints may
@@ -237,69 +353,385 @@ describe.skipIf(!ready)('infra: the app works end to end', () => {
         }
     });
 
-    it('streams: a quiet watch() outlives the proxy idle window', async () => {
-        // ingress-nginx cuts an idle proxied response at 60s by default;
-        // the chart raises it because per-actor streams send no keepalive
-        // ping (issue #178). This is the test that catches a deployment
-        // where that annotation was lost.
+    it('streams: a quiet $live connection outlives the proxy idle window', async () => {
+        // ingress-nginx cuts an idle proxied response at 60s by default; the
+        // chart raises both proxy timeouts to 3600 AND turns buffering off,
+        // and the endpoint emits a `{"chunk":{"p":1}}` keepalive every 30s
+        // (DEFAULT_LIVE_PING_MS). This is the test that catches a deployment
+        // where any of those was lost.
+        //
+        // `$live` is the mount every open room page holds — one held-open
+        // response multiplexing many actors — so it deliberately carries NO
+        // routing token (a `$`-prefixed type never gets one), and the chart
+        // carves it out of the hashed Ingress for exactly that reason.
+        //
+        // This used to drive a per-actor `Room#watch` stream. The app stopped
+        // having one when `useActorState(…, { live: true })` replaced it, so
+        // the test had been 404ing against every deployment since.
         const room = `quiet-${Date.now().toString(36)}`;
-        const token = routeToken('Room', room);
         const controller = new AbortController();
-        const res = await fetch(
-            `${URL_BASE}/_sigx/actor/r/${token}/${encodeURIComponent('Room#watch')}`,
-            {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    origin: URL_BASE!,
-                    cookie: cookieFor('tester'),
-                    'x-sigx-actor-route': token
-                },
-                body: JSON.stringify({ args: [room] }),
-                signal: controller.signal
-            }
-        );
+        const res = await fetch(`${URL_BASE}/_sigx/actor/${encodeURIComponent(LIVE_SYMBOL)}`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                origin: URL_BASE!,
+                cookie: cookieFor('tester')
+            },
+            body: JSON.stringify({ args: [[{ t: 'Room', k: room, m: 'recent', a: [20] }]] }),
+            signal: controller.signal
+        });
         expect(res.status).toBe(200);
         expect(res.headers.get('content-type')).toMatch(/ndjson/);
 
-        const reader = res.body!.getReader();
-        // The first chunk is the `{ initial: true }` snapshot.
-        const first = await reader.read();
-        expect(first.done).toBe(false);
+        // Drain in the background: a ping that arrives during the quiet
+        // window has to be READ to have been observed, and the quiet window
+        // is precisely when nothing else is calling `read()`.
+        const seen: LiveLine[] = [];
+        const pump = (async () => {
+            for await (const line of ndjson(res)) seen.push(line);
+        })().catch(() => undefined);
 
-        const idleMs = Number(process.env.INFRA_STREAM_IDLE_MS ?? 75_000);
-        // Hold it open with no traffic, then prove it still delivers.
-        await new Promise((r) => setTimeout(r, idleMs));
-        await actorCall('Room', 'post', [room, 'tester', 'after the quiet window']);
-        const next = await reader.read();
-        expect(next.done).toBe(false);
-        expect(new TextDecoder().decode(next.value)).toContain('after the quiet window');
-        controller.abort();
+        try {
+            // The first frame is the initial snapshot for subscription 0.
+            await waitFor(
+                () => seen.some((l) => l.chunk?.i === 0 && l.chunk?.v !== undefined),
+                30_000
+            );
+
+            const idleMs = Number(process.env.INFRA_STREAM_IDLE_MS ?? 75_000);
+            await new Promise((r) => setTimeout(r, idleMs));
+            // Silence is the point: with a 30s ping and a >=75s window, a
+            // connection that survived must have carried keepalives.
+            expect(seen.some((l) => l.chunk?.p === 1)).toBe(true);
+
+            const before = seen.length;
+            await actorCall('Room', 'post', [room, 'tester', 'after the quiet window']);
+            await waitFor(
+                () =>
+                    seen
+                        .slice(before)
+                        .some((l) =>
+                            JSON.stringify(l.chunk?.v ?? '').includes('after the quiet window')
+                        ),
+                30_000
+            );
+        } finally {
+            controller.abort();
+            await pump;
+        }
     }, 180_000);
 });
 
-describe.skipIf(!ready || !OPS_SECRET)('infra: ops reports a healthy cluster', () => {
-    // Reached through a port-forward, never the public host — see the
-    // sealed-surface suite above.
-    const opsUrl = process.env.INFRA_OPS_URL ?? 'http://127.0.0.1:7399';
-
-    it('every host is active and the view agrees on its size', async () => {
-        const res = await fetch(`${opsUrl}/_sigx/ops/cluster`, {
-            headers: { authorization: `Bearer ${OPS_SECRET}` }
+describe.skipIf(!ready)('infra: the serverFn id the load ladder drives still resolves', () => {
+    // `postMessage_fn_<hash>` is emitted by the build, and the hash moves.
+    // `edge-ladder.mjs` used to carry one pasted in, and it had rotted from
+    // `…_6c5508cb` to `…_2b42ef63` unnoticed — silently, because a stale id
+    // 404s, a 404 is CHEAPER than a real write, and `infra/write-mix` reads
+    // the difference as extra throughput rather than as a broken run. One
+    // request here, and it fails before any VM budget is spent.
+    it('accepts a signed call to the postMessage serverFn', async () => {
+        const room = `fnid-${Date.now().toString(36)}`;
+        const res = await fetch(`${URL_BASE}/_sigx/fn/${postMessageFnId()}`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                origin: URL_BASE!,
+                cookie: cookieFor('tester')
+            },
+            body: JSON.stringify({ args: [{ room, text: 'wire id probe' }] })
         });
         expect(res.status).toBe(200);
-        const body = (await res.json()) as {
-            view: { size: number; active: number };
-            hosts: { status: string }[];
-        };
+        expect((await res.json()).error).toBeUndefined();
+    });
+});
+
+describe.skipIf(!ready || !OPS_SECRET)('infra: ops reports a healthy cluster', () => {
+    // Reached through a port-forward (OPS_URL), never the public host — see
+    // the sealed-surface suite above.
+    it('every host is active and the view agrees on its size', async () => {
+        const body = await clusterReport();
         expect(body.view.active).toBe(body.view.size);
         expect(body.hosts.every((s) => s.status === 'active')).toBe(true);
     });
 
     it('rejects an unauthenticated ops read', async () => {
-        expect((await fetch(`${opsUrl}/_sigx/ops`)).status).toBe(401);
+        expect((await fetch(`${OPS_URL}/_sigx/ops`)).status).toBe(401);
     });
 });
+
+describe.skipIf(!ready)('infra: topics fan out across real hosts', () => {
+    // In-process fakes already pin the delivery COUNTS. What only a real
+    // deployment can show is that the fan-out survives the parts a fake
+    // stands in for: a subscriber owned by another pod, reached over the
+    // HMAC-signed internal mount, through a directory in Redis.
+    it("every room's publish reaches the singleton ActivityFeed", async () => {
+        const stamp = Date.now().toString(36);
+        const rooms = [`topic-a-${stamp}`, `topic-b-${stamp}`, `topic-c-${stamp}`];
+        for (const room of rooms) {
+            expect((await actorCall('Room', 'post', [room, 'tester', 'hello'])).status).toBe(200);
+        }
+        // Three room keys hash to (very likely) different hosts while
+        // ActivityFeed('all') lives on exactly one, so at least one of these
+        // deliveries crossed a pod boundary. `ctx.publish` settles before
+        // `post` returns, so this needs no polling — a missing entry means a
+        // delivery was LOST, not that it is late.
+        const feed = (await dataOf(
+            await actorCall('ActivityFeed', 'recent', ['all', 50])
+        )) as { room: string; what: string }[];
+        for (const room of rooms) {
+            expect(feed.map((e) => e.room)).toContain(room);
+        }
+    });
+});
+
+describe.skipIf(!ready || !workersAvailable)('infra: a worker pool runs one key concurrently', () => {
+    const BURST = 4;
+    /** Long enough that overlapping is unambiguous, short enough to stay
+     *  well inside the call deadline on a 1-core limit. */
+    const ITERS = Number(process.env.INFRA_DIGEST_ITERS ?? 20_000);
+
+    const burst = async (type: 'Digest' | 'DigestActor', key: string) =>
+        Promise.all(
+            Array.from({ length: BURST }, () =>
+                actorCall(type, 'summarize', [key, 'payload', ITERS]).then(
+                    (r) => dataOf(r) as Promise<{ member: string; startedAt: number; endedAt: number }>
+                )
+            )
+        );
+
+    /** Do any two intervals intersect? */
+    const overlaps = (runs: { startedAt: number; endedAt: number }[]): boolean =>
+        runs.some((a, i) =>
+            runs.some((b, j) => i !== j && a.startedAt < b.endedAt && b.startedAt < a.endedAt)
+        );
+
+    it('the same key runs on several members at once; the stateful twin does not', async () => {
+        const stamp = Date.now().toString(36);
+        // Both bursts carry a routing token, so each lands wholly on ONE
+        // host — which is what makes the timestamps comparable at all.
+        const pool = await burst('Digest', `pool-${stamp}`);
+        const single = await burst('DigestActor', `single-${stamp}`);
+
+        expect(new Set(pool.map((r) => r.member)).size).toBeGreaterThan(1);
+        expect(overlaps(pool)).toBe(true);
+
+        // The contrast, and the reason the control arm exists: one
+        // activation per key means one mailbox, so these serialize.
+        expect(new Set(single.map((r) => r.member)).size).toBe(1);
+        expect(overlaps(single)).toBe(false);
+    }, 120_000);
+
+    it.skipIf(!OPS_SECRET)('costs the directory nothing', async () => {
+        // The structural claim behind `cluster/stateless-directory-ops`:
+        // a worker is always placed locally, so it never looks up, claims
+        // or releases. Asserted here against a REAL directory in Redis.
+        const before = (await clusterReport()).totals.counters;
+        await burst('Digest', `nodir-${Date.now().toString(36)}`);
+        const after = (await clusterReport()).totals.counters;
+        expect(after.directoryLookups).toBe(before.directoryLookups);
+        expect(after.directoryClaims).toBe(before.directoryClaims);
+        expect(after.directoryReleases).toBe(before.directoryReleases);
+    }, 120_000);
+
+    it('answers on whichever host the call lands on', async () => {
+        // No routing token: the ingress round-robins, so these spray across
+        // the fleet. A stateful actor would be proxied to its owner; a
+        // worker is local everywhere, so every host answers for itself and
+        // none of them ever redirects.
+        const results = await Promise.all(
+            Array.from({ length: 6 }, () =>
+                actorCall('Digest', 'summarize', ['anywhere', 'payload', 100], { route: false })
+            )
+        );
+        for (const res of results) expect(res.status).toBe(200);
+    }, 120_000);
+});
+
+describe.skipIf(!ready || !OPS_SECRET || MAX_ACTIVATIONS <= 0)(
+    'infra: maxActivations sheds under the cap',
+    () => {
+        it('settles under the cap, and a shed room keeps its history', async () => {
+            const stamp = Date.now().toString(36);
+            const rooms = Array.from(
+                { length: MAX_ACTIVATIONS * 3 },
+                (_, i) => `cap-${stamp}-${i}`
+            );
+            for (const room of rooms) {
+                expect((await actorCall('Room', 'post', [room, 'tester', 'x'])).status).toBe(200);
+            }
+
+            // Shedding rides the SWEEPER, so nothing happens until one runs.
+            // Two intervals plus slack: the first may have fired mid-burst.
+            const hosts = (await clusterReport()).totals.hosts;
+            await waitFor(
+                async () => {
+                    const now = await clusterReport();
+                    return (
+                        now.totals.activations <= MAX_ACTIVATIONS * hosts + hosts &&
+                        (now.totals.metrics?.activations.byReason.capacity ?? 0) > 0
+                    );
+                },
+                SWEEP_INTERVAL_MS * 3 + 30_000,
+                Math.min(5_000, SWEEP_INTERVAL_MS)
+            );
+
+            // The cap is a memory knob, never a correctness one: the first
+            // room was shed long ago and must still read back whole.
+            const back = (await dataOf(
+                await actorCall('Room', 'recent', [rooms[0]!, 20])
+            )) as unknown[];
+            expect(back.length).toBe(1);
+        }, 600_000);
+    }
+);
+
+describe.skipIf(!ready || !MIGRATED_ROOM)(
+    'infra: migrateState upgrades a record written by the previous image',
+    () => {
+        // The only assertion here that structurally needs TWO deploys —
+        // `testenv.mjs migrate-check` sets it up and exports the room name.
+        // No fixture and no test-only endpoint: a v1 record is simply what
+        // the previous image wrote.
+        it('reads the old history back, at the new version', async () => {
+            const history = (await dataOf(
+                await actorCall('Room', 'recent', [MIGRATED_ROOM, 100])
+            )) as unknown[];
+            expect(history.length).toBeGreaterThan(0);
+            expect(await dataOf(await actorCall('Room', 'version', [MIGRATED_ROOM]))).toBe(2);
+        });
+    }
+);
+
+describe.skipIf(!ready || !CHAOS || !OPS_SECRET || !REBALANCE)(
+    'infra: chaos — rebalance converges after a scale-out',
+    () => {
+        it('migrates its own idlest actors down toward the mean', async () => {
+            const stamp = Date.now().toString(36);
+            // Give the incumbents something to be imbalanced ABOUT.
+            for (let i = 0; i < 60; i++) {
+                await actorCall('Room', 'post', [`bal-${stamp}-${i}`, 'tester', 'x']);
+            }
+            const before = await clusterReport();
+            const wasReplicas = before.totals.hosts;
+            const incumbents = new Set(before.hosts.map((h) => h.hostId));
+            const migrationsBefore = before.totals.counters.rebalanceMigrations;
+
+            try {
+                await kubectlAsync('scale', `deploy/${RELEASE}-host`, `--replicas=${wasReplicas + 2}`);
+                await kubectlAsync(
+                    'rollout',
+                    'status',
+                    `deploy/${RELEASE}-host`,
+                    '--timeout=300s'
+                );
+
+                // A round runs per intervalMs and only acts on activations
+                // idle for minIdleMs, so this is minutes, not seconds.
+                await waitFor(
+                    async () => {
+                        const now = await clusterReport();
+                        if (now.partial || now.totals.hosts <= wasReplicas) return false;
+                        if (now.totals.counters.rebalanceMigrations <= migrationsBefore) {
+                            return false;
+                        }
+                        // Converged when the busiest host is within the
+                        // configured threshold of the mean. Slack of one
+                        // activation: the rule itself carries an `own - mean
+                        // >= 1` floor, so perfect equality is not reachable.
+                        const counts = [...spreadOf(now).values()];
+                        const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+                        return Math.max(...counts) <= mean * REBALANCE_THRESHOLD + 1;
+                    },
+                    600_000,
+                    10_000
+                );
+
+                // The new hosts took work, and they took it by MIGRATION —
+                // nothing here activated a new room after the scale-out.
+                const after = await clusterReport();
+                const joined = after.hosts.filter((h) => !incumbents.has(h.hostId));
+                expect(joined.length).toBeGreaterThan(0);
+                expect(joined.some((h) => h.stats.activations > 0)).toBe(true);
+            } finally {
+                await kubectlAsync('scale', `deploy/${RELEASE}-host`, `--replicas=${wasReplicas}`);
+                await kubectlAsync(
+                    'rollout',
+                    'status',
+                    `deploy/${RELEASE}-host`,
+                    '--timeout=300s'
+                );
+            }
+        }, 1_200_000);
+    }
+);
+
+describe.skipIf(!ready || !CHAOS || !OPS_SECRET || PLACEMENT !== 'activation-count')(
+    'infra: chaos — activationCountPolicy steers new work at the cold hosts',
+    () => {
+        it('a freshly joined host attracts more than its uniform share', async () => {
+            const stamp = Date.now().toString(36);
+            for (let i = 0; i < 60; i++) {
+                await actorCall('Room', 'post', [`warm-${stamp}-${i}`, 'tester', 'x']);
+            }
+            const before = await clusterReport();
+            const wasReplicas = before.totals.hosts;
+            const incumbents = new Set(before.hosts.map((h) => h.hostId));
+
+            try {
+                await kubectlAsync('scale', `deploy/${RELEASE}-host`, `--replicas=${wasReplicas + 2}`);
+                await kubectlAsync(
+                    'rollout',
+                    'status',
+                    `deploy/${RELEASE}-host`,
+                    '--timeout=300s'
+                );
+                await waitFor(
+                    async () => (await clusterReport()).totals.hosts > wasReplicas,
+                    300_000,
+                    5_000
+                );
+
+                const baseline = spreadOf(await clusterReport());
+                // No routing token: the edge sends these round-robin, so the
+                // PLACEMENT decides where they activate rather than the hash.
+                const fresh = 90;
+                for (let i = 0; i < fresh; i++) {
+                    await actorCall('Room', 'post', [`cold-${stamp}-${i}`, 'tester', 'x'], {
+                        route: false
+                    });
+                }
+                const after = spreadOf(await clusterReport());
+
+                let onJoiners = 0;
+                let total = 0;
+                for (const [hostId, count] of after) {
+                    const delta = Math.max(0, count - (baseline.get(hostId) ?? 0));
+                    total += delta;
+                    if (!incumbents.has(hostId)) onJoiners += delta;
+                }
+                expect(total).toBeGreaterThan(0);
+                // A host with no known load reads as COLD, so the joiners
+                // should out-draw a uniform split (2 of N). Asserted with
+                // room to spare — this is a bias, not a guarantee, and the
+                // directory stays the sole arbiter of single-activation.
+                const uniform = total * (after.size - incumbents.size) / after.size;
+                expect(onJoiners).toBeGreaterThan(uniform);
+                console.log(
+                    `  cold-host draw: ${onJoiners}/${total} new activations went to the ` +
+                        `${after.size - incumbents.size} joined host(s) (uniform would be ~${uniform.toFixed(1)})`
+                );
+            } finally {
+                await kubectlAsync('scale', `deploy/${RELEASE}-host`, `--replicas=${wasReplicas}`);
+                await kubectlAsync(
+                    'rollout',
+                    'status',
+                    `deploy/${RELEASE}-host`,
+                    '--timeout=300s'
+                );
+            }
+        }, 1_200_000);
+    }
+);
 
 describe.skipIf(!ready || !CHAOS)('infra: chaos — the invariants that actually break', () => {
     /** Drive steady load, run `disrupt`, and report what the callers saw. */

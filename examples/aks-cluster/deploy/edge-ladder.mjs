@@ -12,7 +12,38 @@ const MIX = Number(process.env.MIX ?? 0);          // fraction of writes
 const DURATION_MS = Number(process.env.DURATION_MS ?? 20_000);
 const WORKERS = Number(process.env.WORKERS ?? 4);
 const LADDER = (process.env.LADDER ?? '32,64,128,256,512,1024').split(',').map(Number);
-const POST_FN = process.env.POST_FN ?? 'postMessage_fn_6c5508cb';
+// The `postMessage` serverFn's wire id. NO DEFAULT, on purpose: it is
+// emitted by the build and the hash moves, and the literal that used to sit
+// here had silently rotted. A stale id 404s, a 404 is CHEAPER than a real
+// write, and the ladder then reports the breakage as extra throughput — so
+// an absent id must stop a write run rather than start a 404 ladder.
+// `examples/chat/deploy/post-fn.mjs` derives it from the build; testenv and
+// the Tier-3 scenarios pass it in from there.
+const POST_FN = process.env.POST_FN ?? '';
+
+// ---- what to drive ---------------------------------------------------------
+//
+// Defaults reproduce the chat read/write mix byte for byte, so the recorded
+// `infra/read-ladder`, `infra/write-mix` and `infra/locality-ab` baselines
+// keep meaning what they meant. Everything below exists so ONE ladder can
+// also drive the worker pool and a cold-key run.
+const TYPE = process.env.ACTOR_TYPE ?? 'Room';
+const READ_METHOD = process.env.READ_METHOD ?? 'recent';
+/** Args AFTER the key, as JSON. Default `[20]` — i.e. `recent(20)`. */
+const READ_ARGS = JSON.parse(process.env.READ_ARGS ?? '[20]');
+/** `fn` writes through the attributed serverFn; `actor` calls the type. */
+const WRITE_MODE = process.env.WRITE_MODE ?? 'fn';
+const WRITE_METHOD = process.env.WRITE_METHOD ?? 'setTopic';
+const WRITE_ARGS = JSON.parse(process.env.WRITE_ARGS ?? '[]');
+const KEY_PREFIX = process.env.KEY_PREFIX ?? 'edge';
+// A per-run nonce, so every key is COLD and every call pays an activation.
+// Off by default: a warm ladder and a cold one measure different things.
+const KEY_SALT = process.env.KEY_FRESH === '1' ? `-${Date.now().toString(36)}` : '';
+
+if (MIX > 0 && WRITE_MODE === 'fn' && !POST_FN) {
+    console.error('edge-ladder: MIX>0 with WRITE_MODE=fn needs POST_FN (see post-fn.mjs)');
+    process.exit(1);
+}
 // The routing token, byte-identical to what the client library mints:
 // fnv1a(type + NUL + key).toString(36).padStart(7,'0'), carried BOTH in the
 // path (/_sigx/actor/r/<token>/<symbol>) and in x-sigx-actor-route. Without
@@ -27,18 +58,23 @@ const tokenFor = (type, key) => fnv1a(`${type}\u0000${key}`).toString(36).padSta
 
 // ---- child role -----------------------------------------------------------
 if (process.send) {
+    const symbol = (method) => `${encodeURIComponent(TYPE)}%23${encodeURIComponent(method)}`;
     const call = async (i) => {
         const write = MIX > 0 && Math.random() < MIX;
-        const room = `edge-${i % ROOMS}`;
-        const tok = ROUTE ? tokenFor('Room', room) : null;
-        const url = write
+        const key = `${KEY_PREFIX}${KEY_SALT}-${i % ROOMS}`;
+        // A serverFn is not an actor call: it carries no token and its own
+        // handler picks the actor, so the edge hash never sees this one.
+        const viaFn = write && WRITE_MODE === 'fn';
+        const method = write && !viaFn ? WRITE_METHOD : READ_METHOD;
+        const tok = ROUTE && !viaFn ? tokenFor(TYPE, key) : null;
+        const url = viaFn
             ? `${O}/_sigx/fn/${POST_FN}`
             : tok
-              ? `${O}/_sigx/actor/r/${tok}/Room%23recent`
-              : `${O}/_sigx/actor/Room%23recent`;
-        const body = write
-            ? JSON.stringify({ args: [{ room, text: `x${i}` }] })
-            : JSON.stringify({ args: [room, 20] });
+              ? `${O}/_sigx/actor/r/${tok}/${symbol(method)}`
+              : `${O}/_sigx/actor/${symbol(method)}`;
+        const body = viaFn
+            ? JSON.stringify({ args: [{ room: key, text: `x${i}` }] })
+            : JSON.stringify({ args: [key, ...(write ? WRITE_ARGS : READ_ARGS)] });
         const res = await fetch(url, {
             method: 'POST',
             headers: {
@@ -88,7 +124,11 @@ if (process.send) {
             )
         );
     };
-    console.log(`# target=${O} workers=${WORKERS} rooms=${ROOMS} mix=${MIX} dur=${DURATION_MS}ms`);
+    console.log(
+        `# target=${O} workers=${WORKERS} rooms=${ROOMS} mix=${MIX} dur=${DURATION_MS}ms ` +
+            `type=${TYPE} read=${READ_METHOD} write=${WRITE_MODE}:${WRITE_METHOD} ` +
+            `keys=${KEY_PREFIX}${KEY_SALT} route=${ROUTE ? 1 : 0}`
+    );
     for (const c of LADDER) {
         const parts = await round(c);
         const actualC = shares(c).reduce((a, b) => a + b, 0);
@@ -99,6 +139,10 @@ if (process.send) {
         console.log(
             JSON.stringify({
                 c: actualC,
+                // `ops` alongside `opsPerSec`: an error RATE needs the raw
+                // successful count as its denominator, and a rate is what
+                // distinguishes a few edge resets from a wholly broken run.
+                ops,
                 opsPerSec: +(ops / (DURATION_MS / 1000)).toFixed(0),
                 p50: q(0.5), p90: q(0.9), p99: q(0.99), max: q(1), errs
             })

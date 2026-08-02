@@ -26,7 +26,7 @@ import {
     saveResult
 } from './report.ts';
 import { runSuite } from './runner.ts';
-import { ALL_SCENARIOS, selectScenarios, tier2Hint } from './scenarios/index.ts';
+import { ALL_SCENARIOS, selectScenarios, tier2Hint, tier3Hint } from './scenarios/index.ts';
 import type { BenchResult } from './types.ts';
 
 interface Options {
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
         return;
     }
     if (scenarios.length === 0) {
-        const hint = tier2Hint(options.filters);
+        const hint = tier2Hint(options.filters) ?? tier3Hint(options.filters);
         if (hint) {
             // Guidance, not a crash: a stack trace here buries the one line
             // that tells you what to type.

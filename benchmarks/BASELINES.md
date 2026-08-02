@@ -24,9 +24,34 @@ load VM), and the load is driven FROM A VM IN THE CLUSTER'S REGION: the
 same ladder run from a laptop across an ocean varies 50-80% run to run and
 cannot detect a 30% regression. Comparisons are refused outright when the
 deployment shape (replica count, how many distinct NODES those replicas
-span, image tag) differs from the baseline's — three replicas packed on one
-node and three spread across three read identically in every report and
-differ by more than 2x.
+span, image tag, and the runtime knobs) differs from the baseline's — three
+replicas packed on one node and three spread across three read identically
+in every report and differ by more than 2x.
+
+The knobs are in the shape because they change the curve WITHOUT changing
+the image: `PLACEMENT`, `REBALANCE*`, `MAX_ACTIVATIONS` /
+`SWEEP_INTERVAL_MS`, `DIGEST_*` and `MIGRATE_PERSIST`. `PLACEMENT` is the
+sharpest case — `activation-count` steers at the least-loaded host while
+the chart's ingress hashes to the owner, so under it `locality-ab`'s
+`token_speedup` no longer measures what its name says. Two configurations
+get compared deliberately, with `bench:diff --before --after`, never by
+`--compare`.
+
+Three of the six scenarios exist for the features only a real deployment
+exercises: `worker-pool` (a `defineWorker` pool against the same body on
+one activation — and the only place the pool's DEFAULT size, the node's
+real `hardwareConcurrency`, is ever used), `cold-placement` (fresh keys, so
+every call pays an activation; read `ops_per_sec` and `ownership_spread`
+together, because a policy can buy latency by wrecking balance) and
+`topics-fanout` (whether a singleton subscriber caps cluster-wide write
+throughput, and at what concurrency).
+
+No Tier-3 metric is `exact`, and none can be — every one rides a real
+clock, a real network and a real scheduler. `error_rate` is the one that
+gates hardest, at a 1% noise floor: a stale serverFn id 404s every write,
+and a 404 is CHEAPER than a write, so without it a wholly broken run
+reports as a throughput WIN. Not hypothetical — that is exactly how the
+id pasted into `edge-ladder.mjs` went stale unnoticed.
 
 Recorded with `node examples/aks-cluster/deploy/testenv.mjs baseline`;
 compared by `… testenv.mjs test`. Absolute capacity is a different

@@ -24,10 +24,62 @@ export interface Message {
     readonly at: Date;
 }
 
+/**
+ * The shape version carried IN the record. Bumping this plus teaching
+ * `migrateState` below about the old shape is the whole upgrade ritual —
+ * see the hook for why the deployment cares.
+ */
+export const ROOM_STATE_VERSION = 2;
+
+interface RoomState {
+    /** Absent on every record written before this field existed — which is
+     *  exactly what makes the migration testable against a real rolling
+     *  deploy rather than a fixture. */
+    v: number;
+    topic: string;
+    messages: Message[];
+}
+
 export const RoomActor = defineActor({
     type: 'Room',
     use: [requireUser],
-    state: () => ({ topic: 'general chatter', messages: [] as Message[] }),
+    state: (): RoomState => ({
+        v: ROOM_STATE_VERSION,
+        topic: 'general chatter',
+        messages: []
+    }),
+    /**
+     * Evolve a stored room between the storage read and activation.
+     *
+     * The v1 shape is `{ topic, messages }` with no `v` — literally what the
+     * previous image wrote — so a rolling deploy of THIS image migrates real
+     * records under real load, which is the only place the interesting
+     * questions live (how often the CAS conflicts, what the write
+     * amplification is, whether activation latency moves). The infra suite
+     * asserts it through `version()` below.
+     *
+     * Returning `stored` unchanged is the fast path and identity is how the
+     * runtime detects it, so the migrating branch builds a NEW object.
+     *
+     * Lazy by default: the migrated shape rides the next save the room would
+     * have made anyway, so a rolling deploy adds no write amplification. The
+     * consequence is that a room only ever READ after the deploy never
+     * persists its migration — `MIGRATE_PERSIST=eager` is the opt-in to one
+     * CAS write-back at activation, and the knob exists so the deployment can
+     * measure the difference.
+     */
+    migrateState: {
+        persist: process.env.MIGRATE_PERSIST === 'eager' ? 'eager' : 'lazy',
+        migrate: (stored): RoomState => {
+            const record = stored as Partial<RoomState>;
+            if (record.v === ROOM_STATE_VERSION) return record as RoomState;
+            return {
+                v: ROOM_STATE_VERSION,
+                topic: typeof record.topic === 'string' ? record.topic : 'general chatter',
+                messages: Array.isArray(record.messages) ? record.messages : []
+            };
+        }
+    },
     methods: (ctx) => ({
         /** The read `useActorState` seeds from during SSR. */
         async recent(limit: number): Promise<Message[]> {
@@ -35,6 +87,13 @@ export const RoomActor = defineActor({
         },
         async topic(): Promise<string> {
             return ctx.state.topic;
+        },
+        /**
+         * The migration, observable from outside. A room written by the
+         * previous image answers `2` here only because `migrateState` ran.
+         */
+        async version(): Promise<number> {
+            return ctx.state.v;
         },
         /**
          * Attributed write — only ever called from `chat.server.ts`, which

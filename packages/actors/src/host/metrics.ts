@@ -394,6 +394,24 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                         return next.dispatchStream!(ref, method, args, call);
                     };
                 }
+                // And `dispatchWatch`, for exactly the same reason — which
+                // was not hypothetical: forwarding one and not the other
+                // meant every host with metrics() attached answered "the
+                // placement for X cannot watch", taking
+                // `useActorState(…, { live: true })` and the whole `$live`
+                // mount down with it, on every deployment.
+                //
+                // Deliberately UNCOUNTED. A watch is one long-lived
+                // subscription that re-invokes a read on every mutating
+                // turn: counting it as a call would mean either one call
+                // for hours, or a `calls` total that no longer matches what
+                // any caller issued. `calls.watches` is a number worth
+                // having, but it belongs next to `streams` as its own
+                // gauge, not folded into this one.
+                if (next.dispatchWatch) {
+                    wrapped.dispatchWatch = (ref, method, args, call, options) =>
+                        next.dispatchWatch!(ref, method, args, call, options);
+                }
                 return wrapped;
             });
 

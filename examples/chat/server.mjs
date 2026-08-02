@@ -39,7 +39,13 @@ import {
     attachSignalHandlers
 } from '@sigx/actors/node';
 import { health, metrics, ops } from '@sigx/actors/host';
-import { cluster, clusterStats, preferLocalPolicy } from '@sigx/actors/cluster';
+import {
+    activationCountPolicy,
+    cluster,
+    clusterStats,
+    preferLocalPolicy,
+    randomPlacementPolicy
+} from '@sigx/actors/cluster';
 import { redisCluster } from '@sigx/actors-redis';
 
 const here = import.meta.dirname;
@@ -63,6 +69,55 @@ const need = (name) => {
     return value;
 };
 
+/**
+ * Placement policy, by environment. `prefer-local` is the default and the
+ * shipped posture — see the comment on `policy:` below for why.
+ *
+ * `activation-count` is here to be MEASURED, not because it is better:
+ * steering new activations toward the least-loaded host directly opposes
+ * the edge hash this chart configures, so the two make a real trade the
+ * deployment can settle (`infra/cold-placement`) instead of an argument.
+ * Anything that changes the answer must therefore be part of `INFRA_SHAPE`
+ * — a perf comparison across policies is a confident wrong answer, and
+ * `testenv.mjs` reads this value back off the live Deployment to make the
+ * baseline machinery refuse it.
+ */
+const PLACEMENT = process.env.PLACEMENT ?? 'prefer-local';
+const placementPolicy = () => {
+    if (PLACEMENT === 'prefer-local') return preferLocalPolicy();
+    if (PLACEMENT === 'activation-count') {
+        return activationCountPolicy({
+            ...(process.env.PLACEMENT_REFRESH_MS
+                ? { refreshMs: Number(process.env.PLACEMENT_REFRESH_MS) }
+                : {})
+        });
+    }
+    if (PLACEMENT === 'random') return randomPlacementPolicy();
+    console.error(
+        `[chat] PLACEMENT must be prefer-local, activation-count or random, got '${PLACEMENT}'`
+    );
+    process.exit(1);
+};
+
+/**
+ * Automatic rebalancing — OFF unless asked for, which is the runtime's own
+ * default too. Each host sheds only its own idlest activations, only down
+ * to the cluster mean, so this is safe to leave on; it is opt-in here
+ * because it changes the steady-state spread every perf number is read
+ * against.
+ */
+const num = (name, fallback) =>
+    process.env[name] === undefined ? fallback : Number(process.env[name]);
+const rebalance =
+    process.env.REBALANCE === '1'
+        ? {
+              intervalMs: num('REBALANCE_INTERVAL_MS', 60_000),
+              threshold: num('REBALANCE_THRESHOLD', 1.2),
+              minIdleMs: num('REBALANCE_MIN_IDLE_MS', 60_000),
+              maxMoves: num('REBALANCE_MAX_MOVES', 10)
+          }
+        : undefined;
+
 // health() needs no wiring; metrics() feeds ops(); cluster() only with a
 // Redis to cluster through.
 let composed = actorApp.use(metrics()).use(health());
@@ -84,7 +139,12 @@ if (REDIS_URL) {
         // the other's algorithm. Measured before this: 213k cross-host
         // hops per 250k public requests, and adding hosts bought +7%
         // throughput for +60% CPU. Neither half works alone.
-        policy: preferLocalPolicy(),
+        //
+        // `PLACEMENT` can swap it out — see above. Doing so deliberately
+        // breaks the pair, which is the point: it is the only way to find
+        // out what the pair is worth on a real cluster.
+        policy: placementPolicy(),
+        ...(rebalance ? { rebalance } : {}),
         fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
     });
     composed = composed.use(plugin).use(
@@ -227,7 +287,8 @@ process.once('SIGINT', () => void shutdown());
 console.log(
     `[chat] public :${PORT}  internal :${INTERNAL_PORT}  ` +
         (plugin
-            ? `host ${plugin.placement.identity.hostId} clustered via redis  `
+            ? `host ${plugin.placement.identity.hostId} clustered via redis  ` +
+              `placement=${PLACEMENT} rebalance=${rebalance ? 'on' : 'off'}  `
             : 'single-node (no REDIS_URL)  ') +
         `NODE_ENV=${process.env.NODE_ENV ?? '(unset)'}`
 );

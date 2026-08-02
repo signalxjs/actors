@@ -50,6 +50,34 @@ Sessions: the footer's sign-in calls a serverFn that mints an HMAC-signed
 a timing-safe compare on every actor call and serverFn. Rooms are URLs:
 `/r/<name>` (default `#general`).
 
+## Runtime knobs
+
+Every one of these defaults to the shipped behaviour, so an unconfigured
+deployment behaves exactly as it did before they existed. They are here to
+be **measured on a real cluster** — each changes the perf curve, so
+`testenv.mjs` folds them into `INFRA_SHAPE` and the Tier-3 comparison
+refuses to cross settings rather than reporting the difference as a code
+regression. The chart exposes each as `env.<camelCase>`.
+
+| env | default | what it does |
+|---|---|---|
+| `PLACEMENT` | `prefer-local` | `prefer-local`, `activation-count` or `random`. `prefer-local` is half of the locality pair with the ingress's `upstream-hash-by`; `activation-count` deliberately opposes it, steering new activations at the least-loaded host instead of the hashed one |
+| `PLACEMENT_REFRESH_MS` | policy default (5000) | load-view refresh cadence for `activation-count` |
+| `REBALANCE` | off | `1` runs one `placement.rebalance()` round per interval — each host sheds only its OWN idlest activations, only down to the cluster mean |
+| `REBALANCE_INTERVAL_MS` / `_THRESHOLD` / `_MIN_IDLE_MS` / `_MAX_MOVES` | 60000 / 1.2 / 60000 / 10 | the round's bounds |
+| `MAX_ACTIVATIONS` | `0` (unlimited) | soft LRU cap per host. Rides the sweeper, so a cap with `SWEEP_INTERVAL_MS=0` is inert. Soft: busy, queued and kept-alive activations are never shed, and a shed room re-activates with its state intact |
+| `SWEEP_INTERVAL_MS` | 60000 | how often the idle + capacity passes run |
+| `DIGEST_MAX_LOCAL` | runtime default | pool members per key for the `Digest` worker — unset means `hardwareConcurrency` clamped to 16, which is the interesting case |
+| `DIGEST_ITERS` / `DIGEST_MAX_ITERS` | 2000 / 200000 | default and ceiling for the per-call hash chain |
+| `MIGRATE_PERSIST` | `lazy` | `Room`'s `migrateState` write-back. Lazy rides the next save the room would have made anyway (so a rolling deploy adds no write amplification, and a room only ever READ never persists its migration); `eager` buys one CAS write-back at activation |
+
+`Digest` (`digest.actor.ts`) is a `defineWorker` pool — pure compute, many
+interchangeable members per key, so two calls to the SAME key overlap —
+next to `DigestActor`, the identical body on `defineActor` for contrast.
+The work is chunked with a yield between slices, which is the load-bearing
+detail: a pool gives a key many mailboxes, not many threads, so one
+unbroken synchronous loop overlaps with nothing.
+
 ## Image + AKS
 
 ```sh

@@ -147,11 +147,32 @@ describe('cluster({ rebalance })', () => {
         const counters = cluster.placements[0]!.counters();
         expect(counters.rebalanceMigrations).toBe(shed);
         expect(counters.rebalanceRounds).toBeGreaterThanOrEqual(2);
-        // Stop cancels the loop: counters freeze.
+        // Stop cancels the loop: no round STARTS after it. `onStop` clears
+        // the interval but does not await a round already in flight, and
+        // that round still counts itself when it lands — so let it settle,
+        // THEN sample. Reading `frozen` straight after `stop()` raced the
+        // in-flight round and failed under a loaded runner.
+        //
+        // Polled rather than slept for a fixed window: a round can outlast
+        // any constant we could pick here (the per-peer probe budget alone
+        // defaults to 1000ms), so a fixed settle is the same race with a
+        // bigger number. Quiescence is the thing being waited for, so wait
+        // for THAT, then prove it holds across a full interval.
         await cluster.stop();
-        const frozen = cluster.placements[0]!.counters().rebalanceRounds;
-        await new Promise((r) => setTimeout(r, 250));
-        expect(cluster.placements[0]!.counters().rebalanceRounds).toBe(frozen);
+        const rounds = (): number => cluster!.placements[0]!.counters().rebalanceRounds;
+        const deadline = Date.now() + 5_000;
+        let frozen = rounds();
+        for (;;) {
+            await new Promise((r) => setTimeout(r, 50));
+            const now = rounds();
+            if (now === frozen) break;
+            frozen = now;
+            if (Date.now() > deadline) throw new Error('rebalance rounds never settled after stop()');
+        }
+        // Several intervals' worth (the loop ran at 100ms): if the timer
+        // were still live this would catch it.
+        await new Promise((r) => setTimeout(r, 500));
+        expect(rounds()).toBe(frozen);
         cluster = null;
     });
 });

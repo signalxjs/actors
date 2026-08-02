@@ -132,6 +132,29 @@ describe('metrics()', () => {
         }
     });
 
+    it('keeps `dispatchWatch` working through the middleware', async () => {
+        // The twin of the test above, and the one that was missing. The
+        // middleware forwarded `dispatchStream` but NOT `dispatchWatch`, so
+        // any host with metrics() attached answered every watch with "the
+        // placement for Counter cannot watch". That is the whole of
+        // `useActorState(…, { live: true })` and the `$live` mount — and
+        // metrics() is on every production host, so the feature was broken
+        // everywhere it shipped and nowhere it was tested.
+        const m = metrics();
+        const { app, host } = await appWith(m);
+        try {
+            const watching = host.dispatchWatch!({ type: 'Counter', key: 'w' }, 'noop', [], {
+                callChain: [],
+                callId: 'c'
+            });
+            const iterator = watching[Symbol.asyncIterator]();
+            expect((await iterator.next()).value).toBe(0);
+            await iterator.return?.();
+        } finally {
+            await app.stop();
+        }
+    });
+
     it('counts activations and deactivation reasons', async () => {
         const m = metrics();
         const { app, host } = await appWith(m);

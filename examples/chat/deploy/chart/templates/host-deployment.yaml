@@ -81,6 +81,36 @@ spec:
               value: {{ .Values.env.sigxNamespace | quote }}
             - name: FETCH_CONNECTIONS
               value: {{ .Values.env.fetchConnections | quote }}
+            # Runtime knobs. The always-set ones carry their shipped
+            # defaults; the rest are omitted entirely when empty, so the app
+            # sees an ABSENT variable rather than "". That distinction is
+            # load-bearing: `Number("")` is 0, which would silently pin a
+            # numeric knob to zero instead of leaving the runtime default.
+            - name: PLACEMENT
+              value: {{ .Values.env.placement | quote }}
+            - name: MAX_ACTIVATIONS
+              value: {{ .Values.env.maxActivations | quote }}
+            - name: SWEEP_INTERVAL_MS
+              value: {{ .Values.env.sweepIntervalMs | quote }}
+            - name: DIGEST_ITERS
+              value: {{ .Values.env.digestIters | quote }}
+            - name: DIGEST_MAX_ITERS
+              value: {{ .Values.env.digestMaxIters | quote }}
+            - name: MIGRATE_PERSIST
+              value: {{ .Values.env.migratePersist | quote }}
+            {{- range $name, $value := dict
+                  "PLACEMENT_REFRESH_MS" .Values.env.placementRefreshMs
+                  "REBALANCE" .Values.env.rebalance
+                  "REBALANCE_INTERVAL_MS" .Values.env.rebalanceIntervalMs
+                  "REBALANCE_THRESHOLD" .Values.env.rebalanceThreshold
+                  "REBALANCE_MIN_IDLE_MS" .Values.env.rebalanceMinIdleMs
+                  "REBALANCE_MAX_MOVES" .Values.env.rebalanceMaxMoves
+                  "DIGEST_MAX_LOCAL" .Values.env.digestMaxLocal }}
+            {{- if $value }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
             - name: CLUSTER_SECRET
               valueFrom:
                 secretKeyRef:

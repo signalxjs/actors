@@ -129,6 +129,8 @@ describe('cluster ops: clusterStats', () => {
         running = cluster;
         await cluster.hosts[1]!.actor(Counter, 'gone').increment(1);
         const dead = cluster.placements[1]!.identity.hostId;
+        // What it claimed, captured BEFORE it goes away — see below.
+        const deadShards = cluster.placements[1]!.report().reminderShards;
         cluster.unbind(1); // address stops resolving, membership still lists it
 
         const report = await clusterStats(cluster.placements[0]!, { timeoutMs: 200 });
@@ -139,9 +141,17 @@ describe('cluster ops: clusterStats', () => {
         // Totals are a lower bound, and `partial` is how you know.
         expect(report.totals.hosts).toBe(2);
         // Shards only the dead host claimed come back EMPTY rather than
-        // vanishing — a missing key reads as "not measured".
-        const orphaned = Object.entries(report.reminderShards).filter(([, o]) => o.length === 0);
-        expect(orphaned.length).toBeGreaterThan(0);
+        // vanishing — a missing key reads as "not measured". Asserted over
+        // the shards it ACTUALLY held, and over the full key set, rather
+        // than as "some shard is orphaned": the latter depends on host ids,
+        // which are minted per run, and with 3 hosts over 16 shards the
+        // dead one holds none about once in 650 runs — which is a CI
+        // failure with nothing wrong.
+        expect(Object.keys(report.reminderShards)).toHaveLength(16);
+        for (const shard of deadShards) {
+            expect(report.reminderShards[shard]).toBeDefined();
+            expect(report.reminderShards[shard]).not.toContain(dead);
+        }
     });
 
     it('bounds a hung peer with timeoutMs instead of hanging the operator', async () => {

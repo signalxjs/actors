@@ -153,7 +153,7 @@ pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
 pnpm test:infra           # Tier-3 assertions against a DEPLOYED environment (env-gated)
 pnpm bench:infra          # Tier 3 perf: a real deployment, load driven from a same-region VM
-node examples/aks-cluster/deploy/testenv.mjs up|test|baseline|load|down
+node examples/aks-cluster/deploy/testenv.mjs up|test|baseline|load|migrate-check|down
 ```
 
 Benchmarks measure the built `dist/*.prod.js` via `--conditions=production`,
@@ -311,7 +311,13 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   it (redisStorage + redisCluster) behind a dual listener (public SSR/
   actor/fn surface vs internal health/ops/host), with HMAC-signed HttpOnly
   sessions and a self-reconnecting live connection; `deploy/` has the AKS chart +
-  public ingress, exercised as runbook scenario (l). Not published.
+  public ingress, exercised as runbook scenario (l). It is also the
+  **Tier-3 subject**: a `Digest` `defineWorker` pool (with `DigestActor`,
+  the identical body on one activation, as the control arm),
+  `migrateState` on `Room`, and env knobs for `PLACEMENT`, `REBALANCE*`
+  and `MAX_ACTIVATIONS` — every one defaulting to the shipped behaviour,
+  and every one folded into `INFRA_SHAPE` so a perf comparison across
+  settings is refused rather than believed. Not published.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev host, client swap, streams, file persistence, and a runnable 3-host
   cluster demo (`pnpm --filter counter-example cluster`), and the

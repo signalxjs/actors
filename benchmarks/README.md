@@ -86,13 +86,33 @@ same ladder driven from a laptop across an ocean swings 50-80% and can
 prove nothing. The driver is `examples/aks-cluster/deploy/edge-ladder.mjs`,
 shipped to the VM per run. A comparison is REFUSED when the deployment
 shape differs from the baseline's (`INFRA_SHAPE`: replicas, distinct nodes,
-image), because packed and spread replicas look identical in a report and
-differ by more than 2x. Normal entry points:
+image, **and the runtime knobs**), because packed and spread replicas look
+identical in a report and differ by more than 2x. Normal entry points:
 
 ```sh
 node examples/aks-cluster/deploy/testenv.mjs baseline   # record for THIS shape
 node examples/aks-cluster/deploy/testenv.mjs test       # assertions + compare
 ```
+
+**A knob change is a shape change.** `PLACEMENT`, `REBALANCE*`,
+`MAX_ACTIVATIONS`, `SWEEP_INTERVAL_MS`, `DIGEST_*` and `MIGRATE_PERSIST`
+each move the curve, and none of them moves the image tag — so a
+`helm --set` would otherwise leave the comparison technically allowed and
+completely wrong. `testenv.mjs` reads them back off the live Deployment and
+folds them into the shape, which turns "compare a rebalancing cluster
+against a non-rebalancing baseline" into a refusal rather than a regression
+report. To compare two configurations ON PURPOSE, save a result file per
+configuration and `pnpm bench:diff --before=a.json --after=b.json`.
+
+The six scenarios: `read-ladder` and `write-mix` (the steady-state curve),
+`locality-ab` (routing token sent vs withheld), `worker-pool` (a
+`defineWorker` pool against the identical body on one activation — the pool
+sizes itself from the node's REAL `hardwareConcurrency`, which no
+in-process bench can do), `cold-placement` (every key fresh, so every call
+pays an activation, reported next to the resulting host spread), and
+`topics-fanout` (writes that fan out to a singleton subscriber, against
+plain reads — i.e. whether one subscriber caps cluster-wide write
+throughput).
 
 ```
 

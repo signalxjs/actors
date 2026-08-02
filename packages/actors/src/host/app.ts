@@ -909,17 +909,25 @@ function compositePlacement(c: Contributions): ActorPlacement | undefined {
         if (!hit) {
             // reduceRight so the FIRST registered middleware ends up outermost.
             hit = c.dispatch.reduceRight((next, middleware) => middleware(next), dispatcher);
-            if (__DEV__ && dispatcher.dispatchStream && !hit.dispatchStream) {
-                // `dispatchStream` is optional, so a middleware returning
-                // just `{ dispatch }` silently drops it — and the host then
-                // fails every `streams:` method blaming the TRANSPORT, which
-                // sends you looking in the wrong place entirely.
-                console.warn(
-                    '[sigx actors] a dispatch middleware returned a dispatcher without ' +
-                        '`dispatchStream`, so every `streams:` method will now fail. Forward it: ' +
-                        '`...(next.dispatchStream && { dispatchStream: (...a) => ' +
-                        'next.dispatchStream!(...a) })`.'
-                );
+            // `dispatchStream` and `dispatchWatch` are both OPTIONAL on
+            // ActorDispatcher, so a middleware returning just `{ dispatch }`
+            // silently drops them — and the host then fails every `streams:`
+            // method, or every watch, blaming the TRANSPORT, which sends you
+            // looking in the wrong place entirely. Warning on both because
+            // warning on only one is precisely how `metrics()` shipped
+            // forwarding the stream and eating every `$live` subscription.
+            if (__DEV__) {
+                for (const [name, breaks] of [
+                    ['dispatchStream', 'every `streams:` method'],
+                    ['dispatchWatch', 'every watch, and with it `$live`']
+                ] as const) {
+                    if (!dispatcher[name] || hit[name]) continue;
+                    console.warn(
+                        `[sigx actors] a dispatch middleware returned a dispatcher without ` +
+                            `\`${name}\`, so ${breaks} will now fail. Forward it: ` +
+                            `\`...(next.${name} && { ${name}: (...a) => next.${name}!(...a) })\`.`
+                    );
+                }
             }
             wrapped.set(dispatcher, hit);
         }

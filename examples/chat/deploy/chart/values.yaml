@@ -36,6 +36,52 @@ env:
   sigxNamespace: chat
   fetchConnections: 64
 
+  # --- runtime knobs, all defaulting to the shipped posture ---------------
+  #
+  # Every value below reproduces current behaviour when left alone. They
+  # exist so a real deployment can be A/B'd against itself — and because
+  # each one MOVES the perf curve, `testenv.mjs` reads them back off the
+  # live Deployment and folds them into INFRA_SHAPE, so `bench:infra`
+  # refuses to compare a run under one setting against a baseline taken
+  # under another.
+
+  # prefer-local | activation-count | random.
+  # prefer-local is half of the locality pair with the ingress's
+  # upstream-hash-by; activation-count deliberately opposes it (it steers
+  # to the least-loaded host instead of the hashed one), which is the
+  # trade `infra/cold-placement` exists to settle.
+  placement: prefer-local
+  # Load-view refresh cadence for activation-count, ms. "" = policy default
+  # (5000).
+  placementRefreshMs: ""
+
+  # Automatic rebalancing: "1" turns it on, anything else off. Each host
+  # sheds only its own idlest activations, and only down to the cluster
+  # mean.
+  rebalance: ""
+  rebalanceIntervalMs: ""
+  rebalanceThreshold: ""
+  rebalanceMinIdleMs: ""
+  rebalanceMaxMoves: ""
+
+  # Soft LRU cap on live activations per host; 0 = unlimited. It rides the
+  # sweeper, so a cap with sweepIntervalMs at 0 would be inert.
+  maxActivations: 0
+  sweepIntervalMs: 60000
+
+  # The Digest worker pool. "" = the runtime default (hardwareConcurrency
+  # clamped to 16) — deliberately the untested-until-now path.
+  digestMaxLocal: ""
+  # Default and ceiling for the per-call sha256 chain length.
+  digestIters: 2000
+  digestMaxIters: 200000
+
+  # migrateState write-back mode: lazy | eager. Lazy (the default) rides
+  # the next save the room would have made anyway; eager buys one CAS
+  # write-back at activation so a read-only room still persists its
+  # migration.
+  migratePersist: lazy
+
 secrets:
   # Empty = generated on install and PRESERVED on upgrade (lookup guard).
   clusterSecret: ""

@@ -53,9 +53,10 @@ spec:
           # many actors, so the runtime deliberately sends no token — and an
           # empty hash key would pin every live subscription in the
           # deployment onto a single host. A longer prefix wins in nginx, so
-          # this carves it back out of the hashed Ingress below. (Chat does
-          # not open a $live channel today; this keeps the chart correct for
-          # anyone who copies it and does.)
+          # this carves it back out of the hashed Ingress below. (Every open
+          # room page holds one — `Room.tsx` puts three live subscriptions on
+          # a single connection — so this rule is load-bearing rather than
+          # defensive, and the infra suite asserts it.)
           # ImplementationSpecific, NOT Prefix: `$` is rejected by the
           # ingress-nginx admission webhook in a Prefix path ("cannot be
           # used with pathType Prefix"), which neither `helm lint` nor

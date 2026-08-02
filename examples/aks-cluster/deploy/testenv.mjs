@@ -4,7 +4,10 @@
  *
  *   node testenv.mjs up            # node pool + both releases + DNS
  *   node testenv.mjs status        # what exists, what it costs
+ *   node testenv.mjs test [args]   # assertions, then perf, then one verdict
+ *   node testenv.mjs baseline      # record the perf baseline for THIS shape
  *   node testenv.mjs load [args]   # run the edge ladder from a same-region VM
+ *   node testenv.mjs migrate-check # the two-deploy migrateState assertion
  *   node testenv.mjs down          # delete everything this script created
  *
  * Why a script and not a README section: every measurement in scenario (l)
@@ -22,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
+import { postMessageFnId } from '../../chat/deploy/post-fn.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -244,7 +248,10 @@ async function load(args) {
     await loadVmUp();
     const cookie = mintCookie();
     const b64 = Buffer.from(readFileSync(join(here, 'edge-ladder.mjs'))).toString('base64');
+    // POST_FN comes from the BUILD — the id is hashed and moves, and a
+    // stale one 404s every write while looking like extra throughput.
     const env = ['ROOMS=64', 'WORKERS=4', 'DURATION_MS=20000', 'LADDER=32,64,128,256,512',
+        `POST_FN=${postMessageFnId()}`,
         ...args].map((kv) => `export ${kv}`).join('\n');
     step('running the ladder from the vm');
     const out = runOnVm(`
@@ -259,9 +266,50 @@ ${env}
 }
 
 /**
+ * The runtime knobs, read back off the LIVE Deployment.
+ *
+ * Every one of these changes the perf curve, and none of them changes the
+ * image tag — so without them in the shape, `bench:infra:compare` happily
+ * compares a rebalancing, activation-count deployment against a baseline
+ * taken from a prefer-local one and reports the difference as a code
+ * regression. Read from the container's env rather than from values.yaml
+ * because a `helm --set` is exactly the case that would otherwise slip
+ * through.
+ */
+const KNOBS = [
+    'PLACEMENT',
+    'PLACEMENT_REFRESH_MS',
+    'REBALANCE',
+    'REBALANCE_INTERVAL_MS',
+    'REBALANCE_THRESHOLD',
+    'REBALANCE_MIN_IDLE_MS',
+    'REBALANCE_MAX_MOVES',
+    'MAX_ACTIVATIONS',
+    'SWEEP_INTERVAL_MS',
+    'DIGEST_MAX_LOCAL',
+    'DIGEST_ITERS',
+    'MIGRATE_PERSIST'
+];
+
+/** `{ NAME: value }` for the knobs the live chat Deployment actually sets. */
+function liveKnobs() {
+    const raw = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-host', '-o',
+        'jsonpath={range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\\n"}{end}'],
+        { quiet: true, allowFail: true }) ?? '';
+    const out = {};
+    for (const line of raw.split('\n')) {
+        const eq = line.indexOf('=');
+        if (eq <= 0) continue;
+        const name = line.slice(0, eq);
+        if (KNOBS.includes(name)) out[name] = line.slice(eq + 1);
+    }
+    return out;
+}
+
+/**
  * The deployment's identity for baseline purposes. Node spread is IN it on
  * purpose: replicas sharing a node add almost no capacity, and a report
- * cannot tell the two apart (#183).
+ * cannot tell the two apart (#183). So are the runtime knobs — see above.
  */
 function infraShape() {
     const replicas = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-host',
@@ -271,7 +319,16 @@ function infraShape() {
     const distinct = new Set(nodes.split('\n').filter(Boolean)).size;
     const image = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-host',
         '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
-    return `replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}`;
+    // Sorted, so two identically-configured deployments produce the same
+    // string whatever order the manifest happened to list the env in.
+    const knobs = Object.entries(liveKnobs())
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([k, v]) => `${k}=${v}`)
+        .join(',');
+    return (
+        `replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}` +
+        (knobs ? ` knobs=${knobs}` : '')
+    );
 }
 
 const opsSecret = () =>
@@ -320,16 +377,40 @@ async function test(args) {
         INFRA_SHAPE: infraShape(),
         INFRA_OPS_URL: `http://127.0.0.1:${forwardPort}`,
         INFRA_VM_RG: cfg.loadRg,
-        INFRA_VM_NAME: cfg.loadVm
+        INFRA_VM_NAME: cfg.loadVm,
+        // The knobs the suites gate on. Each is read back off the live
+        // Deployment, so a suite asserting a feature runs exactly when the
+        // deployment was actually brought up with it.
+        ...knobEnv()
     };
     log(`  shape: ${env.INFRA_SHAPE}`);
     step('assertions (vitest)');
     const assertions = spawnInherit('pnpm', ['test:infra', ...args], env);
-    step('perf (bench tier 3, compared against the recorded baseline)');
-    const perf = spawnInherit('pnpm', ['bench:infra:compare'], env);
+    // Perf costs a VM and ~10 minutes of it. Measuring a deployment whose
+    // assertions just failed spends that on a number nobody can trust, so
+    // stop — unless the operator is specifically chasing the perf half.
+    const forcePerf = process.env.INFRA_FORCE_PERF === '1';
+    let perf = 0;
+    if (assertions !== 0 && !forcePerf) {
+        log('\n✗ assertions failed — skipping perf (INFRA_FORCE_PERF=1 runs it anyway)');
+        perf = 1;
+    } else {
+        step('perf (bench tier 3, compared against the recorded baseline)');
+        perf = spawnInherit('pnpm', ['bench:infra:compare'], env);
+    }
     forward.kill();
     log(`\n${assertions === 0 ? '✓' : '✗'} assertions   ${perf === 0 ? '✓' : '✗'} perf`);
     if (assertions !== 0 || perf !== 0) process.exitCode = 1;
+}
+
+/** The live knobs, as the `INFRA_*` names the suites and scenarios read. */
+function knobEnv() {
+    const live = liveKnobs();
+    const out = {};
+    for (const [name, value] of Object.entries(live)) {
+        if (value !== '') out[`INFRA_${name}`] = value;
+    }
+    return out;
 }
 
 /** Record the perf baseline FOR THE CURRENT SHAPE. */
@@ -350,6 +431,75 @@ async function baseline() {
         log('✗ baseline FAILED — nothing was recorded');
         process.exitCode = 1;
     }
+}
+
+/**
+ * The one assertion that structurally needs TWO deploys: `migrateState`
+ * only runs on a record the PREVIOUS image wrote.
+ *
+ *   node testenv.mjs migrate-check [<old-tag>]
+ *
+ * Write a room against whatever is deployed now, roll the release forward
+ * to HEAD, then assert the room reads back whole at the new version. No
+ * fixture and no test-only endpoint: a v1 record is simply what the older
+ * image writes, which is the same thing that happens to every real room
+ * during the deploy this is imitating.
+ *
+ * Default `<old-tag>` is the tag already running, so the normal sequence is
+ * `up` on an older commit, then `migrate-check` on the newer one.
+ */
+async function migrateCheck(args) {
+    const target = `https://${cfg.chatHost}`;
+    const secret = authSecret();
+    const name = 'migrator';
+    const sig = createHmac('sha256', secret).update(name).digest('hex');
+    const cookie = `user=${encodeURIComponent(`${name}.${sig}`)}`;
+    const room = `migrated-${Date.now().toString(36)}`;
+
+    const before = kube(['-n', cfg.chatNs, 'get', 'deploy', 'chat-host',
+        '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
+    const oldTag = args[0] ?? before.split(':').pop();
+    step(`writing ${room} against the OLD image (${oldTag})`);
+    if (args[0]) {
+        release('chat', 'examples/chat/deploy/chart', cfg.chatNs, [
+            '--set', `image.tag=${oldTag}`,
+            '--set', `ingress.host=${cfg.chatHost}`,
+            '--set', `nodeSelector.workload=${cfg.workload}`
+        ]);
+        kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
+    }
+    for (let i = 0; i < 3; i++) {
+        const res = await fetch(`${target}/_sigx/fn/${postMessageFnId()}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: target, cookie },
+            body: JSON.stringify({ args: [{ room, text: `pre-migration ${i}` }] })
+        });
+        if (!res.ok) {
+            log(`✗ could not seed ${room}: ${res.status}`);
+            process.exitCode = 1;
+            return;
+        }
+    }
+
+    const tag = gitSha();
+    step(`rolling forward to ${tag}`);
+    buildImage('sigx-chat', 'examples/chat/Dockerfile', tag);
+    release('chat', 'examples/chat/deploy/chart', cfg.chatNs, [
+        '--set', `image.tag=${tag}`,
+        '--set', `ingress.host=${cfg.chatHost}`,
+        '--set', `nodeSelector.workload=${cfg.workload}`
+    ]);
+    kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
+
+    step('asserting the migration');
+    const code = spawnInherit('pnpm', ['test:infra', '-t', 'migrateState'], {
+        ...process.env,
+        INFRA_URL: target,
+        INFRA_AUTH_SECRET: secret,
+        INFRA_MIGRATED_ROOM: room
+    });
+    log(`\n${code === 0 ? '✓' : '✗'} migrateState (${room}, written by ${oldTag})`);
+    if (code !== 0) process.exitCode = 1;
 }
 
 function spawnInherit(cmd, args, env) {
@@ -398,6 +548,7 @@ const verbs = {
     test: () => test(rest),
     baseline,
     load: () => load(rest),
+    'migrate-check': () => migrateCheck(rest),
     'vm-up': loadVmUp
 };
 if (!verbs[verb]) {

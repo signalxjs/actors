@@ -21,12 +21,28 @@ import { actors } from 'virtual:sigx-actors';
 
 const redisUrl = process.env.REDIS_URL;
 
+/**
+ * A soft LRU cap on live activations — off (0) unless the deployment asks
+ * for one. It rides the sweeper, so `sweepIntervalMs` decides how quickly a
+ * host over the cap comes back under it; a cap with the sweeper disabled is
+ * silently inert, which is why both live here rather than only the
+ * interesting one.
+ *
+ * Soft on purpose: busy, queued and kept-alive activations are never shed,
+ * so a loaded host may sit over the cap until it quiets. Correctness never
+ * depends on the number — a shed room re-activates on its next call with
+ * its history intact, and the infra suite asserts exactly that.
+ */
+const maxActivations = Number(process.env.MAX_ACTIVATIONS ?? 0);
+const sweepIntervalMs = Number(process.env.SWEEP_INTERVAL_MS ?? 60_000);
+
 export const app = defineActorApp({
     actors,
     storage: redisUrl
         ? redisStorage({ url: redisUrl, namespace: process.env.SIGX_NAMESPACE ?? 'chat' })
-        : fileStorage({ dir: '.actors' })
+        : fileStorage({ dir: '.actors' }),
+    defaults: { maxActivations, sweepIntervalMs }
 });
 
-/** Bound to this app's plugin set; actor modules import this. */
-export const { defineActor } = app;
+/** Bound to this app's plugin set; actor modules import these. */
+export const { defineActor, defineWorker } = app;

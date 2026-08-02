@@ -188,6 +188,11 @@ join (new hosts are readiness-gated); post-join steady-state ops/s ≥ the
 3-host figure from (c); new keys activate on the new hosts. Existing
 actors stay put — spread evens out via new activations, not migration.
 
+That last sentence is the DEFAULT, not a law: `cluster({ rebalance })`
+migrates idle activations toward the mean when it is switched on, and
+`activationCountPolicy()` steers new ones at the coldest host. Both are off
+here. Scenario (n) is this same scale-out with them on.
+
 ### (e) Rolling restart under load — the zero-drop check
 
 Under `load counter 64 600`:
@@ -339,10 +344,99 @@ The matrix — every test runs from OUTSIDE the cluster:
 | 9 | `kubectl -n sigx-chat rollout restart deploy/chat-host` with a tab streaming | tab reconnects by itself and resumes receiving |
 | 10 | post → `kubectl -n sigx-chat delete pod chat-redis-...` | AOF recovery, history intact |
 | 11 | WAN load from a laptop (signed cookie + correct Origin, recent+post loop) | p50/p99 vs the in-cluster curve; no 5xx |
+| 12 | post in three rooms, then read `ActivityFeed#recent('all', 50)` | all three appear — a publish reached the singleton subscriber on whichever pod owns it, over the internal HMAC mount |
+| 13 | `POST /_sigx/fn/<postMessage id>` (signed) | 200 — the id is derived from the build (`deploy/post-fn.mjs`), never pasted; a stale one 404s and reads as extra throughput |
+
+Rows 1 and 3–8 and 11–13 are the automated suite; rows 2 and 9 are the
+browser ones that stay manual.
 
 Teardown: `az network dns record-set a delete ... -n chat -y` and
 `helm uninstall chat -n sigx-chat` (the room-history PVC survives until
 the namespace goes).
+
+### (m) migrateState across a rolling deploy
+
+The one assertion that needs two images: `migrateState` runs only on a
+record the PREVIOUS one wrote, and a v1 record is simply what an older
+chat image writes — no fixture, no test-only endpoint.
+
+```sh
+node examples/aks-cluster/deploy/testenv.mjs migrate-check [<old-tag>]
+```
+
+Writes a room against the old image, rolls the release forward to HEAD,
+then asserts the room reads its full history back and `Room#version()`
+answers `2`. Pass: green, with `INFRA_MIGRATED_ROOM` named in the output.
+
+Worth watching while it rolls, because these are the numbers no unit test
+can produce: `storage.conflicts` in `sigx actors stats --json` (a fleet
+mid-deploy migrates the same record more than once and the etag CAS is what
+makes that safe), and whether `storage.saves` moves at all — lazy
+write-back must add NO writes to a read-only room. Re-run with
+`--set env.migratePersist=eager` to see the opposite trade: one CAS per
+activation, and a read-only room that does persist its migration.
+
+### (n) Rebalance and load-aware placement under scale-out
+
+Scenario (d) with the knobs on. Both are off by default and both change the
+steady-state spread, so `testenv.mjs` folds them into `INFRA_SHAPE` and the
+perf comparison refuses to cross them — deliberate, not an obstacle.
+
+```sh
+helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
+  --set env.rebalance=1 --set env.rebalanceIntervalMs=30000 \
+  --set env.rebalanceMinIdleMs=15000
+INFRA_CHAOS=1 node examples/aks-cluster/deploy/testenv.mjs test -t rebalance
+```
+
+Pass: `counters.rebalanceMigrations` climbs, the joined hosts end up
+holding activations they did not activate, and max/mean converges under
+`rebalanceThreshold`. For the placement half, `--set
+env.placement=activation-count` and `-t activationCountPolicy`: fresh keys
+placed WITHOUT a routing token should favour the cold hosts, because a host
+with no known load reads as cold.
+
+Record what neither can be unit-tested for: whether the correction
+converges or oscillates across repeated scaling events, and what the
+per-peer probe traffic costs at this fleet size.
+
+### (o) maxActivations — shedding under a cap
+
+```sh
+helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
+  --set env.maxActivations=200 --set env.sweepIntervalMs=15000
+node examples/aks-cluster/deploy/testenv.mjs test -t maxActivations
+```
+
+Pass: total activations settle at ≤ cap × hosts, `activations.byReason.
+capacity` is non-zero, and a shed room still reads its history back — the
+cap is a memory knob, never a correctness one.
+
+The measurement to take by hand alongside it: `kubectl top pods` before and
+after, because the premise ("shed before the heap makes you") is the one
+thing no test asserts. Note also the soft-cap failure mode — a genuinely
+busy host sits OVER the cap indefinitely, because busy, queued and
+kept-alive activations are never shed.
+
+### (p) Worker-pool saturation
+
+```sh
+helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
+  --set env.digestMaxLocal=8 --set env.digestIters=20000
+node examples/aks-cluster/deploy/testenv.mjs load ACTOR_TYPE=Digest \
+  READ_METHOD=summarize 'READ_ARGS=["payload",20000]' ROOMS=1 LADDER=8,16,32,64
+```
+
+One key, so every call lands in one pool. Pass: throughput keeps climbing
+past a concurrency of 1 (a single activation would flatten immediately),
+and `directoryLookups` in the ops snapshot does not move at all — a worker
+is always placed locally and never claims.
+
+The headline finding to record is where it stops scaling and why: the pool
+grows to `maxLocal` MAILBOXES, but the container's CPU limit is what
+decides how many of them make progress. Leaving `digestMaxLocal` unset is
+the more interesting run — the pool then sizes itself from the node's real
+`hardwareConcurrency`, which no unit test has ever exercised.
 
 ### Optional: Lease-based membership (`@sigx/actors-k8s`)
 

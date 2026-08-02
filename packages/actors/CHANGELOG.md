@@ -149,6 +149,25 @@
 
 ### Fixed
 
+- **`metrics()` no longer breaks every watch — and with it `$live`**
+  (#259). Its dispatch middleware forwarded `dispatch` and
+  `dispatchStream` but not `dispatchWatch`, and all three are optional on
+  `ActorDispatcher`, so the composed dispatcher simply lost the method:
+  any host with `metrics()` attached answered every watch with
+  `the placement for <Type> cannot watch`. That is the whole of
+  `useActorState(…, { live: true })` and the `$live` mount, and `metrics()`
+  is attached on essentially every production host — so the feature was
+  broken everywhere it shipped and nowhere it was tested, because the
+  in-process suites build hosts without the plugin. The middleware now
+  forwards it (uncounted: a watch is one long-lived subscription that
+  re-invokes a read per mutating turn, so folding it into `calls` would
+  make that total stop matching what callers issued).
+
+  The `__DEV__` guard that exists to catch exactly this only checked
+  `dispatchStream`, which is how it went unnoticed; it now checks both, so
+  third-party middleware gets told too. Found by the Tier-3 `$live`
+  assertion added in the same change.
+
 - **The public actor endpoint no longer dispatches runtime-reserved
   methods** (#240). `createActorResolver` synthesized a wrapper for any
   method name, so a caller could POST `Type#$sigx:reminder` and invoke
