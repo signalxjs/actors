@@ -244,7 +244,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   (TTL heartbeat judged on the DATABASE clock, LISTEN/NOTIFY push with
   poll fallback, signature-based change detection so silent deaths
   converge without a version bump), `pgDirectory` (claim/CAD/`evictHost`),
-  `pgCluster` bundling the two, and `pgSchemaSql()`/`ensurePgSchema()` —
+  `pgReminders` (durable reminders on a due-time-indexed table, one
+  SKIP LOCKED claim statement per tick — the reminder-scan answer from
+  #16 for pg deployments), `pgCluster` bundling membership + directory,
+  and `pgSchemaSql()`/`ensurePgSchema()` —
   DDL is explicit, the providers never issue it. `pg` ≥8 as a peer
   dependency; provider tests are env-gated on `PG_URL` (a dedicated CI
   job provides a postgres service).

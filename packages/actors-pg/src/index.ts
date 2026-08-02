@@ -80,13 +80,31 @@ export interface PgClusterOptions {
  * task-ledger storage key IS an actor id. Every identifier crossing into a
  * text column goes through this injective escape (`\` doubles, NUL becomes
  * `\0` — two ASCII characters), applied symmetrically on writes and
- * lookups so nothing ever needs decoding back.
+ * lookups. Storage and the directory never decode; the reminder table
+ * must (a claimed row has to become a deliverable ref again), which is
+ * what `pgTextDecode` exists for.
  */
 export function pgText(value: string): string {
     if (!value.includes(String.fromCharCode(0))) {
         return value.includes('\\') ? value.replaceAll('\\', '\\\\') : value;
     }
     return value.replaceAll('\\', '\\\\').replaceAll(String.fromCharCode(0), '\\0');
+}
+
+/** The exact inverse of `pgText`. */
+export function pgTextDecode(value: string): string {
+    if (!value.includes('\\')) return value;
+    let out = '';
+    for (let i = 0; i < value.length; i++) {
+        const c = value[i]!;
+        if (c !== '\\') {
+            out += c;
+            continue;
+        }
+        const next = value[++i];
+        out += next === '0' ? String.fromCharCode(0) : (next ?? '\\');
+    }
+    return out;
 }
 
 /**
@@ -162,6 +180,15 @@ CREATE TABLE IF NOT EXISTS ${s}.membership_version (
 );
 INSERT INTO ${s}.membership_version (id, version) VALUES (1, 0)
     ON CONFLICT (id) DO NOTHING;
+CREATE TABLE IF NOT EXISTS ${s}.reminders (
+    type text NOT NULL,
+    key text NOT NULL,
+    name text NOT NULL,
+    next_due timestamptz NOT NULL,
+    period_ms bigint,
+    PRIMARY KEY (type, key, name)
+);
+CREATE INDEX IF NOT EXISTS reminders_due ON ${s}.reminders (next_due);
 `;
 }
 
@@ -426,3 +453,8 @@ export function pgDirectory(
 // Storage
 
 export { pgStorage, type PgStorageOptions } from './storage';
+
+// ---------------------------------------------------------------------------
+// Reminders
+
+export { pgReminders, type PgRemindersOptions } from './reminders';

@@ -10,6 +10,12 @@ durable store is SQL. Three providers, one pool:
   the **database clock** (host clock skew cannot fake a death or a
   survival), LISTEN/NOTIFY push with a poll fallback, and self-suspect
   fencing when this host cannot prove its own membership.
+- **`pgReminders()`** — durable reminders on an indexed table: a tick is
+  one `FOR UPDATE SKIP LOCKED` claim statement for exactly the due rows
+  (advance/delete commits BEFORE delivery — at-most-once, no catch-up
+  bursts, database clock throughout), and every host may tick the same
+  table because row locks replace shard ownership. The reminder-scan
+  answer for large tables.
 - **`pgDirectory()`** — the single-activation claim directory:
   create-if-absent claim, compare-and-delete release/evict, and an
   `evictHost` sweep for departed hosts.
@@ -23,7 +29,7 @@ providers never issue it, so a production role needs only DML grants:
 
 ```ts
 import pg from 'pg';
-import { ensurePgSchema, pgCluster, pgStorage } from '@sigx/actors-pg';
+import { ensurePgSchema, pgCluster, pgReminders, pgStorage } from '@sigx/actors-pg';
 
 const pool = new pg.Pool({ connectionString: process.env.PG_URL });
 await ensurePgSchema(pool);            // dev/tests; prod: pgSchemaSql() via your migration tool
@@ -37,7 +43,10 @@ import { cluster } from '@sigx/actors/cluster';
 
 const app = defineActorApp({
     actors,
-    storage: pgStorage({ pool })
+    storage: pgStorage({ pool }),
+    // Without this the runtime keeps the default sharded reminders (which
+    // also work over pgStorage) — pass the provider to get the indexed table.
+    reminders: pgReminders({ pool })
 }).use(
     cluster({
         providers: pgCluster({ pool }),
