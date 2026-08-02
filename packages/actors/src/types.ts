@@ -621,6 +621,46 @@ export type ActorTaskContext<
     readonly abortSignal: AbortSignal;
 } & Ext;
 
+/**
+ * The second argument to a `migrateState` hook — the same record, in the
+ * form the hook's first argument is NOT.
+ */
+export interface MigrateStateInfo {
+    /**
+     * The codec-ENCODED record, exactly as storage holds it. Reach for it
+     * when the revived view cannot distinguish two stored versions — an old
+     * field whose tag no longer revives to anything useful, say. Read-only
+     * by contract: mutating it does not change what is stored.
+     */
+    readonly raw: unknown;
+    /** The actor key, as `state(key)` receives it. */
+    readonly key: string;
+}
+
+/**
+ * A state-migration hook. The return type is `NoInfer<S>` on purpose: `S` is
+ * inferred from `state:` ALONE, and this is a CHECK site, not a second
+ * inference site. Without that, a migration written over `any` — which is
+ * what casting a `stored: unknown` naturally produces — would infer `S = any`
+ * and silently erase `ctx.state`'s type everywhere, with no error anywhere.
+ * It also makes an `async` hook a type error (`Promise<S>` is not `S`), which
+ * is the sync-only rule enforcing itself.
+ */
+export type MigrateStateFn<S extends object> = (
+    stored: unknown,
+    info: MigrateStateInfo
+) => NoInfer<S>;
+
+/**
+ * `migrateState:` — the bare hook, or the hook plus its write-back policy.
+ * `'lazy'` (the default) writes nothing on its own; `'eager'` issues one CAS
+ * write-back at activation, for records that would otherwise never be saved
+ * and so would be re-migrated on every activation forever.
+ */
+export type MigrateState<S extends object> =
+    | MigrateStateFn<S>
+    | { migrate: MigrateStateFn<S>; persist?: 'lazy' | 'eager' };
+
 export interface ActorOptions<
     S extends object,
     M extends ActorMethodTable,
@@ -647,6 +687,57 @@ export interface ActorOptions<
     /** Initial state factory — used when storage has no record (the
      *  virtual-actor "always exists" default). */
     state: (key: string) => S;
+    /**
+     * Evolve a STORED state shape whose layout predates this deploy — the
+     * answer to "the `state:` shape changed and the records didn't".
+     *
+     * Runs between the storage read and activation, and ONLY on a load that
+     * FOUND a record: never on the `state(key)` fresh path, never on
+     * `ctx.clearState()` (which re-seeds through `state(key)` for the same
+     * reason). It also runs BEFORE `onActivate`, which therefore always sees
+     * migrated state — an ordering commitment, not an accident.
+     *
+     * ```ts
+     * migrateState: (stored) => {
+     *     const s = stored as CartV1 | CartV2;
+     *     if ('v' in s) return s;                              // fast path
+     *     return { v: 2, items: s.items ?? [], coupons: [] };  // v1 → v2
+     * }
+     * ```
+     *
+     * `stored` is already CODEC-REVIVED — `Date`/`Map`/`Set` are real objects
+     * again — so `unknown` means unknown SHAPE, not raw JSON. When the revived
+     * view cannot tell two versions apart, `info.raw` is the codec-ENCODED
+     * record as it sits in storage.
+     *
+     * **Returning the input unchanged is the fast path**, and identity is how
+     * that is detected — so to migrate, return a NEW object. Mutating `stored`
+     * in place and returning it works (the value has not been made reactive
+     * yet), but reads as "nothing migrated" to `persist: 'eager'`.
+     *
+     * By default the migrated shape is written back LAZILY: it rides the next
+     * save the actor would have made anyway, so read paths still issue zero
+     * writes and a rolling deploy costs nothing extra. The rule holds in BOTH
+     * persistence modes — `migrateState` never causes a write by itself, so a
+     * `write-behind` actor that is only ever read after a migration does not
+     * persist it. `{ persist: 'eager', migrate }` opts into an immediate CAS
+     * write-back instead, for records that would otherwise never be saved.
+     *
+     * The trade is stated rather than hidden: a fleet mid-rolling-deploy can
+     * migrate the same record on several hosts. That is safe because the hook
+     * is a pure function of the stored value and every write is etag-CAS'd —
+     * the first save wins, and the loser either adopts the winner (eager) or
+     * gets `ActorStateConflictError` and re-activates against it (lazy).
+     *
+     * Synchronous, and a throw fails the activation with
+     * `ActorActivationError` — the same posture as a throwing `onActivate`.
+     * Corrupt state is loud, and the stored record is never silently reset.
+     *
+     * Version bookkeeping is YOUR convention: the runtime neither reads nor
+     * writes a version field, and this is deliberately not a scheme for
+     * versioning an actor's INTERFACE across a mixed-version fleet.
+     */
+    migrateState?: MigrateState<S>;
     /**
      * `'explicit'` (default): only `ctx.save()` writes. `'write-behind'`:
      * a deep watch schedules a debounced save; acked ≠ persisted — use only

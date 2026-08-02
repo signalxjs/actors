@@ -79,7 +79,12 @@ export interface ActivationHost {
     onTurn?: ActorTurnObserver;
     /** Clock for `ctx.timer` and write-behind flushes. */
     readonly scheduler: ActorScheduler;
-    loadState(ref: ActorRef): Promise<{ state: object; etag: string } | null>;
+    /**
+     * `raw` is the codec-ENCODED record alongside the revived `state` — it is
+     * already in hand at the call site, and `migrateState` hands it to the
+     * hook so a migration can inspect on-disk tags the revive smooths over.
+     */
+    loadState(ref: ActorRef): Promise<{ state: object; raw: unknown; etag: string } | null>;
     saveState(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
     clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
     /** Deep, detached copy through the codec vocabulary. */
@@ -122,6 +127,83 @@ export interface ActivationHost {
      * is a plugin bug and is dev-warned, not silently honoured.
      */
     extendContext?(ref: ActorRef): object | undefined;
+}
+
+/**
+ * Load the state an activation starts from, running the type's
+ * `migrateState` hook when — and only when — storage HAD a record. A shape
+ * that has never been anywhere cannot be out of date, which is why the fresh
+ * `state(key)` path skips the hook (and why `ctx.clearState()`, which
+ * re-seeds through the same factory, skips it too).
+ *
+ * The migrated value is not written back here by default: `#doSave` always
+ * serializes the live state, so the new shape lands on the next save the
+ * actor would have made anyway. That is what keeps read paths free of writes
+ * and a rolling deploy free of write amplification; the cost is that a fleet
+ * may migrate the same record more than once, which the etag CAS makes safe.
+ * `persist: 'eager'` buys the write back for the records that would otherwise
+ * never be saved at all.
+ */
+async function seedFromStorage(
+    ref: ActorRef,
+    opts: AnyActorDefinition['__sigxActor'],
+    host: ActivationHost
+): Promise<{ state: object; etag: string | null }> {
+    let stored = await host.loadState(ref);
+    if (!stored) return { state: opts.state(ref.key) as object, etag: null };
+    const spec = opts.migrateState;
+    if (!spec) return { state: stored.state, etag: stored.etag };
+
+    const migrate = typeof spec === 'function' ? spec : spec.migrate;
+    const migrated = checkMigrated(ref, migrate(stored.state, { raw: stored.raw, key: ref.key }));
+    // Identity IS the "nothing to migrate" signal — the documented fast path.
+    if (migrated === stored.state) return { state: stored.state, etag: stored.etag };
+    if (typeof spec === 'function' || spec.persist !== 'eager') {
+        // Lazy: the etag must stay the one the migration was derived from, or
+        // the next save becomes a blind create and clobbers a concurrent winner.
+        return { state: migrated, etag: stored.etag };
+    }
+    try {
+        return { state: migrated, etag: await host.saveState(ref, migrated, stored.etag) };
+    } catch (error) {
+        if (!isStorageConflict(error)) throw error;
+        // A peer migrated first. That is EXPECTED rather than exceptional —
+        // an eager write-back fires precisely during a rolling deploy — so
+        // adopt the winner instead of failing every parked caller: reload,
+        // re-run the hook (a no-op against an already-migrated record), and
+        // activate on that. One extra read and no second write; retrying the
+        // write would only re-enter the same race.
+        stored = await host.loadState(ref);
+        if (!stored) return { state: opts.state(ref.key) as object, etag: null };
+        return {
+            state: checkMigrated(ref, migrate(stored.state, { raw: stored.raw, key: ref.key })),
+            etag: stored.etag
+        };
+    }
+}
+
+/**
+ * Both mistakes this catches surface far from their cause if they get
+ * through: `signal(undefined)` from a forgotten `return` becomes a TypeError
+ * inside an unrelated method, and `signal(promise)` fails naming neither the
+ * hook nor storage.
+ */
+function checkMigrated(ref: ActorRef, value: unknown): object {
+    if (typeof value !== 'object' || value === null) {
+        throw new Error(
+            `[sigx actors] the \`migrateState\` hook of actor "${ref.type}" returned ` +
+                `${value === null ? 'null' : typeof value} — it must return the state OBJECT ` +
+                `(return the input unchanged when there is nothing to migrate).`
+        );
+    }
+    if (typeof (value as { then?: unknown }).then === 'function') {
+        throw new Error(
+            `[sigx actors] the \`migrateState\` hook of actor "${ref.type}" returned a promise. ` +
+                `Migration is SYNCHRONOUS — it sits between the storage read and activation, and ` +
+                `must not do I/O of its own.`
+        );
+    }
+    return value;
 }
 
 interface ChangeSub {
@@ -230,10 +312,9 @@ export class Activation {
         const a = new Activation(ref, def, host, mailbox);
         try {
             const opts = def.__sigxActor;
-            const stored = await host.loadState(ref);
-            const initial = stored ? stored.state : (opts.state(ref.key) as object);
-            a.#etag = stored ? stored.etag : null;
-            a.#state = signal(initial);
+            const seed = await seedFromStorage(ref, opts, host);
+            a.#etag = seed.etag;
+            a.#state = signal(seed.state);
             a.#ctx = a.#buildContext();
             // The factories (and onActivate) run inside the activation's
             // effect scope so computeds/watches they create die with it.

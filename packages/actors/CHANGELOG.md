@@ -4,6 +4,44 @@
 
 ### Added
 
+- **`migrateState` — evolve long-lived state across deploys** (#244,
+  closing it). `defineActor({ migrateState: (stored, { raw, key }) => State })`
+  runs between the storage read and activation, and only on a load that
+  FOUND a record — never on the `state(key)` fresh path, never on
+  `ctx.clearState()`, and always before `onActivate`. `stored` is already
+  codec-revived, so `Date`/`Map`/`Set` are real objects and `unknown` means
+  unknown SHAPE, not raw JSON; `raw` is the encoded record for the cases
+  where the revived view cannot tell two versions apart. Returning the input
+  unchanged is the fast path, and identity is how that is detected — so to
+  migrate, return a NEW object.
+
+  `S` is still inferred from `state:` alone: the hook's return is a check
+  site, not a second inference site, so a migration written over `any` —
+  which casting a `stored: unknown` naturally produces — cannot silently
+  widen your state type. It also makes an `async` hook a type error, which
+  is the sync-only rule enforcing itself.
+
+  The migrated shape is written back LAZILY: it rides the next save the actor
+  would have made anyway, in BOTH persistence modes. `migrateState` never
+  causes a write by itself, so read paths stay read-only and a rolling deploy
+  adds no write amplification — which does mean a write-behind actor that is
+  only ever read after a migration never persists it. For a record that would
+  otherwise never be saved at all, `{ persist: 'eager', migrate }` opts into
+  one CAS write-back at activation; when a peer migrates the same record
+  first, the loser adopts the winner instead of failing its callers.
+
+  The consequence is stated rather than hidden: a fleet mid-deploy can
+  migrate the same record more than once, and the etag CAS is what makes that
+  safe — the first save wins, the loser either adopts the winner (eager) or
+  gets `ActorStateConflictError` and re-activates against it (lazy).
+
+  A throw fails activation with `ActorActivationError`, the same posture as a
+  throwing `onActivate`: every parked caller sees it, nothing is remembered,
+  and the stored record is never silently reset. Deliberately a plain
+  function over `unknown` — version-field bookkeeping is the app's
+  convention, and versioning an actor's INTERFACE across a mixed-version
+  fleet is a different problem this does not attempt.
+
 - **`defaults.maxActivations` — a soft LRU cap on live activations**
   (#16, closing it). When the sweep finds more than this many active
   (default 0 = unlimited), it deactivates the least-recently-used idle,

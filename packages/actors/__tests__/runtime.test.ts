@@ -6,6 +6,7 @@ import {
     type ActorDispatcher,
     type ActorPlacement,
     type ActorStorage,
+    type MigrateState,
     type PlacementBindings
 } from '@sigx/actors';
 import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
@@ -326,6 +327,347 @@ describe('persistence', () => {
         await client.set(7);
         await expect(client.wipe()).resolves.toBe(42);
         expect(await storage.load('Clearing', 'k')).toBeNull();
+    });
+});
+
+describe('state migration', () => {
+    type CartV1 = { items: string[] };
+    type CartV2 = { v: 2; items: string[]; coupons: string[] };
+
+    /** The issue's own example, as a definition factory. */
+    function cartActor(migrateState: MigrateState<CartV2>) {
+        return defineActor({
+            type: 'Cart',
+            unguarded: true,
+            state: (): CartV2 => ({ v: 2, items: [], coupons: [] }),
+            migrateState,
+            methods: (ctx) => ({
+                async read() {
+                    return { v: ctx.state.v, items: [...ctx.state.items], coupons: [...ctx.state.coupons] };
+                },
+                async add(item: string) {
+                    ctx.state.items.push(item);
+                    await ctx.save();
+                }
+            })
+        });
+    }
+
+    /** A pre-migration record, written straight to storage. */
+    function seedV1(storage: ActorStorage, key = 'k'): Promise<string> {
+        return storage.save('Cart', key, { items: ['a'] } satisfies CartV1, null);
+    }
+
+    it('runs on a stored record and its result becomes the live state', async () => {
+        const def = cartActor((stored) => {
+            const s = stored as CartV1 | CartV2;
+            if ('v' in s) return s;
+            return { v: 2, items: s.items ?? [], coupons: [] };
+        });
+        const storage = memoryStorage();
+        await seedV1(storage);
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        await expect(host.actor(def, 'k').read()).resolves.toEqual({
+            v: 2,
+            items: ['a'],
+            coupons: []
+        });
+    });
+
+    it('hands the hook the revived state and the raw encoded record', async () => {
+        let sawRevivedDate: boolean | null = null;
+        let sawRawDate: boolean | null = null;
+        let sawKey: string | null = null;
+        const stamped = defineActor({
+            type: 'Stamped',
+            unguarded: true,
+            state: () => ({ when: null as Date | null, seen: false }),
+            migrateState: (stored, info) => {
+                const s = stored as { when: unknown };
+                sawRevivedDate = s.when instanceof Date;
+                sawRawDate = (info.raw as { when: unknown }).when instanceof Date;
+                sawKey = info.key;
+                return { when: s.when as Date | null, seen: true };
+            },
+            methods: (ctx) => ({
+                async read() {
+                    return { ms: ctx.state.when?.getTime(), seen: ctx.state.seen };
+                },
+                async stamp() {
+                    ctx.state.when = new Date(1234567890000);
+                    await ctx.save();
+                }
+            })
+        });
+        const storage = memoryStorage();
+        const host = createHost({ actors: [stamped], storage, defaults: quiet });
+        const client = host.actor(stamped, 's');
+        await client.stamp(); // writes a real record, codec-encoded
+        await host.deactivateType('Stamped');
+
+        await expect(client.read()).resolves.toEqual({ ms: 1234567890000, seen: true });
+        // The hook sees the actor's own vocabulary; `raw` is the on-disk form.
+        expect(sawRevivedDate).toBe(true);
+        expect(sawRawDate).toBe(false);
+        expect(sawKey).toBe('s');
+    });
+
+    it('a throwing hook fails ALL parked callers and leaves the record untouched', async () => {
+        const def = cartActor(() => {
+            throw new Error('corrupt');
+        });
+        const storage = memoryStorage();
+        const etag = await seedV1(storage);
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        const client = host.actor(def, 'k');
+
+        const [r1, r2] = await Promise.allSettled([client.read(), client.read()]);
+        expect(r1.status).toBe('rejected');
+        expect(r2.status).toBe('rejected');
+        expect((r1 as PromiseRejectedResult).reason).toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'activation'
+        );
+        expect(host.stats().activations).toBe(0);
+        // Corrupt state is loud, never silently reset: same bytes, same etag.
+        const record = await storage.load('Cart', 'k');
+        expect(record).toEqual({ state: { items: ['a'] }, etag });
+    });
+
+    it('a hook that forgets to return fails activation rather than seeding undefined', async () => {
+        const def = cartActor((() => undefined) as unknown as MigrateState<CartV2>);
+        const storage = memoryStorage();
+        await seedV1(storage);
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        await expect(host.actor(def, 'k').read()).rejects.toSatisfy(
+            (e: unknown) =>
+                isActorError(e) &&
+                e.kind === 'activation' &&
+                /migrateState/.test(String((e as { cause?: Error }).cause?.message))
+        );
+    });
+
+    it('is not called when there is no stored record', async () => {
+        const migrate = vi.fn((stored: unknown) => stored as CartV2);
+        const def = cartActor(migrate);
+        const host = createHost({ actors: [def], storage: memoryStorage(), defaults: quiet });
+        await expect(host.actor(def, 'fresh').read()).resolves.toEqual({
+            v: 2,
+            items: [],
+            coupons: []
+        });
+        expect(migrate).not.toHaveBeenCalled();
+    });
+
+    it('clearState re-seeds from state(key) without running the hook', async () => {
+        const migrate = vi.fn((stored: unknown) => {
+            const s = stored as CartV1 | CartV2;
+            return 'v' in s ? s : { v: 2 as const, items: s.items, coupons: [] };
+        });
+        const clearing = defineActor({
+            type: 'Clearable',
+            unguarded: true,
+            state: (): CartV2 => ({ v: 2, items: [], coupons: [] }),
+            migrateState: migrate,
+            methods: (ctx) => ({
+                async wipe() {
+                    await ctx.clearState();
+                    return [...ctx.state.items];
+                }
+            })
+        });
+        const storage = memoryStorage();
+        await storage.save('Clearable', 'k', { items: ['a'] } satisfies CartV1, null);
+        const host = createHost({ actors: [clearing], storage, defaults: quiet });
+
+        const client = host.actor(clearing, 'k');
+        const before = migrate.mock.calls.length;
+        expect(before).toBe(0);
+        await expect(client.wipe()).resolves.toEqual([]);
+        // One call: the activation's. `clearState` re-seeds through `state(key)`.
+        expect(migrate.mock.calls.length).toBe(1);
+        expect(await storage.load('Clearable', 'k')).toBeNull();
+    });
+
+    it('the migrated shape is written on the next save — and not before', async () => {
+        const def = cartActor((stored) => {
+            const s = stored as CartV1 | CartV2;
+            return 'v' in s ? s : { v: 2 as const, items: s.items, coupons: [] };
+        });
+        const storage = memoryStorage();
+        const etag = await seedV1(storage);
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        const client = host.actor(def, 'k');
+
+        // A pure read activates and migrates — and writes nothing. Etag
+        // equality is the real assertion: a rewrite of identical bytes would
+        // still move it.
+        await expect(client.read()).resolves.toEqual({ v: 2, items: ['a'], coupons: [] });
+        expect(await storage.load('Cart', 'k')).toEqual({ state: { items: ['a'] }, etag });
+
+        await client.add('b');
+        const after = await storage.load('Cart', 'k');
+        expect(after!.state).toEqual({ v: 2, items: ['a', 'b'], coupons: [] });
+        expect(after!.etag).not.toBe(etag);
+    });
+
+    it('write-behind never writes a migration on its own', async () => {
+        const wb = defineActor({
+            type: 'CartWB',
+            unguarded: true,
+            state: (): CartV2 => ({ v: 2, items: [], coupons: [] }),
+            persistence: { mode: 'write-behind', debounceMs: 10 },
+            migrateState: (stored) => {
+                const s = stored as CartV1 | CartV2;
+                return 'v' in s ? s : { v: 2 as const, items: s.items, coupons: [] };
+            },
+            methods: (ctx) => ({
+                async read() {
+                    return [...ctx.state.items];
+                },
+                async add(item: string) {
+                    ctx.state.items.push(item);
+                }
+            })
+        });
+        const storage = memoryStorage();
+        const etag = await storage.save('CartWB', 'k', { items: ['a'] } satisfies CartV1, null);
+        const host = createHost({ actors: [wb], storage, defaults: quiet });
+        const client = host.actor(wb, 'k');
+
+        await expect(client.read()).resolves.toEqual(['a']);
+        await new Promise((r) => setTimeout(r, 40)); // well past the debounce
+        expect(await storage.load('CartWB', 'k')).toEqual({ state: { items: ['a'] }, etag });
+        // Nor does the deactivation flush turn a read into a write.
+        await host.deactivateType('CartWB');
+        expect(await storage.load('CartWB', 'k')).toEqual({ state: { items: ['a'] }, etag });
+
+        // A real mutation carries the migrated shape with it, as ever.
+        await client.add('b');
+        await vi.waitFor(async () => {
+            const record = await storage.load('CartWB', 'k');
+            expect(record!.state).toEqual({ v: 2, items: ['a', 'b'], coupons: [] });
+        });
+    });
+
+    it("persist: 'eager' writes the migration back once, then leaves it alone", async () => {
+        const migrate = vi.fn((stored: unknown) => {
+            const s = stored as CartV1 | CartV2;
+            return 'v' in s ? s : { v: 2 as const, items: s.items, coupons: [] };
+        });
+        const def = cartActor({ persist: 'eager', migrate });
+        const storage = memoryStorage();
+        const seeded = await seedV1(storage);
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        const client = host.actor(def, 'k');
+
+        await expect(client.read()).resolves.toEqual({ v: 2, items: ['a'], coupons: [] });
+        const migrated = await storage.load('Cart', 'k');
+        expect(migrated!.state).toEqual({ v: 2, items: ['a'], coupons: [] });
+        expect(migrated!.etag).not.toBe(seeded);
+
+        // Second activation: the hook returns its input, so nothing is written.
+        await host.deactivateType('Cart');
+        await expect(client.read()).resolves.toEqual({ v: 2, items: ['a'], coupons: [] });
+        expect(await storage.load('Cart', 'k')).toEqual(migrated);
+        expect(migrate).toHaveBeenCalledTimes(2);
+    });
+
+    it('an eager write-back that loses the CAS adopts the winner', async () => {
+        const inner = memoryStorage();
+        await seedV1(inner);
+        let raced = false;
+        // A peer migrates and saves in the window between our read and our
+        // write — the rolling-deploy race, made deterministic.
+        const racing: ActorStorage = {
+            async load(type, key) {
+                const record = await inner.load(type, key);
+                if (!raced && type === 'Cart' && key === 'k') {
+                    raced = true;
+                    await inner.save(
+                        type,
+                        key,
+                        { v: 2, items: ['a'], coupons: ['PEER'] } satisfies CartV2,
+                        record!.etag
+                    );
+                }
+                return record;
+            },
+            save: (type, key, state, etag) => inner.save(type, key, state, etag),
+            clear: (type, key, etag) => inner.clear(type, key, etag)
+        };
+        const def = cartActor({
+            persist: 'eager',
+            migrate: (stored) => {
+                const s = stored as CartV1 | CartV2;
+                return 'v' in s ? s : { v: 2 as const, items: s.items, coupons: [] };
+            }
+        });
+        const host = createHost({ actors: [def], storage: racing, defaults: quiet });
+
+        // The caller sees nothing unusual, and the peer's record survives.
+        await expect(host.actor(def, 'k').read()).resolves.toEqual({
+            v: 2,
+            items: ['a'],
+            coupons: ['PEER']
+        });
+        expect((await inner.load('Cart', 'k'))!.state).toEqual({
+            v: 2,
+            items: ['a'],
+            coupons: ['PEER']
+        });
+    });
+
+    it('two hosts migrating lazily: the second save loses the CAS, the record stays sound', async () => {
+        const def = cartActor((stored) => {
+            const s = stored as CartV1 | CartV2;
+            return 'v' in s ? s : { v: 2 as const, items: s.items, coupons: [] };
+        });
+        const storage = memoryStorage();
+        await seedV1(storage);
+        const hostA = createHost({ actors: [def], storage, defaults: quiet });
+        const hostB = createHost({ actors: [def], storage, defaults: quiet });
+        const a = hostA.actor(def, 'k');
+        const b = hostB.actor(def, 'k');
+
+        // Both activate off the same v1 bytes and both migrate — the double
+        // migration the docs promise is safe. Neither has written yet.
+        await Promise.all([a.read(), b.read()]);
+        await a.add('fromA');
+        await expect(b.add('fromB')).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+
+        const record = await storage.load('Cart', 'k');
+        expect(record!.state).toEqual({ v: 2, items: ['a', 'fromA'], coupons: [] });
+        // The loser re-activates against the winner.
+        await expect(b.read()).resolves.toEqual({ v: 2, items: ['a', 'fromA'], coupons: [] });
+    });
+
+    it('defineActor rejects a malformed migrateState at definition time', () => {
+        const base = {
+            type: 'BadMigrate',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            methods: () => ({})
+        } as const;
+        expect(() =>
+            defineActor({ ...base, migrateState: 'nope' as unknown as MigrateState<{ n: number }> })
+        ).toThrow(/`migrateState` must be a function/);
+        expect(() =>
+            defineActor({
+                ...base,
+                migrateState: { persist: 'sometimes' } as unknown as MigrateState<{ n: number }>
+            })
+        ).toThrow(/`migrateState` must be a function/);
+        expect(() =>
+            defineActor({
+                ...base,
+                migrateState: {
+                    migrate: (s: unknown) => s as { n: number },
+                    persist: 'sometimes'
+                } as unknown as MigrateState<{ n: number }>
+            })
+        ).toThrow(/`persist` must be 'lazy' \(the default\) or 'eager'/);
     });
 });
 

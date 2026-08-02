@@ -504,6 +504,61 @@ carriers for a declared read, so this is a client-side choice.
 - Rich types (`Date`, `Map`, `Set`, `BigInt`, `URL`, `RegExp`, plus your
   `serverPlugin({ types })` handlers) survive storage and the wire — the
   same `@sigx/serialize` vocabulary everywhere.
+- `migrateState` evolves a record whose shape predates this deploy — the
+  answer to "the `state:` shape changed and the stored records didn't". It
+  runs between the storage read and activation, and only on a load that
+  **found** a record: never on the `state(key)` fresh path, never on
+  `ctx.clearState()`. It also runs before `onActivate`, which therefore
+  always sees migrated state.
+
+  ```ts
+  defineActor({
+      type: 'Cart',
+      state: () => ({ v: 2, items: [], coupons: [] }),
+      migrateState: (stored) => {
+          const s = stored as CartV1 | CartV2;
+          if ('v' in s) return s;                              // fast path
+          return { v: 2, items: s.items ?? [], coupons: [] };  // v1 → v2
+      },
+      // …
+  });
+  ```
+
+  `stored` is already codec-revived (per the bullet above — `Date`/`Map` are
+  real objects), so `unknown` means unknown *shape*, not raw JSON. A second
+  argument carries `{ raw, key }` when the revived view can't tell two stored
+  versions apart: `raw` is the encoded record as storage holds it.
+
+  **Returning the input unchanged is the fast path**, and identity is how
+  that's detected — so to migrate, return a *new* object.
+
+  The migrated shape is written back **lazily**: it rides the next save the
+  actor would have made anyway, so a read-only activation still issues zero
+  writes and a rolling deploy costs no extra ones. That rule holds in both
+  persistence modes — `migrateState` never causes a write by itself, so a
+  write-behind actor that is only ever *read* after a migration doesn't
+  persist it. For a record that would otherwise never be saved at all (and so
+  would be re-migrated on every activation forever),
+  `{ persist: 'eager', migrate }` opts into one CAS write-back at activation;
+  if a peer migrated first, the loser adopts the winner's record rather than
+  failing.
+
+  The trade is stated rather than hidden: a fleet mid-deploy can migrate the
+  same record on several hosts. That's safe because the hook is a pure
+  function of the stored value and every write is etag-CAS'd — first save
+  wins, and the loser either adopts the winner (eager) or gets
+  `ActorStateConflictError` and re-activates against it (lazy).
+
+  Synchronous, and a throw fails activation with `ActorActivationError` —
+  the same posture as a throwing `onActivate`. Corrupt state is loud, and the
+  stored record is never silently reset. Version bookkeeping is your
+  convention: the runtime neither reads nor writes a version field, and this
+  is deliberately not a scheme for versioning an actor's *interface* across a
+  mixed-version fleet. **`defineJob` does not take `migrateState`**: a job's
+  stored record is the job envelope (`status`/`progress`/`checkpoint`/… with
+  your own state under `extra`), so a hook over it would hand you a runtime
+  shape you don't own. Migrating the `extra` half wants its own option, and
+  is not part of this.
 - Providers: `memoryStorage()` (tests/dev), `fileStorage({ dir })`
   (dev; one cat-able JSON file per actor). Implement `ActorStorage`
   (load/save/clear with etags) for real databases.
@@ -822,7 +877,9 @@ not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob
 
 - `onActivate(ctx)` / `onDeactivate(ctx, reason)` hooks; an `onActivate`
   throw fails all parked callers and forgets the activation (nothing is
-  remembered — the next call retries from scratch).
+  remembered — the next call retries from scratch). `migrateState` runs
+  before both, between the storage load and activation — see
+  [Persistence](#persistence).
 - Idle actors deactivate after `idleAfterMs` (default 20 min; per-actor
   override). `ctx.deactivate()`: finish the
   queue, then go.

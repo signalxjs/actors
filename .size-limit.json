@@ -2,7 +2,7 @@
   {
     "name": "@sigx/actors",
     "path": "packages/actors/dist/index.prod.js",
-    "limit": "3 KB",
+    "limit": "3.25 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",

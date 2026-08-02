@@ -72,6 +72,7 @@ export function defineActor<
     if (typeof options.methods !== 'function') {
         throw new Error(`[sigx actors] actor "${options.type}" needs a \`methods\` factory.`);
     }
+    validateMigrateState(options);
 
     let streamNames: readonly string[] = [];
     if (options.streams) {
@@ -89,6 +90,27 @@ export function defineActor<
         streamNames,
         __sigxActor: options
     };
+}
+
+/**
+ * Check the `migrateState:` declaration — a definition-time throw in every
+ * build, for the same reason the checks above are. A malformed hook fails
+ * only on a load that FINDS a record, and a fresh dev run never has one: the
+ * failure would first appear in production, on whichever host happens to
+ * activate a pre-existing key. Definition time is import time, everywhere.
+ */
+function validateMigrateState(options: { type: string; migrateState?: unknown }): void {
+    const spec = options.migrateState as { migrate?: unknown; persist?: unknown } | undefined;
+    if (spec === undefined || typeof spec === 'function') return;
+    const where = `[sigx actors] actor "${options.type}" \`migrateState\``;
+    // Optional chaining covers null and every non-object: a string's
+    // `.migrate` is undefined too, so one check refuses them all.
+    if (typeof spec?.migrate !== 'function') {
+        throw new Error(`${where} must be a function, or \`{ migrate, persist? }\`.`);
+    }
+    if (spec.persist !== undefined && spec.persist !== 'lazy' && spec.persist !== 'eager') {
+        throw new Error(`${where}: \`persist\` must be 'lazy' (the default) or 'eager'.`);
+    }
 }
 
 /**

@@ -76,6 +76,52 @@ describe('ActorClient inference', () => {
             })
         });
     });
+
+    it('migrateState does not widen the inferred state type', () => {
+        void defineActor({
+            type: 'Migrating',
+            unguarded: true,
+            state: () => ({ v: 2, items: [] as string[] }),
+            // Returns `any` — what casting a `stored: unknown` naturally
+            // produces, and what the issue's own example does. Were this an
+            // inference site, `S` would become `any` and every assertion
+            // below would silently evaporate.
+            migrateState: (stored) => stored as any,
+            methods: (ctx) => ({
+                size() {
+                    expectTypeOf(ctx.state).toEqualTypeOf<{ v: number; items: string[] }>();
+                    // @ts-expect-error unknown state field — proof S was not widened
+                    void ctx.state.missing;
+                    return ctx.state.items.length;
+                }
+            })
+        });
+    });
+
+    it('migrateState is a check site: a wrong return shape errors on the hook', () => {
+        void defineActor({
+            type: 'BadMigrateShape',
+            unguarded: true,
+            state: () => ({ v: 2, items: [] as string[] }),
+            // @ts-expect-error the wrong shape is refused HERE rather than
+            // being taken as a second candidate for `S`. Drop the `NoInfer`
+            // and this line compiles — which fails this expect-error, so the
+            // pin cuts both ways.
+            migrateState: () => ({ nope: true }),
+            methods: () => ({})
+        });
+    });
+
+    it('migrateState may not be async — the sync rule is the type', () => {
+        void defineActor({
+            type: 'AsyncMigrate',
+            unguarded: true,
+            state: () => ({ n: 0 }),
+            // @ts-expect-error `Promise<S>` is not `S`
+            migrateState: async (stored: unknown) => stored as { n: number },
+            methods: () => ({})
+        });
+    });
 });
 
 // ---------------------------------------------------------------------------

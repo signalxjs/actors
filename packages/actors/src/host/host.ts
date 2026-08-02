@@ -244,6 +244,7 @@ class HostImpl implements Host {
                 if (!record) return null;
                 return {
                     state: reviveWithHandlers(record.state, this.#types) as object,
+                    raw: record.state,
                     etag: record.etag
                 };
             },
