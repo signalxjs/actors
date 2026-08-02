@@ -59,6 +59,7 @@ import type {
     DirectoryEntry,
     MembershipView,
     PlacementPolicy,
+    PolicyRuntime,
     HostDescriptor,
     HostIdentity
 } from './types';
@@ -373,6 +374,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #fenced = false;
     #status: HostDescriptor['status'] = 'joining';
     #unsubscribe: (() => void)[] = [];
+    /** Teardowns returned by attached policies, run at `stop()`. */
+    #policyTeardowns: (() => void)[] = [];
+    /** Policies already attached — one object may serve several types. */
+    #attachedPolicies = new Set<PlacementPolicy>();
     /** Mutable counters — never handed out; `counters()` copies. */
     #counters: ClusterCounterTotals = createCounters();
     /** `performance.now()` at `start()`; 0 before. */
@@ -548,6 +553,51 @@ class ClusterPlacementImpl implements ClusterPlacement {
             }),
             this.#options.membership.onSelfSuspect(() => void this.#fence())
         );
+        // Stateful policies attach AFTER the join, so their first view()
+        // already contains this host. Declared policies attach when they
+        // resolve (`#declaredPolicy`) — lazily, like everything about them.
+        this.#attachPolicy(this.#policy);
+        for (const policy of Object.values(this.#options.typePolicies ?? {})) {
+            this.#attachPolicy(policy);
+        }
+    }
+
+    /**
+     * Hand a stateful policy its runtime seam. Once per policy OBJECT —
+     * the same instance may be the default and serve several types — and
+     * never fatally: a policy can cost throughput, not the placement.
+     */
+    #attachPolicy(policy: PlacementPolicy): void {
+        if (!policy.attach || this.#attachedPolicies.has(policy)) return;
+        this.#attachedPolicies.add(policy);
+        try {
+            const teardown = policy.attach(this.#policyRuntime());
+            if (typeof teardown === 'function') this.#policyTeardowns.push(teardown);
+        } catch (error) {
+            if (__DEV__) {
+                console.warn(
+                    `[sigx actors] placement policy "${policy.name ?? 'unnamed'}" threw in ` +
+                        `attach() — it will run un-attached:`,
+                    error
+                );
+            }
+        }
+    }
+
+    /** See `PolicyRuntime` — the narrow, hint-only seam a policy gets. */
+    #policyRuntime(): PolicyRuntime {
+        return {
+            hostId: this.identity.hostId,
+            view: () => this.view(),
+            selfLoad: () => {
+                const stats = this.#host?.stats();
+                return stats ? stats.activations + stats.transitional.activating : 0;
+            },
+            peerLoad: async (target, timeoutMs, signal) => {
+                const report = await this.peerReport(target, timeoutMs, signal);
+                return report.stats.activations + report.stats.transitional.activating;
+            }
+        };
     }
 
     /**
@@ -604,6 +654,15 @@ class ClusterPlacementImpl implements ClusterPlacement {
     async stop(): Promise<void> {
         // host.stop() has already drained activations (releasing claims,
         // reason 'migrated') between beginStop() and here.
+        for (const teardown of this.#policyTeardowns) {
+            try {
+                teardown();
+            } catch {
+                // One policy's broken teardown must not strand the others.
+            }
+        }
+        this.#policyTeardowns = [];
+        this.#attachedPolicies.clear();
         for (const unsub of this.#unsubscribe) unsub();
         this.#unsubscribe = [];
         this.#status = 'leaving';
@@ -1020,6 +1079,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         }
         const policy = (declared as PlacementPolicy | undefined) ?? null;
         this.#declaredPolicies.set(type, policy);
+        if (policy) this.#attachPolicy(policy);
         return policy ?? undefined;
     }
 

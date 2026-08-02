@@ -4,6 +4,31 @@
 
 ### Added
 
+- **`activationCountPolicy()` — load-aware placement** (#241). Steers NEW
+  activations toward the least-loaded host: a load view refreshed out of
+  band over the authenticated host-to-host ops channel (`refreshMs`
+  default 5 s, per-peer `timeoutMs` 1 s, probe `concurrency` 8), consumed
+  by a sync `choose()` that samples two random active hosts and takes the
+  less loaded (power-of-two-choices), plus a local pending delta so a
+  burst inside one refresh window sees its own effect. A failed probe
+  keeps the stale value; a host with no data reads as cold, so a freshly
+  joined host attracts work immediately; un-attached it keeps no state
+  and is behaviorally `randomPlacementPolicy()`. Never load-bearing for
+  correctness — the directory stays the sole arbiter of
+  single-activation.
+
+- **The `attach` seam for stateful policies** (#241). `PlacementPolicy`
+  grows an optional `attach(runtime: PolicyRuntime): void | (() => void)`
+  — called once per policy object when the placement starts (or on first
+  resolution, for a `defineActor({ placement })` declaration), torn down
+  at placement stop. `PolicyRuntime` is deliberately narrow — `{ hostId,
+  view(), selfLoad(), peerLoad(target, timeoutMs, signal?) }` — the load
+  numbers being the one thing a policy could not legally obtain before. A
+  throwing `attach` is dev-warned and contained: a policy can cost
+  throughput, never the placement.
+
+### Added
+
 - **Topics — actor-to-actor pub/sub** (#239). `topic(name, key?)` declares a
   topic; a `subscriptions:` table on `defineActor` receives its events; and
   `ctx.publish` / `host.publish()` / `publishTopic()` fan one event out to

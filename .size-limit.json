@@ -60,7 +60,7 @@
   {
     "name": "@sigx/actors/cluster",
     "path": "packages/actors/dist/cluster.prod.js",
-    "limit": "11 KB",
+    "limit": "12 KB",
     "ignore": [
       "@sigx/server",
       "@sigx/serialize"

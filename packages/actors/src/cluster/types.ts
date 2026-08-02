@@ -133,6 +133,36 @@ export interface ClusterProviders {
 }
 
 /**
+ * What an attached policy may ask the placement for — the one legal channel
+ * from the runtime into a policy beyond `choose()`'s own arguments.
+ *
+ * Deliberately narrow: the load numbers are the piece a policy cannot get
+ * anywhere else (`view()` it already receives per call), and everything
+ * here is a HINT — a policy acting on a stale or missing answer must still
+ * only cost throughput, never correctness. The directory stays the sole
+ * arbiter of single-activation.
+ */
+export interface PolicyRuntime {
+    /** This placement's host id. */
+    readonly hostId: string;
+    /** The live membership view — same source `choose()` is handed. */
+    view(): MembershipView;
+    /**
+     * This host's own activation count (settled plus mid-activation).
+     * Local, but O(activations) — call it on a refresh cadence, never per
+     * placement decision.
+     */
+    selfLoad(): number;
+    /**
+     * A peer's activation count, over the authenticated host-to-host ops
+     * channel (one round trip plus one directory walk on the peer). Throws
+     * on an unreachable or mixed-version peer — keep the stale value and
+     * carry on; never act on missing data.
+     */
+    peerLoad(target: HostDescriptor, timeoutMs: number, signal?: AbortSignal): Promise<number>;
+}
+
+/**
  * Picks the host where a NEW activation goes.
  * Custom strategies implement this and are applied either centrally
  * (`clusterPlacement({ policy, typePolicies })`) or per actor
@@ -148,4 +178,16 @@ export interface PlacementPolicy extends ActorPlacementStrategy {
         view: MembershipView,
         self: HostDescriptor
     ): HostDescriptor;
+    /**
+     * Optional lifecycle for a STATEFUL policy (`activationCountPolicy()`
+     * keeps a load cache; a zone-aware policy might watch the view). Called
+     * once per placement when it starts — or on first resolution, for a
+     * policy declared on a definition — with the runtime seam above; the
+     * returned function is the teardown, run at placement stop.
+     *
+     * A throwing `attach` is dev-warned and otherwise ignored: a policy can
+     * never fail the placement. `choose()` must keep working un-attached —
+     * single-node hosts and foreign backends never call this.
+     */
+    attach?(runtime: PolicyRuntime): void | (() => void);
 }

@@ -254,8 +254,8 @@ Two independent axes:
 - **The strategy** — *which host a new activation goes to*. That is
   `PlacementPolicy` from `@sigx/actors/cluster`;
   ship your own `choose(ref, view, self)` alongside the built-in
-  `randomPlacementPolicy()`, `consistentHashPolicy()` and
-  `preferLocalPolicy()`.
+  `randomPlacementPolicy()`, `consistentHashPolicy()`,
+  `preferLocalPolicy()` and `activationCountPolicy()`.
 
 A strategy can be declared **on the actor**, a per-type placement
 attribute that beats the central `typePolicies` map:
@@ -2002,6 +2002,28 @@ edge hashing (see *Wire protocol*): the edge's hash and the cluster's
 rendezvous hash are different functions over different sets, so they
 disagree on most keys. It is worth having when a client routes with the
 cluster's own rule rather than the LB's.
+
+**`activationCountPolicy()` steers new activations toward the least-loaded
+host** — the answer when the workload is uneven (hot types, lumpy keys) and
+ownership spread is the number you are watching. It keeps a load view
+refreshed out of band over the authenticated host-to-host ops channel
+(`refreshMs`, default 5 s; a peer probe that misses its `timeoutMs` keeps
+its stale entry), and `choose()` stays sync: it samples **two** random
+active hosts and takes the less loaded — power-of-two-choices — plus a
+local pending delta so a burst inside one refresh window sees its own
+effect. Un-attached it keeps no state and IS `randomPlacementPolicy()`
+behaviorally; attached but not yet refreshed it spreads random-or-better
+until data lands. A host with no known load reads as cold, which is what
+makes a freshly joined host attract work immediately.
+Staleness is the design, not a defect: routing is an optimization, and a
+decision made on old numbers costs a little balance, never correctness.
+
+Stateful policies ride the `attach` seam: a policy may declare
+`attach(runtime)` and the placement calls it at start (or on first
+resolution, for a `defineActor({ placement })` declaration) with
+`PolicyRuntime` — `{ hostId, view(), selfLoad(), peerLoad(target,
+timeoutMs) }` — returning a teardown run at stop. A throwing `attach` is
+contained; `choose()` must keep working un-attached.
 
 Precedence, highest first: `defineActor({ placement })` →
 `cluster({ typePolicies })` → `cluster({ policy })` → random.

@@ -15,6 +15,7 @@ export {
     type ClusterPlacement,
     type ClusterPlacementOptions
 } from './placement';
+export { activationCountPolicy, type ActivationCountPolicyOptions } from './load-policy';
 export {
     handleHostRequest,
     handleHostRequestForRuntime,
@@ -71,6 +72,7 @@ export type {
     DirectoryEntry,
     MembershipView,
     PlacementPolicy,
+    PolicyRuntime,
     HostDescriptor,
     HostIdentity,
     HostStatus
