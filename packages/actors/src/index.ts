@@ -16,6 +16,7 @@ import { currentHost } from './seam';
 import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './types';
 
 export { defineActor, isActorDefinition } from './define';
+export { defineWorker } from './define-worker';
 export { actorKey, ACTOR_KEY_NS, type ActorKeyArg } from './actor-key';
 export { currentHost, peekHost } from './seam';
 export { topic, publishTopic } from './topics';
@@ -79,7 +80,9 @@ export type {
     TopicEvent,
     TopicPublishReport,
     TopicSubscription,
-    TopicSubscriptionHandler
+    TopicSubscriptionHandler,
+    WorkerContext,
+    WorkerOptions
 } from './types';
 
 /** The client-ref brand the build transform's `__actorRef` stubs carry. */

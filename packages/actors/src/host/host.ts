@@ -270,11 +270,14 @@ class HostImpl implements Host {
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
             publish: (topic, payload, call, publisher) =>
                 this.#publish(topic, payload, call ?? this.#externalCall(), publisher),
+            // `deactivateOne`, not `deactivate`: both callbacks target the
+            // ACTIVATION that faulted / asked to go — for a stateless pool
+            // member, taking the whole pool down would punish its siblings.
             onFault: (activation: Activation) => {
-                void this.#local.deactivate(activation.ref, 'conflict');
+                void this.#local.deactivateOne(activation, 'conflict');
             },
             onIdleRequest: (activation: Activation) => {
-                void this.#local.deactivate(activation.ref, 'explicit');
+                void this.#local.deactivateOne(activation, 'explicit');
             },
             ...(options.extendContext ? { extendContext: options.extendContext } : {})
         };

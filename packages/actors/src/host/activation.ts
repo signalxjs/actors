@@ -285,6 +285,9 @@ export class Activation {
      */
     readonly startedMs = performance.now();
 
+    /** Stateless worker-pool member: no storage, no persistence surface. */
+    readonly stateless: boolean;
+
     private constructor(
         ref: ActorRef,
         def: AnyActorDefinition,
@@ -296,6 +299,7 @@ export class Activation {
         this.#host = host;
         this.mailbox = mailbox;
         this.#scope = effectScope();
+        this.stateless = def.__sigxActor.stateless !== undefined;
     }
 
     /**
@@ -312,9 +316,17 @@ export class Activation {
         const a = new Activation(ref, def, host, mailbox);
         try {
             const opts = def.__sigxActor;
-            const seed = await seedFromStorage(ref, opts, host);
-            a.#etag = seed.etag;
-            a.#state = signal(seed.state);
+            // A stateless member never reads storage: there is no record to
+            // find (and no identity to find it under), so `seedFromStorage`
+            // — including any `migrateState` hook — is skipped whole.
+            if (a.stateless) {
+                a.#etag = null;
+                a.#state = signal(opts.state(ref.key) as object);
+            } else {
+                const seed = await seedFromStorage(ref, opts, host);
+                a.#etag = seed.etag;
+                a.#state = signal(seed.state);
+            }
             a.#ctx = a.#buildContext();
             // The factories (and onActivate) run inside the activation's
             // effect scope so computeds/watches they create die with it.
@@ -980,6 +992,9 @@ export class Activation {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         const derived = Object.create(this.#ctx) as ActorContext<object>;
+        // Stateless: the prototype's `changes`/`state` are already throwing
+        // guards — shadowing them here would quietly re-open the surface.
+        if (this.stateless) return derived;
         Object.defineProperty(derived, 'changes', {
             value: (options?: { initial?: boolean }): AsyncIterable<object> =>
                 self.#openChanges(options, feeds),
@@ -1294,11 +1309,43 @@ export class Activation {
         return derived;
     }
 
+    /**
+     * Replace the identity-bound members with loud throws. They are already
+     * typed away on `WorkerContext`, so the only way here is an untyped
+     * cast — and a `save()` that silently succeeded would FAKE persistence,
+     * which makes this a correctness commitment (throws in every build), not
+     * a dev-ergonomics warning.
+     */
+    #guardStateless(base: ActorContext<object>): ActorContext<object> {
+        const type = this.ref.type;
+        const guard = (member: string) => (): never => {
+            throw new Error(
+                `[sigx actors] ctx.${member} is not available on stateless worker "${type}" — ` +
+                    `workers have no state, persistence, reminders or tasks.`
+            );
+        };
+        for (const member of ['save', 'clearState', 'snapshot', 'changes']) {
+            Object.defineProperty(base, member, {
+                value: guard(member),
+                enumerable: true,
+                configurable: true
+            });
+        }
+        for (const member of ['state', 'reminders', 'tasks']) {
+            Object.defineProperty(base, member, {
+                get: guard(member),
+                enumerable: true,
+                configurable: true
+            });
+        }
+        return base;
+    }
+
     #buildBaseContext(): ActorContext<object> {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         const opts = this.def.__sigxActor;
-        return {
+        const base: ActorContext<object> = {
             ref: this.ref,
             key: this.ref.key,
             get state() {
@@ -1375,7 +1422,10 @@ export class Activation {
                 self.#timers.set(name, handle);
                 return { cancel: () => handle.clear() };
             },
-            reminders: this.#host.reminders(this.ref),
+            // A worker member never builds the reminder API — the member is
+            // replaced by a throwing guard below, and constructing it would
+            // touch reminder machinery a stateless type must never reach.
+            reminders: this.stateless ? (undefined as never) : this.#host.reminders(this.ref),
             actor<D extends AnyActorDefinition>(def: D, key: string): ActorClient<D> {
                 // The outbound context appends SELF to the chain — that is
                 // what lets the target detect A→B→A cycles.
@@ -1440,6 +1490,7 @@ export class Activation {
                 return self.#openChanges(options);
             }
         };
+        return this.stateless ? this.#guardStateless(base) : base;
     }
 
     /**

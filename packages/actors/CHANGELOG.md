@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Stateless workers — `defineWorker()`** (#243, closing it).
+  Multi-activation pure-compute actors: the host pools up to `maxLocal`
+  (default `navigator.hardwareConcurrency`, clamped to 16) interchangeable
+  activations per (type, key), spun up on mailbox pressure, dispatched to
+  the shallowest mailbox — so two calls to the same key run concurrently,
+  which is the declared contract. Always placed locally: no directory
+  claim, lookup or release (gated exactly in CI at `directory_ops == 0`,
+  alongside a pool ≤ `maxLocal` invariant), invisible to fencing,
+  migration and rebalancing, and on Cloudflare a worker runs in the
+  calling isolate rather than a Durable Object. The identity-bound
+  surface (`state`, `persistence`, `reminders`, `tasks:`,
+  `subscriptions:`, `placement`, `reentrant`, `migrateState`) is
+  structurally absent from
+  `WorkerOptions` and typed away on the new `WorkerContext`
+  (with every-build throwing guards behind casts); guards, `reads:`,
+  `streams:`, `onActivate`/`onDeactivate`, `ctx.timer`/`actor`/`publish`
+  all work as on `defineActor`. The Vite extractor recognizes
+  `defineWorker` in `*.actor.ts` modules (same `__actorRef` client swap,
+  same `requireGuards` gate), and `app.defineWorker` is the plugin-typed
+  twin. Watches are refused for worker types; a same-key self-call is a
+  deterministic `ActorDeadlockError`.
+
 - **`migrateState` — evolve long-lived state across deploys** (#244,
   closing it). `defineActor({ migrateState: (stored, { raw, key }) => State })`
   runs between the storage read and activation, and only on a load that

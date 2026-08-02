@@ -9,7 +9,8 @@ import type {
     ActorMethodTable,
     ActorOptions,
     ActorReadCache,
-    ActorStreamTable
+    ActorStreamTable,
+    AnyActorDefinition
 } from './types';
 import { warnIfInheritedTable } from './own-member';
 import { topicNameObjection } from './topics';
@@ -73,6 +74,41 @@ export function defineActor<
         throw new Error(`[sigx actors] actor "${options.type}" needs a \`methods\` factory.`);
     }
     validateMigrateState(options);
+    if (options.stateless !== undefined) {
+        // The stateless marker is set by `defineWorker`, whose options bag
+        // cannot express any of these — but the marker is reachable by a
+        // hand-written `defineActor` call, and every one of these options
+        // binds behaviour to a single persistent identity that a pooled
+        // stateless type does not have. Same rule as `unguarded` + `use`:
+        // a contradiction throws in every build.
+        const contradiction = (
+            [
+                'persistence',
+                'tasks',
+                'subscriptions',
+                'onReminder',
+                'placement',
+                'reentrant',
+                'migrateState'
+            ] as const
+        ).find((key) => options[key] !== undefined);
+        if (contradiction) {
+            throw new Error(
+                `[sigx actors] actor "${options.type}" declares \`stateless\` together with ` +
+                    `\`${contradiction}\` — a stateless worker has no persistent identity to ` +
+                    `bind it to. Use \`defineWorker\`, which cannot express it.`
+            );
+        }
+        // Same check `defineWorker` makes — repeated HERE because the marker
+        // is reachable without it, and a zero/fractional cap corrupts the
+        // pool arithmetic rather than failing loudly.
+        const cap = options.stateless.maxLocal;
+        if (cap !== undefined && (!Number.isInteger(cap) || cap < 1)) {
+            throw new Error(
+                `[sigx actors] worker "${options.type}" needs a positive integer \`maxLocal\`.`
+            );
+        }
+    }
 
     let streamNames: readonly string[] = [];
     if (options.streams) {
@@ -241,6 +277,14 @@ function validateReads(
             }
         }
     }
+}
+
+/**
+ * @internal Is this definition a stateless worker pool (built by
+ * `defineWorker`)? The runtime's one branch point for pooled dispatch.
+ */
+export function isStatelessDefinition(def: AnyActorDefinition): boolean {
+    return def.__sigxActor.stateless !== undefined;
 }
 
 /** Brand check: is this value a server-side actor definition? */

@@ -27,7 +27,13 @@
  * satisfying `isActorError` and the runtime stops discarding stale
  * activations.
  */
-import type { ActorDispatcher, ActorPlacement, ActorRef, Host } from '@sigx/actors';
+import type {
+    ActorDispatcher,
+    ActorPlacement,
+    ActorRef,
+    AnyActorDefinition,
+    Host
+} from '@sigx/actors';
 import {
     fromHostWireError,
     httpTransport,
@@ -137,6 +143,46 @@ export function durableObjectPlacement(
     };
 
     let local: ActorDispatcher | null = null;
+    let boundHost: Host | null = null;
+    /** Per-type stateless memo — same lazy shape as the cluster placement's. */
+    const statelessTypes = new Map<string, boolean>();
+
+    const requireLocal = (): ActorDispatcher => {
+        if (!local) {
+            throw new Error(
+                '[sigx actors-cloudflare] the placement has no local dispatcher yet — ' +
+                    'createHost() binds it, so this ran before the host was built.'
+            );
+        }
+        return local;
+    };
+
+    /**
+     * Stateless workers run in the isolate that received the call — the
+     * Worker at the edge, or whichever Durable Object made the `ctx.actor()`
+     * hop. There is no object to route to: a worker has no identity, no
+     * storage record, and no single-activation invariant, so mapping it onto
+     * a DO would serialize pure compute behind one object for nothing.
+     */
+    const isStateless = (type: string): boolean | Promise<boolean> => {
+        const memo = statelessTypes.get(type);
+        if (memo !== undefined) return memo;
+        if (!boundHost) return false; // pre-bind: nothing dispatches yet
+        const resolved = boundHost.definition(type);
+        if (resolved && typeof (resolved as PromiseLike<unknown>).then === 'function') {
+            return (resolved as Promise<AnyActorDefinition | null>).then(
+                (def) => {
+                    const is = def?.__sigxActor.stateless !== undefined;
+                    statelessTypes.set(type, is);
+                    return is;
+                },
+                () => false
+            );
+        }
+        const is = (resolved as AnyActorDefinition | null)?.__sigxActor.stateless !== undefined;
+        statelessTypes.set(type, is);
+        return is;
+    };
 
     const namespaceFor = (ref: ActorRef): DurableObjectNamespaceLike => {
         const resolved =
@@ -215,19 +261,24 @@ export function durableObjectPlacement(
          * IS the directory), no reminder shard to own (a DO holds one
          * actor), and a present call chain inside a DO is genuinely local.
          */
-        bind(dispatcher: ActorDispatcher, _host: Host): void {
+        bind(dispatcher: ActorDispatcher, host: Host): void {
             local = dispatcher;
+            boundHost = host;
         },
 
-        dispatcherFor(ref: ActorRef): ActorDispatcher {
-            if (options.isSelf?.(ref)) {
-                if (!local) {
-                    throw new Error(
-                        '[sigx actors-cloudflare] the placement has no local dispatcher yet — ' +
-                            'createHost() binds it, so this ran before the host was built.'
-                    );
-                }
-                return local;
+        dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher> {
+            if (options.isSelf?.(ref)) return requireLocal();
+            // Stateless workers never map to an object — they run right
+            // here, in whichever isolate is dispatching. Note there is no
+            // idle sweep on Workers (`sweepIntervalMs: 0`), so a pool
+            // shrinks only when the isolate is evicted — which the platform
+            // does anyway, and a worker loses nothing when it happens.
+            const stateless = isStateless(ref.type);
+            if (stateless === true) return requireLocal();
+            if (stateless !== false) {
+                return Promise.resolve(stateless).then((is) =>
+                    is ? requireLocal() : remoteFor(ref, objectName(ref))
+                );
             }
             // Built fresh every time, and NOT cached. A stub is an I/O
             // object bound to the request context that created it, and

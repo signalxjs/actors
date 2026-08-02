@@ -54,7 +54,10 @@ export function isGeneratedClientModule(code: string): boolean {
  * client-swapped, so its implementation would ship to the browser.
  */
 export function mayDefineActors(code: string, hints: readonly string[] = []): boolean {
-    if (!code.includes('defineActor')) return false;
+    // Both spellings, checked separately: 'defineWorker' does NOT contain
+    // the substring 'defineActor', and a missed worker module would ship its
+    // implementation to the browser.
+    if (!code.includes('defineActor') && !code.includes('defineWorker')) return false;
     return code.includes('@sigx/actors') || hints.some((hint) => code.includes(hint));
 }
 
@@ -90,7 +93,10 @@ export function extractActors(
     const errors: { message: string; offset: number }[] = [];
     const warnings: string[] = [];
 
-    /** Local names `defineActor` is imported under. */
+    /** Local names `defineActor` / `defineWorker` are imported under. A
+     *  stateless worker swaps to the same `__actorRef` stub — the client
+     *  needs only type, endpoint, streams and reads, none of which know
+     *  about state. */
     const defineNames = new Set<string>();
     for (const node of program.body as Node[]) {
         if (node.type !== 'ImportDeclaration') continue;
@@ -102,10 +108,11 @@ export function extractActors(
         if (source !== '@sigx/actors' && !options.isDefineSource?.(source)) continue;
         if (node.importKind === 'type') continue;
         for (const spec of (node.specifiers ?? []) as Node[]) {
+            const imported = spec.imported?.name ?? spec.imported?.value;
             if (
                 spec.type === 'ImportSpecifier' &&
                 spec.importKind !== 'type' &&
-                (spec.imported?.name ?? spec.imported?.value) === 'defineActor'
+                (imported === 'defineActor' || imported === 'defineWorker')
             ) {
                 defineNames.add(spec.local.name as string);
             }

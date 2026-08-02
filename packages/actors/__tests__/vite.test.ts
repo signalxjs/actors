@@ -78,6 +78,62 @@ export const ProductActor = defineActor({
         );
     });
 
+    it('extracts defineWorker exactly like defineActor — same __actorRef swap', () => {
+        // NOTE: no 'defineActor' substring anywhere in this module — the
+        // pre-filter must recognize 'defineWorker' on its own, or the worker
+        // implementation ships to the browser.
+        const code = `
+import { defineWorker } from '@sigx/actors';
+import { requireUser } from './guards';
+
+export const Resize = defineWorker({
+    type: 'Resize',
+    use: [requireUser],
+    maxLocal: 4,
+    reads: { probe: { maxAge: 5 } },
+    methods: () => ({ async run(input) { return transform(input); } }),
+    streams: () => ({ async *chunks(n) { yield n; } })
+});
+`;
+        expect(mayDefineActors(code)).toBe(true);
+        const result = extractActors(code, 'src/resize.actor.ts', opts());
+        expect(result.errors).toEqual([]);
+        expect(result.actors[0]).toMatchObject({
+            exportName: 'Resize',
+            type: 'Resize',
+            streams: ['chunks'],
+            reads: ['probe'],
+            guarded: true
+        });
+        expect(result.clientModule).toContain(
+            `export const Resize = __actorRef("Resize", "/_sigx/actor", ["chunks"], ["probe"]);`
+        );
+        expect(result.clientModule).not.toContain('transform');
+    });
+
+    it('the requireGuards gate applies to workers too', () => {
+        const code = `
+import { defineWorker } from '@sigx/actors';
+export const Bare = defineWorker({ type: 'Bare', methods: () => ({}) });
+`;
+        const result = extractActors(code, 'src/bare.actor.ts', opts());
+        expect(result.errors[0]?.message).toMatch(/declares no `use:` guard chain/);
+    });
+
+    it('recognizes a defineWorker imported from the app module (isDefineSource)', () => {
+        const code = `
+import { defineWorker } from '../actors.app';
+export const AppWorker = defineWorker({ type: 'AppWorker', unguarded: true, methods: () => ({}) });
+`;
+        expect(mayDefineActors(code, ['../actors.app'])).toBe(true);
+        const result = extractActors(code, 'src/w.actor.ts', {
+            ...opts(),
+            isDefineSource: (source) => source === '../actors.app'
+        });
+        expect(result.errors).toEqual([]);
+        expect(result.actors[0]).toMatchObject({ type: 'AppWorker', unguarded: true });
+    });
+
     it('refuses a `reads:` value the build cannot read statically', () => {
         // Same rule as `streams` and `type`: what the browser bundle needs, the
         // build must be able to see without evaluating the module.

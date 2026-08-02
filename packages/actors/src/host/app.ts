@@ -15,11 +15,13 @@
  */
 import type { TypeHandler } from '@sigx/serialize';
 import { defineActor as defineActorFn } from '../define';
+import { defineWorker as defineWorkerFn } from '../define-worker';
 import type {
     ActorDefinition,
     ActorDispatcher,
     ActorMethodTable,
     ActorOptions,
+    WorkerOptions,
     ActorPlacement,
     ActorRef,
     ActorStorage,
@@ -345,6 +347,14 @@ export interface ActorApp<Ext extends object = Record<never, never>> {
     >(
         options: ActorOptions<S, M, St, Ext>
     ): ActorDefinition<S, M, St>;
+    /**
+     * `defineWorker` bound to this app's plugin set — same deal as the
+     * bound `defineActor`: identical function at runtime, with the worker
+     * ctx widened by every plugin's additions.
+     */
+    defineWorker<M extends ActorMethodTable, St extends ActorStreamTable = Record<never, never>>(
+        options: WorkerOptions<M, St, Ext>
+    ): ActorDefinition<Record<never, never>, M, St>;
     /** Plugin-contributed routes. Reading this seals the app. */
     readonly routes: readonly ActorRoute[];
     /** The running host — null before `start()` and again after `stop()`. */
@@ -540,6 +550,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
     // The app-bound `defineActor` IS the root one — only its type differs,
     // so the build transform sees the very same call it always did.
     readonly defineActor: ActorApp['defineActor'] = defineActorFn;
+    readonly defineWorker: ActorApp['defineWorker'] = defineWorkerFn;
 
     get routes(): readonly ActorRoute[] {
         return this.#seal().routes;

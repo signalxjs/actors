@@ -7,7 +7,7 @@
  * envelope, codec, NDJSON, branded errors — and only the platform is faked.
  */
 import { describe, expect, it } from 'vitest';
-import { defineActor, isActorError } from '@sigx/actors';
+import { defineActor, defineWorker, isActorError } from '@sigx/actors';
 import { createHost, manualScheduler, type Host } from '@sigx/actors/host';
 import { handleHostRequestForRuntime, hostEndpointRuntime } from '@sigx/actors/cluster';
 import { durableObjectPlacement, durableObjectStorage } from '@sigx/actors-cloudflare';
@@ -33,6 +33,10 @@ const Counter = defineActor({
         async bumpPeer(key: string) {
             return ctx.actor(Counter, key).increment(1);
         },
+        /** Calls a stateless worker — which must run HERE, in this object. */
+        async viaWorker(n: number) {
+            return ctx.actor(Work, 'any').double(n);
+        },
         async boom() {
             throw new Error('nope');
         }
@@ -40,6 +44,17 @@ const Counter = defineActor({
     streams: (ctx) => ({
         async *watch() {
             yield* ctx.changes({ initial: true });
+        }
+    })
+});
+
+const Work = defineWorker({
+    type: 'Work',
+    unguarded: true,
+    maxLocal: 2,
+    methods: () => ({
+        async double(n: number) {
+            return n * 2;
         }
     })
 });
@@ -71,7 +86,7 @@ function fakeNamespace(): DurableObjectNamespaceLike & {
             delete: async (k: string) => store.delete(k)
         });
         const host = createHost({
-            actors: [Counter],
+            actors: [Counter, Work],
             storage,
             scheduler: manualScheduler(),
             // The object hosts exactly the actor its name encodes; anything
@@ -122,7 +137,7 @@ function workerPlacement(namespace: DurableObjectNamespaceLike) {
 
 async function workerHost(namespace: DurableObjectNamespaceLike): Promise<Host> {
     const host = createHost({
-        actors: [Counter],
+        actors: [Counter, Work],
         scheduler: manualScheduler(),
         placement: workerPlacement(namespace),
         defaults: { sweepIntervalMs: 0, callTimeoutMs: 0 }
@@ -162,6 +177,23 @@ describe('durableObjectPlacement', () => {
             );
             await expect(worker.actor(Counter, 'a').read()).resolves.toBe(2);
             await expect(worker.actor(Counter, 'b').read()).resolves.toBe(1);
+        } finally {
+            await worker.stop({ timeoutMs: 1_000 });
+            await ns.stop();
+        }
+    });
+
+    it('a stateless worker runs in the calling isolate — no object is created', async () => {
+        const ns = fakeNamespace();
+        const worker = await workerHost(ns);
+        try {
+            // From the Worker (edge): dispatches locally, touches no namespace.
+            await expect(worker.actor(Work, 'any').double(2)).resolves.toBe(4);
+            expect(ns.objects.size).toBe(0);
+            // From inside a Durable Object: the worker runs in THAT object's
+            // isolate — still no `Work` object anywhere.
+            await expect(worker.actor(Counter, 'a').viaWorker(5)).resolves.toBe(10);
+            expect([...ns.objects.keys()]).toEqual([`Counter${SEP}a`]);
         } finally {
             await worker.stop({ timeoutMs: 1_000 });
             await ns.stop();

@@ -827,6 +827,80 @@ export interface ActorOptions<
      * methods, so the guard chain governs them.
      */
     tasks?: (ctx: ActorTaskContext<S, Ext>) => ActorTaskTable;
+    /**
+     * @internal Stateless-worker marker — set by `defineWorker` only, never
+     * by hand. Presence flips the runtime to pooled multi-activation
+     * dispatch for this type: no directory claim, no state load, up to
+     * `maxLocal` interchangeable activations per (type, key) on a host.
+     * `defineActor` throws when it appears alongside any identity-bound
+     * option (`persistence`, `tasks`, `subscriptions`, `onReminder`,
+     * `placement`, `reentrant`).
+     */
+    stateless?: { maxLocal?: number };
+}
+
+/**
+ * What a stateless worker's `methods`/`streams` factories receive. Workers
+ * have no identity-bound surface, so the persistence members are typed away:
+ * no `state`, no `save()`/`clearState()`, no `reminders`, no `tasks`, no
+ * `snapshot()`/`changes()`. `ctx.key` remains — it is the key the caller
+ * addressed — but two calls to the same key may run concurrently on
+ * different pool members: that is the stateless contract.
+ */
+export type WorkerContext<Ext extends object = Record<never, never>> = Omit<
+    ActorContextBase<Record<never, never>>,
+    'state' | 'save' | 'clearState' | 'reminders' | 'tasks' | 'snapshot' | 'changes'
+> &
+    Ext;
+
+/**
+ * The options bag of `defineWorker` — deliberately a hand-written subset of
+ * {@link ActorOptions}, not a derived type: everything identity-bound
+ * (`state`, `persistence`, `tasks`, `onReminder`, `subscriptions`,
+ * `placement`, `reentrant`) is structurally absent, so a worker cannot
+ * declare it even untyped. Method/stream typing is inferred exactly as for
+ * `defineActor` — from the factories, never from state.
+ */
+export interface WorkerOptions<
+    M extends ActorMethodTable,
+    St extends ActorStreamTable = Record<never, never>,
+    Ext extends object = Record<never, never>
+> {
+    /** Stable type id — the worker's wire and registry name. */
+    type: string;
+    /** Guard chain, exactly as on `ActorOptions.use`. */
+    use?: readonly ServerFnGuard[];
+    /** The explicit opt-out word for a public worker. */
+    unguarded?: boolean;
+    /** Per-method guard chains, run after `use`. */
+    methodUse?: Record<string, readonly ServerFnGuard[]>;
+    /**
+     * Pool cap: max concurrent activations per (type, key) on one host.
+     * Positive integer. Default: `navigator.hardwareConcurrency` clamped to
+     * [1, 16], falling back to 4 where that global does not exist.
+     */
+    maxLocal?: number;
+    /** Idle collection age per pool member; overrides the host default. */
+    idleAfterMs?: number;
+    /** Per-member warm-up (load a model, open a client); throwing fails the
+     *  callers queued on this member only. */
+    onActivate?(ctx: WorkerContext<Ext>): void | Promise<void>;
+    /** Per-member teardown, after that member's queue drains. */
+    onDeactivate?(ctx: WorkerContext<Ext>, reason: DeactivationReason): void | Promise<void>;
+    /** The method-table factory — called once per pool MEMBER. */
+    methods: (ctx: WorkerContext<Ext>) => M;
+    /**
+     * HTTP-cacheable reads, exactly as on `ActorOptions.reads`. A pure
+     * worker read is the ideal candidate: idempotent by construction.
+     */
+    reads?: { [K in keyof M & string]?: ActorReadCache };
+    /**
+     * Stream-method factory, exactly as on `ActorOptions.streams` — but with
+     * no `ctx.changes()`/`snapshot()` to lean on: worker streams are pure
+     * generators. An open stream pins its pool member (counts against
+     * `maxLocal`, exempt from the idle sweep) until it closes.
+     */
+    streams?: (ctx: WorkerContext<Ext>) => St;
 }
 
 export interface ActorDefinition<

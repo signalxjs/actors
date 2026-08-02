@@ -873,6 +873,70 @@ A singleton queue-worker (strict ordering, bounded concurrency), a
 cron-on-reminders scheduler, and the Cloudflare DO posture are recipes,
 not API — see [`docs/job-recipes.md`](https://github.com/signalxjs/actors/blob/main/docs/job-recipes.md).
 
+## Stateless workers (`defineWorker`)
+
+Everything above assumes an actor **is** somebody — one identity, one
+activation, one mailbox, turns in order. Pure compute (validation,
+transformation, fan-out work) has none of that: two calls to the same
+worker have no shared state to protect, so serializing them behind one
+mailbox is a bottleneck the semantics never asked for. `defineWorker`
+declares a type whose activations are **interchangeable**:
+
+```ts
+import { defineWorker } from '@sigx/actors';
+
+export const Resize = defineWorker({
+    type: 'Resize',
+    use: [requireUser],
+    maxLocal: 8,             // pool cap; default: hardwareConcurrency (≤16)
+    methods: () => ({
+        async run(image: Uint8Array, width: number) {
+            return transform(image, width);
+        }
+    })
+});
+
+await actor(Resize, 'any').run(img, 800);   // callers look exactly the same
+```
+
+The contract, stated loudly because it is the whole point:
+
+- **Two calls to the same key may run concurrently, on different pool
+  members.** The host keeps up to `maxLocal` activations per (type, key),
+  spun up under mailbox pressure, and each dispatch rides the shallowest
+  mailbox. `ctx.key` is still the key the caller addressed — it just no
+  longer names a single runner.
+- **Always local, zero directory traffic.** A worker activates on
+  whichever host (or Cloudflare isolate) received the call: no directory
+  claim, no lookup, no routing, no 421 redirect — and nothing for a
+  cluster to fence, migrate or rebalance. (Both invariants are gated
+  exactly in CI: `directory_ops == 0`, pool ≤ cap.)
+- **No identity, so no identity-bound surface.** `state`, `persistence`,
+  `reminders`, `tasks:`, `subscriptions:`, `placement` and `reentrant`
+  do not exist on `WorkerOptions` — the option is a compile error, and
+  `ctx.state` / `ctx.save()` etc. are typed away (`WorkerContext`) and
+  throw if reached through a cast.
+- What remains: guards (`use`/`methodUse`/`unguarded`, same build gate),
+  `reads:` (a pure read is the ideal cacheable GET), `streams:` (pure
+  generators — an open stream pins its member against the sweep),
+  `onActivate`/`onDeactivate` for per-member warm-up/teardown (load a
+  model once per member, close it on the way out), and `ctx.timer` /
+  `ctx.actor` / `ctx.publish`.
+- **Pool members idle-collect individually** after `idleAfterMs` — a
+  quiet worker shrinks back to zero footprint.
+- **A same-key self-call is a deadlock, deterministically.** `reentrant`
+  does not exist for workers, so `ctx.actor(Self, ctx.key)` throws
+  `ActorDeadlockError` rather than working only when the pool happens to
+  have a free member. A different key is a different pool and fine.
+- **Watches are refused** — a watch is a state-change feed and a worker
+  has no state.
+
+Workers live in `*.actor.ts` files like every other definition (not
+`*.worker.ts` — that suffix belongs to Vite's Web-Worker convention), and
+the build swaps them for the same wire client, so a browser can call one
+directly. In an app, `app.defineWorker` is the plugin-typed twin, exactly
+like `app.defineActor`.
+
 ## Lifecycle
 
 - `onActivate(ctx)` / `onDeactivate(ctx, reason)` hooks; an `onActivate`

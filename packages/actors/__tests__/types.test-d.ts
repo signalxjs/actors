@@ -3,7 +3,7 @@
  * methods promise-wrapped, streams as AsyncIterable, `.with` preserved.
  */
 import { describe, expectTypeOf, it } from 'vitest';
-import { actor, defineActor, publishTopic, topic } from '@sigx/actors';
+import { actor, defineActor, defineWorker, publishTopic, topic } from '@sigx/actors';
 import type {
     ActorContext,
     ActorContextBase,
@@ -11,7 +11,8 @@ import type {
     AnyActorDefinition,
     Topic,
     TopicEvent,
-    TopicPublishReport
+    TopicPublishReport,
+    WorkerContext
 } from '@sigx/actors';
 import { defineActorApp, type ActorPlugin } from '@sigx/actors/host';
 
@@ -242,6 +243,26 @@ describe('plugin ctx extension inference', () => {
         });
     });
 
+    it('the app-bound defineWorker threads plugin Ext into the worker ctx', () => {
+        const app = defineActorApp({ actors: [] }).use(loggerPlugin);
+        const Worked = app.defineWorker({
+            type: 'Worked',
+            unguarded: true,
+            methods: (ctx) => ({
+                async run() {
+                    expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
+                    expectTypeOf(ctx.key).toEqualTypeOf<string>();
+                    // still a WORKER ctx: the persistence surface stays away
+                    // @ts-expect-error workers have no state, plugins or not
+                    void ctx.state;
+                    return 1;
+                }
+            })
+        });
+        expectTypeOf(Worked).toMatchTypeOf<AnyActorDefinition>();
+        expectTypeOf(actor(Worked, 'k').run).returns.toEqualTypeOf<Promise<number>>();
+    });
+
     it('still produces a plain ActorDefinition the host accepts', () => {
         const app = defineActorApp({ actors: [] }).use(loggerPlugin);
         const Logged = app.defineActor({
@@ -257,6 +278,117 @@ describe('plugin ctx extension inference', () => {
         expectTypeOf(Logged).toMatchTypeOf<AnyActorDefinition>();
         // and the client inference is unchanged by the extension
         expectTypeOf(actor(Logged, 'k').bump).returns.toEqualTypeOf<Promise<number>>();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Stateless workers: the identity-bound surface is typed AWAY — absent from
+// WorkerOptions and from the ctx the factories receive — while method/stream
+// inference and the client mapping work exactly as for defineActor.
+
+describe('defineWorker typing', () => {
+    const Resize = defineWorker({
+        type: 'Resize',
+        unguarded: true,
+        maxLocal: 4,
+        methods: (ctx) => ({
+            async run(input: string) {
+                expectTypeOf(ctx.key).toEqualTypeOf<string>();
+                return input.length;
+            }
+        }),
+        streams: () => ({
+            async *chunks(n: number) {
+                for (let i = 0; i < n; i++) yield i;
+            }
+        })
+    });
+
+    it('flows through actor() with the ordinary client mapping', () => {
+        const client = actor(Resize, 'any');
+        expectTypeOf(client.run).parameters.toEqualTypeOf<[string]>();
+        expectTypeOf(client.run).returns.toEqualTypeOf<Promise<number>>();
+        expectTypeOf(client.chunks).returns.toEqualTypeOf<AsyncIterable<number>>();
+        expectTypeOf(Resize).toMatchTypeOf<AnyActorDefinition>();
+    });
+
+    it('types away the identity-bound ctx members', () => {
+        void defineWorker({
+            type: 'CtxShape',
+            unguarded: true,
+            methods: (ctx) => ({
+                async probe() {
+                    // still there: addressing, composition, lifecycle
+                    expectTypeOf(ctx.key).toEqualTypeOf<string>();
+                    void ctx.actor;
+                    void ctx.publish;
+                    void ctx.timer;
+                    void ctx.deactivate;
+                    expectTypeOf(ctx.abortSignal).toEqualTypeOf<AbortSignal>();
+                    // typed away: the persistence surface
+                    // @ts-expect-error workers have no state
+                    void ctx.state;
+                    // @ts-expect-error workers have no save
+                    void ctx.save;
+                    // @ts-expect-error workers have no clearState
+                    void ctx.clearState;
+                    // @ts-expect-error workers have no reminders
+                    void ctx.reminders;
+                    // @ts-expect-error workers have no tasks
+                    void ctx.tasks;
+                    // @ts-expect-error workers have no snapshot
+                    void ctx.snapshot;
+                    // @ts-expect-error workers have no change feed
+                    void ctx.changes;
+                }
+            })
+        });
+        expectTypeOf<WorkerContext>().not.toHaveProperty('state');
+    });
+
+    it('cannot express the identity-bound options', () => {
+        void defineWorker({
+            type: 'NoState',
+            unguarded: true,
+            // @ts-expect-error workers have no state factory
+            state: () => ({ n: 0 }),
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoSubs',
+            unguarded: true,
+            // @ts-expect-error workers cannot subscribe to topics
+            subscriptions: { chat: () => {} },
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoTasks',
+            unguarded: true,
+            // @ts-expect-error workers have no durable tasks
+            tasks: () => ({}),
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoPlacement',
+            unguarded: true,
+            // @ts-expect-error workers always place locally
+            placement: { name: 'prefer-local' },
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoReentrancy',
+            unguarded: true,
+            // @ts-expect-error workers are never reentrant
+            reentrant: true,
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoPersistence',
+            unguarded: true,
+            // @ts-expect-error workers persist nothing
+            persistence: 'explicit',
+            methods: () => ({})
+        });
     });
 });
 

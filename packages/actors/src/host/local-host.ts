@@ -31,13 +31,62 @@ import { Mailbox } from './mailbox';
 /** Bounded low: this is a "top N" view, and the walk is O(activations). */
 const DEFAULT_ACTIVATIONS_LIMIT = 100;
 
+/**
+ * Directory id of one stateless pool member: `NUL + actorId + NUL + seq`.
+ * The LEADING NUL cannot collide with any `actorId` — types are non-empty
+ * and NUL-free, so every actorId starts with a non-NUL character — and the
+ * trailing token is digits-only, so `baseIdOf` decomposes uniquely even for
+ * keys that themselves contain NUL.
+ */
+const NUL = String.fromCharCode(0); // a literal would put raw bytes in the source
+const memberId = (id: string, seq: number): string => NUL + id + NUL + seq;
+const isMemberId = (id: string): boolean => id.charCodeAt(0) === 0;
+const baseIdOf = (mid: string): string => mid.slice(1, mid.lastIndexOf(NUL));
+
+/**
+ * Default pool cap, WinterCG-safe: `navigator.hardwareConcurrency` exists in
+ * browsers, Deno, Bun and Node ≥ 21; workerd may omit it. Clamped to 16 — a
+ * 128-core host should not default to 128 members of one worker key. No
+ * `node:os` anywhere on this path: this class runs on workerd too.
+ */
+function defaultMaxLocal(): number {
+    const n = (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator
+        ?.hardwareConcurrency;
+    return typeof n === 'number' && n >= 1 ? Math.min(Math.trunc(n), 16) : 4;
+}
+
 type Slot =
     | { phase: 'activating'; promise: Promise<Activation> }
     | { phase: 'active'; activation: Activation }
     | { phase: 'deactivating'; drained: Promise<void> };
 
+/**
+ * One stateless type+key's pool of interchangeable members. Members are
+ * ordinary directory slots under `memberId(...)` ids, so every walk of
+ * `#directory` (stats, sweep, stopAll) sees them for free; this record only
+ * carries the pick/spin bookkeeping. Invariant: a member id is listed here
+ * exactly while its slot exists (or is being reserved) in the directory.
+ */
+interface WorkerPool {
+    /** `stateless.maxLocal ?? defaultMaxLocal()`, resolved once per pool. */
+    readonly cap: number;
+    readonly def: AnyActorDefinition;
+    /**
+     * Member counter, monotonic within THIS pool record. A re-created pool
+     * (deleted once empty, rebuilt on the next dispatch) restarts at 0 —
+     * safe, because `#forgetMember` runs only after the member's directory
+     * slot is deleted, so an empty pool proves no slot under its ids
+     * remains and a fresh `memberId(id, 0)` cannot collide.
+     */
+    seq: number;
+    /** Live member directory ids, in creation order (the pick tiebreak). */
+    readonly members: string[];
+}
+
 export class LocalHost implements ActorDispatcher {
     #directory = new Map<string, Slot>();
+    /** Stateless pools, keyed by `actorId(ref)`. */
+    #pools = new Map<string, WorkerPool>();
     #deadlines = new CallDeadlines();
     #host: ActivationHost;
     #resolveDefinition: (type: string) => AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
@@ -96,6 +145,17 @@ export class LocalHost implements ActorDispatcher {
     ): AsyncIterable<unknown> {
         return this.#lazyIterable(async () => {
             this.#checkShutdown(call);
+            if ((await this.#definition(ref.type)).__sigxActor.stateless !== undefined) {
+                // A watch is a state-change feed, and a worker has no state:
+                // the subscription would attach to one arbitrary pool member
+                // and never fire. Refuse loudly — and BEFORE activating, so
+                // the refusal does not spin a member.
+                throw new ActorError(
+                    'method-not-found',
+                    `[sigx actors] ${actorLabel(ref)} is a stateless worker — workers have no ` +
+                        `state to watch.`
+                );
+            }
             await this.#checkReentrancy(ref, call);
             const activation = await this.#activationFor(ref);
             return activation.openWatch(method, args, call, options)[Symbol.asyncIterator]();
@@ -146,6 +206,18 @@ export class LocalHost implements ActorDispatcher {
         if (!call.callChain.includes(id)) {
             const warm = this.#directory.get(id);
             if (warm?.phase === 'active') return warm.activation.enqueue(method, args, call);
+            // Stateless pool: a synchronous shallowest-mailbox pick. Ordered
+            // AFTER the warm hit above so the stateful fast path is
+            // byte-for-byte untouched (a base-id slot and a pool are mutually
+            // exclusive); the uncontended stateless path is itself two sync
+            // Map reads + enqueue — zero added microtasks.
+            const pool = this.#pools.get(id);
+            if (pool) {
+                const target = this.#poolTarget(pool, ref, id);
+                return target instanceof Activation
+                    ? target.enqueue(method, args, call)
+                    : target.then((a) => a.enqueue(method, args, call));
+            }
         }
         const inline = await this.#checkReentrancy(ref, call, id);
         if (inline) return inline.runInline(method, args, call);
@@ -212,15 +284,36 @@ export class LocalHost implements ActorDispatcher {
     async #activationFor(ref: ActorRef, knownId?: string): Promise<Activation> {
         const id = knownId ?? actorId(ref);
         for (;;) {
+            // Stateless types never occupy a base-id slot — they live as a
+            // pool of member slots and dispatch through the pick below.
+            const pool = this.#pools.get(id);
+            if (pool) return this.#poolTarget(pool, ref, id);
             const slot = this.#directory.get(id);
             if (!slot) {
+                // The definition is resolved BEFORE the reservation now: the
+                // stateless branch must not create a base-id slot. For
+                // array-registered hosts this is a synchronous Map hit, so
+                // the stateful reservation below is still synchronous from
+                // function entry — the race invariant is intact. A lazy
+                // registry pays one await, then re-enters the loop because
+                // the slot may have been reserved while it waited.
+                const resolved = this.#resolveDefinition(ref.type);
+                if (resolved && typeof (resolved as PromiseLike<unknown>).then === 'function') {
+                    const loaded = await (resolved as Promise<AnyActorDefinition | null>);
+                    if (!loaded) throw this.#unknownType(ref);
+                    continue;
+                }
+                const def = resolved as AnyActorDefinition | null;
+                if (!def) throw this.#unknownType(ref);
+                if (def.__sigxActor.stateless !== undefined) {
+                    return this.#poolTarget(this.#ensurePool(id, def), ref, id);
+                }
                 // Reserve SYNCHRONOUSLY so a racing second dispatch joins
                 // this promise — the single-activation invariant. (`reserved`
                 // is only read after the first await inside the closure.)
                 const mailbox = new Mailbox();
                 let reserved!: Slot;
                 const promise = (async () => {
-                    const def = await this.#definition(ref.type);
                     // The distributed directory's claim point: a throw here
                     // (wrong-host) rejects every parked caller and the slot
                     // is dropped below — nothing activates.
@@ -249,40 +342,184 @@ export class LocalHost implements ActorDispatcher {
         }
     }
 
+    #unknownType(ref: ActorRef): ActorActivationError {
+        return new ActorActivationError(`${ref.type}/?`, {
+            cause: new Error(
+                `[sigx actors] unknown actor type "${ref.type}" — is it registered with createHost({ actors })?`
+            )
+        });
+    }
+
+    #ensurePool(id: string, def: AnyActorDefinition): WorkerPool {
+        // Idempotent: two racing cold dispatches both land here; the second
+        // adopts the first's pool.
+        let pool = this.#pools.get(id);
+        if (!pool) {
+            pool = {
+                cap: def.__sigxActor.stateless?.maxLocal ?? defaultMaxLocal(),
+                def,
+                seq: 0,
+                members: []
+            };
+            this.#pools.set(id, pool);
+        }
+        return pool;
+    }
+
+    /**
+     * The pool pick — SYNCHRONOUS unless it has to spin. The rule:
+     *
+     *  1. an idle active member (depth 0) → take it; ties break on creation
+     *     order, so the pick is deterministic;
+     *  2. everyone busy and room under the cap → spin a fresh member and ride
+     *     it (this is what makes same-key concurrency real — queueing behind
+     *     a busy member and spinning one nobody uses would leave the second
+     *     caller serialized);
+     *  3. at the cap → queue on the shallowest mailbox (backpressure, exactly
+     *     like a stateful actor);
+     *  4. nothing active yet → join the first activating member.
+     *
+     * The cap counts active + activating members. A DEACTIVATING member is
+     * not counted: it no longer accepts work, so replacing it while it
+     * drains is the same transient overlap a stateful re-activation has.
+     */
+    #poolTarget(pool: WorkerPool, ref: ActorRef, id: string): Activation | Promise<Activation> {
+        let best: Activation | null = null;
+        let firstActivating: Promise<Activation> | null = null;
+        let live = 0;
+        for (const mid of pool.members) {
+            const slot = this.#directory.get(mid);
+            if (!slot || slot.phase === 'deactivating') continue;
+            if (slot.phase === 'active') {
+                live++;
+                if (!best || slot.activation.mailbox.depth < best.mailbox.depth) {
+                    best = slot.activation;
+                }
+            } else {
+                live++;
+                firstActivating ??= slot.promise;
+            }
+        }
+        if (best && best.mailbox.depth === 0) return best;
+        if (live < pool.cap) return this.#spinMember(pool, ref, id);
+        if (best) return best;
+        return firstActivating ?? this.#spinMember(pool, ref, id);
+    }
+
+    /** Reserve and activate one fresh pool member (synchronous reservation,
+     *  same shape as `#activationFor` — minus the directory claim: a
+     *  stateless member is never claimed, locality is the contract). */
+    #spinMember(pool: WorkerPool, ref: ActorRef, id: string): Promise<Activation> {
+        const mid = memberId(id, pool.seq++);
+        pool.members.push(mid);
+        const mailbox = new Mailbox();
+        let reserved!: Slot;
+        const promise = (async () => {
+            const activation = await Activation.create(ref, pool.def, this.#host, mailbox);
+            const current = this.#directory.get(mid);
+            if (current === reserved) {
+                this.#directory.set(mid, { phase: 'active', activation });
+            }
+            return activation;
+        })();
+        reserved = { phase: 'activating', promise };
+        this.#directory.set(mid, reserved);
+        promise.catch(() => {
+            if (this.#directory.get(mid) === reserved) this.#directory.delete(mid);
+            this.#forgetMember(mid);
+        });
+        return promise;
+    }
+
+    /** Drop a member id from its pool; an empty pool record is removed (the
+     *  next dispatch re-creates it), so idle collection returns a quiet
+     *  worker key to zero footprint. */
+    #forgetMember(mid: string): void {
+        const pool = this.#pools.get(baseIdOf(mid));
+        if (!pool) return;
+        const i = pool.members.indexOf(mid);
+        if (i >= 0) pool.members.splice(i, 1);
+        if (pool.members.length === 0) this.#pools.delete(baseIdOf(mid));
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle orchestration (host-facing)
 
-    /** Begin (or join) graceful deactivation of one activation. */
+    /**
+     * Begin (or join) graceful deactivation. For a stateless pool the ref
+     * names the whole (type, key): every member drains.
+     */
     deactivate(ref: ActorRef, reason: DeactivationReason): Promise<void> {
         const id = actorId(ref);
+        const pool = this.#pools.get(id);
+        if (pool) {
+            // Snapshot: `#deactivateById` mutates `pool.members` as each
+            // member finishes draining.
+            return Promise.all(
+                [...pool.members].map((mid) => this.#deactivateById(mid, reason))
+            ).then(() => {});
+        }
+        return this.#deactivateById(id, reason);
+    }
+
+    /**
+     * Deactivate exactly ONE activation — the host's fault/idle-request
+     * callbacks target the activation object, and for a pool member that
+     * must not take the whole pool down with it.
+     */
+    deactivateOne(activation: Activation, reason: DeactivationReason): Promise<void> {
+        return this.#deactivateById(this.#idFor(activation), reason);
+    }
+
+    /** The directory id of an activation: its member id inside a pool, the
+     *  plain actorId otherwise. The pool scan is tiny (≤ cap) and only runs
+     *  on the rare fault/idle-request paths. */
+    #idFor(activation: Activation): string {
+        const id = actorId(activation.ref);
+        const pool = this.#pools.get(id);
+        if (!pool) return id;
+        for (const mid of pool.members) {
+            const slot = this.#directory.get(mid);
+            if (slot?.phase === 'active' && slot.activation === activation) return mid;
+        }
+        return id; // not found — resolves to a no-op below
+    }
+
+    #deactivateById(id: string, reason: DeactivationReason): Promise<void> {
         const slot = this.#directory.get(id);
         if (!slot) return Promise.resolve();
         if (slot.phase === 'deactivating') return slot.drained;
         if (slot.phase === 'activating') {
             // Let the activation finish, then deactivate it.
-            return slot.promise
-                .then(() => this.deactivate(ref, reason))
-                .catch(() => {});
+            return slot.promise.then(() => this.#deactivateById(id, reason)).catch(() => {});
         }
         const activation = slot.activation;
+        const member = isMemberId(id);
         let next!: Slot & { phase: 'deactivating' };
         const drained = (async () => {
             try {
                 await activation.deactivate(reason);
             } finally {
                 if (this.#directory.get(id) === next) this.#directory.delete(id);
-                // Directory-claim release. Swallowed: a failed release must
-                // not reject callers parked on `drained` — a stale remote
-                // entry is reclaimed lazily by its owner's liveness.
-                try {
-                    await this.#bindings()?.afterDeactivate?.(activation.ref, reason);
-                } catch (error) {
-                    if (__DEV__) {
-                        console.error(
-                            `[sigx actors] afterDeactivate hook for ` +
-                                `${actorLabel(activation.ref)} failed:`,
-                            error
-                        );
+                if (member) {
+                    // A pool member was never claimed, so there is no
+                    // afterDeactivate release to run — only bookkeeping.
+                    this.#forgetMember(id);
+                } else {
+                    // Directory-claim release. Swallowed: a failed release
+                    // must not reject callers parked on `drained` — a stale
+                    // remote entry is reclaimed lazily by its owner's
+                    // liveness.
+                    try {
+                        await this.#bindings()?.afterDeactivate?.(activation.ref, reason);
+                    } catch (error) {
+                        if (__DEV__) {
+                            console.error(
+                                `[sigx actors] afterDeactivate hook for ` +
+                                    `${actorLabel(activation.ref)} failed:`,
+                                error
+                            );
+                        }
                     }
                 }
             }
@@ -295,6 +532,11 @@ export class LocalHost implements ActorDispatcher {
     /**
      * The sweep: idle collection, then capacity shedding.
      *
+     * Stateless pool members collect INDIVIDUALLY in both passes — each has
+     * its own mailbox and `lastActivityMs` — so this is also how a pool
+     * shrinks (both passes are by directory id, never by ref: a by-ref
+     * deactivation of one member would drain its whole pool).
+     *
      * `maxActivations` is a SOFT cap (0 = unlimited): once the idle pass
      * has run, if more than `maxActivations` activations remain active, the
      * least-recently-used idle, unheld ones are deactivated with reason
@@ -306,24 +548,24 @@ export class LocalHost implements ActorDispatcher {
      * its next call, state intact.
      */
     sweep(now: number, defaultIdleMs: number, maxActivations = 0): void {
-        for (const [, slot] of this.#directory) {
+        for (const [id, slot] of this.#directory) {
             if (slot.phase !== 'active') continue;
             const a = slot.activation;
             const idleAfter = a.def.__sigxActor.idleAfterMs ?? defaultIdleMs;
             if (a.idle && !a.keptAlive && now - a.lastActivityMs >= idleAfter) {
-                void this.deactivate(a.ref, 'idle');
+                void this.#deactivateById(id, 'idle');
             }
         }
         if (maxActivations <= 0) return;
         // Fresh scan: everything the idle pass just started deactivating has
         // left the 'active' phase, so it neither counts nor sheds twice.
         let active = 0;
-        const candidates: Activation[] = [];
-        for (const [, slot] of this.#directory) {
+        const candidates: { id: string; lastActivityMs: number }[] = [];
+        for (const [id, slot] of this.#directory) {
             if (slot.phase !== 'active') continue;
             active++;
             const a = slot.activation;
-            if (a.idle && !a.keptAlive) candidates.push(a);
+            if (a.idle && !a.keptAlive) candidates.push({ id, lastActivityMs: a.lastActivityMs });
         }
         const excess = active - maxActivations;
         if (excess <= 0) return;
@@ -331,16 +573,16 @@ export class LocalHost implements ActorDispatcher {
         // LRU cache rather than a random cull.
         candidates.sort((a, b) => a.lastActivityMs - b.lastActivityMs);
         for (const victim of candidates.slice(0, excess)) {
-            void this.deactivate(victim.ref, 'capacity');
+            void this.#deactivateById(victim.id, 'capacity');
         }
     }
 
     /** Deactivate every activation of one type (dev/HMR). */
     async deactivateType(type: string): Promise<void> {
         const waits: Promise<void>[] = [];
-        for (const [, slot] of this.#directory) {
+        for (const [id, slot] of this.#directory) {
             if (slot.phase === 'active' && slot.activation.ref.type === type) {
-                waits.push(this.deactivate(slot.activation.ref, 'explicit'));
+                waits.push(this.#deactivateById(id, 'explicit'));
             }
         }
         await Promise.all(waits);
@@ -355,14 +597,14 @@ export class LocalHost implements ActorDispatcher {
     async stopAll(timeoutMs: number, reason: DeactivationReason = 'shutdown'): Promise<void> {
         this.#shuttingDown = true;
         const waits: Promise<void>[] = [];
-        for (const [, slot] of this.#directory) {
+        for (const [id, slot] of this.#directory) {
             if (slot.phase === 'active') {
-                waits.push(this.deactivate(slot.activation.ref, reason));
+                waits.push(this.#deactivateById(id, reason));
             } else if (slot.phase === 'deactivating') {
                 waits.push(slot.drained);
             } else {
                 waits.push(slot.promise.then(
-                    (a) => this.deactivate(a.ref, reason),
+                    () => this.#deactivateById(id, reason),
                     () => {}
                 ));
             }
@@ -390,6 +632,7 @@ export class LocalHost implements ActorDispatcher {
                 }
                 this.#directory.delete(id);
             }
+            this.#pools.clear();
         }
         this.#deadlines.dispose();
     }

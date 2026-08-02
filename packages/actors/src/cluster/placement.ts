@@ -25,6 +25,7 @@ import {
     type ActorDispatcher,
     type ActorLocation,
     type ActorPlacement,
+    type ActivationInfo,
     type ActorRef,
     type AnyActorDefinition,
     type PlacementBindings,
@@ -403,6 +404,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #host: Host | null = null;
     /** type → its `defineActor({ placement })` policy, or null if none. */
     #declaredPolicies = new Map<string, PlacementPolicy | null>();
+    /** Per-type stateless memo — same lazy shape as `#declaredPolicies`. */
+    #statelessTypes = new Map<string, boolean>();
     /** Our live directory claims: actorId → the entry we wrote. */
     #claimed = new Map<string, DirectoryEntry>();
     /** actorId → hostId hint. Insertion-ordered Map as a cheap LRU. */
@@ -491,6 +494,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#local = local;
         this.#host = host;
         return {
+            // CONTRACT: neither hook ever runs for a stateless worker type —
+            // the local host skips them when it spins a pool member, so no
+            // claim is written, `#claimed` never lists a worker, and the
+            // directory counters stay untouched by stateless traffic. That
+            // also keeps workers invisible to `#fence` (fencing defends the
+            // single-activation invariant, which workers don't have — a
+            // fenced host keeps serving pure compute) and to `rebalance()`
+            // (migration moves claims; a pool has none).
             beforeActivate: async (ref) => {
                 if (this.#fenced) {
                     throw new ActorUnreachableError(
@@ -598,10 +609,17 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // traffic, holding a stream/watch/task, or with queued turns is
         // where it should be.
         const budget = Math.min(maxMoves, Math.floor(own - mean));
-        const candidates = host
-            .activations({ sortBy: 'idle', limit: maxMoves * 4 })
-            .filter((a) => !a.keptAlive && a.queued === 0 && a.idleMs >= minIdleMs)
-            .slice(0, budget);
+        const candidates: ActivationInfo[] = [];
+        for (const a of host.activations({ sortBy: 'idle', limit: maxMoves * 4 })) {
+            if (candidates.length >= budget) break;
+            if (a.keptAlive || a.queued !== 0 || a.idleMs < minIdleMs) continue;
+            // A stateless pool member holds no claim, so `migrate()` would
+            // no-op — counting it as a move would report a rebalance that
+            // never happened. Workers shed load by idling out, not by
+            // moving. (Memoized: sync from the second look at a type.)
+            if (await this.#isStateless(a.type)) continue;
+            candidates.push(a);
+        }
         if (candidates.length === 0) {
             return { own, peers: answers.length, mean, moved: 0, reason: 'no-candidates' };
         }
@@ -798,10 +816,47 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#transportFor.clear();
     }
 
-    dispatcherFor(ref: ActorRef): ActorDispatcher {
+    dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher> {
         // Local fast path: we hold the claim, no store reads, no routing.
         if (this.#claimed.has(actorId(ref))) return this.#local!;
-        return this.#routing;
+        // Stateless workers always run HERE: no directory lookup, no route
+        // cache, no policy. A remote hop to run a pure function is a bug,
+        // and skipping `#resolveTarget` entirely is what makes the
+        // `directory_ops == 0` bench invariant structural rather than a
+        // counter special case. Sync after the first resolution per type
+        // (the memo), so the hot path stays promise-free.
+        const stateless = this.#isStateless(ref.type);
+        if (stateless === true) return this.#local!;
+        if (stateless === false) return this.#routing;
+        return stateless.then((is) => (is ? this.#local! : this.#routing));
+    }
+
+    /**
+     * Is this type a stateless worker pool? Lazily memoized per type, the
+     * `#declaredPolicy` shape: sync (a boolean) from the second dispatch on;
+     * the first dispatch of a lazily-registered type pays one await. A
+     * failed module load answers `false` un-memoized — the dispatch path is
+     * the one that reports load failures.
+     */
+    #isStateless(type: string): boolean | Promise<boolean> {
+        const memo = this.#statelessTypes.get(type);
+        if (memo !== undefined) return memo;
+        const host = this.#host;
+        if (!host) return false; // not bound yet — nothing dispatches before bind
+        const resolved = host.definition(type);
+        if (resolved && typeof (resolved as PromiseLike<unknown>).then === 'function') {
+            return (resolved as Promise<AnyActorDefinition | null>).then(
+                (def) => {
+                    const is = def?.__sigxActor.stateless !== undefined;
+                    this.#statelessTypes.set(type, is);
+                    return is;
+                },
+                () => false
+            );
+        }
+        const is = (resolved as AnyActorDefinition | null)?.__sigxActor.stateless !== undefined;
+        this.#statelessTypes.set(type, is);
+        return is;
     }
 
     async locate(ref: ActorRef): Promise<ActorLocation> {
@@ -809,6 +864,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // Same fast path as dispatcherFor: holding the claim answers with
         // no store read at all.
         if (this.#claimed.has(actorId(ref))) return LOCAL;
+        // Stateless workers are local on EVERY host — this is what keeps the
+        // public endpoint's `redirectIfRemote` from ever answering 421 for a
+        // worker type.
+        if (await this.#isStateless(ref.type)) return LOCAL;
         const target = await this.#resolveTarget(ref);
         if (target === 'local') return LOCAL;
         this.#counters.locateRemote++;

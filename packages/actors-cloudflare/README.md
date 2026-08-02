@@ -141,6 +141,15 @@ change. `jurisdiction` and `objectName` are part of an actor's identity:
 changing either repoints every actor at a different object, which is a state
 migration.
 
+**Stateless workers never map to an object.** A `defineWorker` type has no
+identity, no storage record and no single-activation invariant, so the
+placement short-circuits it to the local dispatcher before any object id is
+derived: the pool runs in whichever isolate received the call — the Worker at
+the edge, or the Durable Object whose `ctx.actor()` made the hop. One caveat
+follows from `sweepIntervalMs: 0` on Workers: pools never shrink by idle
+sweep here — they go away when the platform evicts the isolate, which loses
+nothing for a stateless type.
+
 ## The object and the Worker
 
 Two pieces, one bundle — on Cloudflare the Durable Object and the Worker are

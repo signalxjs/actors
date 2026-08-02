@@ -211,7 +211,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 ## Packages
 
 - `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Nine
-  runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`, plus
+  runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`,
+  `defineWorker` — stateless multi-activation pure-compute pools: always
+  local, no directory claim, up to `maxLocal` concurrent members per
+  key — plus
   topics — `topic()`/`publishTopic()`, the `subscriptions:` table and
   `ctx.publish` for actor-to-actor pub/sub), `./host` (defineActorApp
   + the plugin model, createHost, runtime, memoryStorage), `./server`
