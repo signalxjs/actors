@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The public actor endpoint no longer dispatches runtime-reserved
+  methods** (#240). `createActorResolver` synthesized a wrapper for any
+  method name, so a caller could POST `Type#$sigx:reminder` and invoke
+  `onReminder` under a reminder name of its choosing — a reminder firing
+  the reminder table never scheduled. A `$sigx:`-prefixed method now
+  answers exactly like a method that does not exist (404,
+  `method-not-found`, same message shape), so probing cannot even learn
+  which names are special. The HMAC-authenticated host-to-host mount is
+  unchanged — `resolveHostSymbol` keeps resolving reserved symbols, which
+  is how remote reminder deliveries travel.
+
 ### Changed
 
 - **Orleans-derived naming is gone: silo → host, grain → actor** (#233).

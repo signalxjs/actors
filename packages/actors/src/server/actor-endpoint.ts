@@ -17,6 +17,7 @@ import {
     type ServerFnRequestOptions
 } from '@sigx/server/server';
 import { mintCallId } from '../call-id';
+import { ActorMethodNotFoundError } from '../errors';
 import { runGuards } from '../guards';
 import { ACTOR_FOLLOW_HEADER, ACTOR_HOPS_HEADER, ACTOR_OWNER_HEADER } from '../route';
 import { relayStream } from '../stream-relay';
@@ -384,6 +385,24 @@ function synthesize(
     method: string,
     options: ActorResolverOptions
 ): unknown {
+    // Runtime-reserved methods — `$sigx:reminder` today, every future
+    // `$sigx:*` delivery — are invoked by the runtime itself, and reach
+    // remote hosts over the HMAC-authenticated internal mount, whose
+    // `resolveHostSymbol` keeps resolving them. On the public mount they
+    // answer exactly like a method that does not exist: dispatching them
+    // would let an unauthenticated caller invoke `onReminder` under a
+    // reminder name of its choosing, and any answer other than the
+    // unknown-method one confirms which names are special. Checked after
+    // the definition lookup so an unknown TYPE still gets the unknown-type
+    // answer, reserved method or not.
+    if (method.startsWith('$sigx:')) {
+        return {
+            __sigxName: method,
+            __sigxFn: () => {
+                throw toClientError(new ActorMethodNotFoundError(def.type, method));
+            }
+        };
+    }
     const isStream = def.streamNames.includes(method);
     const onMiss = options.onMiss ?? 'proxy';
     const base = options.base ?? DEFAULT_BASE;
