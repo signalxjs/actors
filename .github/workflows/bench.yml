@@ -7,6 +7,16 @@ name: Bench
 #   to gate on: measured on two IDENTICAL commits, this workflow reported
 #   regressions of 16%, 19% and 53%. All false. So no timing move, however
 #   large, fails anything here.
+#
+#   The `pull_request` A/B now runs on a DEDICATED machine instead (four real
+#   cores, no SMT; THP and swap off; the OS pinned to core 0 and the benchmark
+#   to cores 1-3). Three back-to-back runs of the sibling repo's quick suite on
+#   it put every timing row above ~0.1 ms within 0.45-4.1%. That is what makes
+#   the timing half worth reading. It does NOT yet make it worth gating:
+#   BENCH_THRESHOLD stays at 25 until we have enough runs on the new box to
+#   measure the real variance floor and lower it to a number we can defend.
+#   Tightening it on the strength of "the hardware is better now" would be
+#   exactly the guess this comment block exists to prevent.
 # - **Exact metrics gate, at zero tolerance.** Directory calls per activation,
 #   microtask turns per dispatch, notifications per join — invariants, not
 #   measurements. In that same identical-commit run every one came back
@@ -107,9 +117,83 @@ env:
   BENCH_GATE_SCENARIOS: 'dispatch/warm-turns dispatch/warm-turns-deadline dispatch/always-warm-turns dispatch/stateless-pool-cap cluster/membership-fanout cluster/directory-ops-per-activation cluster/stateless-directory-ops cluster/locality-routed cluster/locality-warm topics/fanout'
 
 jobs:
+  # Starts the dedicated bench machine, which sits powered down between runs so
+  # compute is billed only while a benchmark is actually running.
+  #
+  # Runs on EVERY event so the bench jobs can `needs:` it unconditionally — the
+  # cloud steps are what is conditional, and a job whose only steps are skipped
+  # still succeeds, so the queue leg and fork PRs pass through it in seconds.
+  #
+  # It WAITS for the machine rather than firing and forgetting. `timeout-minutes`
+  # does not apply to a job still QUEUED for a runner label that never appears:
+  # that clock starts only once a runner picks the job up. An unavailable machine
+  # would therefore leave the PR pending until GitHub's 24-hour unpicked-job
+  # limit, with nothing in the log saying why. Blocking here costs ~45s of hosted
+  # time and turns that into an immediate, visible failure.
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # OIDC only — no client secret exists for this identity to leak.
+      id-token: write
+      contents: read
+    steps:
+      # Fork PRs are excluded for the same reason they are excluded from
+      # `runs-on` below, and they cannot read secrets anyway, so this would fail
+      # confusingly rather than cleanly.
+      #
+      # DEPENDABOT is excluded for a related but distinct reason. Its PRs come
+      # from a branch IN this repo, so the fork test above passes them — but a
+      # Dependabot-triggered run gets a read-only token and cannot see regular
+      # Actions secrets (they live in a separate Dependabot store). Without this
+      # clause every dependency bump would fail `wake` on empty credentials and
+      # paint a red X on a PR that has no business touching the bench machine.
+      # This repo gets a lot of them.
+      #
+      # These conditions are written to FOLD to a single line — no continuation
+      # is indented past the first. A more-indented line in a `>-` scalar keeps
+      # its newline, and the expression then reaches Actions with a literal
+      # newline inside it.
+      - uses: azure/login@v2
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]')
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Starting an already-running machine is a successful no-op, so concurrent
+      # PRs racing to wake the same box is fine.
+      - name: Start the bench machine
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]')
+        env:
+          RG: ${{ secrets.AZURE_RG }}
+          VM: ${{ secrets.AZURE_VM_NAME }}
+        run: |
+          az vm start -g "$RG" -n "$VM"
+          state=$(az vm get-instance-view -g "$RG" -n "$VM" \
+            --query "instanceView.statuses[?starts_with(code,'PowerState/')].code | [0]" -o tsv)
+          echo "power state: $state"
+          [ "$state" = "PowerState/running" ] || {
+            echo "::error::Bench machine did not reach a running state ($state)."
+            exit 1
+          }
+
   bench-quick:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    needs: wake
+    # `workflow_dispatch` requires write access on a branch of this repo, so
+    # there is no fork exposure here and this can take the dedicated runner
+    # unconditionally.
+    runs-on: [self-hosted, linux, x64, bench]
+    timeout-minutes: 45
     # The workflow-level `permissions: {}` leaves a job with a token that
     # cannot even clone unless it asks for this.
     permissions:
@@ -147,7 +231,41 @@ jobs:
 
   bench-ab:
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
+    needs: wake
+    # WHERE THIS RUNS IS THE WHOLE POINT, and the three cases differ:
+    #
+    # - `pull_request` from a branch of this repo → the dedicated bench machine.
+    #   This is the leg that measures TIMINGS, and timings off a shared 2-vCPU
+    #   runner are worthless: on two identical commits this workflow reported
+    #   16%, 19% and 53% regressions, all false. The machine has four real cores
+    #   with no SMT sibling to contend with (vCPUsPerCore=1 — every D*_v6 SKU
+    #   reports 2), THP and swap off, the apt/man-db/fstrim timers disabled, and
+    #   cgroup pinning that keeps the OS on core 0 and the benchmark on 1-3.
+    #
+    # - `merge_group` → stays on `ubuntu-latest`, deliberately. The queue leg
+    #   measures only BENCH_GATE_SCENARIOS, and those carry `exact` metrics —
+    #   invariants, not measurements, identical on any machine. They gate just as
+    #   well on a shared runner, so there is nothing to gain, and pinning a merge
+    #   gate to a single machine means an outage wedges the queue.
+    #
+    # - `pull_request` from a FORK → `ubuntu-latest`, non-negotiable. Fork PRs
+    #   run the workflow file FROM THE FORK, so a self-hosted runner on a public
+    #   repo is arbitrary code execution on our infrastructure. Forks still get
+    #   their A/B, on the shared box, which is what they had before.
+    #
+    # - `pull_request` from DEPENDABOT → `ubuntu-latest` too. Those PRs are
+    #   same-repo so the fork test passes them, but their runs get a read-only
+    #   token and no Actions secrets, so `wake` cannot start the machine — and a
+    #   dependency bump does not need the quiet box anyway.
+    #
+    # Kept on ONE line on purpose: in a YAML folded scalar (`>-`) a line indented
+    # further than the first is preserved verbatim, newline and all, so the
+    # pretty-wrapped version of this expression reaches Actions with literal
+    # newlines inside it.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') && fromJSON('["self-hosted","linux","x64","bench"]') || 'ubuntu-latest' }}
+    # Two installs, two builds and two full suites. The ceiling is for a hang,
+    # not for a slow run.
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: write
