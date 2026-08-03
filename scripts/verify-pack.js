@@ -87,14 +87,31 @@ function assertTarballContents(pkgFullPath, name) {
     // `npm pack --dry-run --json` lists exactly what would ship, without
     // needing tar to read the archive back — the msys tar on Windows rewrites
     // paths that look like `C:\…`, and Node has no built-in tar reader.
-    const listed = JSON.parse(
+    const parsed = JSON.parse(
         execSync('npm pack --dry-run --json', {
             cwd: pkgFullPath,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore']
         })
     );
-    const files = listed[0].files.map((f) => f.path);
+    // npm changed this shape. Up to npm 10 it is an ARRAY with one entry per
+    // packed package; from npm 12 it is an OBJECT keyed by package name. The
+    // entry itself is identical either way, so accept both.
+    //
+    // Worth stating why this escaped review: local npm is 10, and
+    // `release.yml` runs `npm install -g npm@latest` because trusted
+    // publishing needs >= 11.5.1. So the old code passed for every developer
+    // and failed only in the one place that publishes.
+    const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+    if (!entry || !Array.isArray(entry.files)) {
+        throw new Error(
+            `${name}: could not read the file list from \`npm pack --dry-run --json\` ` +
+                `(npm ${execSync('npm --version', { encoding: 'utf8' }).trim()}). ` +
+                'Neither the array nor the keyed-object shape matched — the output format ' +
+                'has changed again.'
+        );
+    }
+    const files = entry.files.map((f) => f.path);
     const missing = REQUIRED_IN_TARBALL.filter((re) => !files.some((f) => re.test(f)));
     if (missing.length > 0) {
         throw new Error(
