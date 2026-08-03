@@ -1,0 +1,31 @@
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "sigx-actors-example",
+    "main": "src/worker.ts",
+
+    // Pinned, never floating: a compatibility date is how Workers versions
+    // runtime behaviour, so bumping it is a deliberate change to test, not
+    // something to inherit from whenever you happened to deploy.
+    "compatibility_date": "2026-07-01",
+    "compatibility_flags": ["nodejs_compat"],
+
+    "durable_objects": {
+        "bindings": [{ "name": "ACTORS", "class_name": "ActorHost" }]
+    },
+
+    // `new_sqlite_classes`, NOT `new_classes`.
+    //
+    // `new_classes` creates the legacy key-value backed storage, which cannot
+    // be migrated to SQLite in place — the class is stuck with it forever —
+    // and carries a far smaller per-value limit. This is the single most
+    // consequential irreversible line in the file.
+    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ActorHost"] }],
+
+    // `__DEV__` is the runtime's compile-time dev flag. The published
+    // package ships both a dev and a production dist and expects its bundler
+    // to define it; without this, the host throws `__DEV__ is not defined` on
+    // the first request. `pnpm dev` overrides it to true for local warnings.
+    "define": { "__DEV__": "false" },
+
+    "observability": { "enabled": true }
+}

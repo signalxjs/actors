@@ -1,0 +1,24 @@
+{
+    "name": "counter-example",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "start": "node server.mjs",
+        "cluster": "node cluster-demo.mjs",
+        "cluster:serve": "node cluster-demo.mjs --serve",
+        "job": "node job-demo.mjs"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:"
+    },
+    "devDependencies": {
+        "@sigx/actors-cli": "workspace:*",
+        "@sigx/cli": "^0.9.0",
+        "vite": "^8.0.3"
+    }
+}

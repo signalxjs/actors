@@ -1,0 +1,30 @@
+{
+    "name": "chat-example",
+    "private": true,
+    "type": "module",
+    "files": [
+        "dist",
+        "server.mjs"
+    ],
+    "scripts": {
+        "dev": "node dev-server.mjs",
+        "build": "vite build",
+        "start": "node server.mjs",
+        "start:prod": "node --conditions=production server.mjs"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/actors-redis": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/server-renderer": "catalog:",
+        "ioredis": "^5.4.1",
+        "sigx": "catalog:",
+        "undici": "^7.16.0"
+    },
+    "devDependencies": {
+        "@sigx/vite": "catalog:",
+        "vite": "^8.0.3"
+    }
+}

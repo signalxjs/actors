@@ -1,0 +1,42 @@
+{
+    // `pnpm typecheck`, as distinct from the build.
+    //
+    // Two things differ, and both follow from ordering: CI runs `typecheck`
+    // BEFORE `build`, so a config that resolves `@sigx/actors` from its
+    // built `.d.ts` would fail on a clean checkout. This one resolves it
+    // from SOURCE, exactly as the repo-root config does for every other
+    // package.
+    //
+    // Resolving from source drags files outside `rootDir` into the program,
+    // which `tsc` refuses when it is emitting. Nothing is emitted here, so
+    // `rootDir` widens to the repo and `declaration` goes off.
+    //
+    // The build config stays the strict one: it emits `.d.ts` against the
+    // published shape of `@sigx/actors`, which is what consumers see.
+    //
+    // It also covers `__tests__`, which the build config deliberately does
+    // not: the repo-root config used to typecheck every package's tests,
+    // and excluding this package from that program would otherwise have
+    // quietly dropped them.
+    "extends": "./tsconfig.json",
+    "include": ["src/**/*.ts", "src/**/*.tsx", "__tests__/**/*.ts", "__tests__/**/*.tsx"],
+    "compilerOptions": {
+        "noEmit": true,
+        "declaration": false,
+        "declarationMap": false,
+        "sourceMap": false,
+        "rootDir": "../..",
+        "paths": {
+            "@sigx/actors": ["../actors/src/index.ts"],
+            "@sigx/actors/host": ["../actors/src/host/index.ts"],
+            "@sigx/actors/cluster": ["../actors/src/cluster/index.ts"],
+            // Self-referential, because the tests import the package's own
+            // public subpath rather than reaching into `src/` — which is
+            // the point of testing it. Without this it resolves through
+            // `node_modules` to `dist/`, so it passes on a machine that has
+            // built once and fails on a clean checkout.
+            "@sigx/actors-cli/source": ["./src/source/index.ts"],
+            "@sigx/actors-cli": ["./src/plugin.ts"]
+        }
+    }
+}

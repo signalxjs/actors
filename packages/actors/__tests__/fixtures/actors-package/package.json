@@ -1,0 +1,14 @@
+{
+    "name": "@acme/actors-presence",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "//": "The dual-package shape: browsers resolve the refs, servers the definitions.",
+    "exports": {
+        ".": {
+            "types": "./server.ts",
+            "browser": "./client.ts",
+            "import": "./server.ts"
+        }
+    }
+}

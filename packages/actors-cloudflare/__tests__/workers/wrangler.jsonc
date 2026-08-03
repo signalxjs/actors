@@ -1,0 +1,22 @@
+{
+    // Test-only. `new_sqlite_classes` rather than `new_classes`: the latter
+    // is the legacy KV-backed form and CANNOT be migrated to SQLite in place,
+    // so it is a one-way door. It also has a far smaller per-value limit,
+    // which changes what the package can honestly promise about actor state.
+    //
+    // `nodejs_compat` is REQUIRED, and it took a real deployment to learn it:
+    // `@sigx/server` (not the actor runtime itself) imports `node:async_hooks`,
+    // so without the flag a Durable Object fails to boot and every call comes
+    // back as `unreachable`. This suite passed without it only because the
+    // pool turns it on implicitly — which made the config quietly disagree
+    // with what a user's wrangler.jsonc actually needs. Stated explicitly so
+    // the two match.
+    "name": "sigx-actors-test",
+    "main": "fixture-worker.ts",
+    "compatibility_date": "2026-07-01",
+    "compatibility_flags": ["nodejs_compat"],
+    "durable_objects": {
+        "bindings": [{ "name": "ACTORS", "class_name": "TestHost" }]
+    },
+    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestHost"] }]
+}

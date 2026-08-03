@@ -1,0 +1,291 @@
+name: Bench
+
+# Two kinds of number, gated completely differently — the split is the whole
+# design, and it is enforced in code (`Metric.exact`), not by this comment.
+#
+# - **Timings are informational.** Numbers off a shared CI runner are too noisy
+#   to gate on: measured on two IDENTICAL commits, this workflow reported
+#   regressions of 16%, 19% and 53%. All false. So no timing move, however
+#   large, fails anything here.
+# - **Exact metrics gate, at zero tolerance.** Directory calls per activation,
+#   microtask turns per dispatch, notifications per join — invariants, not
+#   measurements. In that same identical-commit run every one came back
+#   bit-identical while 215 other metrics drifted. A shared runner judges these
+#   exactly as well as a quiet desk does, so an extra directory round-trip
+#   fails the check and should.
+#
+# (A scenario that THROWS also still fails the step: a benchmark that cannot
+# prove it did its work must not report a number.)
+#
+# Two jobs, two shapes:
+#
+# - `bench-ab` (perf-sensitive PRs): the PR's base ref and its head ref
+#   measured back to back ON THE SAME RUNNER, posted as one PR comment.
+#   Absolute numbers from a shared vCPU mean nothing, but the delta between
+#   two runs a few minutes apart on the same box does — and that is the only
+#   comparison available here. `pnpm bench:compare` diffs against
+#   `benchmarks/baselines/local.json`, which is per-machine and gitignored
+#   precisely because someone else's laptop is not evidence; CI has no such
+#   baseline and could not trust one if it did (the calibration probe would
+#   differ and every verdict would come back "no verdict").
+# - `bench-quick` (manual): one run of the current ref, uploaded as an
+#   artifact for a human to read.
+#
+# An exact-metric regression FAILS this workflow, so the check goes red. It is
+# not yet a *required* check — this repo has no ruleset — so red is a stop sign
+# rather than a lock. It now runs on `merge_group` too, which was the blocking
+# prerequisite: a required check that never reports on the queue ref leaves the
+# PR waiting forever on a context that will not arrive, and `gh pr checks` shows
+# nothing wrong. What remains before promoting it is judgement, not plumbing —
+# give the gate a few PRs, because one that fires on noise once costs more trust
+# than a hundred green runs earn.
+#
+# THE QUEUE RUN IS DELIBERATELY NARROWER. `merge_group` does not support `paths`
+# filters, so it fires on every queued merge including docs-only ones. Running
+# the whole ~7-minute suite there would tax every merge to re-measure timings
+# that cannot fail anything. So the queue measures only the scenarios carrying
+# `exact` metrics — which is exactly the set that can fail — and the full A/B
+# stays on `pull_request`, where the paths filter applies and a human reads it.
+#
+# Tier 2 (`BENCH_TIER2=1`, a forked process per host) stays out — it wants
+# a quiet machine with spare cores.
+on:
+  workflow_dispatch:
+  merge_group:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - 'benchmarks/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/bench.yml'
+
+permissions: {}
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # One knob, applied to BOTH halves of the A/B — they are only comparable if
+  # they measured the same way. 3 rounds is the local default, and rounds are
+  # interleaved across scenarios precisely so a runner that drifts mid-suite
+  # does not dump all of it on whichever scenario ran last.
+  #
+  # Everything else is left at its default ON PURPOSE, so a PR comment
+  # describes the same measurement `pnpm bench` makes: no scenario filter (the
+  # whole Tier-1 suite, ~4 min a half locally — the `mem/` leak scenarios are
+  # only ~15% of that, and a leak arriving in a PR is worth catching) and no
+  # --quick (1 round of 150ms cannot separate a change from the noise).
+  BENCH_RUNS: '3'
+  # The comparison threshold, and the ONE number that differs from the local
+  # default of 10%. Not a laxer rule — a different measurement condition,
+  # measured rather than guessed.
+  #
+  # The first real A/B on this workflow compared two commits with no runtime
+  # change at all (the PR that added the workflow) and reported one 🔴
+  # regression and four 🟢 improvements, spanning 10.1% to 18.7%. All were
+  # false. The per-metric noise gate estimates noise from the spread across
+  # rounds INSIDE one process; two processes minutes apart on a shared 2-vCPU
+  # runner vary by considerably more than that, and a metric that happened to
+  # be steady within each half slips through. A suite that cries wolf gets
+  # ignored, so the CI floor sits above the false positives it actually
+  # produced.
+  #
+  # A quiet local machine keeps the 10% default — `pnpm bench:compare` is
+  # unchanged. This buys the reduction in false alarms by giving up real moves
+  # under 25%, which is the correct trade for an advisory comment: anything
+  # smaller has to be reproduced locally anyway.
+  BENCH_THRESHOLD: '25'
+  # The scenarios that carry `exact` metrics, and so the only ones whose
+  # outcome can fail a check. The merge queue measures these and nothing else;
+  # a `pull_request` run passes no filter and measures everything.
+  #
+  # Keep in step with the `exact: true` flags — a scenario flagged but missing
+  # here is simply not gated on the queue, silently. `pnpm bench:run --list`
+  # names them; `grep -rn 'exact: true' benchmarks/src/scenarios` is the check.
+  BENCH_GATE_SCENARIOS: 'dispatch/warm-turns dispatch/warm-turns-deadline dispatch/always-warm-turns dispatch/stateless-pool-cap cluster/membership-fanout cluster/directory-ops-per-activation cluster/stateless-directory-ops cluster/locality-routed cluster/locality-warm topics/fanout'
+
+jobs:
+  bench-quick:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # The workflow-level `permissions: {}` leaves a job with a token that
+    # cannot even clone unless it asks for this.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          # The benchmarks run erasable TS directly through `node` (native type
+          # stripping), which needs >= 22.18.
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # By path, with --conditions=production, so this measures the built prod
+      # dist — the same thing `pnpm bench:run` measures.
+      - name: Bench (informational)
+        run: |
+          node --conditions=production --expose-gc benchmarks/src/main.ts \
+            --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/bench.json"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: ${{ runner.temp }}/bench.json
+
+  bench-ab:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      # `merge_group` carries no pull_request payload, so each side falls back
+      # to the queue's own shas. Exactly one of the two is ever non-empty.
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+      # NOTE: `FILTERS` is deliberately NOT computed here. The `env` context is
+      # not available inside a job-level `env:` block, so a
+      # `${{ ... env.BENCH_GATE_SCENARIOS ... }}` expression would resolve to
+      # the empty string in silence — the queue would quietly measure the whole
+      # suite and nobody would notice. The steps derive it from
+      # `$GITHUB_EVENT_NAME`, which is always defined.
+    steps:
+      # fetch-depth 0: the job checks the base ref out in place, so both
+      # commits must be in the clone.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      # Both halves invoke benchmarks/src/main.ts BY PATH, never through a pnpm
+      # script: the base ref is an arbitrary older commit and need not define a
+      # script name this PR introduces. For the same reason they pass only
+      # flags the base ref already understands — main.ts throws on an unknown
+      # one.
+      # On the queue, measure only what can fail; on a PR, measure everything.
+      # Unquoted on the command line so the words split into separate filters.
+      - name: Scenario filter
+        id: filter
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
+            echo "filters=$BENCH_GATE_SCENARIOS" >> "$GITHUB_OUTPUT"
+          else
+            echo "filters=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bench the base ref
+        env:
+          FILTERS: ${{ steps.filter.outputs.filters }}
+        run: |
+          git checkout --detach "$BASE_SHA"
+          pnpm install --frozen-lockfile
+          pnpm build
+          node --conditions=production --expose-gc benchmarks/src/main.ts \
+            $FILTERS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/base.json"
+
+      - name: Bench the head ref
+        env:
+          FILTERS: ${{ steps.filter.outputs.filters }}
+        run: |
+          git checkout --detach "$HEAD_SHA"
+          # A dist left over from the base build is not overwritten when the
+          # head build no longer emits that file — the head half must measure
+          # the head's output and nothing else.
+          rm -rf packages/*/dist
+          pnpm install --frozen-lockfile
+          pnpm build
+          node --conditions=production --expose-gc benchmarks/src/main.ts \
+            $FILTERS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/head.json"
+
+      # The HEAD checkout's comparer, so a PR that changes the comparison rules
+      # is read by the version it ships.
+      #
+      # `continue-on-error` is NOT indifference: the comparer exits 1 when an
+      # exact metric regressed, and if that ended the job here the comment
+      # explaining WHY would never post. So the failure is captured, the
+      # report goes out, and the last step re-raises it.
+      - name: Compare
+        id: compare
+        continue-on-error: true
+        run: |
+          node --conditions=production benchmarks/src/compare-files.ts \
+            --before="$RUNNER_TEMP/base.json" \
+            --after="$RUNNER_TEMP/head.json" \
+            --threshold="$BENCH_THRESHOLD" \
+            --markdown="$RUNNER_TEMP/bench.md" \
+            --title="base \`${BASE_SHA:0:7}\` (before) → head \`${HEAD_SHA:0:7}\` (after), both measured on this runner. The head half is always measured second; across all throughput metrics that order is worth about +2%."
+
+      - name: Job summary
+        run: cat "$RUNNER_TEMP/bench.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Fork PRs get a read-only token on `pull_request`, so the comment call
+      # would 403. The job summary above still carries the report for those,
+      # as it does for the merge queue, where there is no PR to comment on and
+      # `context.payload.pull_request` would be undefined.
+      - name: Comment on the PR
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const marker = '<!-- sigx-actors-bench-ab -->';
+            const body = marker + '\n' + fs.readFileSync(process.env.RUNNER_TEMP + '/bench.md', 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100
+            });
+            // One comment per PR, updated in place — a push should refresh the
+            // numbers, not bury the thread under a new table each time.
+            const existing = comments.find((c) => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      # The gate, re-raised now that the comment and the summary are out. Only
+      # an exact-metric regression reaches here — a timing move, however
+      # large, left the comparer at exit 0.
+      - name: Fail on an exact-metric regression
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "::error::An exact metric regressed — see the Benchmark A/B comment." \
+            " These are invariants (directory calls per activation, microtask turns per" \
+            " dispatch), not timings: the same code gives the same value on any machine," \
+            " so this is a behavioural change rather than runner noise. If it is" \
+            " intended, say so in the PR."
+          exit 1
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-ab-results
+          path: |
+            ${{ runner.temp }}/base.json
+            ${{ runner.temp }}/head.json
+            ${{ runner.temp }}/bench.md
+          if-no-files-found: ignore

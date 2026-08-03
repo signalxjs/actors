@@ -1,0 +1,207 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`rendered frames > Actors 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+actors on host s.2sme5hx2
+ TYPE     KEY     QUEUE    AGE   IDLE  TASKS  KEPT
+ ─────────────────────────────────────────────────
+ Counter  cart        0  2m47s  2m47s
+ Counter  cold-0      0  2m41s     2s
+ Counter  cold-1      3  2m47s     2s      2  yes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  1–3/3
+
+slowest methods (p99 turn)
+  Counter#increment                  216µs  989 calls
+  Counter#nope                       136µs  47 calls  47 failed"
+`;
+
+exports[`rendered frames > Cluster 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+cluster · 2 host(s)
+view                 #5  1 active of 2
+collected from       s.2sme5hx2
+route cache          84% hit  (282 lookups)
+locates              44  27% answered "a peer owns it"
+remoteDispatches     1.28k  directoryClaims      37
+inboundDispatches    1.28k  claimConflicts       4
+routedLocal          1.28k  wrongHostRedirects   3
+remoteWatches        0      unreachableRetries   0
+inboundWatches       0      transportFallbacks   0
+retries              15     authFailures         0
+routingFailures      0      selfFences           0
+
+reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
+p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ● p7  ●
+p8  ● p9  ● p10 ● p11 ● p12 ● p13 ● p14 ● p15 ●"
+`;
+
+exports[`rendered frames > Cluster, cramped 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
+  them
+
+cluster · 2 host(s)
+view                 #5  1 active of 2
+collected from       s.2sme5hx2
+route cache          84% hit  (282 lookups)
+locates              44  27% answered "a peer owns it"
+remoteDispatches     1.28k  directoryClaims      37
+inboundDispatches    1.28k  claimConflicts       4
+routedLocal          1.28k  wrongHostRedirects   3
+remoteWatches        0      unreachableRetries   0
+inboundWatches       0      transportFallbacks   0
+retries              15     authFailures         0
+routingFailures      0      selfFences           0
+
+reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
+p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ●
+p7  ● p8  ● p9  ● p10 ● p11 ● p12 ● p13 ●
+p14 ● p15 ●"
+`;
+
+exports[`rendered frames > Health 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+host s.2sme5hx2
+live         yes
+ready        yes
+uptime       4m02s
+
+checks
+  ok   cluster — active
+
+errors by kind
+  method-not-found     68
+
+recent failures
+  22:13:20 Counter#nope method-not-found: actor type "Counter" has no method "nope"
+
+storage
+  158 loads  2.86k saves  0 clears
+  0 etag conflicts — each one discarded an activation"
+`;
+
+exports[`rendered frames > Host drill-down 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+host s.2sme5hx2
+status       active
+address      http://127.0.0.1:5391
+up           2m22s
+ready        yes
+calls        593  26 failed (4%)
+latency      p50 48µs  p99 64µs
+storage      158 loads  2.86k saves  0 conflicts
+
+checks
+  ok   cluster — active
+
+errors by kind
+  method-not-found     68
+
+actors on this host
+ TYPE     KEY     QUEUE    AGE  IDLE  TASKS  KEPT
+ ────────────────────────────────────────────────
+ Counter  cart        3  2m47s    2s      1  yes
+ Counter  cold-0      0  2m41s    2s
+
+
+
+
+
+
+  1–2/2"
+`;
+
+exports[`rendered frames > Hosts 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+ HOST        STATUS   READY     UP  ACTS  QUEUE  VIEW  TRANSPORTS
+ ────────────────────────────────────────────────────────────────
+❯s.2sme5hx2  active   yes    2m22s    30      2    #5  http
+ s.ikfugf49  leaving  NO     2m22s     2      0    #5  http
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  1–2/2"
+`;
+
+exports[`rendered frames > Overview 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
+
+cluster · 2 host(s)
+hosts        2
+activations  32
+queued       2
+calls        1.19k  52 failed (4%)
+
+calls/s      ·██▇▅▄▆·█▇▅▄▅▇·█▆▄▅▇█·▆▄▄▆██·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
+failures/s   █▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
+queued       ▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█ 2 ▲
+activations  ████████████████████████████████████████████████████████████ 33 ▲
+
+latency                       queue                         turn
+p50 ██░░░░░░░░░░░░░░░░ 76µs   p50 █░░░░░░░░░░░░░░░░░ 34µs   p50 █░░░░░░░░░░░░░░░░░ 40µs
+p90 █████████░░░░░░░░░ 304µs  p90 ████░░░░░░░░░░░░░░ 136µs  p90 █████░░░░░░░░░░░░░ 160µs
+p99 ██████████████████ 608µs  p99 ████████░░░░░░░░░░ 272µs  p99 █████████░░░░░░░░░ 320µs
+high queue = a hot actor · high turn = a slow method"
+`;
+
+exports[`rendered frames > Overview, cramped 1`] = `
+"! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking
+  them
+
+cluster · 2 host(s)
+hosts        2
+activations  32
+queued       2
+calls        1.19k  52 failed (4%)
+
+calls/s      ·▅▄▅██▇·▄▅▇██▆·▅▆██▇▅·▆██▇▅▄·▇██ 515/s ▼
+failures/s   ▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄█▄▄▄▄ 2/s ·
+queued       ▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█▁▅█ 2 ▲
+activations  ████████████████████████████████ 33 ▲
+
+latency           queue             turn
+p50 █░░░░░ 76µs   p50 █░░░░░ 34µs   p50 █░░░░░ 40µs
+p90 ███░░░ 304µs  p90 █░░░░░ 136µs  p90 ██░░░░ 160µs
+p99 ██████ 608µs  p99 ███░░░ 272µs  p99 ███░░░ 320µs
+high queue = a hot actor · high turn = a slow method"
+`;

@@ -1,0 +1,74 @@
+{
+    "name": "sigx-actors-monorepo",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Virtual actors for SignalX",
+    "type": "module",
+    "scripts": {
+        "sync:core": "node scripts/sync-core.mjs",
+        "verify:catalog": "node scripts/check-catalog.mjs",
+        "wt": "node scripts/worktree.mjs",
+        "branch-protection": "node scripts/apply-branch-protection.mjs",
+        "build": "pnpm -r run build",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:workers": "pnpm --filter @sigx/actors-cloudflare test:workers",
+        "test:coverage": "vitest run --coverage",
+        "typecheck": "tsgo --noEmit && pnpm --filter @sigx/actors-cli typecheck && pnpm --filter cf-workers-example typecheck",
+        "lint": "oxlint packages/actors/src packages/actors-cli/src packages/actors-pg/src packages/actors-redis/src packages/actors-k8s/src packages/actors-otel/src packages/actors-cloudflare/src benchmarks/src examples/cf-workers/src",
+        "lint:fix": "oxlint --fix packages/actors/src packages/actors-cli/src packages/actors-pg/src packages/actors-redis/src packages/actors-k8s/src packages/actors-otel/src packages/actors-cloudflare/src benchmarks/src examples/cf-workers/src",
+        "bench": "pnpm build && pnpm bench:run",
+        "bench:run": "node --conditions=production --expose-gc benchmarks/src/main.ts",
+        "bench:dev-dist": "node --expose-gc benchmarks/src/main.ts",
+        "bench:tier2": "cross-env BENCH_TIER2=1 node --conditions=production --expose-gc benchmarks/src/main.ts cluster2/ --no-gc-profile",
+        "bench:baseline": "node --conditions=production --expose-gc benchmarks/src/main.ts --save-baseline",
+        "bench:compare": "node --conditions=production --expose-gc benchmarks/src/main.ts --compare",
+        "bench:diff": "node --conditions=production benchmarks/src/compare-files.ts",
+        "bench:profile": "node --conditions=production --expose-gc --enable-source-maps --cpu-prof --cpu-prof-dir=benchmarks/profiles benchmarks/src/main.ts --runs=1",
+        "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules pnpm-lock.yaml",
+        "publish:dry": "node scripts/publish.js --dry-run",
+        "publish:all": "node scripts/publish.js",
+        "publish:beta": "node scripts/publish.js --tag beta",
+        "version:set": "node scripts/bump-version.js",
+        "version:patch": "node scripts/bump-version.js patch",
+        "version:minor": "node scripts/bump-version.js minor",
+        "version:major": "node scripts/bump-version.js major",
+        "verify:pack": "node scripts/verify-pack.js",
+        "size": "size-limit"
+    },
+    "devDependencies": {
+        "@size-limit/preset-small-lib": "^11",
+        "@types/node": "^25.9.1",
+        "@typescript/native-preview": "7.0.0-dev.20260707.2",
+        "@vitest/coverage-v8": "^4.1.5",
+        "cross-env": "^10.1.0",
+        "happy-dom": "^20.9.0",
+        "oxlint": "^1.47.0",
+        "size-limit": "^11",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3",
+        "vitest": "^4.1.5"
+    },
+    "keywords": [
+        "SignalX",
+        "sigx",
+        "actors",
+        "virtual-actors",
+        "actors",
+        "stateful"
+    ],
+    "author": "Andreas Ekdahl",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/signalxjs/actors.git"
+    },
+    "homepage": "https://sigx.dev/actors/",
+    "bugs": {
+        "url": "https://github.com/signalxjs/actors/issues"
+    },
+    "packageManager": "pnpm@10.28.2",
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    }
+}

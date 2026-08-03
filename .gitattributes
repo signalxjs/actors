@@ -1,0 +1,9 @@
+# Scripts are checked out with LF on every platform.
+#
+# `scripts/public-export.mjs` is imported by its test, not merely executed, and
+# a module checked out with CRLF fails to parse if it opens with a shebang —
+# CI on windows-latest reported "SyntaxError: Invalid or unexpected token"
+# while every LF checkout passed. That shebang is gone, but pinning the
+# endings removes the whole class rather than the one instance.
+scripts/*.mjs text eol=lf
+scripts/*.js  text eol=lf

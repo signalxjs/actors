@@ -1,0 +1,1308 @@
+/**
+ * Shared actor types — the dispatch seam, storage contract, and definition
+ * shapes. Split from index.ts so the host, wire, and client entries can
+ * import types without pulling the public API module in.
+ */
+import type { ServerFnGuard, ServerFnReadCache } from '@sigx/server';
+import type { ActorErrorKind, ActorOwnerHint } from './errors';
+
+/** Identity of one virtual actor. Serializable; never holds memory. */
+export interface ActorRef {
+    readonly type: string;
+    readonly key: string;
+}
+
+/** `type\u0000key` — NUL separator so real keys can contain `/` or `:`. */
+export function actorId(ref: ActorRef): string {
+    return `${ref.type}\u0000${ref.key}`;
+}
+
+/** Human-readable identity for error messages. */
+export function actorLabel(ref: ActorRef): string {
+    return `${ref.type}/${ref.key}`;
+}
+
+/**
+ * Per-call metadata riding EVERY dispatch. Serializable by construction
+ * (minus `abortSignal`, which a remote transport maps to fetch abort) so a
+ * future remote placement can forward it and reentrancy detection keeps
+ * working across hops.
+ */
+export interface ActorCallContext {
+    /**
+     * Chain of `actorId()` identities from the original external call to
+     * here. Empty for external calls; each actor-to-actor hop appends the
+     * caller. Drives deadlock detection and call-chain reentrancy.
+     */
+    readonly callChain: readonly string[];
+    /** Correlates one logical request across hops. */
+    readonly callId: string;
+    /** Absolute epoch-ms deadline; local dispatch races the caller against it. */
+    readonly deadline?: number;
+    /**
+     * W3C `traceparent` of the span this call runs under. Unauthenticated
+     * observability metadata for tracing middleware — the runtime only
+     * relays it (envelope, `ctx.actor` hops), never reads it for control
+     * flow. Optional and additive: peers that predate it ignore it.
+     */
+    readonly traceparent?: string;
+    /**
+     * The dispatch resolves at ACCEPTANCE (scheduled on the target activation;
+     * for a remote call, the receiving host's enqueue — the transport reply
+     * is the ack) instead of turn settlement. Failures after acceptance are
+     * dropped-with-counter (`oneWayFailures` in `metrics()`), never
+     * delivered. `true`-only so the envelope stays additive (`ow`): absent
+     * means a normal awaited call. A receiving peer that predates the flag
+     * ignores it and delivers the call as a normal awaited one — still
+     * exactly once; the sender just resolves at turn completion instead of
+     * acceptance.
+     */
+    readonly oneWay?: true;
+    /**
+     * The request-context bag (#246): a small, string-only key/value bag
+     * stamped at the server edge (typically a guard calling `stampCallBag`),
+     * read by methods via `ctx.bag`, inherited by `ctx.actor`/`ctx.publish`
+     * hops, and carried host-to-host on the envelope (`bag`, additive within
+     * v1). Size-capped (see `CALL_BAG_MAX_*`), frozen, never client-settable
+     * over the public wire. NOT integrity-protected between hosts — the
+     * envelope rides outside the cluster HMAC, so its trust is the same
+     * perimeter posture as the rest of the envelope (mTLS/VPC between
+     * hosts). A malformed bag is dropped WHOLE en route, never a 400 — so an
+     * actor must treat a missing entry as unauthenticated, never as a
+     * different principal.
+     */
+    readonly bag?: Readonly<Record<string, string>>;
+    /** Cooperative cancellation from the outermost caller. NOT serialized. */
+    readonly abortSignal?: AbortSignal;
+}
+
+/**
+ * THE dispatch seam. The wire endpoint, `actor()`, `ctx.actor()`, timers and
+ * reminders all go through this and only this — nothing outside an
+ * activation ever touches activation memory. That invariant is what lets a
+ * remote placement (Durable Objects, a cluster directory) replace the local
+ * host without any public API change.
+ */
+export interface ActorDispatcher {
+    dispatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext
+    ): Promise<unknown>;
+    /**
+     * Async-generator (`streams:`) methods. Optional: a transport that
+     * cannot stream simply doesn't declare it and the runtime rejects with
+     * a descriptive error.
+     */
+    dispatchStream?(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext
+    ): AsyncIterable<unknown>;
+    /**
+     * A change-driven READ: the method's result now, and again after every
+     * turn that mutated state. Optional for the same reason as
+     * `dispatchStream` — a transport that cannot stream simply omits it.
+     *
+     * Distinct from `dispatchStream` because it is not a user-authored
+     * generator: the runtime re-invokes an ordinary read method, which is
+     * what lets a subscriber ask for `total()` rather than for state it
+     * would have to re-derive itself.
+     */
+    dispatchWatch?(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown>;
+}
+
+/**
+ * Observes each completed turn, splitting the two things a dispatch
+ * middleware cannot tell apart: `queuedMs`, how long the message waited for
+ * its turn, and `elapsedMs`, how long it then HELD the activation. That
+ * split is the difference between "this actor is slow" (elapsed) and "this
+ * actor is hot" (queued), which are opposite problems with opposite fixes —
+ * and only the activation knows both, since a middleware sees just the sum.
+ *
+ * Positional parameters, not an options object: this runs on every turn, and
+ * an object literal per turn would be an allocation on the hot path.
+ *
+ * Fires for DISPATCHED turns only — the ones a caller waited for, including
+ * reminder delivery (as `$sigx:reminder`). Volatile `ctx.timer` ticks and
+ * write-behind flushes are excluded: they have no caller and no queue wait
+ * of their own, and their cost is already visible as queue wait on whatever
+ * was behind them. Call-chain-reentrant (`ctx.actor` A→B→A) calls run inline
+ * against the caller's turn and are excluded too, since the outer turn
+ * already covers that time.
+ *
+ * INTERLEAVED turns (`reentrant: 'always'` / `methodReentrancy`) fire once
+ * per turn like any other, but launch immediately: `queuedMs` is ~0 and
+ * `elapsedMs` is how long the turn RAN, not how long it held the activation —
+ * their `[start, end]` intervals can overlap.
+ *
+ * Called from a `finally`. Throwing from here is swallowed (dev-logged) —
+ * an observer must never be able to fail a turn.
+ *
+ * `failed` means THE METHOD INVOCATION THREW, which is deliberately narrower
+ * than "the caller saw an error": the runtime's own post-turn bookkeeping
+ * (change fan-out, write-behind scheduling) runs after this and could in
+ * principle fail on its own, and such a turn is reported as succeeded. The
+ * narrow meaning is the one an actor author can act on; widening it is
+ * tracked separately rather than left ambiguous here.
+ *
+ * `call` is the turn's `ActorCallContext` — what lets an observer correlate
+ * the turn with the dispatch that caused it (`callId`, `traceparent`).
+ * Trailing and optional-by-position so existing five-parameter observers
+ * keep compiling; the object already exists per dispatch, so passing it
+ * allocates nothing.
+ */
+export type ActorTurnObserver = (
+    ref: ActorRef,
+    method: string,
+    queuedMs: number,
+    elapsedMs: number,
+    failed: boolean,
+    call?: ActorCallContext
+) => void;
+
+/**
+ * A per-actor-type placement strategy, declared ON the actor rather than
+ * in a central map.
+ *
+ * Deliberately opaque here: choosing a host needs a membership view, which
+ * is a cluster concept, and core must not depend on `./cluster`. Cluster
+ * narrows this to `PlacementPolicy` (adding `choose()`); the single-node
+ * host has one host and ignores it. That keeps the declaration next to the
+ * actor while the algorithm stays in the layer that can implement it.
+ */
+export interface ActorPlacementStrategy {
+    /**
+     * Diagnostic name, e.g. `'prefer-local'` — surfaced in placement
+     * warnings. Optional on purpose: a custom strategy should not have to
+     * carry boilerplate that only exists for logging.
+     */
+    readonly name?: string;
+    /**
+     * Which placement backend understands this strategy, e.g. `'cluster'`.
+     *
+     * This exists because the type here is deliberately OPAQUE — choosing a
+     * host needs a membership view, which is a cluster concept, and core must
+     * not depend on `./cluster`. That opacity is load-bearing (it is what lets
+     * a Durable Objects backend define its own strategies) but it left a
+     * backend unable to tell two very different things apart: a strategy meant
+     * for someone ELSE, which must be ignored silently, and one meant for IT
+     * but malformed, which must fail.
+     *
+     * With the tag a backend distinguishes three cases instead of one, so a
+     * missing `choose()` stops being a dev-only warning and a silent
+     * misplacement in production. Set by each backend's own factories; a
+     * hand-written strategy may omit it, and is then judged on shape alone.
+     */
+    readonly backend?: string;
+}
+
+/**
+ * Where an actor currently lives — the answer to `ActorPlacement.locate()`.
+ *
+ * A discriminated union rather than a nullable owner, so "it is here" cannot
+ * be confused with "I don't know". "I don't know" is `undefined` INSTEAD of
+ * an `ActorLocation` — either by not implementing `locate()` or by returning
+ * undefined from it, which a composing placement has to be able to do.
+ */
+export type ActorLocation =
+    | { readonly local: true }
+    | { readonly local: false; readonly owner: ActorOwnerHint };
+
+/**
+ * Placement: given a ref, WHO dispatches it. The single-node provider
+ * always answers "the local host"; a Durable Objects provider answers with
+ * a stub whose dispatch() is a fetch to the DO. Sync-or-promise so the
+ * local fast path stays allocation-free.
+ */
+export interface ActorPlacement {
+    dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher>;
+    /**
+     * Where this actor lives, WITHOUT dispatching and WITHOUT activating —
+     * what a mount asks before deciding to redirect rather than proxy.
+     *
+     * A placement that cannot answer either omits this or returns
+     * `undefined`, and every mount then falls back to proxying. Both, rather
+     * than only the first, because a COMPOSING placement has to define the
+     * method to forward it and only discovers at call time whether the inner
+     * one implements it. Sync-or-promise so a placement holding the claim
+     * can answer without allocating.
+     *
+     * The answer is a HINT and is allowed to be stale — by the time the
+     * caller acts on it the actor may have moved. That is safe because the
+     * directory, not this, is the arbiter of single-activation.
+     */
+    locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
+    /**
+     * Called once by `createHost` with the host's own local dispatcher and
+     * the host itself, before `start()`. A distributed placement returns
+     * bindings hooking the activation lifecycle (directory claims) and the
+     * reminder tick; the default local placement doesn't implement it.
+     */
+    bind?(local: ActorDispatcher, host: Host): PlacementBindings | void;
+    start?(): void | Promise<void>;
+    /**
+     * Called by `host.stop()` BEFORE the drain begins — a cluster placement
+     * announces `leaving` here so peers stop placing new actors on this
+     * host while it hands its activations off.
+     */
+    beginStop?(): void | Promise<void>;
+    stop?(): void | Promise<void>;
+}
+
+/**
+ * What a placement's `bind()` hands back to the host. Every member is
+ * optional; omitting all of them is the single-node behavior.
+ */
+export interface PlacementBindings {
+    /**
+     * Runs inside the activation reserve, after the definition resolves and
+     * before any state loads — the distributed directory's claim point.
+     * Throwing (e.g. a wrong-host error carrying the winning owner) refuses
+     * the activation: every parked caller rejects and nothing is remembered.
+     */
+    beforeActivate?(ref: ActorRef): void | Promise<void>;
+    /**
+     * Runs after an activation is fully deactivated and forgotten — the
+     * claim release point. Errors are swallowed (dev-logged): a failed
+     * release must not break callers parked on re-activation. Not called
+     * for activations force-dropped at the shutdown deadline.
+     */
+    afterDeactivate?(ref: ActorRef, reason: DeactivationReason): void | Promise<void>;
+    /**
+     * Cluster posture for a call-chain hit on a REENTRANT actor with no
+     * local activation: the chain proves the target is mid-turn somewhere,
+     * so activating a second copy here would violate single-activation.
+     * `true` = throw a retryable deadlock error; default (single-node)
+     * falls back to a normal dispatch.
+     */
+    strictChainPresence?: boolean;
+    /**
+     * Durable-reminder shard ownership — the reminder table is split into
+     * fixed hash shards and each tick a host processes only the shards it
+     * owns (a cluster answers via rendezvous hashing over the membership
+     * view, spreading reminder load; every host still mutates any shard).
+     * Default: own every shard.
+     */
+    ownsReminderShard?(shard: string): boolean | Promise<boolean>;
+    /**
+     * The deactivation reason a graceful `host.stop()` uses. A cluster
+     * placement answers `'migrated'`: the stop is a HANDOFF — claims are
+     * released as activations drain and peers re-place them — not the end
+     * of the actor system. Default `'shutdown'`.
+     */
+    stopReason?: Extract<DeactivationReason, 'shutdown' | 'migrated'>;
+}
+
+/**
+ * The clock seam for BACKGROUND work — the idle sweeper, the reminder tick,
+ * `ctx.timer`, and write-behind flushes. Those are the jobs that must keep
+ * running between requests, so they are the ones a runtime has to be able
+ * to redirect.
+ *
+ * Deliberately NOT everything that touches a timer: call deadlines and the
+ * shutdown drain (`local-host.ts`) stay on host timers, because they are
+ * scoped to a request or a stop that is already in flight and work as-is
+ * wherever that request runs.
+ *
+ * The default (`timerScheduler()`) uses the host timers. A runtime with no
+ * background execution replaces it: a Cloudflare Worker only runs while
+ * handling a request, so a `setInterval` registered at startup never fires
+ * and a Durable Object drives the same work from alarms instead.
+ *
+ * Both methods return a cancel function; cancelling twice is a no-op.
+ */
+export interface ActorScheduler {
+    /** Run `tick` every `intervalMs`. */
+    every(intervalMs: number, tick: () => void): () => void;
+    /** Run `run` once, after `delayMs`. */
+    after(delayMs: number, run: () => void): () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Storage
+
+export interface ActorStorageRecord {
+    /** Codec-encoded (JSON-safe) state as `@sigx/serialize` produced it. */
+    state: unknown;
+    etag: string;
+}
+
+/**
+ * Pluggable persistence with optimistic concurrency. `expectedEtag: null`
+ * means "no stored record yet" (first save). A mismatch must throw the
+ * `ActorStorageConflict` brand — the runtime translates it into
+ * `ActorStateConflictError` and discards the stale activation.
+ */
+export interface ActorStorage {
+    load(type: string, key: string): Promise<ActorStorageRecord | null>;
+    save(type: string, key: string, state: unknown, expectedEtag: string | null): Promise<string>;
+    clear(type: string, key: string, expectedEtag: string | null): Promise<void>;
+}
+
+/**
+ * What the host hands a reminder implementation at bind time — everything
+ * it would otherwise have to be told twice (and could be told wrongly).
+ */
+export interface ActorRemindersContext {
+    /** The host's storage, AFTER any plugin decorators. */
+    readonly storage: ActorStorage;
+    /** The host's clock, so reminder ticks are drivable like everything else. */
+    readonly scheduler: ActorScheduler;
+    /** Requested tick cadence, ms (`HostDefaults.reminderTickMs`). */
+    readonly tickMs: number;
+    /**
+     * Does THIS host own the given reminder shard? A cluster answers via
+     * rendezvous hashing so N hosts split the load; single-node owns all.
+     * Meaningless to an implementation that does not shard.
+     */
+    ownsShard(shard: string): boolean | Promise<boolean>;
+    /** Deliver a due reminder to its actor, activating it if idle. */
+    deliver(ref: ActorRef, name: string): Promise<unknown>;
+}
+
+/**
+ * Durable reminders, as a seam.
+ *
+ * The default (`shardedReminders()`) keeps the table in `ActorStorage` under
+ * a reserved type, split into fixed hash shards that hosts divide between
+ * them — which assumes MANY actors per host. A runtime where that is false
+ * replaces it: under Cloudflare's one-Durable-Object-per-actor model each
+ * actor's reminders live in its own DO and fire from its own alarm, so
+ * there is nothing to shard and nothing to poll.
+ *
+ * `bind()` runs once before `start()`, mirroring `ActorPlacement.bind()`.
+ */
+export interface ActorReminders {
+    bind(context: ActorRemindersContext): void;
+    start(): void | Promise<void>;
+    stop(): void | Promise<void>;
+    /** The per-actor API behind `ctx.reminders`. */
+    apiFor(ref: ActorRef): ReminderApi;
+}
+
+// ---------------------------------------------------------------------------
+// Definition
+
+export interface TimerOptions {
+    /** Delay to first tick, ms. */
+    due: number;
+    /** Repeat period, ms; omit for one-shot. */
+    period?: number;
+    /**
+     * Whether ticks count as activity for idle collection. Default false —
+     * timers don't keep actors alive.
+     */
+    keepAlive?: boolean;
+}
+
+export interface TimerHandle {
+    cancel(): void;
+}
+
+export interface ReminderApi {
+    /**
+     * Register or overwrite a durable reminder. Coarse resolution: fires at
+     * or after `due` ms from now, re-activating the actor if idle. Minimum
+     * `period` is 60s (enforced) — anything tighter is a timer's job.
+     */
+    set(name: string, opts: { due: number; period?: number }): Promise<void>;
+    clear(name: string): Promise<void>;
+    list(): Promise<string[]>;
+}
+
+/** One running detached task, as `ctx.tasks.list()` reports it. */
+export interface TaskInfo {
+    name: string;
+    /** Epoch-ms this run first started. */
+    startedAt: number;
+    /**
+     * Times the runtime re-started the run after a deactivation or crash
+     * (0 on a fresh start). At-least-once: a restarted body replays from
+     * its own checkpointed state.
+     */
+    restarts: number;
+}
+
+/**
+ * Detached long-running work — `ctx.tasks`. A task runs OUTSIDE any turn
+ * (reads interleave while it works) and holds a keep-alive ref so idle
+ * collection skips the actor. State access happens only through the task
+ * context's `turn()`, which is an ordinary serialized turn.
+ */
+export interface TaskApi {
+    /**
+     * Start the named task from the definition's `tasks:` table. Resolves
+     * once the run is launched — NOT when it finishes. Single-flight per
+     * name: starting an already-running task is a no-op. A task that throws
+     * is terminal (it is not restarted); a cancelled task ends with its
+     * abort reason.
+     */
+    start(name: string, input?: unknown): Promise<void>;
+    /**
+     * REQUEST cancellation: abort the run's signal (reason `'cancelled'`)
+     * and return. Deliberately not a join — awaiting settlement from a
+     * method turn would deadlock with the task's own wind-down `turn()`.
+     * The run leaves `list()` once its body settles; restart the name only
+     * after it has.
+     */
+    cancel(name: string): Promise<void>;
+    /** The tasks currently running on this activation. */
+    list(): readonly TaskInfo[];
+}
+
+/**
+ * Why an activation is going away. `'idle'` is the idle sweep;
+ * `'capacity'` the max-activations LRU shed (same sweeper, different
+ * pressure); `'explicit'` a `ctx.deactivate()` / `host.deactivate()`
+ * request; `'shutdown'` the host stopping; `'conflict'` a storage etag
+ * mismatch (the activation is discarded and the next call reloads the
+ * winning state); `'activation-failed'` an `onActivate` throw (nothing to
+ * tear down — `onDeactivate` is skipped); `'migrated'` a cluster handoff
+ * or rebalance — a peer will re-place the actor.
+ */
+export type DeactivationReason =
+    | 'idle'
+    | 'capacity'
+    | 'explicit'
+    | 'shutdown'
+    | 'conflict'
+    | 'activation-failed'
+    | 'migrated';
+
+// ---------------------------------------------------------------------------
+// Topics — actor-to-actor pub/sub
+
+/**
+ * A topic identity: a NAME (the namespace a `subscriptions:` entry binds to)
+ * and a KEY (which subscriber instance receives the event — by default the
+ * subscriber's own actor key). Built by `topic()`, which validates both.
+ *
+ * The type parameter is phantom: it types the payload on the publish side
+ * and never exists at runtime.
+ */
+export interface Topic<T = unknown> {
+    readonly name: string;
+    readonly key: string;
+    /** @internal phantom — payload type only; never set. */
+    readonly __payload?: T;
+}
+
+/** What a subscription handler receives — the whole delivery, not just the
+ *  payload, so one handler can serve several topic keys. */
+export interface TopicEvent<T = unknown> {
+    readonly topic: { readonly name: string; readonly key: string };
+    readonly payload: T;
+    /** Epoch-ms at publish. */
+    readonly at: number;
+    /** The publishing actor, when published from a turn (`ctx.publish`);
+     *  absent for `host.publish()` / `publishTopic()`. */
+    readonly publisher?: ActorRef;
+}
+
+/** One subscriber a publish could not deliver to. The publisher NEVER
+ *  throws for a subscriber's failure — it lands here instead. */
+export interface TopicDeliveryFailure {
+    readonly type: string;
+    readonly key: string;
+    readonly message: string;
+    /** The branded classification, when the failure was an actor error —
+     *  `'deadlock'`, `'call-timeout'`, `'unreachable'`, … */
+    readonly kind?: ActorErrorKind;
+}
+
+/**
+ * What `publish()` resolves to. Delivery is BEST-EFFORT, at-most-once:
+ * "delivered" means the subscriber's handler turn settled without throwing,
+ * bounded by the call deadline. Nothing is persisted, retried, or replayed.
+ */
+export interface TopicPublishReport {
+    /** Subscriber refs targeted (the deploy's subscribing types). */
+    readonly subscribers: number;
+    readonly delivered: number;
+    readonly failures: readonly TopicDeliveryFailure[];
+}
+
+/** Options for `host.publish()` / `publishTopic()`. A bag from day one so a
+ *  future delivery mode has somewhere to live. */
+export interface PublishOptions {
+    signal?: AbortSignal;
+}
+
+/** A `subscriptions:` handler — an ordinary turn, free to mutate
+ *  state and `ctx.save()`. */
+export type TopicSubscriptionHandler<
+    S extends object,
+    Ext extends object = Record<never, never>
+> = (ctx: ActorContext<S, Ext>, event: TopicEvent) => void | Promise<void>;
+
+/**
+ * One `subscriptions:` entry: the handler alone (subscriber key = topic
+ * key), or `{ key, handle }` where `key` maps the topic key to the
+ * subscriber key — `() => 'aggregate'` makes one singleton receive every
+ * key's events.
+ */
+export type TopicSubscription<S extends object, Ext extends object = Record<never, never>> =
+    | TopicSubscriptionHandler<S, Ext>
+    | {
+          /** Map topic key → subscriber key. Default: identity. */
+          key?: (topicKey: string) => string;
+          handle: TopicSubscriptionHandler<S, Ext>;
+      };
+
+/**
+ * The built-in half of the per-activation context — created once per
+ * activation and closed over by the `methods`/`streams` factories.
+ * Activation-scoped (not call-scoped), which is why it is a closure and not
+ * a first parameter.
+ *
+ * Actors see `ActorContext` (below), which is this plus whatever the app's
+ * plugins contribute.
+ */
+export interface ActorContextBase<S extends object> {
+    readonly ref: ActorRef;
+    readonly key: string;
+    /**
+     * Actor state as a deep sigx signal proxy — mutate it directly
+     * (`ctx.state.count++`). `computed`/`watch` created in the `methods`
+     * factory work against it and are disposed with the activation.
+     */
+    readonly state: S;
+    /**
+     * Persist now. Resolves when stored; throws
+     * `ActorStateConflictError` on an etag mismatch, which also discards
+     * this activation.
+     */
+    save(): Promise<void>;
+    /** Delete the stored record; in-memory state resets to `state(key)`. */
+    clearState(): Promise<void>;
+    /** Volatile timer — dies with the activation; ticks are ordinary turns. */
+    timer(name: string, cb: () => void | Promise<void>, opts: TimerOptions): TimerHandle;
+    /** Durable reminders — survive deactivation, re-activate the actor. */
+    readonly reminders: ReminderApi;
+    /** Typed client for another actor; carries the call chain. */
+    actor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D>;
+    /**
+     * The CURRENT turn's request-context bag — the edge-stamped, string-only
+     * key/value metadata riding this call chain (`ActorCallContext.bag`).
+     * Frozen; resolved per read, so it is turn-correct even on interleaving
+     * activations. An empty frozen object outside any turn and in contexts
+     * that deliberately do not inherit it (detached task bodies, volatile
+     * timer ticks — the same rule as `traceparent`). A missing entry means
+     * unauthenticated: en route a malformed bag is dropped whole, never
+     * partially delivered.
+     */
+    readonly bag: Readonly<Record<string, string>>;
+    /**
+     * Publish to a topic. Settles when every subscriber's handler turn has
+     * settled; subscriber failures land in the report, never here. Carries
+     * this turn's call chain, so a subscription cycling back into this
+     * actor is a detected deadlock (a `failures` entry), not a hang.
+     */
+    publish<T>(topic: Topic<T>, payload: T): Promise<TopicPublishReport>;
+    /** Finish the queue, then deactivate. */
+    deactivate(): void;
+    /**
+     * Aborts when this activation begins deactivating (any reason,
+     * including host shutdown) — BEFORE the turn drain, so long-running
+     * work can observe it and wind down inside the drain window.
+     */
+    readonly abortSignal: AbortSignal;
+    /** Detached long-running work declared in the `tasks:` section. */
+    readonly tasks: TaskApi;
+    /** Deep, detached copy of the current state (safe outside a turn). */
+    snapshot(): S;
+    /**
+     * Change feed: yields a `snapshot()` after every turn that mutated
+     * state. Bounded buffer (drop-oldest); made for `streams:` methods,
+     * which must not touch live state after their setup turn returns.
+     *
+     * `{ initial: true }` queues the CURRENT snapshot as the first value,
+     * synchronously, in the same call that registers the subscription — so
+     * `yield* ctx.changes({ initial: true })` has no gap. Prefer it to the
+     * `yield ctx.snapshot()` prologue, which subscribes only after the
+     * consumer resumes past that first yield and therefore loses every
+     * mutation in between.
+     */
+    changes(options?: { initial?: boolean }): AsyncIterable<S>;
+}
+
+/**
+ * What a `methods`/`streams` factory receives: the built-in members plus
+ * `Ext`, the members this app's plugins contribute
+ * (`PluginRegistry.extendContext`).
+ *
+ * `Ext` is threaded from `ActorApp` through the app-bound `defineActor`
+ * (`defineActorApp(...).defineActor`), so a plugin's additions are typed
+ * inside every actor that imports it — no global declaration merging, and
+ * the types stay per-app rather than per-process.
+ */
+export type ActorContext<
+    S extends object,
+    Ext extends object = Record<never, never>
+> = ActorContextBase<S> & Ext;
+
+export type ActorMethod = (...args: never[]) => unknown;
+export type ActorMethodTable = Record<string, ActorMethod>;
+export type ActorStreamMethod = (...args: never[]) => AsyncIterable<unknown>;
+export type ActorStreamTable = Record<string, ActorStreamMethod>;
+export type ActorTask = (input: never) => void | Promise<void>;
+export type ActorTaskTable = Record<string, ActorTask>;
+
+/**
+ * What a `tasks:` body sees. Tasks run DETACHED, outside any turn, so the
+ * live-state members are typed away: no `state`, no `save()`, no
+ * `clearState()`. State access goes through `turn()` — one ordinary
+ * serialized turn with the full context — and reads through
+ * `snapshot()` / `changes()`. `abortSignal` is the RUN's own signal: it
+ * fires on `ctx.tasks.cancel()` (reason `'cancelled'`) and on deactivation
+ * (reason: the `DeactivationReason`), before the turn drain, so a task
+ * can run a final `turn()` checkpoint while winding down.
+ */
+export type ActorTaskContext<
+    S extends object,
+    Ext extends object = Record<never, never>
+> = Omit<ActorContextBase<S>, 'state' | 'save' | 'clearState' | 'abortSignal'> & {
+    /** Re-enter: run `fn` as one ordinary serialized turn. */
+    turn<T>(fn: (ctx: ActorContext<S, Ext>) => T | Promise<T>): Promise<T>;
+    /** This run's signal — see the type doc. */
+    readonly abortSignal: AbortSignal;
+} & Ext;
+
+/**
+ * The second argument to a `migrateState` hook — the same record, in the
+ * form the hook's first argument is NOT.
+ */
+export interface MigrateStateInfo {
+    /**
+     * The codec-ENCODED record, exactly as storage holds it. Reach for it
+     * when the revived view cannot distinguish two stored versions — an old
+     * field whose tag no longer revives to anything useful, say. Read-only
+     * by contract: mutating it does not change what is stored.
+     */
+    readonly raw: unknown;
+    /** The actor key, as `state(key)` receives it. */
+    readonly key: string;
+}
+
+/**
+ * A state-migration hook. The return type is `NoInfer<S>` on purpose: `S` is
+ * inferred from `state:` ALONE, and this is a CHECK site, not a second
+ * inference site. Without that, a migration written over `any` — which is
+ * what casting a `stored: unknown` naturally produces — would infer `S = any`
+ * and silently erase `ctx.state`'s type everywhere, with no error anywhere.
+ * It also makes an `async` hook a type error (`Promise<S>` is not `S`), which
+ * is the sync-only rule enforcing itself.
+ */
+export type MigrateStateFn<S extends object> = (
+    stored: unknown,
+    info: MigrateStateInfo
+) => NoInfer<S>;
+
+/**
+ * `migrateState:` — the bare hook, or the hook plus its write-back policy.
+ * `'lazy'` (the default) writes nothing on its own; `'eager'` issues one CAS
+ * write-back at activation, for records that would otherwise never be saved
+ * and so would be re-migrated on every activation forever.
+ */
+export type MigrateState<S extends object> =
+    | MigrateStateFn<S>
+    | { migrate: MigrateStateFn<S>; persist?: 'lazy' | 'eager' };
+
+export interface ActorOptions<
+    S extends object,
+    M extends ActorMethodTable,
+    St extends ActorStreamTable,
+    Ext extends object = Record<never, never>
+> {
+    /**
+     * Stable type id — the actor's wire, directory, and storage name.
+     * A string literal (the build transform reads it statically); renaming
+     * it is a wire and storage break.
+     */
+    type: string;
+    /**
+     * Transport-independent guard chain, run for every method on every
+     * transport (wire and in-process), OUTSIDE any turn. Required unless
+     * `unguarded: true` when the build gate is on (its default).
+     */
+    use?: readonly ServerFnGuard[];
+    /** The explicit opt-out word for a public actor. */
+    unguarded?: boolean;
+    /** Per-method guard chains, run after `use`. Static map — the method
+     *  table itself is per-activation and cannot carry wire metadata. */
+    methodUse?: Record<string, readonly ServerFnGuard[]>;
+    /**
+     * Per-method interleaving, alongside `methodUse` (same static-map shape,
+     * own keys only): a method mapped to `'always'` is exempt from turn
+     * exclusivity regardless of the actor-level `reentrant` setting — it
+     * never waits for in-flight turns and is never waited for, and an
+     * in-chain call to it never throws `ActorDeadlockError`. Unlisted
+     * methods keep the actor-level behavior exactly.
+     *
+     * The canonical use: read-only `get`-style methods on an otherwise
+     * serial actor, so reads never queue behind a slow write (pairs well
+     * with `reads:` for the HTTP-cacheable ones). The contract is the same
+     * as `reentrant: 'always'`, scoped to the listed methods: their turns
+     * may observe state changes across any `await`.
+     *
+     * Keys must name `methods:` entries — a stream or reserved name fails
+     * the type's first activation loudly, a name matching nothing is
+     * dev-warned there. Redundant on a `reentrant: 'always'` actor, so that
+     * combination fails the same way.
+     */
+    methodReentrancy?: Record<string, 'always'>;
+    /** Initial state factory — used when storage has no record (the
+     *  virtual-actor "always exists" default). */
+    state: (key: string) => S;
+    /**
+     * Evolve a STORED state shape whose layout predates this deploy — the
+     * answer to "the `state:` shape changed and the records didn't".
+     *
+     * Runs between the storage read and activation, and ONLY on a load that
+     * FOUND a record: never on the `state(key)` fresh path, never on
+     * `ctx.clearState()` (which re-seeds through `state(key)` for the same
+     * reason). It also runs BEFORE `onActivate`, which therefore always sees
+     * migrated state — an ordering commitment, not an accident.
+     *
+     * ```ts
+     * migrateState: (stored) => {
+     *     const s = stored as CartV1 | CartV2;
+     *     if ('v' in s) return s;                              // fast path
+     *     return { v: 2, items: s.items ?? [], coupons: [] };  // v1 → v2
+     * }
+     * ```
+     *
+     * `stored` is already CODEC-REVIVED — `Date`/`Map`/`Set` are real objects
+     * again — so `unknown` means unknown SHAPE, not raw JSON. When the revived
+     * view cannot tell two versions apart, `info.raw` is the codec-ENCODED
+     * record as it sits in storage.
+     *
+     * **Returning the input unchanged is the fast path**, and identity is how
+     * that is detected — so to migrate, return a NEW object. Mutating `stored`
+     * in place and returning it works (the value has not been made reactive
+     * yet), but reads as "nothing migrated" to `persist: 'eager'`.
+     *
+     * By default the migrated shape is written back LAZILY: it rides the next
+     * save the actor would have made anyway, so read paths still issue zero
+     * writes and a rolling deploy costs nothing extra. The rule holds in BOTH
+     * persistence modes — `migrateState` never causes a write by itself, so a
+     * `write-behind` actor that is only ever read after a migration does not
+     * persist it. `{ persist: 'eager', migrate }` opts into an immediate CAS
+     * write-back instead, for records that would otherwise never be saved.
+     *
+     * The trade is stated rather than hidden: a fleet mid-rolling-deploy can
+     * migrate the same record on several hosts. That is safe because the hook
+     * is a pure function of the stored value and every write is etag-CAS'd —
+     * the first save wins, and the loser either adopts the winner (eager) or
+     * gets `ActorStateConflictError` and re-activates against it (lazy).
+     *
+     * Synchronous, and a throw fails the activation with
+     * `ActorActivationError` — the same posture as a throwing `onActivate`.
+     * Corrupt state is loud, and the stored record is never silently reset.
+     *
+     * Version bookkeeping is YOUR convention: the runtime neither reads nor
+     * writes a version field, and this is deliberately not a scheme for
+     * versioning an actor's INTERFACE across a mixed-version fleet.
+     */
+    migrateState?: MigrateState<S>;
+    /**
+     * `'explicit'` (default): only `ctx.save()` writes. `'write-behind'`:
+     * a deep watch schedules a debounced save; acked ≠ persisted — use only
+     * for lossy-tolerant state.
+     */
+    persistence?: 'explicit' | { mode: 'write-behind'; debounceMs?: number };
+    /**
+     * Reentrancy. Default `false`: turns are strictly serial and A→B→A
+     * throws `ActorDeadlockError`.
+     *
+     * - `'call-chain'` (alias: `true`, the v1 spelling): A→B→A runs inline
+     *   against this actor's own up-stack turn. Unrelated calls still
+     *   serialize — no foreign interleaving.
+     * - `'always'`: FULL interleaving. Every call is its own turn, launched
+     *   immediately — unrelated calls interleave at every `await`, and
+     *   in-chain calls complete as concurrent turns instead of running
+     *   inline. The single-threaded guarantee narrows to "no two turns run
+     *   simultaneously between awaits": your state can change across EVERY
+     *   `await`, and a save captures a synchronously-consistent frame that
+     *   may be mid-logical-turn. Deadlock by self-cycle is impossible by
+     *   construction. Needs `AsyncLocalStorage` (on Cloudflare Workers:
+     *   the `nodejs_compat` flag, which the DO package already requires).
+     *
+     * For interleaving only SOME methods, see `methodReentrancy`.
+     */
+    reentrant?: boolean | 'call-chain' | 'always';
+    /** Idle collection age for this type; overrides the host default. */
+    idleAfterMs?: number;
+    /**
+     * Where NEW activations of this type go (`consistentHashPolicy()`,
+     * `preferLocalPolicy()`, or your own). Read by
+     * a cluster placement when it resolves a target, and it WINS over the
+     * central `typePolicies` map; ignored single-node.
+     */
+    placement?: ActorPlacementStrategy;
+    /** Runs before the first message; throwing fails all queued callers. */
+    onActivate?(ctx: ActorContext<S, Ext>): void | Promise<void>;
+    /** Runs after the queue drains, before state teardown. */
+    onDeactivate?(ctx: ActorContext<S, Ext>, reason: DeactivationReason): void | Promise<void>;
+    /** Durable-reminder callback. */
+    onReminder?(ctx: ActorContext<S, Ext>, name: string): void | Promise<void>;
+    /**
+     * The method-table factory — called once per ACTIVATION, closing over
+     * ctx. Free to create `computed`/`watch` at construction; they die with
+     * the activation.
+     */
+    methods: (ctx: ActorContext<S, Ext>) => M;
+    /**
+     * Methods that are HTTP-CACHEABLE READS: the endpoint accepts `GET` for
+     * them and emits the `Cache-Control` these values describe, so browser,
+     * CDN and reverse-proxy caches can absorb read traffic that would
+     * otherwise reach an actor.
+     *
+     * ```ts
+     * reads: { summary: { maxAge: 5 }, price: { maxAge: 60, public: true } }
+     * ```
+     *
+     * The declaration is a PROMISE about the method, and the runtime cannot
+     * check it: a listed method must be side-effect-free and idempotent. One
+     * that mutates re-opens CSRF completely, exactly as core's `cache`
+     * declaration does on a serverFn — same vocabulary
+     * ({@link ActorReadCache}), same contract.
+     *
+     * **It also trades away turn ordering for `maxAge` seconds.** A cached
+     * response can be older than the actor's state, and nothing can
+     * invalidate it — not `ctx.save()`, not `useActorAction`, not
+     * `cells.invalidate()`, which reach this page's cells and never a CDN's
+     * copy. Declare it where staleness is a product decision, not a bug.
+     */
+    reads?: { [K in keyof M & string]?: ActorReadCache };
+    /**
+     * Stream-method factory. Each entry runs its body as ONE turn
+     * and must return an async iterable that does NOT touch live state —
+     * use `ctx.snapshot()` / `ctx.changes()`. Unlike `methods`, this
+     * factory must not touch ctx during construction: its keys are
+     * enumerated at definition time (for wire routing) with an inert probe.
+     */
+    streams?: (ctx: ActorContext<S, Ext>) => St;
+    /**
+     * Implicit topic subscriptions — this type receives every publish to the
+     * named topics, with no registration and nothing stored: the subscriber
+     * set is a pure function of the deploy. A publish ACTIVATES an idle
+     * subscriber, exactly as a reminder delivery does.
+     *
+     * ```ts
+     * subscriptions: {
+     *   'chat-messages': (ctx, event) => { ... },   // subscriber key = topic key
+     *   'presence': { key: () => 'aggregate', handle: (ctx, event) => { ... } },
+     * }
+     * ```
+     *
+     * Handlers run as ordinary turns (mutate state, `ctx.save()`).
+     * They are NOT wire-callable and never appear on the client. A handler
+     * that throws fails only its own delivery — the publisher sees a
+     * `failures` entry, other subscribers are untouched.
+     */
+    subscriptions?: Record<string, TopicSubscription<S, Ext>>;
+    /**
+     * Detached long-running work, started via `ctx.tasks.start(name,
+     * input?)`. A task body runs OUTSIDE any turn — other calls
+     * interleave while it works — and touches state only through the task
+     * context's `turn()`. The factory is called once per RUN with that
+     * run's derived context (its own `abortSignal`), and must be a pure
+     * table constructor. No wire surface: start/cancel go through your own
+     * methods, so the guard chain governs them.
+     */
+    tasks?: (ctx: ActorTaskContext<S, Ext>) => ActorTaskTable;
+    /**
+     * @internal Stateless-worker marker — set by `defineWorker` only, never
+     * by hand. Presence flips the runtime to pooled multi-activation
+     * dispatch for this type: no directory claim, no state load, up to
+     * `maxLocal` interchangeable activations per (type, key) on a host.
+     * `defineActor` throws when it appears alongside any identity-bound
+     * option (`persistence`, `tasks`, `subscriptions`, `onReminder`,
+     * `placement`, `reentrant`, `methodReentrancy`).
+     */
+    stateless?: { maxLocal?: number };
+}
+
+/**
+ * What a stateless worker's `methods`/`streams` factories receive. Workers
+ * have no identity-bound surface, so the persistence members are typed away:
+ * no `state`, no `save()`/`clearState()`, no `reminders`, no `tasks`, no
+ * `snapshot()`/`changes()`. `ctx.key` remains — it is the key the caller
+ * addressed — but two calls to the same key may run concurrently on
+ * different pool members: that is the stateless contract.
+ */
+export type WorkerContext<Ext extends object = Record<never, never>> = Omit<
+    ActorContextBase<Record<never, never>>,
+    'state' | 'save' | 'clearState' | 'reminders' | 'tasks' | 'snapshot' | 'changes'
+> &
+    Ext;
+
+/**
+ * The options bag of `defineWorker` — deliberately a hand-written subset of
+ * {@link ActorOptions}, not a derived type: everything identity-bound
+ * (`state`, `persistence`, `tasks`, `onReminder`, `subscriptions`,
+ * `placement`, `reentrant`, `methodReentrancy`) is structurally absent, so a
+ * worker cannot declare it even untyped. Method/stream typing is inferred exactly as for
+ * `defineActor` — from the factories, never from state.
+ */
+export interface WorkerOptions<
+    M extends ActorMethodTable,
+    St extends ActorStreamTable = Record<never, never>,
+    Ext extends object = Record<never, never>
+> {
+    /** Stable type id — the worker's wire and registry name. */
+    type: string;
+    /** Guard chain, exactly as on `ActorOptions.use`. */
+    use?: readonly ServerFnGuard[];
+    /** The explicit opt-out word for a public worker. */
+    unguarded?: boolean;
+    /** Per-method guard chains, run after `use`. */
+    methodUse?: Record<string, readonly ServerFnGuard[]>;
+    /**
+     * Pool cap: max concurrent activations per (type, key) on one host.
+     * Positive integer. Default: `navigator.hardwareConcurrency` clamped to
+     * [1, 16], falling back to 4 where that global does not exist.
+     */
+    maxLocal?: number;
+    /** Idle collection age per pool member; overrides the host default. */
+    idleAfterMs?: number;
+    /** Per-member warm-up (load a model, open a client); throwing fails the
+     *  callers queued on this member only. */
+    onActivate?(ctx: WorkerContext<Ext>): void | Promise<void>;
+    /** Per-member teardown, after that member's queue drains. */
+    onDeactivate?(ctx: WorkerContext<Ext>, reason: DeactivationReason): void | Promise<void>;
+    /** The method-table factory — called once per pool MEMBER. */
+    methods: (ctx: WorkerContext<Ext>) => M;
+    /**
+     * HTTP-cacheable reads, exactly as on `ActorOptions.reads`. A pure
+     * worker read is the ideal candidate: idempotent by construction.
+     */
+    reads?: { [K in keyof M & string]?: ActorReadCache };
+    /**
+     * Stream-method factory, exactly as on `ActorOptions.streams` — but with
+     * no `ctx.changes()`/`snapshot()` to lean on: worker streams are pure
+     * generators. An open stream pins its pool member (counts against
+     * `maxLocal`, exempt from the idle sweep) until it closes.
+     */
+    streams?: (ctx: WorkerContext<Ext>) => St;
+}
+
+export interface ActorDefinition<
+    S extends object = object,
+    M extends ActorMethodTable = ActorMethodTable,
+    St extends ActorStreamTable = ActorStreamTable
+> {
+    readonly type: string;
+    /** Stream-method names, enumerated at definition time. */
+    readonly streamNames: readonly string[];
+    /**
+     * @internal the raw options — the host's activation hook. The context
+     * extension is erased to `any` here: a definition built against an app's
+     * `Ext` must still be a plain `ActorDefinition`, and the host only ever
+     * *calls* these factories with the context it built.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    readonly __sigxActor: ActorOptions<S, M, St, any>;
+}
+
+// `any` variants: `never[]`-typed parameters make the table types invariant
+// enough that concrete definitions won't assign to the defaulted shape.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyActorDefinition = ActorDefinition<any, any, any>;
+
+/**
+ * The cache declaration for one actor read — core's `ServerFnReadCache`,
+ * deliberately by ALIAS rather than by imitation.
+ *
+ * `maxAge` (seconds, no invented default), plus optional
+ * `staleWhileRevalidate`, `public` and `sMaxAge`. A second vocabulary for the
+ * same HTTP headers would drift from the one an app already learned for
+ * serverFns, and the endpoint composing the header is literally core's.
+ */
+export type ActorReadCache = ServerFnReadCache;
+
+/** Per-call options for `actor(...).with()`, mirroring `fn.with()`. */
+export interface ActorCallOptions {
+    signal?: AbortSignal;
+    /** Extra request headers (wire transport only). */
+    headers?: Record<string, string>;
+    /** Explicit server context for in-process calls (`fn.with({ context })`). */
+    context?: unknown;
+    /**
+     * Override the carrier for a method declared in `reads:`, which the client
+     * otherwise sends as a cacheable `GET`. `false` sends it as a POST — the
+     * endpoint accepts both — and the response is then not cacheable.
+     *
+     * Two reasons to reach for it, both real: arguments too large for a URL
+     * (intermediaries cap the query, and the endpoint answers 414), and
+     * arguments that should stay OUT of access logs, proxy traces and referrer
+     * headers. A GET puts the actor key and every argument in the URL, which
+     * is exactly what the hashed routing token exists to avoid for the key.
+     *
+     * Wire transport only, and inert on an undeclared method: the server
+     * accepts GET solely for declared reads.
+     */
+    get?: boolean;
+    /**
+     * Fire-and-forget: the call resolves as `Promise<void>` when it is
+     * ACCEPTED by the target activation (locally: scheduled; remotely: the
+     * transport ack), not when the turn completes. Failures after acceptance
+     * are dropped-with-counter (`oneWayFailures` in `metrics()`), never
+     * delivered; failures BEFORE acceptance (a failing guard, auth, unknown
+     * type, host shutdown, unreachable peer) still reject. Forces POST on a
+     * method declared in `reads:` (a one-way never rides a cacheable GET),
+     * and streams refuse it — a stream is consumed, not fired-and-forgotten.
+     */
+    oneWay?: true;
+    /**
+     * Explicit request-context bag entries for this call — the server-side
+     * escape hatch (scripts, tests, cluster ops) beside the usual path of a
+     * guard calling `stampCallBag`. Merged OVER whatever the call would
+     * otherwise carry (edge-stamped or hop-inherited), explicit entries
+     * winning; validated against the `CALL_BAG_MAX_*` caps (throws — this is
+     * developer input). Server-side only: the browser wire client ignores it
+     * in v1, exactly as `context` is in-process-only and `headers` is
+     * wire-only.
+     */
+    bag?: Readonly<Record<string, string>>;
+}
+
+/** What callers see: methods promise-wrapped, streams as AsyncIterable. */
+export type ActorClient<D> = D extends ActorDefinition<infer _S, infer M, infer St>
+    ? {
+          [K in keyof M]: M[K] extends (...a: infer A) => infer R
+              ? (...a: A) => Promise<Awaited<R>>
+              : never;
+      } & {
+          [K in keyof St]: St[K] extends (...a: infer A) => AsyncIterable<infer T>
+              ? (...a: A) => AsyncIterable<T>
+              : never;
+      }
+    : never;
+
+/**
+ * The client shape behind `.with({ oneWay: true })`: every method resolves
+ * `void` at acceptance, and stream methods are `never` — a stream cannot be
+ * one-way.
+ */
+export type ActorOneWayClient<D> = D extends ActorDefinition<infer _S, infer M, infer St>
+    ? {
+          [K in keyof M]: M[K] extends (...a: infer A) => unknown
+              ? (...a: A) => Promise<void>
+              : never;
+      } & { [K in keyof St]: never }
+    : never;
+
+export type ActorClientWith<D> = ActorClient<D> & {
+    /**
+     * Bind per-call options; returns the same client shape — except
+     * `oneWay: true`, which narrows methods to `Promise<void>`. The overload
+     * needs the literal at the call site: an options value statically typed
+     * as plain `ActorCallOptions` falls through to the second overload even
+     * if it carries `oneWay` at runtime (types then over-promise; the calls
+     * still behave one-way).
+     */
+    with(options: ActorCallOptions & { oneWay: true }): ActorOneWayClient<D>;
+    with(options?: ActorCallOptions): ActorClient<D>;
+};
+
+/**
+ * The names of a definition's `methods` — what `useActorState` reads and
+ * `useActorAction` runs. Stream methods are deliberately excluded: they
+ * return an `AsyncIterable`, not a value a data key can hold.
+ */
+export type ActorReadName<D> = D extends ActorDefinition<infer _S, infer M, infer _St>
+    ? keyof M & string
+    : never;
+
+/** The parameters of one of a definition's methods. */
+export type ActorArgs<D, M extends PropertyKey> = D extends ActorDefinition<
+    infer _S,
+    infer T,
+    infer _St
+>
+    ? M extends keyof T
+        ? T[M] extends (...a: infer A) => unknown
+            ? A
+            : never
+        : never
+    : never;
+
+/** The awaited result of one of a definition's methods. */
+export type ActorResult<D, M extends PropertyKey> = D extends ActorDefinition<
+    infer _S,
+    infer T,
+    infer _St
+>
+    ? M extends keyof T
+        ? // Same `(...a: infer _A)` shape as ActorArgs on purpose: a
+          // `never[]` parameter list also matches (never is the bottom
+          // type, verified for both method-shorthand and arrow-property
+          // declarations), but having the two helpers read identically
+          // keeps the question from being asked again.
+          T[M] extends (...a: infer _A) => infer R
+            ? Awaited<R>
+            : never
+        : never
+    : never;
+
+// ---------------------------------------------------------------------------
+// The host seam contract (what the wire layer and `actor()` consume)
+
+export interface HostStats {
+    activations: number;
+    queued: number;
+    perType: Record<string, number>;
+    /**
+     * Slots mid-activation and mid-deactivation. NOT counted in
+     * `activations`, which only sees settled ones — so a host in an
+     * activation storm reads as idle without these, which is precisely when
+     * you are looking at it.
+     */
+    transitional: { activating: number; deactivating: number };
+}
+
+/**
+ * Resolve a caller-supplied cap to a whole, non-negative, FINITE number.
+ *
+ * `Math.max(0, Math.floor(x))` is the obvious spelling and it has a hole:
+ * `Math.floor(NaN)` is `NaN`, `Math.max(0, NaN)` is `NaN`, and every
+ * subsequent comparison against `NaN` is false — so `limit === 0` misses,
+ * `rows.length > limit` misses, and a bound meant to protect a walk over
+ * millions of activations silently becomes no bound at all. A cap that
+ * fails OPEN is worse than no cap, because nothing looks wrong until the
+ * one call that matters.
+ *
+ * Non-finite input therefore falls back to the default rather than being
+ * honoured: `Infinity` reads as "no limit", which is a request this API
+ * deliberately does not offer.
+ */
+export function resolveLimit(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.floor(value));
+}
+
+/**
+ * What a host that is not running reports. A FACTORY, not a shared frozen
+ * constant: this lands in an ops snapshot and a `HostReport`, both of which
+ * a caller may reasonably transform in place.
+ */
+export const emptyHostStats = (): HostStats => ({
+    activations: 0,
+    queued: 0,
+    perType: {},
+    transitional: { activating: 0, deactivating: 0 }
+});
+
+/** One live activation, as `Host.activations()` reports it. */
+export interface ActivationInfo {
+    type: string;
+    key: string;
+    /** Turns depth: unsettled turns — queued plus running (an
+     *  interleaving actor can have several running). */
+    queued: number;
+    /** Since activation, ms. Monotonic. */
+    ageMs: number;
+    /** Since the last turn, ms. Wall clock — this is what idle collection reads. */
+    idleMs: number;
+    /** Held open — by a stream, a watch, or a running detached task — so
+     *  idle sweeping skips it. When `tasks > 0`, the tasks are the reason. */
+    keptAlive: boolean;
+    /** Detached task runs currently held by this activation — the actors
+     *  hosting long-running work. Counted in `keptAlive` too. */
+    tasks: number;
+}
+
+export interface ActivationsOptions {
+    /**
+     * How many to return. Default 100.
+     *
+     * Bounded on purpose, and low: a host can hold millions of activations,
+     * and this walks them all to sort. It is a "top N" view, not an export.
+     */
+    limit?: number;
+    /**
+     * `'queued'` (most queued turns first) — the hot actors.
+     * `'age'` (oldest first) — the long-lived ones.
+     * `'idle'` (most idle first) — the next sweep's candidates.
+     * Default `'queued'`.
+     */
+    sortBy?: 'queued' | 'age' | 'idle';
+    /** Only this actor type. */
+    type?: string;
+}
+
+export interface Host extends ActorDispatcher {
+    /** Definition lookup — the wire resolver's 404 authority. May load lazily. */
+    definition(type: string): AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
+    /**
+     * Where an actor lives, without dispatching or activating — delegates to
+     * the placement's `locate()`.
+     *
+     * `undefined` means "cannot answer", which is what a single-node host
+     * and any placement without `locate()` return. Callers must treat that
+     * as "assume local / just dispatch", never as an error — one check
+     * covers both a placement that opts out and a host built before the
+     * seam existed.
+     *
+     * The endpoint uses this to answer 421 with the owner instead of
+     * proxying; nothing else should need it, because dispatching already
+     * routes correctly on its own.
+     */
+    locate?(ref: ActorRef): ActorLocation | Promise<ActorLocation> | undefined;
+    actor<D extends AnyActorDefinition>(def: D, key: string): ActorClientWith<D>;
+    /**
+     * Publish to a topic from OUTSIDE any actor (a serverFn, a script, a
+     * timer). An external call: fresh chain, default deadline. See
+     * `ActorContextBase.publish` for the in-turn form, which carries the
+     * caller's chain.
+     */
+    publish<T>(topic: Topic<T>, payload: T, options?: PublishOptions): Promise<TopicPublishReport>;
+    /** Starts sweeper + reminders and stamps the host seam. Idempotent. */
+    start(): Promise<void>;
+    /** Drain, flush, clear the seam. Default timeout 30s. */
+    stop(opts?: { timeoutMs?: number }): Promise<void>;
+    /**
+     * Gracefully deactivate ONE activation (drain its turns, flush,
+     * forget). No-op if the actor isn't active here. `reason` defaults to
+     * `'explicit'`; a cluster rebalancer passes `'migrated'`.
+     */
+    deactivate(ref: ActorRef, reason?: DeactivationReason): Promise<void>;
+    /** Deactivate every activation of one type (dev/HMR hook). */
+    deactivateType(type: string): Promise<void>;
+    stats(): HostStats;
+    /**
+     * The live activations themselves, bounded and sorted — what `stats()`
+     * collapses into counts.
+     *
+     * This is the "top actors" view: which keys are hot, which are old,
+     * which are about to be swept. Without it a dashboard can say a host
+     * holds 12,000 activations with 400 queued turns and cannot say WHERE,
+     * which is the only question worth asking at that point.
+     *
+     * Walks the directory, so it costs O(activations) and allocates one
+     * record per candidate — hence the default limit of 100. Poll it at
+     * human rates, not per request.
+     */
+    activations(options?: ActivationsOptions): readonly ActivationInfo[];
+    /**
+     * Observe every dispatched turn; returns an unsubscribe.
+     *
+     * When the LAST observer unsubscribes the runtime stops taking the
+     * per-turn timestamps altogether, so observation can be switched on for
+     * an investigation and off again without leaving a permanent cost
+     * behind. That is the difference between disabling the work and merely
+     * discarding its results.
+     */
+    observeTurns(observer: ActorTurnObserver): () => void;
+}

@@ -1,0 +1,132 @@
+# .github/workflows/core-sync.yml
+# Opens (or updates) a "chore: align with core X.Y" PR whenever sigx core ships a
+# new version. Triggered by a repository_dispatch (`core-released`) fanned out from
+# core's release.yml (its `notify-consumers` job, gated on an ECOSYSTEM_DISPATCH_TOKEN
+# secret), a weekly safety-net schedule, or manually. Part of the sigx standard —
+# keep in sync with signalxjs/repo-template. Needs the repo's `catalog:` block set up
+# and `scripts/sync-core.mjs` present; see the repo-template adoption guide
+# ("Wire up core catalog alignment") for the one-time setup.
+#
+# `node-version` matches the CI/release workflows (22).
+name: Sync with core
+
+on:
+  repository_dispatch:
+    types: [core-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Core version to align to (e.g. 0.13.0). Blank = latest on npm."
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC — catches anything the dispatch missed
+
+# Scoped at the JOB, matching release.yml and bench.yml. A workflow-level
+# grant applies to every job a future edit adds, including one that only needs
+# to read.
+permissions: {}
+
+jobs:
+  align:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Pinned to v5 ON PURPOSE — do NOT "align" this with whatever checkout version
+      # the repo's other workflows use. This is the only workflow here that runs
+      # peter-evans/create-pull-request, and v5 is the last version compatible with it.
+      # checkout v6 moved credential storage to git's `includeIf`, which
+      # create-pull-request (below) does not detect, so it configures a SECOND auth
+      # header and every git remote call dies with
+      #   remote: Duplicate header: "Authorization"  ->  HTTP 400
+      # before the action ever looks at the diff. peter-evans/create-pull-request#4272
+      # is open against checkout v6+ and reports it unfixed in create-pull-request v7
+      # and v8 as of 2026-07, so bumping the PR action is not the way out.
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Target version: dispatch payload > manual input > latest on npm.
+      #
+      # The npm lookup is resolved HERE rather than left to sync-core's internal
+      # fallback, because the cron and payload-less dispatch paths would otherwise
+      # leave every downstream step (and the PR title) with no version to name —
+      # an alignment PR that cannot say which minor it aligns to is a worse
+      # artifact than the bump it carries.
+      - name: Resolve target core version
+        id: target
+        # Through `env:`, never interpolated into the script. `${{ … }}` is
+        # substituted as TEXT before bash sees the line, so a payload of
+        # `"; curl … | sh; #` executes with this job's write-scoped token.
+        # Firing repository_dispatch needs a repo-write PAT, so it is not
+        # reachable by a stranger — but the shape is the textbook one and the
+        # fix costs nothing.
+        env:
+          PAYLOAD_VERSION: ${{ github.event.client_payload.version }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          V="$PAYLOAD_VERSION"
+          [ -z "$V" ] && V="$INPUT_VERSION"
+          if [ -z "$V" ]; then
+            V=$(npm view @sigx/reactivity version)
+            echo "No version supplied (cron or bare dispatch) — latest on npm is $V"
+          fi
+          MINOR=$(printf '%s' "$V" | sed -E 's/^v?([0-9]+)\.([0-9]+).*/\1.\2/')
+          # Validate the RESULT, never "did sed change the string" — an input that
+          # is already a bare minor ("0.13", which the manual-dispatch path accepts)
+          # comes back unchanged and would fail an equality check despite being
+          # perfectly valid.
+          if ! printf '%s' "$MINOR" | grep -qE '^[0-9]+\.[0-9]+$'; then
+            echo "::error::could not parse a minor from core version '$V'"
+            exit 1
+          fi
+          echo "version=$V"   >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "Aligning to core $MINOR (from $V)"
+
+      - name: Align catalog to core
+        run: node scripts/sync-core.mjs "${{ steps.target.outputs.minor }}"
+
+      # Prove it still builds/tests green before proposing the bump. If this
+      # fails, the core release introduced a breaking change this repo must
+      # migrate by hand — the job fails loudly instead of opening a red PR.
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm verify:catalog
+
+      - name: Open / update alignment PR
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
+        with:
+          branch: chore/align-with-core
+          commit-message: "chore: align with core ${{ steps.target.outputs.minor }}"
+          title: "chore: align with core ${{ steps.target.outputs.minor }}"
+          body: |
+            Automated by `core-sync.yml`. Aligns the `catalog:` core pins in
+            `pnpm-workspace.yaml` to core **${{ steps.target.outputs.minor }}**
+            (released as `${{ steps.target.outputs.version }}`) and refreshes the
+            lockfile.
+
+            Build, typecheck, test and `verify:catalog` passed on this branch —
+            if a future core release breaks this repo, this workflow fails
+            instead of opening the PR, so a red PR here should never happen.
+
+            Sibling pins (`@sigx/router`, `@sigx/cli`, …) are deliberately NOT
+            touched: they release on their own tier. See core's
+            `docs/ecosystem-release.md` for the order.
+
+            Review, then merge + cut a release per RELEASING.md.
+          # The requested-reviewers API takes the `[bot]`-suffixed slug; a bare
+          # `copilot` does not resolve to the review bot and the request is
+          # silently dropped. (The review AUTHOR login comes back without the
+          # suffix, which is what makes the bare form look plausible.)
+          reviewers: copilot-pull-request-reviewer[bot]
+          add-paths: |
+            pnpm-workspace.yaml
+            pnpm-lock.yaml

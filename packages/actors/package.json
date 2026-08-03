@@ -1,0 +1,136 @@
+{
+    "name": "@sigx/actors",
+    "version": "0.1.0",
+    "description": "Virtual actors for SignalX \u2014 addressable, single-threaded, persistent server state",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "development": "./dist/index.js",
+            "production": "./dist/index.prod.js",
+            "import": "./dist/index.js"
+        },
+        "./host": {
+            "types": "./dist/host/index.d.ts",
+            "development": "./dist/host.js",
+            "production": "./dist/host.prod.js",
+            "import": "./dist/host.js"
+        },
+        "./server": {
+            "types": "./dist/server/index.d.ts",
+            "development": "./dist/server.js",
+            "production": "./dist/server.prod.js",
+            "import": "./dist/server.js"
+        },
+        "./node": {
+            "types": "./dist/node/index.d.ts",
+            "development": "./dist/node.js",
+            "production": "./dist/node.prod.js",
+            "import": "./dist/node.js"
+        },
+        "./client": {
+            "types": "./dist/client/index.d.ts",
+            "development": "./dist/client.js",
+            "production": "./dist/client.prod.js",
+            "import": "./dist/client.js"
+        },
+        "./app": {
+            "types": "./dist/app/index.d.ts",
+            "development": "./dist/app.js",
+            "production": "./dist/app.prod.js",
+            "import": "./dist/app.js"
+        },
+        "./job": {
+            "types": "./dist/job/index.d.ts",
+            "development": "./dist/job.js",
+            "production": "./dist/job.prod.js",
+            "import": "./dist/job.js"
+        },
+        "./cluster": {
+            "types": "./dist/cluster/index.d.ts",
+            "development": "./dist/cluster.js",
+            "production": "./dist/cluster.prod.js",
+            "import": "./dist/cluster.js"
+        },
+        "./cluster/frames": {
+            "types": "./dist/cluster/frames.d.ts",
+            "development": "./dist/cluster-frames.js",
+            "production": "./dist/cluster-frames.prod.js",
+            "import": "./dist/cluster-frames.js"
+        },
+        "./vite": {
+            "types": "./dist/vite/index.d.ts",
+            "import": "./dist/vite.js"
+        },
+        "./vite-client": {
+            "types": "./dist/vite/virtual.d.ts"
+        }
+    },
+    "files": [
+        "dist",
+        "CHANGELOG.md"
+    ],
+    "sideEffects": false,
+    "scripts": {
+        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly && node -e \"require('fs').copyFileSync('src/vite/virtual.d.ts','dist/vite/virtual.d.ts')\"",
+        "dev": "vite build --watch"
+    },
+    "keywords": [
+        "sigx",
+        "actors",
+        "virtual-actors",
+        "actors",
+        "stateful",
+        "server"
+    ],
+    "author": "Andreas Ekdahl",
+    "license": "MIT",
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/signalxjs/actors.git",
+        "directory": "packages/actors"
+    },
+    "homepage": "https://sigx.dev/actors/",
+    "bugs": {
+        "url": "https://github.com/signalxjs/actors/issues"
+    },
+    "devDependencies": {
+        "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/server-renderer": "catalog:",
+        "@sigx/vite": "catalog:",
+        "@types/node": "^25.9.1",
+        "sigx": "catalog:",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "peerDependencies": {
+        "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/vite": "catalog:",
+        "vite": ">=6"
+    },
+    "peerDependenciesMeta": {
+        "@sigx/vite": {
+            "optional": true
+        },
+        "@sigx/runtime-core": {
+            "optional": true
+        },
+        "vite": {
+            "optional": true
+        }
+    }
+}

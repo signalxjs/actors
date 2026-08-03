@@ -1,0 +1,99 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+docs/dist/
+*.d.ts
+*.d.ts.map
+# Hand-written ambient declarations are SOURCE, at any depth
+# (e.g. src/vite/virtual.d.ts declaring `virtual:sigx-actors`).
+!packages/*/src/**/*.d.ts
+!examples/*/src/**/*.d.ts
+*.js
+*.js.map
+
+# Keep specific JS files
+!vite.config.js
+!*.config.js
+!examples/*.js
+!scripts/*.js
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Environment variables. The `.env.*` wildcard matters: the explicit list
+# below covers `.env.production.local` but NOT a bare `.env.production`, which
+# is the one people actually create.
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Credentials and cluster access. None of these have ever been committed here;
+# they are listed so that stays true for contributors whose global gitignore
+# does not cover them.
+*.pem
+*.key
+*.p12
+*.pfx
+kubeconfig
+*.kubeconfig
+*.tfstate
+*.tfstate.*
+
+# Agent tooling. `settings.json` IS shared config and stays tracked;
+# `settings.local.json` is per-machine permission grants and must not be.
+.claude/settings.local.json
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Testing
+coverage/
+
+# Runtime data (fileStorage of running examples/dev hosts)
+.actors/
+
+# Benchmark output. Results and the local baseline are machine-specific —
+# only benchmarks/BASELINES.md (hand-curated, with its machine recorded) is
+# committed. Heap snapshots and .cpuprofile files are large and disposable.
+benchmarks/results/
+benchmarks/baselines/
+benchmarks/profiles/
+# …and the same artefacts written anywhere else, e.g. `node --cpu-prof` run by
+# hand from a package directory.
+*.cpuprofile
+*.heapsnapshot
+
+# Misc
+.cache/
+.temp/
+.tmp/
+.wrangler/
+.dev.vars
+.mf/
+examples/cf-workers/.wrangler/

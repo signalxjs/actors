@@ -1,0 +1,32 @@
+{
+    // Its own program, chained from the repo-root `typecheck` script — the
+    // same mechanism `@sigx/actors-cli` uses, and for the same kind of
+    // reason.
+    //
+    // It cannot join the root config: Worker code needs the
+    // `@cloudflare/workers-types` globals, which redeclare `Request`,
+    // `Response`, `fetch` and friends. Pulling those into the repo-wide
+    // program would collide with the DOM/node lib set every other package
+    // compiles against.
+    //
+    // `@sigx/actors*` resolve from SOURCE, as the root config does, so a
+    // clean checkout typechecks before anything is built.
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "ES2022",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "types": ["@cloudflare/workers-types"],
+        "verbatimModuleSyntax": true,
+        "paths": {
+            "@sigx/actors": ["../../packages/actors/src/index.ts"],
+            "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/server": ["../../packages/actors/src/server/index.ts"],
+            "@sigx/actors/cluster": ["../../packages/actors/src/cluster/index.ts"],
+            "@sigx/actors-cloudflare": ["../../packages/actors-cloudflare/src/index.ts"]
+        }
+    },
+    "include": ["src/**/*.ts"]
+}

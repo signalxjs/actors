@@ -1,0 +1,108 @@
+[
+  {
+    "name": "@sigx/actors",
+    "path": "packages/actors/dist/index.prod.js",
+    "limit": "4 KB",
+    "ignore": [
+      "@sigx/reactivity",
+      "@sigx/runtime-core",
+      "@sigx/serialize",
+      "@sigx/server"
+    ]
+  },
+  {
+    "name": "@sigx/actors { actor } (tree-shaking guard)",
+    "path": "packages/actors/dist/index.prod.js",
+    "import": "{ actor }",
+    "limit": "2 KB",
+    "ignore": [
+      "@sigx/reactivity",
+      "@sigx/runtime-core",
+      "@sigx/serialize",
+      "@sigx/server"
+    ]
+  },
+  {
+    "name": "@sigx/actors/client",
+    "path": "packages/actors/dist/client.prod.js",
+    "limit": "5 KB",
+    "ignore": [
+      "@sigx/serialize"
+    ]
+  },
+  {
+    "name": "@sigx/actors/client (tree-shaking guard: no router)",
+    "path": "packages/actors/dist/client.prod.js",
+    "import": "{ __actorRef, configureActors, fetchTransport }",
+    "limit": "2 KB",
+    "ignore": [
+      "@sigx/serialize"
+    ]
+  },
+  {
+    "name": "@sigx/actors/app",
+    "path": "packages/actors/dist/app.prod.js",
+    "limit": "5.4 KB",
+    "ignore": [
+      "@sigx/reactivity",
+      "@sigx/runtime-core",
+      "@sigx/serialize"
+    ]
+  },
+  {
+    "name": "@sigx/actors/job",
+    "path": "packages/actors/dist/job.prod.js",
+    "limit": "3 KB",
+    "ignore": [
+      "@sigx/serialize"
+    ]
+  },
+  {
+    "name": "@sigx/actors/cluster",
+    "path": "packages/actors/dist/cluster.prod.js",
+    "limit": "12.5 KB",
+    "ignore": [
+      "@sigx/server",
+      "@sigx/serialize"
+    ]
+  },
+  {
+    "name": "@sigx/actors/cluster/frames",
+    "path": "packages/actors/dist/cluster-frames.prod.js",
+    "limit": "4.1 KB"
+  },
+  {
+    "name": "@sigx/actors/server",
+    "path": "packages/actors/dist/server.prod.js",
+    "limit": "6 KB",
+    "ignore": [
+      "@sigx/server",
+      "@sigx/serialize"
+    ]
+  },
+  {
+    "name": "@sigx/actors-cloudflare",
+    "path": "packages/actors-cloudflare/dist/index.prod.js",
+    "limit": "4 KB",
+    "ignore": [
+      "@sigx/actors"
+    ]
+  },
+  {
+    "name": "@sigx/actors-otel",
+    "path": "packages/actors-otel/dist/index.prod.js",
+    "limit": "3 KB",
+    "ignore": [
+      "@sigx/actors",
+      "@opentelemetry/api"
+    ]
+  },
+  {
+    "name": "@sigx/actors-otel/prometheus",
+    "path": "packages/actors-otel/dist/prometheus.prod.js",
+    "limit": "3 KB",
+    "ignore": [
+      "@sigx/actors"
+    ]
+  }
+]

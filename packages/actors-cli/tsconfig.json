@@ -1,0 +1,30 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "ES2022",
+        // DOM for the web platform types the wire layer uses (`Request`,
+        // `HeadersInit`, `fetch`) — NOT for JSX. The JSX intrinsics here
+        // are the terminal's, and this program gets them because it never
+        // imports `sigx`: `@sigx/runtime-terminal` and `sigx` both augment
+        // the GLOBAL JSX namespace and both declare `text`, so a program
+        // containing both cannot have `<text color="cyan">` mean the
+        // terminal one. That is why this package has its own tsconfig at
+        // all, and why the repo-root config excludes it.
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "moduleResolution": "bundler",
+        "strict": true,
+        "types": ["node"],
+        "declaration": true,
+        "declarationMap": true,
+        "sourceMap": true,
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+        "skipLibCheck": true,
+        "jsx": "react-jsx",
+        "jsxImportSource": "@sigx/terminal"
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx"],
+    "exclude": ["node_modules", "dist"]
+}

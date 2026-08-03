@@ -1,0 +1,54 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "sigx",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    // `benchmarks/` runs straight off Node's native type stripping, which
+    // needs the full `./x.ts` specifier on every relative import.
+    "allowImportingTsExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@sigx/actors": ["./packages/actors/src/index.ts"],
+      "@sigx/actors/host": ["./packages/actors/src/host/index.ts"],
+      "@sigx/actors/server": ["./packages/actors/src/server/index.ts"],
+      "@sigx/actors/node": ["./packages/actors/src/node/index.ts"],
+      "@sigx/actors/client": ["./packages/actors/src/client/index.ts"],
+      "@sigx/actors/app": ["./packages/actors/src/app/index.ts"],
+      "@sigx/actors/job": ["./packages/actors/src/job/index.ts"],
+      "@sigx/actors/cluster/frames": ["./packages/actors/src/cluster/frames.ts"],
+      "@sigx/actors/cluster/testing": ["./packages/actors/src/cluster/testing.ts"],
+      "@sigx/actors/cluster": ["./packages/actors/src/cluster/index.ts"],
+      "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"],
+      "@sigx/actors-ws": ["./packages/actors-ws/src/index.ts"],
+      "@sigx/actors-otel/prometheus": ["./packages/actors-otel/src/prometheus.ts"],
+      "@sigx/actors-otel": ["./packages/actors-otel/src/index.ts"],
+      "@sigx/actors-k8s": ["./packages/actors-k8s/src/index.ts"],
+      "@sigx/actors-tcp": ["./packages/actors-tcp/src/index.ts"],
+      "@sigx/actors-pg": ["./packages/actors-pg/src/index.ts"],
+      "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"],
+      "@sigx/actors-cloudflare": ["./packages/actors-cloudflare/src/index.ts"],
+      "@sigx/actors-cli/source": ["./packages/actors-cli/src/source/index.ts"],
+      "@sigx/actors-cli": ["./packages/actors-cli/src/plugin.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/__tests__/**/*.ts",
+    "packages/*/src/**/*.tsx",
+    "benchmarks/src/**/*.ts",
+    "benchmarks/__tests__/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "packages/actors-cloudflare/__tests__/workers",
+    "packages/actors-cli",
+    "dist",
+    "packages/*/dist"
+  ]
+}
