@@ -362,6 +362,12 @@ function liveView(
         get value() {
             return pushed.has ? pushed.value : state.value;
         },
+        get hasValue() {
+            // A pushed value is as present as a fetched one; otherwise defer
+            // to the cell, which discriminates on state rather than a null
+            // test (core #485).
+            return pushed.has || state.hasValue;
+        },
         get error() {
             if (pushed.has) return null;
             return state.error ?? (unsettled() ? pushed.error : null);

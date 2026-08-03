@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **sigx core peer range moves to `^0.14.0`** (#267). The
+  `@sigx/reactivity` / `@sigx/runtime-core` / `@sigx/serialize` /
+  `@sigx/server` / `@sigx/vite` peers now require core 0.14. Notable for
+  consumers: core 0.14 turns on `sigxServer({ requireGuards })` by
+  default, so a bare `serverFn` beside your actors becomes a build error
+  — declare `use:`, derive from a preset, or mark it `unguarded: true`
+  (the actors-side `requireGuards` gate in `sigxActors()` already worked
+  this way). The live `useActorState` view also gains core 0.14's
+  `AsyncState.hasValue`, and an ambient request scope's `locals` (the
+  per-request store core 0.14 introduces) now flows through in-process
+  actor guard chains by reference.
+
 ### Added
 
 - **Full interleaving — `reentrant: 'always'` and per-method

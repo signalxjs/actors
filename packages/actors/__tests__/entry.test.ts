@@ -116,6 +116,40 @@ describe('actor() entry', () => {
         expect(sawUrl).toBe('https://example.test/page');
     });
 
+    it('the ambient seam returning { request, locals } shares the locals store with guards', async () => {
+        // Core 0.14 (#494): a request scope resolves to a Partial<ServerFnContext>
+        // whose `locals` IS the per-request store. Pin that an actor guard both
+        // reads it and that its writes land back in the same store.
+        const request = new Request('https://example.test/scoped');
+        const locals: Record<string, unknown> = { user: 'ada' };
+        let sawUser: unknown = null;
+        const g = globalThis as { __SIGX_SERVERFN_CONTEXT__?: () => unknown };
+        g.__SIGX_SERVERFN_CONTEXT__ = () => ({ request, locals });
+        try {
+            const def = defineActor({
+                type: 'AmbientLocals',
+                use: [
+                    (rq: ServerFnContext) => {
+                        sawUser = rq.locals.user;
+                        rq.locals.stamped = true;
+                    }
+                ],
+                state: () => ({}),
+                methods: () => ({
+                    async ping() {
+                        return 'pong';
+                    }
+                })
+            });
+            await startHost([def]);
+            await expect(actor(def, 'a').ping()).resolves.toBe('pong');
+            expect(sawUser).toBe('ada');
+            expect(locals.stamped).toBe(true);
+        } finally {
+            delete g.__SIGX_SERVERFN_CONTEXT__;
+        }
+    });
+
     it('a guard reading rq.request with no context gets the descriptive detached throw', async () => {
         const def = defineActor({
             type: 'Detached',
