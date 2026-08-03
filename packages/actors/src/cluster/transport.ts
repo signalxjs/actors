@@ -14,7 +14,7 @@ import { ActorUnreachableError, isActorError } from '../errors';
 import type { ActorRoute } from '../host/app';
 import type { ActorCallContext, ActorDispatcher } from '../types';
 import { relayStream } from '../stream-relay';
-import { readNdjson, type WireError } from '../wire-shared';
+import { parseWireWith, readNdjson, type WireError } from '../wire-shared';
 import { encodeEnvelope, signAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from './envelope';
 import type {
     HostTransport,
@@ -122,10 +122,9 @@ export function httpTransport(options: HttpTransportOptions = {}): HostTransport
                     if (!res.ok || !res.body) {
                         let wire: WireError | undefined;
                         try {
-                            wire = (
-                                JSON.parse(await res.text(), config.codec.reviver) as {
-                                    error?: WireError;
-                                }
+                            wire = parseWireWith<{ error?: WireError }>(
+                                await res.text(),
+                                config.codec.reviver
                             )?.error;
                         } catch {
                             wire = undefined;
@@ -180,10 +179,10 @@ export function httpTransport(options: HttpTransportOptions = {}): HostTransport
                 );
                 let parsed: { data?: unknown; error?: WireError } | undefined;
                 try {
-                    parsed = JSON.parse(await res.text(), config.codec.reviver) as {
-                        data?: unknown;
-                        error?: WireError;
-                    };
+                    parsed = parseWireWith<{ data?: unknown; error?: WireError }>(
+                        await res.text(),
+                        config.codec.reviver
+                    );
                 } catch {
                     parsed = undefined;
                 }

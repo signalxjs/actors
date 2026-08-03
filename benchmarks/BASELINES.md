@@ -740,10 +740,11 @@ these are known problems** — they are measurements looking for a decision.
 7. **`consistentHashPolicy()` costs ~16 µs per decision at N=100** (63×
    worse than at N=1) because it hashes `actorId|hostId` for every host.
    Only paid on a route-cache miss, and small next to a network hop.
-8. **Every `JSON.parse` on the wire passes a reviver** (`wire-shared.ts:29`,
-   used at `wire-shared.ts:104`, `client/index.ts:267`/`:291`,
-   `cluster/frames.ts:136`, `cluster/transport.ts:126`/`:183`). A reviver
-   disables V8's fast parser. Measured standalone on the machine above:
+8. **FIXED (#218): every `JSON.parse` on the wire passed a reviver**
+   (`wire-parse.ts`, used at `wire-shared.ts` `readNdjson`,
+   `client/index.ts` ×2, `cluster/frames.ts` `decodeFrameBody`,
+   `cluster/transport.ts` ×2). A reviver disables V8's fast parser. Measured
+   standalone on the machine above:
 
    | payload | plain | + reviver | pre-scan then parse |
    |---|---:|---:|---:|
@@ -751,11 +752,19 @@ these are known problems** — they are measurements looking for a decision.
    | 90 B | 1 191 ns | 10 020 ns (8.4×) | 1 390 ns |
    | 9 KB (200 rows) | 72 µs | 773 µs (10.7×) | 90 µs |
 
-   **Size the fix against the rung, not against this table.** Native
-   `JSON.parse` is only 5.7% of `wire/endpoint-roundtrip`, because that rung is
-   dominated by undici and webstreams (above) — so the recoverable share there
-   is a few percent, not 5–10×. It is worth more on `cluster/frames.ts`, where
-   the binary transports carry no `Request`/`Response` overhead at all.
+   `parseWire` now pre-scans for `__proto__` / `constructor` / `prototype` /
+   `\u` and skips the reviver when none can be present; a custom codec
+   reviver (judged by identity against the default) always takes the full
+   walk. The `frames/decode` scenario pins the effect in-tree: decode with
+   the default reviver vs a custom one measured **4.6×** on a ~90 B reply
+   and **7.6×** on a 9 KB 200-row payload (i9-12900HK, busy machine — the
+   ratio is robust even when the absolute numbers are not).
+
+   **Sized against the rung, as predicted:** `wire/endpoint-roundtrip` was
+   unchanged within noise (native `JSON.parse` is only 5.7% of it — the rung
+   is dominated by undici and webstreams, above). The win lives on
+   `cluster/frames.ts`, where the binary transports carry no
+   `Request`/`Response` overhead at all.
 
 ---
 

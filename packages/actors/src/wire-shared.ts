@@ -24,10 +24,12 @@ function extraHandlers(): readonly TypeHandler[] {
 export const encodeWire = (value: unknown): unknown => encodeWithHandlers(value, extraHandlers());
 export const reviveWire = (value: unknown): unknown => reviveWithHandlers(value, extraHandlers());
 
-/** Prototype-pollution keys DROPPED from every parsed payload. */
-const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-export const reviver = (key: string, value: unknown): unknown =>
-    DANGEROUS_KEYS.has(key) ? undefined : value;
+// The pollution-safe reviver and the guarded fast-path parse (#218) live in
+// their own dependency-free module so `./cluster/frames` can import them
+// without this module's `@sigx/serialize` graph; re-exported here so every
+// existing importer is unchanged.
+export { parseWire, parseWireWith, reviver } from './wire-parse';
+import { parseWire } from './wire-parse';
 
 export interface WireError {
     message?: string;
@@ -101,7 +103,7 @@ export async function* readNdjson(res: Response, symbol: string): AsyncGenerator
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    const parseLine = (text: string): NdjsonLine => JSON.parse(text, reviver) as NdjsonLine;
+    const parseLine = (text: string): NdjsonLine => parseWire<NdjsonLine>(text);
     for (;;) {
         const { value, done } = await reader.read();
         if (done) break;

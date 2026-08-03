@@ -16,6 +16,18 @@
   per-request store core 0.14 introduces) now flows through in-process
   actor guard chains by reference.
 
+- **Wire JSON parsing keeps V8's fast parser** (#218). Every wire
+  `JSON.parse` passed the prototype-pollution reviver, which forces a
+  JS-level walk of every parsed node (measured 5–10.7× slower than a
+  plain parse). The new guarded `parseWire` pre-scans the text and skips
+  the reviver when no dangerous key (`__proto__` / `constructor` /
+  `prototype`, literal or `\u`-escaped) can be present — same protection,
+  measured 4.6–7.6× faster frame decode on the binary transports
+  (`frames/decode`, new benchmark scenario). A custom codec reviver on
+  the cluster seam is judged by identity and always takes the full walk —
+  never silently downgraded to the fast path. `wire/endpoint-roundtrip`
+  is unchanged within noise, as expected: parse is ~6% of that rung.
+
 ### Added
 
 - **Full interleaving — `reentrant: 'always'` and per-method

@@ -41,6 +41,7 @@
  * already carries its own length. `encodeFrame` therefore emits the header
  * and body separately from the length prefix.
  */
+import { parseWireWith } from '../wire-parse';
 
 export const FRAME_HEADER_BYTES = 12;
 /** Header size once the length prefix is stripped (the WebSocket form). */
@@ -115,7 +116,10 @@ export function encodeFrame(frame: Frame): Uint8Array {
 
 /**
  * Decode a length-prefix-free frame body. `reviver` is the codec's
- * prototype-pollution-safe reviver — never `JSON.parse` without it.
+ * prototype-pollution-safe reviver — a payload is never parsed without its
+ * protection. Under the default reviver `parseWireWith` takes the guarded
+ * fast path (pre-scan, then plain `JSON.parse` — #218); a custom codec
+ * reviver runs on every node, always.
  */
 export function decodeFrameBody(
     body: Uint8Array,
@@ -133,7 +137,7 @@ export function decodeFrameBody(
     };
     if (body.length > FRAME_HEADER_BYTES_UNPREFIXED) {
         const text = new TextDecoder().decode(body.subarray(FRAME_HEADER_BYTES_UNPREFIXED));
-        frame.payload = JSON.parse(text, reviver) as unknown;
+        frame.payload = parseWireWith<unknown>(text, reviver);
     }
     return frame;
 }

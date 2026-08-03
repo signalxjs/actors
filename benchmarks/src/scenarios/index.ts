@@ -2,6 +2,7 @@ import { clusterScenarios } from './cluster.ts';
 import { tier2Scenarios } from './cluster2.ts';
 import { TIER3_ENABLED, tier3Hint as tier3Reason, tier3Scenarios } from './infra.ts';
 import { dispatchScenarios } from './dispatch.ts';
+import { frameScenarios } from './frames.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
@@ -29,6 +30,7 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...dispatchScenarios,
     ...stateScenarios,
     ...wireScenarios,
+    ...frameScenarios,
     ...lifecycleScenarios,
     ...memoryScenarios,
     ...clusterScenarios,

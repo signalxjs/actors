@@ -33,9 +33,9 @@ import {
 import type { ActorRef } from '../types';
 import {
     encodeWire,
+    parseWire,
     readNdjson,
     reviveWire,
-    reviver,
     wireFail,
     type WireError
 } from '../wire-shared';
@@ -264,10 +264,7 @@ export function fetchTransport(config: ActorTransportConfig = {}): ActorTranspor
             const res = await dispatch(symbol, args, init);
             let parsed: { data?: unknown; error?: WireError } | undefined;
             try {
-                parsed = JSON.parse(await res.text(), reviver) as {
-                    data?: unknown;
-                    error?: WireError;
-                };
+                parsed = parseWire<{ data?: unknown; error?: WireError }>(await res.text());
             } catch {
                 parsed = undefined;
             }
@@ -287,9 +284,7 @@ export function fetchTransport(config: ActorTransportConfig = {}): ActorTranspor
                     if (!res.ok || !res.body) {
                         let wire: WireError | undefined;
                         try {
-                            wire = (
-                                JSON.parse(await res.text(), reviver) as { error?: WireError }
-                            )?.error;
+                            wire = parseWire<{ error?: WireError }>(await res.text())?.error;
                         } catch {
                             wire = undefined;
                         }
