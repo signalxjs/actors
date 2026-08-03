@@ -14,7 +14,7 @@
  * the finding.
  */
 import { Mailbox } from '@sigx/actors/host';
-import { Tiny } from '../actors.ts';
+import { AlwaysTiny, Tiny } from '../actors.ts';
 import { sweepConcurrency } from '../loop.ts';
 import {
     benchCall,
@@ -307,6 +307,93 @@ const warmTurnsDeadline: Scenario = {
     }
 };
 
+/**
+ * `warm-actor`'s interleaving twin — the same call over `AlwaysTiny`
+ * (`reentrant: 'always'`). The delta against `warm-actor` prices what an
+ * interleaved turn pays that a serial one does not: the AsyncLocalStorage
+ * establishment per turn and the concurrent-lane bookkeeping. A timing, so
+ * it informs and never gates.
+ */
+const alwaysWarmGrain: Scenario = {
+    name: 'dispatch/always-warm-actor',
+    description: "host.dispatch() to one warm reentrant: 'always' activation — the interleaved-lane tax vs warm-actor",
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const fixture = await createBenchHost({ actors: [AlwaysTiny] });
+        try {
+            const ref = { type: AlwaysTiny.type, key: 'warm' };
+            const call = benchCall();
+            await fixture.host.dispatch(ref, 'noop', [], call);
+            return await sweepConcurrency({
+                call: () => fixture.host.dispatch(ref, 'noop', [], call),
+                concurrencies: ctx.quick ? SHORT_SWEEP : FULL_SWEEP,
+                durationMs: ctx.durationMs
+            });
+        } finally {
+            await fixture.stop();
+        }
+    }
+};
+
+/**
+ * `warm-turns` over the interleaved lane: the microtask count for one warm
+ * dispatch to a `reentrant: 'always'` actor. Deterministic by construction
+ * (a fixed code path, no clock, no randomness), so it gates exactly like
+ * `warm-turns` — an accidental promise hop added to the interleaved path
+ * moves the integer where no timing could resolve it.
+ */
+const alwaysWarmTurns: Scenario = {
+    name: 'dispatch/always-warm-turns',
+    description: "microtask turns for ONE warm dispatch to a reentrant: 'always' actor — the interleaved lane, as a count",
+    async run(): Promise<Metric[]> {
+        const fixture = await createBenchHost({ actors: [AlwaysTiny] });
+        try {
+            const ref = { type: AlwaysTiny.type, key: 'warm' };
+            const call = benchCall();
+            for (let i = 0; i < 2_000; i++) {
+                await fixture.host.dispatch(ref, 'noop', [], call);
+            }
+
+            const turnsForOneDispatch = async (): Promise<number> => {
+                let turns = 0;
+                let done = false;
+                const tick = (): void => {
+                    if (done) return;
+                    turns++;
+                    queueMicrotask(tick);
+                };
+                queueMicrotask(tick);
+                await fixture.host.dispatch(ref, 'noop', [], call);
+                done = true;
+                return turns;
+            };
+
+            const samples: number[] = [];
+            for (let i = 0; i < 15; i++) samples.push(await turnsForOneDispatch());
+            samples.sort((a, b) => a - b);
+
+            return [
+                {
+                    name: 'microtask_turns',
+                    value: samples[Math.floor(samples.length / 2)] as number,
+                    unit: 'turns',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: 'microtask_turns_spread',
+                    value: (samples[samples.length - 1] as number) - (samples[0] as number),
+                    unit: 'turns',
+                    direction: 'lower',
+                    exact: true,
+                    noiseFloor: 0.5
+                }
+            ];
+        } finally {
+            await fixture.stop();
+        }
+    }
+};
+
 export const dispatchScenarios: Scenario[] = [
     mailboxRaw,
     warmGrain,
@@ -314,5 +401,7 @@ export const dispatchScenarios: Scenario[] = [
     viaProxy,
     fanOut,
     warmTurns,
-    warmTurnsDeadline
+    warmTurnsDeadline,
+    alwaysWarmGrain,
+    alwaysWarmTurns
 ];

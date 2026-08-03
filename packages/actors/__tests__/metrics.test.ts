@@ -534,6 +534,43 @@ describe('observeTurns seam', () => {
         }
     });
 
+    it("fires once per interleaved turn on a reentrant: 'always' actor, queue wait ~0", async () => {
+        const Al = defineActor({
+            type: 'AlObs',
+            unguarded: true,
+            reentrant: 'always',
+            state: () => ({}),
+            methods: () => ({
+                async slow() {
+                    await new Promise((r) => setTimeout(r, 20));
+                    return 'slow';
+                },
+                async quick() {
+                    return 'quick';
+                }
+            })
+        });
+        const seen: { method: string; queuedMs: number }[] = [];
+        const onTurn: ActorTurnObserver = (_ref, method, queuedMs) => {
+            seen.push({ method, queuedMs });
+        };
+        const host = createHost({ actors: [Al], defaults: quiet, onTurn });
+        await host.start();
+        try {
+            const call = () => ({ callChain: [], callId: 'test' });
+            const ref = { type: 'AlObs', key: 'a' };
+            const slow = host.dispatch(ref, 'slow', [], call());
+            await host.dispatch(ref, 'quick', [], call());
+            await slow;
+            // One observation per turn, in COMPLETION order — quick never
+            // queued behind slow, so its wait is ~0, not ~20ms.
+            expect(seen.map((s) => s.method)).toEqual(['quick', 'slow']);
+            expect(seen[0]!.queuedMs).toBeLessThan(15);
+        } finally {
+            await host.stop();
+        }
+    });
+
     it('host.observeTurns() unsubscribes, and the last one leaving stops the timing', async () => {
         const a: string[] = [];
         const b: string[] = [];

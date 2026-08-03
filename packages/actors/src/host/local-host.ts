@@ -27,6 +27,7 @@ import {
 import { Activation, type ActivationHost } from './activation';
 import { CallDeadlines } from './deadlines';
 import { Mailbox } from './mailbox';
+import { effectiveReentrancy } from './reentrancy';
 
 /** Bounded low: this is a "top N" view, and the walk is O(activations). */
 const DEFAULT_ACTIVATIONS_LIMIT = 100;
@@ -130,7 +131,7 @@ export class LocalHost implements ActorDispatcher {
         // Must return synchronously; resolve the activation on first pull.
         return this.#lazyIterable(async () => {
             this.#checkShutdown(call);
-            await this.#checkReentrancy(ref, call);
+            await this.#checkReentrancy(ref, call, method);
             const activation = await this.#activationFor(ref);
             return activation.openStream(method, args, call)[Symbol.asyncIterator]();
         });
@@ -156,7 +157,7 @@ export class LocalHost implements ActorDispatcher {
                         `state to watch.`
                 );
             }
-            await this.#checkReentrancy(ref, call);
+            await this.#checkReentrancy(ref, call, method);
             const activation = await this.#activationFor(ref);
             return activation.openWatch(method, args, call, options)[Symbol.asyncIterator]();
         });
@@ -203,6 +204,13 @@ export class LocalHost implements ActorDispatcher {
         // `active` too, and skipping it would enqueue behind the turn that is
         // up-stack awaiting us — a permanent hang where the runtime owes a
         // loud `ActorDeadlockError`.
+        //
+        // Interleaving (`reentrant: 'always'` / `methodReentrancy`) needs no
+        // branch here: the interleave decision lives inside
+        // `Activation.enqueue`, so this shortcut serves those actors
+        // unchanged, and their in-chain calls fall through to
+        // `#checkReentrancy`, which admits them as normal (interleaved)
+        // dispatches instead of inline runs.
         if (!call.callChain.includes(id)) {
             const warm = this.#directory.get(id);
             if (warm?.phase === 'active') return warm.activation.enqueue(method, args, call);
@@ -219,7 +227,7 @@ export class LocalHost implements ActorDispatcher {
                     : target.then((a) => a.enqueue(method, args, call));
             }
         }
-        const inline = await this.#checkReentrancy(ref, call, id);
+        const inline = await this.#checkReentrancy(ref, call, method, id);
         if (inline) return inline.runInline(method, args, call);
         const activation = await this.#activationFor(ref, id);
         return activation.enqueue(method, args, call);
@@ -233,22 +241,28 @@ export class LocalHost implements ActorDispatcher {
 
     /**
      * The target is already in this call chain → its turn is up-stack
-     * awaiting us. Reentrant: run inline against that turn. Non-reentrant:
-     * throw now with the full chain instead of hanging until a timeout.
+     * awaiting us. Call-chain reentrant: run inline against that turn.
+     * Interleaving ('always', or the method is mapped in
+     * `methodReentrancy`): fall through to a normal dispatch — the enqueue
+     * launches immediately instead of waiting behind the tail, so the cycle
+     * completes as a concurrent turn, never inline. Non-reentrant: throw
+     * now with the full chain instead of hanging until a timeout.
      */
     async #checkReentrancy(
         ref: ActorRef,
         call: ActorCallContext,
+        method: string,
         knownId?: string
     ): Promise<Activation | null> {
         const id = knownId ?? actorId(ref);
         if (!call.callChain.includes(id)) return null;
         const slot = this.#directory.get(id);
         const active = slot?.phase === 'active' ? slot.activation : null;
-        const reentrant = active
-            ? active.def.__sigxActor.reentrant === true
-            : (await this.#definition(ref.type)).__sigxActor.reentrant === true;
-        if (!reentrant) {
+        const mode = effectiveReentrancy(
+            active ? active.def.__sigxActor : (await this.#definition(ref.type)).__sigxActor,
+            method
+        );
+        if (mode === 'none') {
             throw new ActorDeadlockError([...call.callChain, id]);
         }
         if (!active) {
@@ -256,7 +270,9 @@ export class LocalHost implements ActorDispatcher {
             // this shouldn't happen; fall back to a normal dispatch. In a
             // cluster it means the turn runs on ANOTHER host — activating a
             // second copy here would break single-activation, so a strict
-            // placement makes it a loud, retryable error instead.
+            // placement makes it a loud, retryable error instead. Applies
+            // to interleaving targets too: 'always' changes turn
+            // scheduling, never where the single activation lives.
             if (this.#bindings()?.strictChainPresence) {
                 throw new ActorError(
                     'deadlock',
@@ -266,7 +282,7 @@ export class LocalHost implements ActorDispatcher {
             }
             return null;
         }
-        return active;
+        return mode === 'always' ? null : active;
     }
 
     async #definition(type: string): Promise<AnyActorDefinition> {

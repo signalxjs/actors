@@ -90,6 +90,10 @@ describe('defineWorker definition', () => {
         expect(() => defineActor({ ...base, onReminder: () => {} })).toThrow(/onReminder/);
         expect(() => defineActor({ ...base, placement: { name: 'x' } })).toThrow(/placement/);
         expect(() => defineActor({ ...base, reentrant: true })).toThrow(/reentrant/);
+        expect(() => defineActor({ ...base, reentrant: 'always' })).toThrow(/reentrant/);
+        expect(() => defineActor({ ...base, methodReentrancy: { m: 'always' } })).toThrow(
+            /methodReentrancy/
+        );
         expect(() => defineActor({ ...base, migrateState: (s: unknown) => s as object })).toThrow(
             /migrateState/
         );

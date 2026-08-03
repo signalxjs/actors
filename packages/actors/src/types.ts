@@ -102,9 +102,14 @@ export interface ActorDispatcher {
  * reminder delivery (as `$sigx:reminder`). Volatile `ctx.timer` ticks and
  * write-behind flushes are excluded: they have no caller and no queue wait
  * of their own, and their cost is already visible as queue wait on whatever
- * was behind them. Reentrant (`ctx.actor` A→B→A) calls run inline against
- * the caller's turn and are excluded too, since the outer turn already
- * covers that time.
+ * was behind them. Call-chain-reentrant (`ctx.actor` A→B→A) calls run inline
+ * against the caller's turn and are excluded too, since the outer turn
+ * already covers that time.
+ *
+ * INTERLEAVED turns (`reentrant: 'always'` / `methodReentrancy`) fire once
+ * per turn like any other, but launch immediately: `queuedMs` is ~0 and
+ * `elapsedMs` is how long the turn RAN, not how long it held the mailbox —
+ * their `[start, end]` intervals can overlap.
  *
  * Called from a `finally`. Throwing from here is swallowed (dev-logged) —
  * an observer must never be able to fail a turn.
@@ -684,6 +689,26 @@ export interface ActorOptions<
     /** Per-method guard chains, run after `use`. Static map — the method
      *  table itself is per-activation and cannot carry wire metadata. */
     methodUse?: Record<string, readonly ServerFnGuard[]>;
+    /**
+     * Per-method interleaving, alongside `methodUse` (same static-map shape,
+     * own keys only): a method mapped to `'always'` is exempt from turn
+     * exclusivity regardless of the actor-level `reentrant` setting — it
+     * never waits for in-flight turns and is never waited for, and an
+     * in-chain call to it never throws `ActorDeadlockError`. Unlisted
+     * methods keep the actor-level behavior exactly.
+     *
+     * The canonical use: read-only `get`-style methods on an otherwise
+     * serial actor, so reads never queue behind a slow write (pairs well
+     * with `reads:` for the HTTP-cacheable ones). The contract is the same
+     * as `reentrant: 'always'`, scoped to the listed methods: their turns
+     * may observe state changes across any `await`.
+     *
+     * Keys must name `methods:` entries — a stream or reserved name fails
+     * the type's first activation loudly, a name matching nothing is
+     * dev-warned there. Redundant on a `reentrant: 'always'` actor, so that
+     * combination fails the same way.
+     */
+    methodReentrancy?: Record<string, 'always'>;
     /** Initial state factory — used when storage has no record (the
      *  virtual-actor "always exists" default). */
     state: (key: string) => S;
@@ -744,8 +769,26 @@ export interface ActorOptions<
      * for lossy-tolerant state.
      */
     persistence?: 'explicit' | { mode: 'write-behind'; debounceMs?: number };
-    /** Call-chain reentrancy. Default false: A→B→A throws ActorDeadlockError. */
-    reentrant?: boolean;
+    /**
+     * Reentrancy. Default `false`: turns are strictly serial and A→B→A
+     * throws `ActorDeadlockError`.
+     *
+     * - `'call-chain'` (alias: `true`, the v1 spelling): A→B→A runs inline
+     *   against this actor's own up-stack turn. Unrelated calls still
+     *   serialize — no foreign interleaving.
+     * - `'always'`: FULL interleaving. Every call is its own turn, launched
+     *   immediately — unrelated calls interleave at every `await`, and
+     *   in-chain calls complete as concurrent turns instead of running
+     *   inline. The single-threaded guarantee narrows to "no two turns run
+     *   simultaneously between awaits": your state can change across EVERY
+     *   `await`, and a save captures a synchronously-consistent frame that
+     *   may be mid-logical-turn. Deadlock by self-cycle is impossible by
+     *   construction. Needs `AsyncLocalStorage` (on Cloudflare Workers:
+     *   the `nodejs_compat` flag, which the DO package already requires).
+     *
+     * For interleaving only SOME methods, see `methodReentrancy`.
+     */
+    reentrant?: boolean | 'call-chain' | 'always';
     /** Idle collection age for this type; overrides the host default. */
     idleAfterMs?: number;
     /**
@@ -834,7 +877,7 @@ export interface ActorOptions<
      * `maxLocal` interchangeable activations per (type, key) on a host.
      * `defineActor` throws when it appears alongside any identity-bound
      * option (`persistence`, `tasks`, `subscriptions`, `onReminder`,
-     * `placement`, `reentrant`).
+     * `placement`, `reentrant`, `methodReentrancy`).
      */
     stateless?: { maxLocal?: number };
 }
@@ -857,8 +900,8 @@ export type WorkerContext<Ext extends object = Record<never, never>> = Omit<
  * The options bag of `defineWorker` — deliberately a hand-written subset of
  * {@link ActorOptions}, not a derived type: everything identity-bound
  * (`state`, `persistence`, `tasks`, `onReminder`, `subscriptions`,
- * `placement`, `reentrant`) is structurally absent, so a worker cannot
- * declare it even untyped. Method/stream typing is inferred exactly as for
+ * `placement`, `reentrant`, `methodReentrancy`) is structurally absent, so a
+ * worker cannot declare it even untyped. Method/stream typing is inferred exactly as for
  * `defineActor` — from the factories, never from state.
  */
 export interface WorkerOptions<
@@ -1071,7 +1114,8 @@ export const emptyHostStats = (): HostStats => ({
 export interface ActivationInfo {
     type: string;
     key: string;
-    /** Mailbox depth: queued turns plus the one running. */
+    /** Mailbox depth: unsettled turns — queued plus running (an
+     *  interleaving actor can have several running). */
     queued: number;
     /** Since activation, ms. Monotonic. */
     ageMs: number;

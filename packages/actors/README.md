@@ -39,6 +39,8 @@ destroy, no connection management — that is the virtual-actor model.
    always reaches *the* `user-42` cart — one activation per key.
 2. **Single-threaded.** One turn (method call) at a time per activation.
    Plain mutation on `ctx.state` is race-free; no locks, ever.
+   (`reentrant: 'always'` and `methodReentrancy` opt out per actor or per
+   method — see [Reentrancy & interleaving](#reentrancy--interleaving).)
 3. **`await` holds the mailbox.** A turn ends when the method's promise
    settles — an awaited `fetch` inside a method blocks every queued call to
    that actor until it resolves. This is the non-reentrant default
@@ -51,7 +53,9 @@ destroy, no connection management — that is the virtual-actor model.
 5. **Deadlock-detected.** Every call carries its chain; `A → B → A` into a
    non-reentrant actor **throws `ActorDeadlockError` immediately** with the
    full chain, instead of hanging until a timeout. `reentrant: true`
-   allows call-chain re-entry (the cycle runs inline against your own turn).
+   allows call-chain re-entry (the cycle runs inline against your own turn);
+   `reentrant: 'always'` interleaves everything, making the deadlock
+   impossible by construction.
 
 ## Setup
 
@@ -573,6 +577,49 @@ carriers for a declared read, so this is a client-side choice.
   });
   ```
 
+## Reentrancy & interleaving
+
+By default an actor is strictly serial (guarantees 2–3) and a call cycle
+back into it is a detected deadlock (guarantee 5). `reentrant` widens that,
+in two steps:
+
+```ts
+reentrant: 'call-chain'   // alias: true — the v1 behavior
+reentrant: 'always'       // full interleaving, per actor
+methodReentrancy: { stats: 'always' }   // full interleaving, per method
+```
+
+- **`'call-chain'`** (`true`): `A → B → A` runs *inline* against your own
+  up-stack turn instead of deadlocking. Unrelated calls still serialize —
+  no foreign interleaving, so state stays turn-consistent.
+- **`'always'`**: every call is its own turn, launched immediately —
+  unrelated calls interleave at every `await` (the Orleans `[Reentrant]`
+  model). The single-threaded guarantee narrows to what JS itself gives
+  you: no two turns run *between* awaits, but **your state can change
+  across every `await`** — re-read, don't cache, anything another turn may
+  move. In-chain calls complete as concurrent turns (never inline), so a
+  self-cycle cannot deadlock by construction.
+- **`methodReentrancy`** marks individual methods `'always'` on an
+  otherwise serial (or `'call-chain'`) actor — the canonical case is a
+  read-only `get`-style method that must not queue behind a slow write
+  (pairs well with `reads:`). A mapped method never waits and is never
+  waited for; unlisted methods keep the actor-level behavior, including
+  their mutual exclusion. Keys must name `methods:` entries; the runtime's
+  own deliveries (`$sigx:reminder`, `$sigx:topic`) follow the actor-level
+  setting only. Redundant next to `reentrant: 'always'`, so that
+  combination is refused.
+
+What interleaving changes elsewhere — saves from concurrent turns are
+single-flighted (last-writer-wins at whole-state granularity; a save
+resolves once a snapshot at-or-after your mutations is durable), a
+write-behind flush may capture mid-logical-turn state (it is still a
+synchronously-consistent frame), and deactivation drains *all* in-flight
+turns before `onDeactivate`. Declarations are validated at the type's first
+activation, loudly, in every build. Interleaving needs `AsyncLocalStorage`
+(per-turn call context): built into Node/Deno/Bun; on Cloudflare Workers it
+rides the `nodejs_compat` flag the DO package already requires. Serial
+actors never touch it.
+
 ## Timers & reminders
 
 - `ctx.timer(name, cb, { due, period, keepAlive })` — **volatile**: ticks run
@@ -707,7 +754,8 @@ The details worth knowing:
   turn's call chain, so a subscription that dispatches back into a
   non-reentrant publisher fails that delivery with `kind: 'deadlock'` in
   the report — the publisher is awaiting the fan-out, so an undetected
-  cycle could never complete. `reentrant: true` delivers inline instead.
+  cycle could never complete. `reentrant: true` delivers inline instead;
+  `reentrant: 'always'` delivers as a concurrent turn of the publisher.
 - **Handlers are turns.** They mutate state and `ctx.save()` like any
   method; a throwing handler fails only its own delivery and does not
   fault the activation. Handlers are not wire-callable and never appear on
@@ -1158,9 +1206,13 @@ registry.observeTurns((ref, method, queuedMs, elapsedMs, failed) => { ... });
 Fires for dispatched turns only — the ones a caller waited for, including
 reminder delivery. Volatile `ctx.timer` ticks and write-behind flushes are
 excluded: they have no caller, and their cost is already visible as queue
-wait on whatever was behind them. Reentrant `ctx.actor` calls run inline
-against the caller's turn and are excluded too. Throwing from an observer is
-swallowed and dev-logged — it can never fail a turn.
+wait on whatever was behind them. Call-chain-reentrant `ctx.actor` calls run
+inline against the caller's turn and are excluded too. Interleaved turns
+(`reentrant: 'always'` / `methodReentrancy`) fire once per turn like any
+other, but launch immediately: `queuedMs` is ~0 and `elapsedMs` is how long
+the turn ran, not how long it held the mailbox — their intervals can
+overlap. Throwing from an observer is swallowed and dev-logged — it can
+never fail a turn.
 
 Registering no observer leaves the hot path exactly as it was: the
 timestamps are only taken when someone is listening.
@@ -2297,9 +2349,7 @@ counters — see [Health & readiness](#health--readiness) above.
 - **String keys**; POST by default, with `GET` for methods that declare
   `reads:` (no form posts / 303 PRG yet); no WebSocket/SSE push layer —
   NDJSON covers server→client, per call (`streams:`) and multiplexed per page
-  (`useActorState(…, { live: true })`); full `[Reentrant]` arbitrary
-  interleaving is not offered — `reentrant: true` is call-chain re-entry
-  only.
+  (`useActorState(…, { live: true })`).
 - Reserved names: actor types starting with `$sigx:`, topic names starting
   with `$` or `@`, and the method names `$sigx:reminder` and `$sigx:topic`.
   `$sigx:host#stats` is the cluster's ops channel and is answered before any

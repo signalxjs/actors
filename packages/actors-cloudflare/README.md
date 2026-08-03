@@ -62,7 +62,11 @@ read-modify-write that is not already serialized needs a gate.
 turn, and one DO holds one actor, so its compare-and-set cannot interleave
 through the normal dispatch path. `durableObjectStorage` still accepts
 `blockConcurrencyWhile` for defence in depth, or if you drive it from
-outside the actor runtime.
+outside the actor runtime. This holds for `reentrant: 'always'` /
+`methodReentrancy` actors too: their turns interleave by design, but the
+runtime single-flights their saves, so the compare-and-set stays serialized
+within the one activation. (Interleaving needs `AsyncLocalStorage`, which
+rides the `nodejs_compat` flag this package already requires.)
 
 **Reminders do.** `onAlarm()` is invoked straight from the object's
 `alarm()` handler, outside any turn, so its read-modify-write of the

@@ -51,6 +51,28 @@ export const Tiny = defineActor({
     })
 });
 
+/**
+ * `Tiny`'s interleaving twin: `reentrant: 'always'`, same trivial body.
+ * What it prices is the interleaved dispatch path — the per-turn call
+ * store (AsyncLocalStorage) and the mailbox's concurrent lane — against
+ * `Tiny`'s serial promise chain.
+ */
+export const AlwaysTiny = defineActor({
+    type: 'BenchAlwaysTiny',
+    unguarded: true,
+    reentrant: 'always',
+    state: (): TinyState => ({ count: 0 }),
+    methods: (ctx) => ({
+        noop() {
+            return 0;
+        },
+        increment(by: number) {
+            ctx.state.count += by;
+            return ctx.state.count;
+        }
+    })
+});
+
 /** Same shape, but every mutating turn schedules a debounced background save. */
 export const WriteBehind = defineActor({
     type: 'BenchWriteBehind',

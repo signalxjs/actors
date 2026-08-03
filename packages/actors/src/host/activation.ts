@@ -42,6 +42,12 @@ import {
     type TaskLedgerEntry
 } from './tasks';
 import { TOPIC_METHOD, subscriptionFor, subscriptionHandler } from './topics';
+import {
+    declaresInterleaving,
+    loadCallStore,
+    validateReentrancy,
+    type CallStore
+} from './reentrancy';
 
 /** Reserved dispatch method routing to `onReminder`. */
 export const REMINDER_METHOD = '$sigx:reminder';
@@ -263,6 +269,20 @@ export class Activation {
     #deepWatchStop: (() => void) | null = null;
     #cancelWriteBehind: (() => void) | null = null;
     #currentCall: ActorCallContext | null = null;
+    /**
+     * Per-turn call context for an INTERLEAVING activation. When set it is
+     * authoritative and `#currentCall` is never read: interleaved turns
+     * overlap, so a single mutable field would hand one turn's chain,
+     * callId and deadline to another after an `await`. Null on the default
+     * (serial) path, which never pays for it. See `#callContext`.
+     */
+    #als: CallStore<ActorCallContext | null> | null = null;
+    /** `reentrant === 'always'` — every dispatched turn interleaves. */
+    #interleaveAll: boolean;
+    /** Own keys of `methodReentrancy`, else null. */
+    #interleaveMethods: ReadonlySet<string> | null;
+    /** The one in-flight storage write (single-flight save gate). */
+    #savePending: Promise<void> | null = null;
     #faulted: unknown = null;
     #faultReported = false;
     #deactivateRequested = false;
@@ -300,6 +320,11 @@ export class Activation {
         this.mailbox = mailbox;
         this.#scope = effectScope();
         this.stateless = def.__sigxActor.stateless !== undefined;
+        const opts = def.__sigxActor;
+        this.#interleaveAll = opts.reentrant === 'always';
+        this.#interleaveMethods = opts.methodReentrancy
+            ? new Set(Object.keys(opts.methodReentrancy))
+            : null;
     }
 
     /**
@@ -316,6 +341,19 @@ export class Activation {
         const a = new Activation(ref, def, host, mailbox);
         try {
             const opts = def.__sigxActor;
+            // Interleaving needs the per-turn call store. Validated and
+            // loaded here — not at definition time (the root entry's size
+            // gate keeps define.ts lean) — so a malformed declaration or a
+            // missing AsyncLocalStorage fails the first activation loudly
+            // (as ActorActivationError, per type) and the serial path never
+            // imports node:async_hooks at all.
+            if (opts.reentrant !== undefined || opts.methodReentrancy !== undefined) {
+                validateReentrancy(ref.type, opts, def.streamNames);
+            }
+            if (declaresInterleaving(opts)) {
+                const Store = await loadCallStore();
+                a.#als = new Store<ActorCallContext | null>();
+            }
             // A stateless member never reads storage: there is no record to
             // find (and no identity to find it under), so `seedFromStorage`
             // — including any `migrateState` hook — is skipped whole.
@@ -334,6 +372,18 @@ export class Activation {
                 a.#methods = opts.methods(a.#ctx) as Record<string, AnyFn>;
             });
             if (__DEV__) warnIfInheritedTable(a.#methods, 'methods', ref.type);
+            if (__DEV__ && a.#interleaveMethods) {
+                // Definition time cannot check these (the methods factory
+                // needs a live ctx) — a typo'd key would silently stay serial.
+                for (const name of a.#interleaveMethods) {
+                    if (!Object.hasOwn(a.#methods, name)) {
+                        console.warn(
+                            `[sigx actors] methodReentrancy of "${ref.type}" names "${name}", ` +
+                                `which is not in its methods table — the entry does nothing.`
+                        );
+                    }
+                }
+            }
             // The `streams:` table is built per SUBSCRIPTION, not here — see
             // `#streamTable`. Its bodies get a derived context of their own:
             // bracketing the dispatch call sites cannot work, because an async
@@ -391,6 +441,15 @@ export class Activation {
         return actorId(this.ref);
     }
 
+    /**
+     * The call context of the turn asking — the ONE reader `ctx.actor()`
+     * and `ctx.publish()` go through. Interleaving activations answer from
+     * the per-turn store; everyone else from the single field.
+     */
+    #callContext(): ActorCallContext | null {
+        return this.#als ? (this.#als.getStore() ?? null) : this.#currentCall;
+    }
+
     // -----------------------------------------------------------------------
     // Dispatch surface (called by the local host only)
 
@@ -406,7 +465,16 @@ export class Activation {
         // immune. The wall clock is still used for idle collection, which
         // genuinely wants wall time.
         const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
-        return this.mailbox.run(() => this.#turn(method, args, call, enqueuedAt));
+        // The interleave decision lives HERE, not on the dispatch path: the
+        // activation owns its def and the method name, so the local host's
+        // warm-path shortcut needs no edits and can never drift. Two field
+        // reads on the default path. Reserved deliveries ($sigx:reminder,
+        // $sigx:topic) interleave iff the whole actor does — the per-method
+        // map cannot name them.
+        const interleave =
+            this.#interleaveAll ||
+            (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
+        return this.mailbox.run(() => this.#turn(method, args, call, enqueuedAt), interleave);
     }
 
     /**
@@ -420,6 +488,10 @@ export class Activation {
         args: readonly unknown[],
         call: ActorCallContext
     ): Promise<unknown> {
+        // A 'call-chain' actor with a methodReentrancy map is an
+        // interleaving activation whose UNMAPPED in-chain calls still run
+        // inline — those must establish the store, not the field.
+        if (this.#als) return this.#als.run(call, () => this.#invoke(method, args));
         const prev = this.#currentCall;
         this.#currentCall = call;
         try {
@@ -518,7 +590,9 @@ export class Activation {
             this.#keepAlive++;
             try {
                 // Async generator bodies are lazy: this runs no user code.
-                return fn(...(args as unknown[]))[Symbol.asyncIterator]();
+                return this.#als
+                    ? this.#als.run(call, () => fn(...(args as unknown[]))[Symbol.asyncIterator]())
+                    : fn(...(args as unknown[]))[Symbol.asyncIterator]();
             } catch (error) {
                 this.#keepAlive--;
                 throw error;
@@ -639,7 +713,7 @@ export class Activation {
         // A stale activation must not overwrite the winning state.
         if (reason !== 'conflict' && this.#version > this.#savedVersion && this.#isWriteBehind()) {
             try {
-                await this.#doSave();
+                await this.#gatedSave(this.#version);
             } catch (error) {
                 if (__DEV__) {
                     console.error(
@@ -718,7 +792,12 @@ export class Activation {
         this.#currentCall = call;
         let failed = true;
         try {
-            const result = await this.#invoke(method, args);
+            // On an interleaving activation the invoke runs under the call
+            // store; the serial path is byte-for-byte what it was (one
+            // null-check, no extra promise hop or allocation).
+            const result = this.#als
+                ? await this.#als.run(call, () => this.#invoke(method, args))
+                : await this.#invoke(method, args);
             failed = false;
             return result;
         } finally {
@@ -727,10 +806,17 @@ export class Activation {
             // number, so compute it once and only when someone reads it.
             const elapsed = timing ? performance.now() - startedAt : 0;
             if (__DEV__ && elapsed > this.#host.slowTurnMs) {
+                const interleaved =
+                    this.#interleaveAll ||
+                    (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
                 console.warn(
-                    `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
-                        `mailbox for ${elapsed}ms. Awaits inside a turn block every queued ` +
-                        `message — move slow I/O out of the actor or split the method.`
+                    interleaved
+                        ? `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() ran for ` +
+                              `${elapsed}ms. Interleaved turns block no queued messages, but a ` +
+                              `slow one still delays deactivation and pins the activation.`
+                        : `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
+                              `mailbox for ${elapsed}ms. Awaits inside a turn block every queued ` +
+                              `message — move slow I/O out of the actor or split the method.`
                 );
             }
             if (observer) {
@@ -856,8 +942,10 @@ export class Activation {
             this.#faultReported = true;
             this.#host.onFault(this);
         } else if (this.#deactivateRequested && this.mailbox.depth <= 1 && !this.#faulted) {
-            // depth 1 = only the turn that is settling right now — the
-            // queue is empty, so the requested deactivation can begin.
+            // depth 1 = only the turn that is settling right now — nothing
+            // else queued OR in flight (this finally runs before the
+            // mailbox's own settlement decrement, in both lanes), so the
+            // requested deactivation can begin.
             this.#host.onIdleRequest(this);
         }
     }
@@ -872,13 +960,42 @@ export class Activation {
         const p = this.def.__sigxActor.persistence as { debounceMs?: number };
         this.#cancelWriteBehind = this.#host.scheduler.after(p.debounceMs ?? 50, () => {
             this.#cancelWriteBehind = null;
-            // A system turn — serialized with user turns, so the save always
-            // captures a between-turns state, never a mid-turn one.
-            this.mailbox.run(() => this.#doSave()).catch(() => {
+            // A system turn — serialized with user turns, so on a serial
+            // actor the save always captures a between-turns state. On an
+            // interleaving actor there IS no between-turns state: the
+            // snapshot is synchronously consistent but may be mid-logical-
+            // turn — the documented 'always' contract.
+            this.mailbox.run(() => this.#gatedSave(this.#version)).catch(() => {
                 // Save failures fault the activation via #doSave; a closed
                 // mailbox at deactivation time is handled by the final flush.
             });
         });
+    }
+
+    /**
+     * Single-flight save with trailing coalescing: at most one storage
+     * write in flight per activation, and a caller returns once a snapshot
+     * at-or-after version `wanted` is durable. A serial actor never
+     * contends here; on an interleaving one, two turns saving concurrently
+     * would otherwise CAS against the same etag and the loser would fault
+     * the activation on its own sibling's write.
+     */
+    async #gatedSave(wanted: number): Promise<void> {
+        while (this.#savedVersion < wanted) {
+            if (this.#savePending) {
+                // The in-flight save's failure belongs to ITS caller; a
+                // persistent fault re-throws from our own #doSave below.
+                await this.#savePending.catch(() => {});
+                continue;
+            }
+            const run = this.#doSave();
+            this.#savePending = run;
+            try {
+                await run;
+            } finally {
+                this.#savePending = null;
+            }
+        }
     }
 
     async #doSave(): Promise<void> {
@@ -1145,7 +1262,16 @@ export class Activation {
 
     /** Run an already-RESERVED task body (see #reserve). */
     #launch(run: TaskRun, fn: AnyTaskFn, input: unknown): void {
-        run.settled = (async () => {
+        // On an interleaving activation the launch site is usually INSIDE a
+        // turn's call store, and async work created here would inherit it —
+        // a detached body's ctx.actor() would then silently carry the
+        // STARTING turn's chain instead of starting fresh. Clear it.
+        const body = (): Promise<void> => this.#taskBody(run, fn, input);
+        run.settled = this.#als ? this.#als.run(null, body) : body();
+    }
+
+    #taskBody(run: TaskRun, fn: AnyTaskFn, input: unknown): Promise<void> {
+        return (async () => {
             try {
                 await fn(input);
             } catch (error) {
@@ -1201,7 +1327,9 @@ export class Activation {
      * settlement here would deadlock — cancel is called from method turns,
      * and a winding-down task's final `turn()` queues behind exactly that
      * turn. The run leaves `list()` when its body settles. (Deactivation
-     * CAN await settlement: its grace runs outside any turn.)
+     * CAN await settlement: its grace runs outside any turn.) An
+     * INTERLEAVED turn could join without deadlocking, but cancel semantics
+     * do not fork on the reentrancy mode — request everywhere.
      */
     #cancelTask(name: string): Promise<void> {
         this.#tasks.get(name)?.controller.abort('cancelled');
@@ -1278,9 +1406,12 @@ export class Activation {
                     const prev = self.#currentCall;
                     // The run's one callId, so ctx.actor() calls made inside
                     // the turn carry a chain and traces correlate the run.
-                    self.#currentCall = { callChain: [self.id], callId: run.callId };
+                    const turnCall = { callChain: [self.id], callId: run.callId };
+                    self.#currentCall = turnCall;
                     try {
-                        return await fn(self.#ctx);
+                        return self.#als
+                            ? await self.#als.run(turnCall, () => fn(self.#ctx))
+                            : await fn(self.#ctx);
                     } finally {
                         self.#currentCall = prev;
                         self.#afterTurn(started);
@@ -1354,19 +1485,34 @@ export class Activation {
             async save(): Promise<void> {
                 // Explicit-mode saves don't need the deep watch; bump the
                 // version so savedVersion bookkeeping stays consistent.
-                self.#version++;
-                await self.#doSave();
+                // Through the gate: resolves once a snapshot at-or-after
+                // this caller's mutations is durable.
+                const wanted = ++self.#version;
+                await self.#gatedSave(wanted);
             },
             async clearState(): Promise<void> {
-                await self.#host.clearStoredState(self.ref, self.#etag);
-                self.#etag = null;
-                const fresh = opts.state(self.ref.key) as Record<string, unknown>;
-                const live = self.#state as Record<string, unknown>;
-                // Reset in place — the proxy identity is captured by closures.
-                for (const k of Object.keys(live)) {
-                    if (!(k in fresh)) delete live[k];
+                // Serialized through the save gate — a clear racing a save
+                // (possible on an interleaving actor) would corrupt the
+                // etag bookkeeping exactly like two racing saves.
+                while (self.#savePending) await self.#savePending.catch(() => {});
+                const run = (async () => {
+                    await self.#host.clearStoredState(self.ref, self.#etag);
+                    self.#etag = null;
+                    const fresh = opts.state(self.ref.key) as Record<string, unknown>;
+                    const live = self.#state as Record<string, unknown>;
+                    // Reset in place — the proxy identity is captured by
+                    // closures.
+                    for (const k of Object.keys(live)) {
+                        if (!(k in fresh)) delete live[k];
+                    }
+                    Object.assign(live, fresh);
+                })();
+                self.#savePending = run;
+                try {
+                    await run;
+                } finally {
+                    self.#savePending = null;
                 }
-                Object.assign(live, fresh);
             },
             timer(name: string, cb: () => void | Promise<void>, options: TimerOptions): TimerHandle {
                 self.#timers.get(name)?.clear();
@@ -1381,12 +1527,17 @@ export class Activation {
                             if (self.#faulted) return;
                             const started = Date.now();
                             const prev = self.#currentCall;
-                            self.#currentCall = {
+                            const tickCall = {
                                 callChain: [self.id],
                                 callId: mintCallId()
                             };
+                            self.#currentCall = tickCall;
                             try {
-                                await cb();
+                                // The tick closure was created inside the
+                                // REGISTERING turn's call store — without the
+                                // explicit run it would inherit that stale
+                                // context on an interleaving activation.
+                                await (self.#als ? self.#als.run(tickCall, () => cb()) : cb());
                             } finally {
                                 self.#currentCall = prev;
                                 if (options.keepAlive) self.#afterTurn(started);
@@ -1430,7 +1581,7 @@ export class Activation {
                 // The outbound context appends SELF to the chain — that is
                 // what lets the target detect A→B→A cycles.
                 return self.#host.actorClient(def, key, () => {
-                    const current = self.#currentCall;
+                    const current = self.#callContext();
                     if (!current) {
                         if (__DEV__) {
                             console.warn(
@@ -1455,7 +1606,7 @@ export class Activation {
                 // actor is a detected deadlock in the report, not a hang —
                 // the publishing turn is awaiting the fan-out, so an
                 // undetected cycle could never complete.
-                const current = self.#currentCall;
+                const current = self.#callContext();
                 if (!current && __DEV__) {
                     console.warn(
                         `[sigx actors] ctx.publish() called on ${actorLabel(self.ref)} with ` +

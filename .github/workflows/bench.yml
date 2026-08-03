@@ -105,7 +105,7 @@ env:
   # Keep in step with the `exact: true` flags — a scenario flagged but missing
   # here is simply not gated on the queue, silently. `pnpm bench:run --list`
   # names them; `grep -rn 'exact: true' benchmarks/src/scenarios` is the check.
-  BENCH_GATE_SCENARIOS: 'dispatch/warm-turns dispatch/warm-turns-deadline dispatch/stateless-pool-cap cluster/membership-fanout cluster/directory-ops-per-activation cluster/stateless-directory-ops cluster/locality-routed cluster/locality-warm topics/fanout'
+  BENCH_GATE_SCENARIOS: 'dispatch/warm-turns dispatch/warm-turns-deadline dispatch/always-warm-turns dispatch/stateless-pool-cap cluster/membership-fanout cluster/directory-ops-per-activation cluster/stateless-directory-ops cluster/locality-routed cluster/locality-warm topics/fanout'
 
 jobs:
   bench-quick:

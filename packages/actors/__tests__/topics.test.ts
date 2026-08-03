@@ -356,6 +356,29 @@ describe('subscription cycles', () => {
         expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
         expect(handled).toBe(1);
     });
+
+    it("reentrant: 'always' delivers a self-subscription as a concurrent turn", async () => {
+        const loop = topic('loop-always', 'self');
+        let handled = 0;
+        const Loop = defineActor({
+            type: 'LoopAlways',
+            unguarded: true,
+            reentrant: 'always',
+            state: () => ({}),
+            methods: (ctx) => ({
+                async trigger() {
+                    return ctx.publish(loop, 1);
+                }
+            }),
+            subscriptions: { 'loop-always': () => void (handled += 1) }
+        });
+        const host = await startHost([Loop]);
+        // The publishing turn awaits the fan-out; the delivery lands as an
+        // interleaved turn of the same activation instead of deadlocking.
+        const report = await host.actor(Loop, 'self').trigger();
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
+        expect(handled).toBe(1);
+    });
 });
 
 // ---------------------------------------------------------------------------

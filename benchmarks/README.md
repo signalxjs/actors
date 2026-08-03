@@ -58,6 +58,11 @@ wire/endpoint-roundtrip       + wire codec, JSON, endpoint (no socket)
 single actor the mailbox serializes, so throughput should flatten while p99
 climbs. `dispatch/fan-out-actors` is the control — spread across 1 000 actors,
 throughput should *not* collapse the same way.
+`dispatch/always-warm-actor` is the same call over a `reentrant: 'always'`
+actor — the delta against `dispatch/warm-actor` prices the interleaved lane
+(per-turn AsyncLocalStorage + concurrent-lane bookkeeping), and
+`dispatch/always-warm-turns` gates that path as a count, exactly as
+`dispatch/warm-turns` gates the serial one.
 
 `±NN%` after a value is that metric's own spread across rounds. Anything past
 the comparison threshold means the metric cannot detect a regression of that

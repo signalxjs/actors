@@ -45,8 +45,11 @@ export function isActorError(error: unknown): error is ActorErrorShape {
 }
 
 /**
- * A → B → A into a non-reentrant actor. Thrown at DISPATCH time with the
- * full chain — the cycle fails fast instead of hanging until a timeout.
+ * A → B → A into a non-reentrant actor (or a non-interleaving method of
+ * one). Thrown at DISPATCH time with the full chain — the cycle fails fast
+ * instead of hanging until a timeout. A `reentrant: 'always'` target (or an
+ * in-chain call to a `methodReentrancy`-mapped method) never throws this:
+ * the cycle completes as a concurrent turn.
  */
 export class ActorDeadlockError extends ActorError {
     /** `type/key` hops from the external caller to the cycle, inclusive. */
@@ -57,7 +60,9 @@ export class ActorDeadlockError extends ActorError {
             'deadlock',
             `[sigx actors] call-chain deadlock: ${chain.join(' → ')}. ` +
                 `The target is already processing a turn in this chain and is not ` +
-                `reentrant; declare \`reentrant: true\` on it to allow call-chain re-entry.`
+                `reentrant; declare \`reentrant: true\` on it to allow call-chain ` +
+                `re-entry, \`reentrant: 'always'\` for full interleaving, or map ` +
+                `just this method in \`methodReentrancy\`.`
         );
         this.name = 'ActorDeadlockError';
         this.chain = chain;
@@ -80,7 +85,9 @@ export class ActorActivationError extends ActorError {
  * `ctx.save()` found the stored etag ahead of this activation's — someone
  * else wrote this actor's state. The activation is stale: the current turn
  * and every queued turn reject with this, the activation is forgotten, and
- * the next call loads the winning state.
+ * the next call loads the winning state. Interleaved turns already in
+ * flight when the fault lands run to completion (their results were
+ * computed on the stale state), but any save they attempt rejects.
  */
 export class ActorStateConflictError extends ActorError {
     constructor(ref: string) {

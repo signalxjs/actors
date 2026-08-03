@@ -4,6 +4,37 @@
 
 ### Added
 
+- **Full interleaving — `reentrant: 'always'` and per-method
+  `methodReentrancy`** (#15, closing it). The Orleans `[Reentrant]` /
+  `[AlwaysInterleave]` pair: `reentrant` widens to
+  `boolean | 'call-chain' | 'always'` (`true` stays the exact v1
+  call-chain behavior), and `methodReentrancy: { method: 'always' }`
+  exempts individual methods on an otherwise serial actor — the
+  read-that-must-not-queue-behind-a-slow-write case. Interleavable turns
+  launch immediately on a concurrent mailbox lane: they never wait for
+  in-flight turns and are never waited for, serial turns keep their
+  mutual exclusion, and in-chain calls to an interleavable target
+  complete as concurrent turns instead of running inline — so a
+  self-cycle cannot deadlock by construction, single-node and cross-host
+  alike (the wire envelope is unchanged; the owning host reads its own
+  definition). Each turn keeps its own call context
+  (chain/callId/deadline) across awaits via a per-activation
+  `AsyncLocalStorage`, loaded lazily only for interleaving types — the
+  serial path never imports `node:async_hooks` and its microtask count
+  is bit-identical (CI-gated). Saves are now single-flighted per
+  activation with trailing coalescing, so concurrent `ctx.save()`s from
+  interleaved turns merge (last-writer-wins, whole-state) instead of
+  CAS-faulting the activation on its own sibling write;
+  `ctx.clearState()` serializes through the same gate. Deactivation
+  drains both lanes before `onDeactivate` and the final write-behind
+  flush; the sweeper, `ctx.deactivate()` and `stats().queued` treat
+  in-flight interleaved turns as work. Declarations are validated at the
+  type's first activation (loudly, every build); `defineWorker` keeps
+  both options structurally absent. New gated benchmark
+  `dispatch/always-warm-turns` (7 microtask turns per warm interleaved
+  dispatch, deterministic) plus informational
+  `dispatch/always-warm-actor`.
+
 - **Stateless workers — `defineWorker()`** (#243, closing it).
   Multi-activation pure-compute actors: the host pools up to `maxLocal`
   (default `navigator.hardwareConcurrency`, clamped to 16) interchangeable

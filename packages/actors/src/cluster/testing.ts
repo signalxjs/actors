@@ -276,6 +276,49 @@ function chainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinition } 
     };
 }
 
+/**
+ * The same A→B→A shape with an ALWAYS-reentrant alpha: the cycle must
+ * complete as a concurrent turn instead of deadlocking — over the same
+ * unchanged envelope, which is the point (reentrancy never rides the wire;
+ * the owning host reads its own definition).
+ */
+function alwaysChainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinition } {
+    const alpha = defineActor({
+        type: `${CHAIN}AlwaysAlpha`,
+        unguarded: true,
+        reentrant: 'always',
+        state: () => ({}),
+        methods: (ctx: ActorContext<object>) => ({
+            async poke() {
+                return await (ctx.actor(beta, 'b') as unknown as { poke(): Promise<string> }).poke();
+            },
+            async back() {
+                return 'alpha-back';
+            },
+            warm() {
+                return 'warm';
+            }
+        })
+    });
+    const beta = defineActor({
+        type: `${CHAIN}AlwaysBeta`,
+        unguarded: true,
+        state: () => ({}),
+        methods: (ctx: ActorContext<object>) => ({
+            async poke() {
+                return await (ctx.actor(alpha, 'a') as unknown as BackMethods).back();
+            },
+            warm() {
+                return 'warm';
+            }
+        })
+    });
+    return {
+        alpha: alpha as unknown as AnyActorDefinition,
+        beta: beta as unknown as AnyActorDefinition
+    };
+}
+
 // ---------------------------------------------------------------------------
 // The cases
 
@@ -615,6 +658,32 @@ const deadlockChain: ConformanceCase = {
     }
 };
 
+const alwaysChain: ConformanceCase = {
+    name: "an always-reentrant cross-host cycle completes instead of deadlocking",
+    why: "reentrant: 'always' never rides the wire — the owning host must admit the in-chain call from its own definition, on the unchanged envelope",
+    run: (create) => {
+        const { alpha, beta } = alwaysChainActors();
+        return withCluster(
+            create,
+            { hosts: 2, actors: [alpha, beta], policy: selfHost },
+            async (h) => {
+                // Same pinning as deadlockChain: a→b→a crosses the wire
+                // twice; the chain arrives intact and alpha's 'always' mode
+                // turns the would-be deadlock into a concurrent turn.
+                await h.hosts[0]!.dispatch({ type: alpha.type, key: 'a' }, 'warm', [], call());
+                await h.hosts[1]!.dispatch({ type: beta.type, key: 'b' }, 'warm', [], call());
+                const result = await h.hosts[0]!.dispatch(
+                    { type: alpha.type, key: 'a' },
+                    'poke',
+                    [],
+                    call()
+                );
+                assertEqual(result, 'alpha-back', 'always-reentrant cycle result');
+            }
+        );
+    }
+};
+
 const opsStatsChannel: ConformanceCase = {
     name: 'the ops channel answers, and reading it does not move the counters',
     why: 'a stats fan-out routed through normal dispatch makes every observation change what it observes',
@@ -769,6 +838,7 @@ export const transportConformance: readonly ConformanceCase[] = [
     methodNotFound,
     prototypeMemberNotFound,
     deadlockChain,
+    alwaysChain,
     opsStatsChannel,
     authRejection,
     gracefulHandoff,

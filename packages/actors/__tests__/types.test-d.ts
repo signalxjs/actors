@@ -175,6 +175,34 @@ describe('public type surface', () => {
             })
         });
     });
+
+    it('types the reentrancy union and the per-method map', () => {
+        const base = {
+            unguarded: true as const,
+            state: () => ({ n: 0 }),
+            methods: () => ({
+                get() {
+                    return 0;
+                }
+            })
+        };
+        void defineActor({ ...base, type: 'R1', reentrant: true });
+        void defineActor({ ...base, type: 'R2', reentrant: 'call-chain' });
+        void defineActor({ ...base, type: 'R3', reentrant: 'always' });
+        void defineActor({
+            ...base,
+            type: 'R4',
+            // @ts-expect-error not a reentrancy mode
+            reentrant: 'sometimes'
+        });
+        void defineActor({ ...base, type: 'R5', methodReentrancy: { get: 'always' } });
+        void defineActor({
+            ...base,
+            type: 'R6',
+            // @ts-expect-error the map only takes 'always'
+            methodReentrancy: { get: 'sometimes' }
+        });
+    });
 });
 
 describe('plugin ctx extension inference', () => {
@@ -380,6 +408,20 @@ describe('defineWorker typing', () => {
             unguarded: true,
             // @ts-expect-error workers are never reentrant
             reentrant: true,
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoAlways',
+            unguarded: true,
+            // @ts-expect-error workers are never reentrant, 'always' included
+            reentrant: 'always',
+            methods: () => ({})
+        });
+        void defineWorker({
+            type: 'NoMethodReentrancy',
+            unguarded: true,
+            // @ts-expect-error workers never interleave per method — they pool
+            methodReentrancy: { m: 'always' },
             methods: () => ({})
         });
         void defineWorker({

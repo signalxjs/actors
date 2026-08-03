@@ -89,6 +89,7 @@ export function defineActor<
                 'onReminder',
                 'placement',
                 'reentrant',
+                'methodReentrancy',
                 'migrateState'
             ] as const
         ).find((key) => options[key] !== undefined);
