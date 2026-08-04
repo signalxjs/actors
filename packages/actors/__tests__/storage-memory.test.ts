@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defineActor } from '@sigx/actors';
+import { defineActor, isStorageConflict } from '@sigx/actors';
 import { createHost, memoryStorage } from '@sigx/actors/host';
 
 /**
@@ -26,11 +26,9 @@ describe('memoryStorage contract', () => {
         const storage = memoryStorage();
         const etag = await storage.save('T', 'k', { n: 0 }, null);
         await expect(storage.save('T', 'k', { n: 1 }, 'stale')).rejects.toSatisfy(
-            (e: unknown) => (e as Error).name === 'ActorStorageConflict'
+            isStorageConflict
         );
-        await expect(storage.clear('T', 'k', 'stale')).rejects.toSatisfy(
-            (e: unknown) => (e as Error).name === 'ActorStorageConflict'
-        );
+        await expect(storage.clear('T', 'k', 'stale')).rejects.toSatisfy(isStorageConflict);
         await storage.clear('T', 'k', etag);
         await expect(storage.load('T', 'k')).resolves.toBeNull();
     });
@@ -60,10 +58,7 @@ describe('memoryStorage contract', () => {
             })
         });
         const host = createHost({ actors: [probe], storage, defaults: quiet });
-        const client = host.actor(probe, 'p') as unknown as {
-            bumpAndSave(): Promise<void>;
-            bumpWithoutSave(): Promise<void>;
-        };
+        const client = host.actor(probe, 'p');
         await client.bumpAndSave();
         await client.bumpWithoutSave();
         const record = await storage.load('Probe', 'p');

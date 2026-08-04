@@ -343,11 +343,15 @@ export interface ActorStorageRecord {
  * `ActorStateConflictError` and discards the stale activation.
  *
  * Ownership contract (#25):
- * - `save` takes ownership of `state`: the caller hands the tree over and
- *   must not mutate it after the call. An implementation may store it by
- *   reference (`memoryStorage`) or serialize it (`JSON.stringify` inside
- *   `save` trivially satisfies this). The host always passes a codec-fresh
- *   tree it built for the call, so no defensive copy is required.
+ * - `save` takes ownership of `state` at the moment of the CALL, and keeps
+ *   it however the call settles: the caller must not mutate the tree while
+ *   the promise is pending or after it rejects — a retry (e.g. after a
+ *   conflict) builds a fresh tree rather than reusing the handed-over one,
+ *   which is what the host does (it re-encodes state per attempt). An
+ *   implementation may store the tree by reference (`memoryStorage`) or
+ *   serialize it (`JSON.stringify` inside `save` trivially satisfies
+ *   this). The host always passes a codec-fresh tree it built for the
+ *   call, so no defensive copy is required.
  * - `load` must return a record the caller may freely mutate — an
  *   implementation that holds records in memory must hand out a copy
  *   (deserializing from a stored string trivially satisfies this).
