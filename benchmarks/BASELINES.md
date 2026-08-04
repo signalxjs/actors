@@ -704,7 +704,9 @@ right about the redundancy and wrong about which copy dominates.
 
 Caveat before acting: `ActorStorage` (`types.ts:300`) is a public seam, so the
 defensive clone is part of its contract for third-party callers even though the
-host's own path cannot need it.
+host's own path cannot need it. **Since fixed (#25):** the seam contract now
+assigns `save` ownership of its argument and the save-side clone is gone; the
+figures above predate that.
 
 ---
 
@@ -734,9 +736,14 @@ these are known problems** — they are measurements looking for a decision.
    **Superseded by the profile:** the snapshot is already shared across
    subscribers, and the 1-subscriber cliff is the `{deep: true}` watch, not the
    clone. See "The change-feed cliff is the deep watch".
-3. **`memoryStorage` `structuredClone`s on both save and load** — ~14.5% of the
+3. ~~**`memoryStorage` `structuredClone`s on both save and load** — ~14.5% of the
    `state/*` profile, and the save-side clone duplicates a tree `host.ts:230`
-   just built. Bounded by the `ActorStorage` seam's contract, not by the host.
+   just built. Bounded by the `ActorStorage` seam's contract, not by the host.~~
+   **Fixed (#25):** the seam's contract now says it — `save` takes ownership
+   of its argument (the host always passes a codec-fresh `encodeWithHandlers`
+   tree), so `memoryStorage` stores it by reference; the load-side clone
+   stays, keeping "a stored value never aliases live activation state" true
+   from both directions.
 4. **The mailbox allocates ~4 promises per turn.** It is not the dominant cost
    today (see the ladder), so this is lower priority than it looks. **Profile
    confirms it:** `host/mailbox.ts` is 2.8% of the dispatch profile.

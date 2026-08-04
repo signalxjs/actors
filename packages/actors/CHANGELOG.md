@@ -4,6 +4,17 @@
 
 ### Changed
 
+- **`ActorStorage.save()` now takes ownership of its `state` argument**
+  (#25) — the caller must not mutate the tree after the call, and an
+  implementation may store it by reference. `load()`'s half of the contract
+  is now explicit too: the returned record is the caller's to mutate.
+  `memoryStorage` accordingly stops `structuredClone`-ing on save (the host
+  always passes a codec-fresh tree; the load-side clone stays, so a stored
+  value still never aliases live activation state). Only storage
+  implementations that retain the argument by reference AND callers that
+  mutate a tree after saving it are affected — no in-repo provider or caller
+  was.
+
 - **BREAKING: `Mailbox` is now `Turns`** (#284) — the class exported from
   `@sigx/actors/host`, its module (`host/mailbox.ts` → `host/turns.ts`), and
   the `Activation.mailbox` field (now `Activation.turns`). No alias; nothing

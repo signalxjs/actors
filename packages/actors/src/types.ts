@@ -341,6 +341,16 @@ export interface ActorStorageRecord {
  * means "no stored record yet" (first save). A mismatch must throw the
  * `ActorStorageConflict` brand — the runtime translates it into
  * `ActorStateConflictError` and discards the stale activation.
+ *
+ * Ownership contract (#25):
+ * - `save` takes ownership of `state`: the caller hands the tree over and
+ *   must not mutate it after the call. An implementation may store it by
+ *   reference (`memoryStorage`) or serialize it (`JSON.stringify` inside
+ *   `save` trivially satisfies this). The host always passes a codec-fresh
+ *   tree it built for the call, so no defensive copy is required.
+ * - `load` must return a record the caller may freely mutate — an
+ *   implementation that holds records in memory must hand out a copy
+ *   (deserializing from a stored string trivially satisfies this).
  */
 export interface ActorStorage {
     load(type: string, key: string): Promise<ActorStorageRecord | null>;
