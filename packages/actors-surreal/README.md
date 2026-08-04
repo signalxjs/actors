@@ -64,7 +64,10 @@ Every provider takes either `db` (a connected `Surreal`, shared with your app â€
 one socket multiplexes everything) or `url` plus `namespace`/`database`/`auth`,
 in which case the package connects lazily and owns the socket. `prefix`
 (default `sigx_`) names the tables; `heartbeatMs` (5 s), `ttlMs` (15 s),
-`pollMs` (5 s) and `push` (true) tune membership.
+`pollMs` (5 s), `push` (true) and `coalesceMs` (0 â€” trailing quiet window
+for coalescing live-query pushes; the subscriber is single-flight either
+way, so a burst of N changes costs one refresh plus at most one catch-up,
+not N) tune membership.
 
 ## Retry is part of the contract
 

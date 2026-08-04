@@ -19,14 +19,15 @@
  * integrity floor underneath all of this.
  */
 import { Redis } from 'ioredis';
-import type {
-    ActorDirectory,
-    ClusterMembership,
-    ClusterProviders,
-    DirectoryEntry,
-    MembershipView,
-    HostDescriptor,
-    HostStatus
+import {
+    refreshCoalescer,
+    type ActorDirectory,
+    type ClusterMembership,
+    type ClusterProviders,
+    type DirectoryEntry,
+    type MembershipView,
+    type HostDescriptor,
+    type HostStatus
 } from '@sigx/actors/cluster';
 
 /** The subset of ioredis this package calls — accepts a shared app client. */
@@ -45,6 +46,14 @@ export interface RedisClusterOptions {
     ttlMs?: number;
     /** Membership view poll cadence, ms. Default 5000. */
     pollMs?: number;
+    /**
+     * Trailing quiet window for coalescing push notifications, ms. The
+     * subscriber is single-flight either way (a burst of N changes costs
+     * one refresh plus at most one trailing catch-up, not N); a non-zero
+     * window widens the net past one round-trip at the price of that much
+     * extra staleness. Default 0.
+     */
+    coalesceMs?: number;
 }
 
 interface Resolved {
@@ -94,11 +103,12 @@ export function redisMembership(
     client: RedisClient,
     options: Omit<RedisClusterOptions, 'client' | 'url'> & { namespace?: string } = {}
 ): ClusterMembership {
-    const { ns, heartbeatMs, ttlMs, pollMs } = {
+    const { ns, heartbeatMs, ttlMs, pollMs, coalesceMs } = {
         ns: options.namespace ?? 'sigx',
         heartbeatMs: options.heartbeatMs ?? 5_000,
         ttlMs: options.ttlMs ?? 15_000,
-        pollMs: options.pollMs ?? 5_000
+        pollMs: options.pollMs ?? 5_000,
+        coalesceMs: options.coalesceMs ?? 0
     };
     const setKey = `${ns}:hosts`;
     const mverKey = `${ns}:mver`;
@@ -163,6 +173,16 @@ export function redisMembership(
         return next;
     };
 
+    // Coalesce the notification→refresh path (#26): a burst of pub/sub
+    // messages costs one refresh plus at most one trailing catch-up per
+    // subscriber, not one refresh per message — and a message whose
+    // published version the view has already caught up past costs nothing.
+    const coalescer = refreshCoalescer<MembershipView>({
+        refresh,
+        version: () => cached.version,
+        quietMs: coalesceMs
+    });
+
     return {
         async join(descriptor) {
             self = descriptor;
@@ -180,12 +200,19 @@ export function redisMembership(
                 });
             }, heartbeatMs);
             (beat as { unref?: () => void }).unref?.();
-            poll = setInterval(() => void refresh().catch(noop), pollMs);
+            // The poll goes through the coalescer too, so a poll tick landing
+            // during a push-triggered refresh joins it instead of double-reading.
+            poll = setInterval(() => void coalescer.demand().catch(noop), pollMs);
             (poll as { unref?: () => void }).unref?.();
             // Push: a dedicated subscriber connection (ioredis subscriber
-            // mode can't run other commands) triggers refresh on publish.
+            // mode can't run other commands) hints the coalescer on publish.
+            // The payload is the published version — the skip gate; a
+            // non-numeric payload still refreshes, just unskippably.
             subscriber = client.duplicate();
-            subscriber.on('message', () => void refresh().catch(noop));
+            subscriber.on('message', (_channel: string, message: string) => {
+                const noted = Number(message);
+                coalescer.note(Number.isFinite(noted) && noted > 0 ? noted : undefined);
+            });
             await subscriber.subscribe(channel).catch(noop);
         },
         async setStatus(status: HostStatus) {
@@ -199,6 +226,9 @@ export function redisMembership(
             if (poll) clearInterval(poll);
             beat = poll = null;
             if (subscriber) {
+                // Quiesce in-flight/pending refreshes before tearing down the
+                // connection they may still be reading from.
+                await coalescer.settled();
                 await subscriber.quit().catch(noop);
                 subscriber = null;
             }
@@ -217,7 +247,10 @@ export function redisMembership(
             await client.publish(channel, String(version ?? '')).catch(noop);
         },
         view: () => cached,
-        refresh,
+        // Demand semantics: resolves with a refresh that started at-or-after
+        // the call — placement's failure path relies on the refreshed view
+        // excluding a leaver it just observed.
+        refresh: () => coalescer.demand(),
         async isAlive(hostId) {
             return (await client.exists(hostKey(hostId))) === 1;
         },

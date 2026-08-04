@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Membership pushes are coalesced** (#26): the LISTEN handler is now
+  single-flight — a burst of N membership changes costs one refresh plus at
+  most one trailing catch-up instead of N full re-reads, and a NOTIFY whose
+  payload version the view has already caught up past costs nothing. New
+  `coalesceMs` option (default 0); `refresh()` keeps its contract (resolves
+  with a refresh that started at-or-after the call).
+
 ### Added
 
 - **`pgReminders()`** (#242, closing it): durable reminders on a

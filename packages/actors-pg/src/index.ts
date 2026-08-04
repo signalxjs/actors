@@ -21,14 +21,15 @@
  * needs only DML grants.
  */
 import pg from 'pg';
-import type {
-    ActorDirectory,
-    ClusterMembership,
-    ClusterProviders,
-    DirectoryEntry,
-    MembershipView,
-    HostDescriptor,
-    HostStatus
+import {
+    refreshCoalescer,
+    type ActorDirectory,
+    type ClusterMembership,
+    type ClusterProviders,
+    type DirectoryEntry,
+    type MembershipView,
+    type HostDescriptor,
+    type HostStatus
 } from '@sigx/actors/cluster';
 
 /** One query result, as this package reads it. */
@@ -48,7 +49,10 @@ interface PgListenClient extends PgQueryable {
     /** node-postgres: a truthy argument DESTROYS the connection instead of
      *  returning it to the pool. */
     release(destroy?: boolean): void;
-    on(event: 'notification', listener: (message: { channel: string }) => void): unknown;
+    on(
+        event: 'notification',
+        listener: (message: { channel: string; payload?: string }) => void
+    ): unknown;
     on(event: 'error', listener: (error: unknown) => void): unknown;
 }
 
@@ -72,6 +76,14 @@ export interface PgClusterOptions {
     /** Membership view poll cadence, ms — the fallback under the
      *  LISTEN/NOTIFY push. Default 5000. */
     pollMs?: number;
+    /**
+     * Trailing quiet window for coalescing push notifications, ms. The
+     * listener is single-flight either way (a burst of N changes costs one
+     * refresh plus at most one trailing catch-up, not N); a non-zero window
+     * widens the net past one round-trip at the price of that much extra
+     * staleness. Default 0.
+     */
+    coalesceMs?: number;
 }
 
 /**
@@ -230,6 +242,7 @@ export function pgMembership(
     const heartbeatMs = options.heartbeatMs ?? 5_000;
     const ttlMs = options.ttlMs ?? 15_000;
     const pollMs = options.pollMs ?? 5_000;
+    const coalesceMs = options.coalesceMs ?? 0;
     // Postgres identifiers truncate at 63 bytes — but only LISTEN would
     // truncate (`pg_notify` takes a plain string and would not), so a long
     // schema would silently split the channel. Truncating HERE keeps both
@@ -304,6 +317,17 @@ export function pgMembership(
         return next;
     };
 
+    // Coalesce the notification→refresh path (#26): a burst of NOTIFYs costs
+    // one refresh plus at most one trailing catch-up per listener, not one
+    // refresh per message. The version gate rides the NOTIFY payload; silent
+    // expiries have no version, but they arrive via the poll, which also
+    // goes through the coalescer (as an unskippable demand).
+    const coalescer = refreshCoalescer<MembershipView>({
+        refresh,
+        version: () => cached.version,
+        quietMs: coalesceMs
+    });
+
     return {
         async join(descriptor) {
             self = descriptor;
@@ -320,7 +344,7 @@ export function pgMembership(
                 });
             }, heartbeatMs);
             (beat as { unref?: () => void }).unref?.();
-            poll = setInterval(() => void refresh().catch(noop), pollMs);
+            poll = setInterval(() => void coalescer.demand().catch(noop), pollMs);
             (poll as { unref?: () => void }).unref?.();
             // Push, when the pool can dedicate a connection: LISTEN turns a
             // membership write anywhere into an immediate refresh here. Any
@@ -328,7 +352,10 @@ export function pgMembership(
             if (pool.connect) {
                 try {
                     const sub = await pool.connect();
-                    sub.on('notification', () => void refresh().catch(noop));
+                    sub.on('notification', (message) => {
+                        const noted = Number(message.payload);
+                        coalescer.note(Number.isFinite(noted) && noted > 0 ? noted : undefined);
+                    });
                     sub.on('error', noop);
                     await sub.query(`LISTEN "${channel}"`);
                     listener = sub;
@@ -347,6 +374,9 @@ export function pgMembership(
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
+            // Quiesce in-flight/pending refreshes before the listener (and
+            // its notification handler) is destroyed under them.
+            await coalescer.settled();
             if (listener) {
                 try {
                     // DESTROY, never pool: LISTEN state and the
@@ -366,7 +396,10 @@ export function pgMembership(
             await bumpVersion().catch(noop);
         },
         view: () => cached,
-        refresh,
+        // Demand semantics: resolves with a refresh that started at-or-after
+        // the call — placement's failure path relies on the refreshed view
+        // excluding a leaver it just observed.
+        refresh: () => coalescer.demand(),
         async isAlive(hostId) {
             const result = await pool.query(
                 `SELECT 1 FROM ${s}.hosts WHERE host_id = $1 AND expires_at > now()`,

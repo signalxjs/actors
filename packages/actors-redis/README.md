@@ -36,6 +36,7 @@ safely shared).
 | `heartbeatMs` | `5000` | membership heartbeat cadence |
 | `ttlMs` | `15000` | heartbeat key TTL — missed beats past this = dead |
 | `pollMs` | `5000` | membership view poll cadence |
+| `coalesceMs` | `0` | trailing quiet window for coalescing membership pushes — the subscriber is single-flight either way (a burst of N changes costs one refresh plus at most one catch-up, not N); a non-zero window widens the net at the price of that much staleness |
 
 ## Key layout
 

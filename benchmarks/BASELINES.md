@@ -261,6 +261,16 @@ A rolling restart of 100 hosts is ~200 membership changes — on the order of
 Cheapest fix is a debounce/coalesce on the subscriber path: N changes
 arriving together should cost one refresh, not N.
 
+**Since fixed (#26):** `refreshCoalescer` (core, wired into redis/pg/surreal)
+makes the subscriber single-flight with a version gate. An isolated join is
+unchanged by design (one notification per subscriber = one refresh). The
+burst is the case it exists for — measured on loopback (the WORST case for
+single-flight, since a refresh completes between publishes), k=10 concurrent
+joins into n=50: refreshes 510 → 292, commands per join 3 080 → 1 709; with
+`coalesceMs: 25`, 213 and 1 264. A real network RTT widens the coalescing
+window for free. The `burst` arms of `cluster/redis-amplification` carry
+this measurement.
+
 ### ❌ Reminders stop scaling at 16 hosts
 
 `REMINDER_SHARD_COUNT = 16`, pinned as storage identity ("never change
@@ -740,8 +750,13 @@ these are known problems** — they are measurements looking for a decision.
 4. **The mailbox allocates ~4 promises per turn.** It is not the dominant cost
    today (see the ladder), so this is lower priority than it looks. **Profile
    confirms it:** `host/mailbox.ts` is 2.8% of the dispatch profile.
-5. **Debounce the membership subscriber** — the single highest-value cluster
-   fix, and the only measured O(N²).
+5. ~~**Debounce the membership subscriber** — the single highest-value cluster
+   fix, and the only measured O(N²).~~
+   **Fixed (#26):** `refreshCoalescer` on `@sigx/actors/cluster`, wired into
+   all three store providers — single-flight with a version gate, `demand()`
+   preserving `refresh()`'s started-at-or-after contract. Loopback burst
+   (k=10 into n=50): refreshes 510 → 292 (default) → 213 (`coalesceMs: 25`).
+   See the amplification section above.
 6. **The 16-shard reminder ceiling** needs a decision, not a patch: raising
    the count is a storage migration.
 7. **`consistentHashPolicy()` costs ~16 µs per decision at N=100** (63×

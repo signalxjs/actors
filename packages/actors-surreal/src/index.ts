@@ -43,14 +43,15 @@
  *    here pushes its predicate through a `SELECT` subquery, which does.
  */
 import { RecordId, Table } from 'surrealdb';
-import type {
-    ActorDirectory,
-    ClusterMembership,
-    ClusterProviders,
-    DirectoryEntry,
-    HostDescriptor,
-    HostStatus,
-    MembershipView
+import {
+    refreshCoalescer,
+    type ActorDirectory,
+    type ClusterMembership,
+    type ClusterProviders,
+    type DirectoryEntry,
+    type HostDescriptor,
+    type HostStatus,
+    type MembershipView
 } from '@sigx/actors/cluster';
 import {
     surrealHandle,
@@ -78,6 +79,14 @@ export interface SurrealClusterOptions extends SurrealConnectionOptions {
     /** Subscribe to a live query for immediate membership convergence.
      *  Default true; the poll remains the guarantee either way. */
     push?: boolean;
+    /**
+     * Trailing quiet window for coalescing push notifications, ms. The
+     * subscriber is single-flight either way (a burst of N changes costs
+     * one refresh plus at most one trailing catch-up, not N); a non-zero
+     * window widens the net past one round-trip at the price of that much
+     * extra staleness. Default 0.
+     */
+    coalesceMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +242,16 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
         return next;
     };
 
+    // Coalesce the notification→refresh path (#26): a burst of live-query
+    // events costs one refresh plus at most one trailing catch-up per
+    // subscriber, not one refresh per event. Events are noted versionless —
+    // live queries are at-most-once and unordered, so no event is skippable.
+    const coalescer = refreshCoalescer<MembershipView>({
+        refresh,
+        version: () => cached.version,
+        quietMs: options.coalesceMs ?? 0
+    });
+
     /**
      * Best-effort push. Subscribes to the version TABLE, not the version
      * RECORD: a record-scoped live query fails to listen on 3.2.4 even though
@@ -249,7 +268,7 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
         if (!wantPush || typeof db.live !== 'function') return;
         try {
             const handle = await db.live(new Table(t.mver));
-            handle.subscribe(() => void refresh().catch(noop));
+            handle.subscribe(() => coalescer.note());
             live = handle;
         } catch {
             // The HTTP engine, a multi-node deployment, a server without the
@@ -274,7 +293,7 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
                 });
             }, heartbeatMs);
             (beat as { unref?: () => void }).unref?.();
-            poll = setInterval(() => void refresh().catch(noop), pollMs);
+            poll = setInterval(() => void coalescer.demand().catch(noop), pollMs);
             (poll as { unref?: () => void }).unref?.();
             await startPush();
         },
@@ -288,6 +307,9 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
+            // Quiesce in-flight/pending refreshes before killing the live
+            // query whose events may still be feeding them.
+            await coalescer.settled();
             if (live) {
                 try {
                     await live.kill();
@@ -303,7 +325,10 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             await bumpVersion().catch(noop);
         },
         view: () => cached,
-        refresh,
+        // Demand semantics: resolves with a refresh that started at-or-after
+        // the call — placement's failure path relies on the refreshed view
+        // excluding a leaver it just observed.
+        refresh: () => coalescer.demand(),
         async isAlive(id) {
             const [alive] = await db.query<[boolean]>(IS_ALIVE, { id: hostRid(id) });
             return alive === true;

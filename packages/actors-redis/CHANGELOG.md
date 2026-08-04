@@ -4,6 +4,15 @@
 
 ### Changed
 
+- **Membership pushes are coalesced** (#26): the pub/sub subscriber is now
+  single-flight — a burst of N membership changes costs one refresh plus at
+  most one trailing catch-up instead of N full member-list re-reads, and a
+  message whose published version the view has already caught up past costs
+  nothing. This was the measured O(N²): ~10 400 commands cluster-wide for
+  one join at n=100. New `coalesceMs` option (default 0) widens the
+  coalescing window; `refresh()` keeps its contract (resolves with a
+  refresh that started at-or-after the call).
+
 - **silo → host** (#233): membership registry keys moved from
   `{ns}:silos` / `{ns}:silo:{id}` to `{ns}:hosts` / `{ns}:host:{id}`,
   and exported types follow `@sigx/actors` (`HostDescriptor`, …).
