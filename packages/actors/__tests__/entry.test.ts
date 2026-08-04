@@ -238,7 +238,7 @@ describe('actor() entry', () => {
         await expect(iterate()).rejects.toMatchObject({ status: 401 });
     });
 
-    it('defineActor rejects the unguarded+use contradiction at definition time', () => {
+    it('allows allowAnonymous alongside authorize — no contradiction since v4', () => {
         expect(() =>
             defineActor({
                 type: 'Contradiction',
@@ -297,7 +297,7 @@ describe('actor() entry: context bag', () => {
         ).rejects.toThrow(/\[sigx actors\]/);
     });
 
-    it('an unguarded detached call degrades to an empty bag, never a throw', async () => {
+    it('an anonymous detached call degrades to an empty bag, never a throw', async () => {
         const plain = defineActor({
             type: 'EntryPlainBag',
             allowAnonymous: true,

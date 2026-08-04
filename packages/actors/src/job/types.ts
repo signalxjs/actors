@@ -5,7 +5,7 @@
  * cancellable and crash-resumable; this layer standardizes the state
  * machine, progress, checkpoints and the client surface around it.
  */
-import type { ServerPolicy } from '@sigx/server';
+import type { ActorPolicy } from '../types';
 import type { ActorPlacementStrategy, ReminderApi } from '../types';
 
 export type JobStatus =
@@ -111,7 +111,7 @@ export interface JobOptions<In, Out, C, Extra extends object> {
      * start and never re-authorizes: a job outlives the request that
      * enqueued it, so there is no live caller left to decide about.
      */
-    authorize?: ServerPolicy | readonly ServerPolicy[];
+    authorize?: ActorPolicy | readonly ActorPolicy[];
     /** The explicit word for a job reachable without a principal. */
     allowAnonymous?: true;
     /**

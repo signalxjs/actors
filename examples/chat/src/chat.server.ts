@@ -19,7 +19,7 @@ import { cookieFor, currentUser } from './guards';
 
 /**
  * Who am I? Drives the header; also proves serverFns work beside actors.
- * `unguarded` — it REPORTS the session (null when absent), so gating it on
+ * `allowAnonymous` — it REPORTS the session (null when absent), so gating it on
  * one would be circular.
  */
 export const me = serverFn({

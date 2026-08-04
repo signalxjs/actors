@@ -59,6 +59,7 @@ export type {
     ActorArgs,
     ActorPlacement,
     ActorPlacementStrategy,
+    ActorPolicy,
     ActorReadName,
     ActorRef,
     ActorReminders,
@@ -114,7 +115,7 @@ function isClientRef(value: unknown): value is ClientRefLike {
  *  - **browser**: `def` is the build-swapped client ref; calls go over the
  *    wire (`/_sigx/actor`) through the generic proxy.
  *  - **server** (serverFns, SSR render, scripts): `def` is the real
- *    definition; the actor's `use`/`methodUse` guard chains run against the
+ *    definition; the actor's `authorize`/`methodAuthorize` policies run against the
  *    ambient request context, then the call dispatches in-process through
  *    the running host (no HTTP hop).
  *

@@ -4,7 +4,32 @@
  * import types without pulling the public API module in.
  */
 import type { ServerPolicy, ServerFnReadCache } from '@sigx/server';
+
 import type { ActorErrorKind, ActorOwnerHint } from './errors';
+
+/**
+ * A policy as an actor DECLARES it.
+ *
+ * The principal is `any` here, and only here, for a variance reason rather
+ * than a laziness one: a definition cannot know the app's principal type
+ * (that lives on `createServerApp<P>`), so the option's type is
+ * `ServerPolicy<unknown>` — and a parameter is contravariant, so the
+ * natural spelling
+ *
+ * ```ts
+ * authorize: (user: User | null, _rq, op) => op.resource.key === user?.id
+ * ```
+ *
+ * would not be assignable to it. The alternative is a cast at every policy,
+ * which is worse: it moves a compile-time annoyance into runtime-shaped
+ * boilerplate, and a cast that appears on every policy stops being read.
+ *
+ * The narrowing an author actually wants is the one they write in their own
+ * parameter annotation, which this preserves. `null` still reaches a policy
+ * only on an `allowAnonymous` operation.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ActorPolicy = ServerPolicy<any>;
 
 /** Identity of one virtual actor. Serializable; never holds memory. */
 export interface ActorRef {
@@ -805,7 +830,7 @@ export interface ActorOptions<
      * null). Required unless `allowAnonymous: true` when the build gate is
      * on (its default), or an app default policy is configured.
      */
-    authorize?: ServerPolicy | readonly ServerPolicy[];
+    authorize?: ActorPolicy | readonly ActorPolicy[];
     /**
      * The explicit word for an actor reachable without a principal. Waives
      * ONLY the identity gate: app middleware and authentication still run,
@@ -815,7 +840,7 @@ export interface ActorOptions<
     allowAnonymous?: true;
     /** Per-method policy chains, ANDed AFTER `authorize`. Static map — the
      *  method table itself is per-activation and cannot carry wire metadata. */
-    methodAuthorize?: Record<string, ServerPolicy | readonly ServerPolicy[]>;
+    methodAuthorize?: Record<string, ActorPolicy | readonly ActorPolicy[]>;
     /**
      * @internal Set by `defineWorker` / `defineJob` so a policy's
      * `op.resource.kind` names what it is actually deciding about. Absent
@@ -824,7 +849,7 @@ export interface ActorOptions<
      */
     kind?: 'worker' | 'job';
     /**
-     * Per-method interleaving, alongside `methodUse` (same static-map shape,
+     * Per-method interleaving, alongside `methodAuthorize` (same static-map shape,
      * own keys only): a method mapped to `'always'` is exempt from turn
      * exclusivity regardless of the actor-level `reentrant` setting — it
      * never waits for in-flight turns and is never waited for, and an
@@ -1047,11 +1072,11 @@ export interface WorkerOptions<
     type: string;
     /** Policy chain, exactly as on `ActorOptions.authorize`; `op.resource`
      *  arrives with `kind: 'worker'`. */
-    authorize?: ServerPolicy | readonly ServerPolicy[];
+    authorize?: ActorPolicy | readonly ActorPolicy[];
     /** The explicit word for a worker reachable without a principal. */
     allowAnonymous?: true;
     /** Per-method policy chains, ANDed after `authorize`. */
-    methodAuthorize?: Record<string, ServerPolicy | readonly ServerPolicy[]>;
+    methodAuthorize?: Record<string, ActorPolicy | readonly ActorPolicy[]>;
     /**
      * Pool cap: max concurrent activations per (type, key) on one host.
      * Positive integer. Default: `navigator.hardwareConcurrency` clamped to

@@ -11,7 +11,7 @@ import { requireUser } from './guards.server';
 
 export const CartActor = defineActor({
     type: 'Cart',
-    use: [requireUser],
+    authorize: [requireUser],
     state: () => ({ items: [] as Item[] }),
     methods: (ctx) => ({
         async addItem(item: Item) {
@@ -236,7 +236,7 @@ import { defineActor } from './actors.app';
 
 export const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         increment(by: number) {
@@ -414,8 +414,9 @@ static resolution instead — so it works with any bundler.
 Three things are on the package author, because the consuming app's build
 never sees the source:
 
-- **Guards.** `requireGuards` cannot inspect a package, so declare `use` or
-  `unguarded` yourself. The host dev-warns for a registered actor that
+- **Authorization.** `requireAuthorization` cannot inspect a package, so
+  declare `authorize` or `allowAnonymous` yourself. The host warns for a
+  registered actor that
   declares neither.
 - **Stream names** in the ref must match the definition; they drive wire
   routing.
@@ -430,56 +431,121 @@ never sees the source:
   refused: those heads belong to the runtime's own data keys (`@actor`) and
   mounts (`$live`).
 
-## Guards
+## Authorization
 
-Actor methods are as security-sensitive as server functions, so the build
-**requires a decision** per actor: a `use: [...]` guard chain, or a literal
-`unguarded: true`. Guards are core's `ServerFnGuard` shape
-(`(rq, info) => void`, veto by throwing), run on **every transport** — the
-wire endpoint and in-process `actor()` calls — and always **outside the
-any turn**, so a slow auth check never occupies the actor's turn.
-`methodUse: { methodName: [...] }` adds per-method chains. Actor-to-actor
-calls (`ctx.actor`) are intra-system and do not re-run guards.
+Actor methods are as security-sensitive as server functions, and the runtime
+is **fail-closed**: an actor that declares nothing, in a process with no
+server app configured, denies every call with 401. Access is decided by an
+`authorize` policy, or waived explicitly with `allowAnonymous: true`, or
+left to the app's default policy.
 
-The endpoint-level `guard` option on `handleActorRequest` remains the
-wire-only backstop, exactly like the serverFn endpoint's.
+```ts
+// src/server-app.ts — the ONE place app-wide policy lives
+export const app = createServerApp<User>({
+    middleware: [requestId, auditLog],   // work, every transport
+    authenticate: sessionFromCookie,     // -> User | null
+    codec: { encode: (u) => u.id, decode: (id) => ({ id }) }
+});
+```
+
+```ts
+defineActor({ type: 'Room', methods });                      // app default decides
+defineActor({ type: 'Auth', allowAnonymous: true, methods }); // deliberately public
+```
+
+A policy is core's `ServerPolicy` — `(principal, rq, op) => boolean`,
+**strict-`true`**: anything else denies (403; 401 when the principal is
+null). A thrown `ServerFnError` passes through verbatim for a custom
+status. Policies run on **every transport** — the wire endpoint, `$live`,
+and in-process `actor()` calls — and always **outside any turn**, so a slow
+check never occupies the actor's turn.
+
+**The policy sees the instance**, which is what makes the common actor
+question expressible at all:
+
+```ts
+defineActor({
+    type: 'Cart',
+    // op.resource is { kind: 'actor', type: 'Cart', key, method }
+    authorize: (user, _rq, op) => op.resource.key === user.id,
+    methods
+});
+```
+
+`methodAuthorize: { methodName: [...] }` adds per-method policies, ANDed
+**after** `authorize`. Actor-to-actor calls (`ctx.actor`) do not
+re-authorize: authentication is per REQUEST and authorization is per ENTRY
+POINT — the wire endpoint, the live endpoint, an in-process call, a job
+enqueue — and a hop is none of those.
+
+The endpoint-level `guard` option is **gone** (it was wire-only by
+construction). App `middleware` runs in the same pre-decode slot and
+reaches in-process calls too; a wire-only concern is one
+`if (fn.transport !== 'wire') return;` in the middleware body.
+
+### Identity: `ctx.principal`
+
+The authenticated principal reaches every actor as `ctx.principal`, with
+nothing to stamp and nothing to thread through arguments:
+
+```ts
+defineActor({
+    type: 'Room',
+    methods: (ctx) => ({
+        async post(text: string) {
+            const from = (ctx.principal as User | null)?.id;
+            // …
+        }
+    })
+});
+```
+
+It rides a **first-class slot on the call envelope**, not the context bag —
+so it cannot be forged through `.with({ bag })`, and it cannot be dropped
+by forgetting to stamp it. It is inherited unchanged by `ctx.actor` and
+`ctx.publish` hops and carried host-to-host, so a downstream actor sees
+**whoever entered the system**, not the actor that called it. Decoding is
+lazy and memoized, so an actor that never reads it pays nothing.
+
+It needs `codec` on `createServerApp` (a principal has to round-trip as a
+string to ride the envelope). Without one it propagates nothing and
+dev-warns once — fail-closed at the reader. **Treat `null` as
+unauthenticated, never as a default principal**: between hosts this rides
+outside the cluster HMAC, exactly like the bag, so its trust is the
+deployment perimeter rather than a proof.
 
 ### The request-context bag
 
-Guards run once, at the edge — so what a guard learns (the authenticated
-user, a correlation id) used to be threaded by hand through method
-arguments, which in-process calls and inner `ctx.actor` hops never saw. The
-context bag is the runtime channel for exactly that:
+The bag is the channel for app DATA — a correlation id, a tenant hint —
+that inner hops would otherwise never see. (Before the guard split it also
+carried identity; that is `ctx.principal`'s job now, precisely so a
+forgotten stamp cannot silently drop the caller mid-chain.)
 
 ```ts
 import { stampCallBag } from '@sigx/actors';
 
-function requireUser(rq: ServerFnContext): void {
-    const user = authenticate(rq);
-    if (!user) throw new ServerFnError(401, 'sign in');
-    stampCallBag(rq, { user });          // ← the guard stamps it…
-}
+const withTenant: ServerMiddleware = (rq) => {
+    stampCallBag(rq, { tenant: tenantOf(rq) });   // ← stamped once…
+};
 
 defineActor({
     type: 'Room',
-    use: [requireUser],
     methods: (ctx) => ({
         async post(text: string) {
-            const from = ctx.bag.user;   // ← …and every method reads it
-            if (!from) throw new ServerFnError(401, 'unauthenticated');
+            const tenant = ctx.bag.tenant;        // ← …read anywhere
         }
     })
 });
 ```
 
 `stampCallBag(rq, entries)` merges string entries (last wins) onto the
-request; after the guard chain, the endpoint lifts them into the call
+request; after the pipeline runs, the endpoint lifts them into the call
 context, where they ride the whole chain: `ctx.bag` on the called actor,
-inherited by `ctx.actor(...)` and `ctx.publish(...)` hops (guards do not
-re-run on those — the edge stamp is the only identity inner hops ever see),
+inherited by `ctx.actor(...)` and `ctx.publish(...)` hops (policies do not
+re-run on those — a hop is not an entry point),
 across host-to-host hops on the envelope, and into `$live` watches. The
-in-process `actor()` entry lifts the same store, so a serverFn's guard
-stamp reaches the actor with no HTTP hop. `actor(Def, key).with({ bag })`
+in-process `actor()` entry lifts the same store, so a serverFn's stamp
+reaches the actor with no HTTP hop. `actor(Def, key).with({ bag })`
 sets entries explicitly (server-side scripts, tests, ops), merging over the
 stamped/inherited ones — explicit wins.
 
@@ -517,7 +583,7 @@ proxies absorb read traffic that would otherwise reach an actor:
 ```ts
 defineActor({
     type: 'Product',
-    unguarded: true,
+    allowAnonymous: true,
     reads: {
         summary: { maxAge: 5 },
         price: { maxAge: 60, public: true, staleWhileRevalidate: 30 }
@@ -832,7 +898,7 @@ export const chatMessages = topic<{ from: string; text: string }>('chat-messages
 // The subscriber declares its interest — nothing registers, nothing is stored.
 export const RoomFeed = defineActor({
     type: 'RoomFeed',
-    use: [sessionGuard],
+    authorize: [requireSession],
     state: () => ({ recent: [] as { from: string; text: string }[] }),
     methods: (ctx) => ({
         async recent() {
@@ -915,7 +981,7 @@ keep answering while it works.
 ```ts
 const Sync = defineActor({
     type: 'Sync',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ done: 0, total: 0, phase: 'idle' as string }),
     methods: (ctx) => ({
         begin: (total: number) => ctx.tasks.start('run', total),
@@ -998,7 +1064,7 @@ import { defineJob } from '@sigx/actors/job';
 
 export const SecuritySync = defineJob({
     type: 'SecuritySync',
-    use: [adminGuard],
+    authorize: [isAdmin],
     maxAttempts: 3,          // crash-resume attempts before 'failed'
     retainMs: 86_400_000,    // keep the terminal record a day, then forget
     run: async (job, input: { providerId: string }) => {
@@ -1068,7 +1134,7 @@ import { defineWorker } from '@sigx/actors';
 
 export const Resize = defineWorker({
     type: 'Resize',
-    use: [requireUser],
+    authorize: [requireUser],
     maxLocal: 8,             // pool cap; default: hardwareConcurrency (≤16)
     methods: () => ({
         async run(image: Uint8Array, width: number) {
@@ -1097,7 +1163,7 @@ The contract, stated loudly because it is the whole point:
   do not exist on `WorkerOptions` — the option is a compile error, and
   `ctx.state` / `ctx.save()` etc. are typed away (`WorkerContext`) and
   throw if reached through a cast.
-- What remains: guards (`use`/`methodUse`/`unguarded`, same build gate),
+- What remains: authorization (`authorize`/`methodAuthorize`/`allowAnonymous`, same build gate),
   `reads:` (a pure read is the ideal cacheable GET), `streams:` (pure
   generators — an open stream pins its member against the sweep),
   `onActivate`/`onDeactivate` for per-member warm-up/teardown (load a
