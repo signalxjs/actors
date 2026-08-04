@@ -321,15 +321,32 @@ class HostImpl implements Host {
     // -----------------------------------------------------------------------
     // ActorDispatcher (the wire layer's entry)
 
-    async dispatch(
+    // A plain function, not `async` (#24): the default placement's
+    // `dispatcherFor` is synchronous, and `await`ing its non-promise result
+    // cost a wrapper promise and microtask ticks on every dispatch. The seam
+    // is declared sync-or-promise for exactly this branch; the try/catch
+    // keeps the prologue's throws (dev arg check, a third-party placement
+    // throwing) surfacing as rejections, as the `async` wrapper did.
+    dispatch(
         ref: ActorRef,
         method: string,
         args: readonly unknown[],
         call: ActorCallContext
     ): Promise<unknown> {
-        const checked = this.#devCheckArgs(ref, method, args);
-        const dispatcher = await this.#placement.dispatcherFor(ref);
-        return dispatcher.dispatch(ref, method, checked, this.#withDefaultDeadline(call));
+        try {
+            const checked = this.#devCheckArgs(ref, method, args);
+            const dispatcher = this.#placement.dispatcherFor(ref);
+            // Deadline stamped per branch, AFTER an async placement resolves —
+            // time spent choosing a dispatcher never eats the call's budget,
+            // same as when this frame awaited unconditionally.
+            return isPromise(dispatcher)
+                ? dispatcher.then((d) =>
+                      d.dispatch(ref, method, checked, this.#withDefaultDeadline(call))
+                  )
+                : dispatcher.dispatch(ref, method, checked, this.#withDefaultDeadline(call));
+        } catch (error) {
+            return Promise.reject(error);
+        }
     }
 
     /**
@@ -779,4 +796,8 @@ function unwrapDefinition(
         if (isActorDefinition(value) && value.type === type) return value as AnyActorDefinition;
     }
     return null;
+}
+
+function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
+    return typeof (value as { then?: unknown })?.then === 'function';
 }

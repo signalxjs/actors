@@ -132,10 +132,17 @@ describe('call deadlines', () => {
                 (e: unknown) =>
                     isActorError(e) && e.kind === 'call-timeout' && (e as Error).message.includes('0ms')
             );
-            // The turn is never killed: the state change landed.
-            await expect(
-                host.dispatch(ref, 'get', [], { callChain: [], callId: 'test' })
-            ).resolves.toBe(1);
+            // The turn is never killed: the state change lands. Polled, not a
+            // single read — the caller was already rejected, so this follow-up
+            // dispatch races the timed-out turn's own enqueue at the cold
+            // activation boundary, and arrival order across that boundary has
+            // never been part of the mailbox contract (FIFO starts at
+            // arrival). Since #24 the follow-up can genuinely win that race.
+            await vi.waitFor(async () => {
+                await expect(
+                    host.dispatch(ref, 'get', [], { callChain: [], callId: 'test' })
+                ).resolves.toBe(1);
+            });
             // Let any orphaned rejection surface.
             await new Promise((r) => setTimeout(r, 20));
             expect(unhandled).toEqual([]);
