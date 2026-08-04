@@ -306,6 +306,27 @@ function rendezvous(key: string, hosts: readonly HostDescriptor[]): HostDescript
 
 const ROUTE_CACHE_MAX = 10_000;
 
+/**
+ * The filtered active-host list, memoized per VIEW OBJECT (#27). Policies
+ * and reminder-shard ownership rebuilt this array on every call — the
+ * allocation behind `choose()` degrading 63× from N=1 to N=100. Keyed on
+ * object identity, not `version`: two clusters in one process can share a
+ * version number, while every provider (and the memory hub, since #27)
+ * returns a STABLE view object between membership changes. `filter` is
+ * deterministic and order-preserving, so `rendezvous()` sees byte-identical
+ * input and the winner per key — pinned storage identity for reminder
+ * shards — cannot change.
+ */
+const activeHostsCache = new WeakMap<MembershipView, readonly HostDescriptor[]>();
+function activeHosts(view: MembershipView): readonly HostDescriptor[] {
+    let active = activeHostsCache.get(view);
+    if (active === undefined) {
+        active = view.hosts.filter((s) => s.status === 'active');
+        activeHostsCache.set(view, active);
+    }
+    return active;
+}
+
 /** Shared, frozen — `locate()` answers this on every local hit, and the hot
  *  path should not allocate to say "it's here". */
 const LOCAL: ActorLocation = Object.freeze({ local: true as const });
@@ -334,7 +355,7 @@ const randomPolicy: PlacementPolicy = {
     name: 'random',
     backend: CLUSTER_BACKEND,
     choose(_ref, view, self) {
-        const active = view.hosts.filter((s) => s.status === 'active');
+        const active = activeHosts(view);
         if (active.length === 0) return self;
         return active[Math.floor(Math.random() * active.length)]!;
     }
@@ -358,7 +379,7 @@ export function consistentHashPolicy(): PlacementPolicy {
         name: 'consistent-hash',
         backend: CLUSTER_BACKEND,
         choose(ref, view, self) {
-            const active = view.hosts.filter((s) => s.status === 'active');
+            const active = activeHosts(view);
             if (active.length === 0) return self;
             return rendezvous(actorId(ref), active) ?? self;
         }
@@ -653,9 +674,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
      * CAS keeps firing at-most-once regardless.
      */
     ownsReminderShard(shard: string): boolean {
-        const active = this.#options.membership
-            .view()
-            .hosts.filter((s) => s.status === 'active');
+        const active = activeHosts(this.#options.membership.view());
         if (active.length === 0) return true; // solo / not started
         return rendezvous(shard, active)?.hostId === this.identity.hostId;
     }

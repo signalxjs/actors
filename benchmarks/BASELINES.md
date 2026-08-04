@@ -766,9 +766,16 @@ these are known problems** — they are measurements looking for a decision.
    fix, and the only measured O(N²).
 6. **The 16-shard reminder ceiling** needs a decision, not a patch: raising
    the count is a storage migration.
-7. **`consistentHashPolicy()` costs ~16 µs per decision at N=100** (63×
+7. ~~**`consistentHashPolicy()` costs ~16 µs per decision at N=100** (63×
    worse than at N=1) because it hashes `actorId|hostId` for every host.
-   Only paid on a route-cache miss, and small next to a network hop.
+   Only paid on a route-cache miss, and small next to a network hop.~~
+   **Allocation half fixed (#27):** the per-call `filter` of active hosts is
+   memoized per view object (WeakMap; the memory hub now returns a stable
+   view per version so the memo hits everywhere). `randomPolicy` goes flat
+   across N; the hash policy keeps rendezvous's inherent O(N) scoring —
+   that part does not go away, and `rendezvous()` itself is untouched
+   (reminder-shard winners are pinned storage identity, now guarded by a
+   hard-coded expectation table in `placement-active-hosts.test.ts`).
 8. **FIXED (#218): every `JSON.parse` on the wire passed a reviver**
    (`wire-parse.ts`, used at `wire-shared.ts` `readNdjson`,
    `client/index.ts` ×2, `cluster/frames.ts` `decodeFrameBody`,
