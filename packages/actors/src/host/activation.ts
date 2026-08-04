@@ -273,7 +273,10 @@ export class Activation {
     /** The effect's re-run job, parked by the scheduler; invoking it walks
      *  the state once and re-subscribes anything added since the last walk. */
     #retrack: (() => void) | null = null;
-    #trackingStop: (() => void) | null = null;
+    /** Install-once latch. Disposal is NOT held here: the tracking effect
+     *  registers with `#scope`, and `#scope.stop()` in `deactivate()` is
+     *  what tears it down. */
+    #trackingInstalled = false;
     #cancelWriteBehind: (() => void) | null = null;
     #currentCall: ActorCallContext | null = null;
     /**
@@ -1047,17 +1050,19 @@ export class Activation {
      * upstream write-hook primitive (see the issue).
      */
     #ensureChangeTracking(): void {
-        if (this.#trackingStop) return;
+        if (this.#trackingInstalled) return;
+        this.#trackingInstalled = true;
         this.#scope.run(() => {
             // The first run is immediate and inline — tracking is
             // established (and every current node subscribed) right here.
-            const runner = effect(() => trackDeep(this.#state), {
+            // `effect()` registers its own disposer with the active scope,
+            // so `#scope.stop()` at deactivation is the teardown.
+            effect(() => trackDeep(this.#state), {
                 scheduler: (run) => {
                     this.#dirty = true;
                     this.#retrack = run;
                 }
             });
-            this.#trackingStop = () => runner.stop();
         });
     }
 
