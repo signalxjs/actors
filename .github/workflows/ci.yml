@@ -124,6 +124,48 @@ jobs:
         env:
           PG_URL: postgres://postgres:postgres@localhost:5432/postgres
 
+  # The @sigx/actors-surreal provider suite is env-gated on SURREAL_URL; only
+  # this job provides it (the main matrix, incl. Windows, skips cleanly).
+  #
+  # A `services:` container CANNOT work here, unlike postgres/redis above: the
+  # image is `ENTRYPOINT ["/surreal"]` with no CMD, and the services schema
+  # offers no way to pass the `start` subcommand — a bare service entry runs
+  # `/surreal` with no arguments and exits. Hence an explicit `docker run`.
+  test-surreal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6.0.9
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start SurrealDB 3
+        run: |
+          docker run -d --name surrealdb -p 8000:8000 \
+            surrealdb/surrealdb:v3.2.4 \
+            start --bind 0.0.0.0:8000 --username root --password root memory
+          # /ready is the true startup probe (3.2.0+); /health only reports
+          # the storage engine.
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/ready > /dev/null && break
+            sleep 1
+          done
+          curl -s http://127.0.0.1:8000/version
+
+      - name: Test against SurrealDB
+        run: pnpm test actors-surreal
+        env:
+          SURREAL_URL: ws://127.0.0.1:8000
+          SURREAL_USER: root
+          SURREAL_PASS: root
+
   # Own job, like test-redis, and for the same kind of reason: wrangler
   # declares engines.node >= 22 and the main matrix includes Node 20, so this
   # suite cannot run there. Ubuntu only — workerd's semantics do not vary by

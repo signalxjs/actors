@@ -350,6 +350,27 @@ importers:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
 
+  packages/actors-surreal:
+    devDependencies:
+      '@sigx/actors':
+        specifier: workspace:*
+        version: link:../actors
+      '@sigx/vite':
+        specifier: 'catalog:'
+        version: 0.14.0(@sigx/server-renderer@0.14.0)(@sigx/server@0.14.0)(sigx@0.14.0)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.5
+      surrealdb:
+        specifier: ^2.0.8
+        version: 2.0.8(tslib@2.8.1)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.3
+        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+
   packages/actors-tcp:
     devDependencies:
       '@sigx/actors':
@@ -1347,6 +1368,16 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  '@surrealdb/cbor@2.0.0-alpha.4':
+    resolution: {integrity: sha512-l/hNZ3ZCOJq8rzwx1y5ZV/8b2bYCWdhGqRVY33Pu50NAHyAW5qLsMn3ZBkZow77mAKwNCsbDsRGnyYEuU95mjw==}
+    engines: {node: '>=18.0.0'}
+
+  '@surrealdb/sqon@0.1.0':
+    resolution: {integrity: sha512-pooKLZ0W6mN8XHzJQavGOdfZOZksycmIjhwFwvG0kdCAt4I5U6KKPHcXQwFkTDNKFKFKdufczLRnzHapPIslQw==}
+    peerDependencies:
+      tslib: ^2.6.3
+      typescript: ^5.0.0
+
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
 
@@ -1872,6 +1903,12 @@ packages:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
     engines: {node: '>=8'}
 
+  surrealdb@2.0.8:
+    resolution: {integrity: sha512-nkoTAdnfJYc0EvB2Hut0MET/UiWTOT6+TJODoubHzoC952gJvjEbHMx5TLrecUYo1vIN3/qBgwMIcLKK0WC7zQ==}
+    peerDependencies:
+      tslib: ^2.6.3
+      typescript: ^5.0.0 || ^6.0.0
+
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
 
@@ -1908,6 +1945,10 @@ packages:
 
   unenv@2.0.0-rc.24:
     resolution: {integrity: sha512-i7qRCmY42zmCwnYlh9H2SvLEypEFGye5iRmEMKjcGi7zk9UquigRjFtTLz0TYqr0ZGLZhaMHl/foy1bZR+Cwlw==}
+
+  uuidv7@1.2.1:
+    resolution: {integrity: sha512-4kPkK3/XTQW9Hbm4CaqfICn+kY9LJtDVEOfgsRRra/+n2Ofg4NqzRFceAkxvQ/Ud/6BpHOPzj8cirqM7TzTN5Q==}
+    hasBin: true
 
   vite@8.1.5:
     resolution: {integrity: sha512-7ULLwsCdYx/nRyrpiEwvqb5TFHrMVZyBt+rg/OAXT7rgj/z+DtTDyKFeLAdDkubDVDKD8jOsndmy7m55XcfUsw==}
@@ -2668,6 +2709,15 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@surrealdb/cbor@2.0.0-alpha.4': {}
+
+  '@surrealdb/sqon@0.1.0(tslib@2.8.1)(typescript@6.0.3)':
+    dependencies:
+      '@surrealdb/cbor': 2.0.0-alpha.4
+      tslib: 2.8.1
+      typescript: 6.0.3
+      uuidv7: 1.2.1
+
   '@tybys/wasm-util@0.10.3':
     dependencies:
       tslib: 2.8.1
@@ -3235,6 +3285,12 @@ snapshots:
     dependencies:
       has-flag: 4.0.0
 
+  surrealdb@2.0.8(tslib@2.8.1)(typescript@6.0.3):
+    dependencies:
+      '@surrealdb/sqon': 0.1.0(tslib@2.8.1)(typescript@6.0.3)
+      tslib: 2.8.1
+      typescript: 6.0.3
+
   tinybench@2.9.0: {}
 
   tinyexec@1.2.4: {}
@@ -3246,8 +3302,7 @@ snapshots:
 
   tinyrainbow@3.1.0: {}
 
-  tslib@2.8.1:
-    optional: true
+  tslib@2.8.1: {}
 
   typescript@6.0.3: {}
 
@@ -3260,6 +3315,8 @@ snapshots:
   unenv@2.0.0-rc.24:
     dependencies:
       pathe: 2.0.3
+
+  uuidv7@1.2.1: {}
 
   vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0):
     dependencies:

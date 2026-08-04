@@ -64,6 +64,10 @@ export default defineConfig({
             '@sigx/actors-k8s': resolve(__dirname, 'packages/actors-k8s/src/index.ts'),
             '@sigx/actors-tcp': resolve(__dirname, 'packages/actors-tcp/src/index.ts'),
             '@sigx/actors-pg': resolve(__dirname, 'packages/actors-pg/src/index.ts'),
+            '@sigx/actors-surreal': resolve(
+                __dirname,
+                'packages/actors-surreal/src/index.ts'
+            ),
             '@sigx/actors-redis': resolve(__dirname, 'packages/actors-redis/src/index.ts'),
             '@sigx/actors-cloudflare': resolve(
                 __dirname,

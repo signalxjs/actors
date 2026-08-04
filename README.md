@@ -31,6 +31,7 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./host`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
 | [`@sigx/actors-redis`](packages/actors-redis) | Redis providers — cluster membership, the actor directory, and etag-CAS actor storage |
 | [`@sigx/actors-pg`](packages/actors-pg) | Postgres providers — etag-CAS actor storage, cluster membership, and the actor directory |
+| [`@sigx/actors-surreal`](packages/actors-surreal) | SurrealDB 3 providers — etag-CAS actor storage, cluster membership, the actor directory, and durable reminders |
 | [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — host liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Framed TCP transport — one multiplexed connection per peer |
 | [`@sigx/actors-ws`](packages/actors-ws) | The same frames over WebSocket — one port, proxy-friendly |
