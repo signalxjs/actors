@@ -25,6 +25,6 @@
     },
     "devDependencies": {
         "@sigx/vite": "catalog:",
-        "vite": "^8.0.3"
+        "vite": "^8.2.0"
     }
 }
