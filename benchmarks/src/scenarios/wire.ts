@@ -7,7 +7,11 @@
  * left out is loopback TCP, and that is deliberate: kernel networking adds
  * tens of microseconds of variance that would swamp the thing we can
  * actually act on, which is our own serialization cost. Subtracting
- * `dispatch/via-proxy` from this gives the per-request wire overhead.
+ * `dispatch/via-proxy` AND `wire/request-construction` from this gives the
+ * per-request wire overhead — the roundtrip rung builds its `Request` inside
+ * the timed closure (a body is single-use, so it cannot be hoisted), and the
+ * construction rung prices that setup so the subtraction is explicit rather
+ * than assumed.
  *
  * Guards are also priced here rather than in the dispatch ladder, because
  * they run OUTSIDE any turn and are not on `host.dispatch` at all —
@@ -38,9 +42,40 @@ async function assertOk(response: Response, label: string): Promise<void> {
     }
 }
 
+/**
+ * The construction-only control: what `actorRequest()` alone costs. undici's
+ * `Request` allocates a `_Request`, a `_HeadersList` and an `extractBody`
+ * pass, plus our `JSON.stringify` — work `endpoint-roundtrip` charges to the
+ * endpoint because it cannot pre-build consumable bodies. Measured at c=1:
+ * construction is synchronous, so a concurrency sweep would measure nothing
+ * (the `async` wrapper's promise is the same scaffolding every rung's closed
+ * loop carries). First in the ladder — floor-first, like the rest.
+ */
+const requestConstruction: Scenario = {
+    name: 'wire/request-construction',
+    description: 'actorRequest() alone — URL building, JSON.stringify, new Request(...) — the harness setup endpoint-roundtrip pays inside its timed closure, priced so it can be subtracted',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const call = async (): Promise<Request> => actorRequest(Tiny.type, 'noop', ['warm']);
+        const outcome = await closedLoop({
+            call,
+            concurrency: 1,
+            durationMs: ctx.durationMs,
+            latency: false
+        });
+        return [
+            {
+                name: 'ops_per_sec',
+                value: outcome.opsPerSec,
+                unit: 'ops/s',
+                direction: 'higher'
+            }
+        ];
+    }
+};
+
 const endpointRoundtrip: Scenario = {
     name: 'wire/endpoint-roundtrip',
-    description: 'handleActorRequest() with an in-memory Request — encode, JSON, revive, dispatch',
+    description: 'handleActorRequest() with an in-memory Request — encode, JSON, revive, dispatch (includes Request construction; subtract wire/request-construction)',
     async run(ctx: RunContext): Promise<Metric[]> {
         const fixture = await createBenchHost({ actors: [Tiny] });
         try {
@@ -104,4 +139,4 @@ const guardCost: Scenario = {
     }
 };
 
-export const wireScenarios: Scenario[] = [endpointRoundtrip, guardCost];
+export const wireScenarios: Scenario[] = [requestConstruction, endpointRoundtrip, guardCost];
