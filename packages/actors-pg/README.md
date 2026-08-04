@@ -59,7 +59,9 @@ const app = defineActorApp({
 Options (all providers): `pool` **or** `url` (the package then constructs
 its own `pg.Pool`), `schema` (default `sigx`, validated as an SQL
 identifier). Membership adds `heartbeatMs` (5 s), `ttlMs` (15 s), `pollMs`
-(5 s).
+(5 s) and `coalesceMs` (0 — trailing quiet window for coalescing NOTIFY
+pushes; the listener is single-flight either way, so a burst of N changes
+costs one refresh plus at most one catch-up, not N).
 
 ## Semantics worth knowing
 

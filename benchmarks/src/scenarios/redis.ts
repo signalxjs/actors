@@ -68,8 +68,14 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 /** Distinguishes measurements within a process; the clock separates runs. */
 let measurementSeq = 0;
 
-/** Commands caused by ONE host joining a cluster that already has `n`. */
-async function measureJoin(url: string, n: number): Promise<CommandStats> {
+/** Commands caused by `k` hosts joining (concurrently, when k > 1) a
+ *  cluster that already has `n`, optionally with a coalescing window. */
+async function measureJoin(
+    url: string,
+    n: number,
+    k = 1,
+    coalesceMs = 0
+): Promise<CommandStats> {
     // Genuinely fresh per measurement, across processes as well as within
     // one. Leftover keys are read by every refresh, so a reused namespace
     // inflates the count — and since host records carry a TTL far longer
@@ -82,7 +88,11 @@ async function measureJoin(url: string, n: number): Promise<CommandStats> {
     const join = async (i: number): Promise<void> => {
         const client = new Redis(url);
         clients.push(client);
-        const membership = redisMembership(client, { namespace, ...QUIET_MEMBERSHIP });
+        const membership = redisMembership(client, {
+            namespace,
+            ...QUIET_MEMBERSHIP,
+            coalesceMs
+        });
         members.push(membership);
         await membership.join({
             hostId: `s${i}`,
@@ -97,7 +107,10 @@ async function measureJoin(url: string, n: number): Promise<CommandStats> {
         await sleep(SETTLE_MS);
 
         await admin.config('RESETSTAT');
-        await join(n);
+        // Concurrent on purpose when k > 1: the burst is the shape a rolling
+        // restart produces, and the shape the subscriber-side coalescing
+        // (#26) exists to collapse.
+        await Promise.all(Array.from({ length: k }, (_v, i) => join(n + i)));
         await sleep(SETTLE_MS);
 
         const stats = await readStats(admin);
@@ -175,6 +188,45 @@ const redisAmplification: Scenario = {
                     unit: 'count',
                     direction: 'lower',
                     noiseFloor: 2,
+                    informational: true
+                }
+            );
+        }
+
+        // The burst arm — the rolling-restart shape, and the case the
+        // subscriber-side coalescing (#26) exists for: k hosts joining an
+        // n-member cluster CONCURRENTLY. Uncoalesced, every subscriber
+        // refreshes once per join (k × O(n) each); coalesced it collapses
+        // toward two refreshes per subscriber for the whole burst.
+        const burstN = ctx.quick ? 10 : 50;
+        const burstK = 10;
+        // Two arms: shipped default (coalesceMs 0 — pure single-flight,
+        // which on LOOPBACK merges little because a refresh completes
+        // between publishes; a real network RTT widens it for free), and a
+        // 25 ms quiet window, the operator knob for burst-heavy fleets.
+        for (const [label, quietMs] of [
+            ['', 0],
+            [' quiet=25', 25]
+        ] as const) {
+            const burst = await measureJoin(url, burstN, burstK, quietMs);
+            metrics.push(
+                {
+                    name: `burst n=${burstN} k=${burstK}${label}/commands_per_join`,
+                    value: burst.total / burstK,
+                    unit: 'count',
+                    direction: 'lower',
+                    // Informational: the publish/refresh interleave differs
+                    // per round, so the count carries real variance — the
+                    // MAGNITUDE against the uncoalesced model is the finding.
+                    noiseFloor: 5,
+                    informational: true
+                },
+                {
+                    name: `burst n=${burstN} k=${burstK}${label}/refreshes`,
+                    value: burst.byCommand['smembers'] ?? 0,
+                    unit: 'count',
+                    direction: 'lower',
+                    noiseFloor: 5,
                     informational: true
                 }
             );

@@ -44,6 +44,11 @@ export {
 } from './stats';
 export type { ClusterCounters, ClusterCounterTotals } from './counters';
 export { memoryClusterHub, type MemoryClusterHub } from './memory';
+export {
+    refreshCoalescer,
+    type RefreshCoalescer,
+    type RefreshCoalescerOptions
+} from './coalesce';
 export { httpTransport, HTTP_TRANSPORT_NAME, type HttpTransportOptions } from './transport';
 export type {
     HostCallMode,

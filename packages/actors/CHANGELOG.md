@@ -122,6 +122,15 @@
 
 ### Added
 
+- **`refreshCoalescer()` on `@sigx/actors/cluster`** (#26): the
+  notification→refresh coalescing primitive membership providers share —
+  leading-edge immediate, single-flight, version-gated hint skipping, with
+  `demand()` preserving `ClusterMembership.refresh()`'s
+  started-at-or-after contract and `settled()` for teardown. Wired into
+  `@sigx/actors-redis`, `@sigx/actors-pg` and `@sigx/actors-surreal`, whose
+  subscriber paths were the measured O(N²) (a burst of N changes cost N
+  full member-list re-reads per subscriber).
+
 - **The request-context bag — `stampCallBag` / `ctx.bag` /
   `.with({ bag })`** (#246, second half, closing it). A small, string-only,
   size-capped (8 entries / 64 B keys / 256 B values / 1 KiB total, the new

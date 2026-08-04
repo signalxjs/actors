@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Membership pushes are coalesced** (#26): the live-query subscriber is
+  now single-flight — a burst of N membership changes costs one refresh
+  plus at most one trailing catch-up instead of N full re-reads (events are
+  unordered and at-most-once, so none are version-skippable). New
+  `coalesceMs` option (default 0); `refresh()` keeps its contract (resolves
+  with a refresh that started at-or-after the call).
+
 ### Added
 
 - **The package** (#18): SurrealDB 3 providers for `@sigx/actors`.
