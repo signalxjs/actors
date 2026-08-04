@@ -7,25 +7,25 @@ settings:
 catalogs:
   default:
     '@sigx/reactivity':
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
     '@sigx/runtime-core':
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
     '@sigx/serialize':
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
     '@sigx/server':
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
     '@sigx/server-renderer':
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
     '@sigx/vite':
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
     sigx:
-      specifier: ^0.15.1
+      specifier: ^0.15.0
       version: 0.15.1
 
 importers:
