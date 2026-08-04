@@ -336,10 +336,14 @@ class HostImpl implements Host {
         try {
             const checked = this.#devCheckArgs(ref, method, args);
             const dispatcher = this.#placement.dispatcherFor(ref);
-            const bounded = this.#withDefaultDeadline(call);
+            // Deadline stamped per branch, AFTER an async placement resolves —
+            // time spent choosing a dispatcher never eats the call's budget,
+            // same as when this frame awaited unconditionally.
             return isPromise(dispatcher)
-                ? dispatcher.then((d) => d.dispatch(ref, method, checked, bounded))
-                : dispatcher.dispatch(ref, method, checked, bounded);
+                ? dispatcher.then((d) =>
+                      d.dispatch(ref, method, checked, this.#withDefaultDeadline(call))
+                  )
+                : dispatcher.dispatch(ref, method, checked, this.#withDefaultDeadline(call));
         } catch (error) {
             return Promise.reject(error);
         }
