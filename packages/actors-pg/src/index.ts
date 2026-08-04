@@ -374,9 +374,6 @@ export function pgMembership(
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
-            // Quiesce in-flight/pending refreshes before the listener (and
-            // its notification handler) is destroyed under them.
-            await coalescer.settled();
             if (listener) {
                 try {
                     // DESTROY, never pool: LISTEN state and the
@@ -389,6 +386,11 @@ export function pgMembership(
                 }
                 listener = null;
             }
+            // Listener destroyed FIRST (no new NOTIFYs can schedule work —
+            // under churn they could hold `settled()` open indefinitely),
+            // THEN drain what already started; refreshes read via the pool,
+            // not the listener connection, so they finish fine without it.
+            await coalescer.settled();
             if (!self) return;
             const id = self.hostId;
             self = null;

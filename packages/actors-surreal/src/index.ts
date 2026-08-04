@@ -307,9 +307,6 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
-            // Quiesce in-flight/pending refreshes before killing the live
-            // query whose events may still be feeding them.
-            await coalescer.settled();
             if (live) {
                 try {
                     await live.kill();
@@ -318,6 +315,11 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
                 }
                 live = null;
             }
+            // Live query killed FIRST (no new events can schedule work —
+            // under churn they could hold `settled()` open indefinitely),
+            // THEN drain what already started; refreshes run on the shared
+            // db handle, not the live query.
+            await coalescer.settled();
             if (!self) return;
             const id = self.hostId;
             self = null;

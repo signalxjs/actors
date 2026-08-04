@@ -51,7 +51,7 @@ function harness(quietMs = 0) {
 }
 
 describe('refreshCoalescer', () => {
-    it('a burst of notes during one flight costs exactly 2 refreshes', async () => {
+    it('a burst of notes during one flight collapses to a single refresh when it catches up', async () => {
         const h = harness();
         h.coalescer.note(1); // leading edge — starts immediately
         expect(h.stats().refreshes).toBe(1);

@@ -226,8 +226,11 @@ export function redisMembership(
             if (poll) clearInterval(poll);
             beat = poll = null;
             if (subscriber) {
-                // Quiesce in-flight/pending refreshes before tearing down the
-                // connection they may still be reading from.
+                // Stop new hints FIRST — under churn, a still-attached
+                // handler could keep scheduling refreshes and hold
+                // `settled()` open indefinitely — then drain what already
+                // started (refreshes read via `client`, not the subscriber).
+                subscriber.removeAllListeners('message');
                 await coalescer.settled();
                 await subscriber.quit().catch(noop);
                 subscriber = null;
