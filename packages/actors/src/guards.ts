@@ -23,17 +23,35 @@
  * Everything here runs OUTSIDE any turn: a slow policy never occupies the
  * actor's turn.
  */
-import {
-    principal,
-    serverFeature,
-    type ServerFnContext,
-    type ServerFnInfo,
-    type ServerPolicy
-} from '@sigx/server';
+import type { ServerFnContext, ServerFnInfo, ServerPolicy } from '@sigx/server';
+// The RUNTIME half comes from `/server`, not the package root, and that is
+// load-bearing rather than stylistic: the root carries a `browser`
+// condition, and `wrangler` bundles Workers with that condition — so
+// importing these from the root threw "reached the browser unextracted" on
+// a Cloudflare deployment, at runtime, on a genuine server. `/server` has
+// no `browser` branch (signalxjs/core#630), so it resolves the real module
+// on every server. Types still come from the root, where they are free.
+import { principal, serverFeature } from '@sigx/server/server';
 import type { AnyActorDefinition } from './types';
 
-/** One pipeline object, reused: every member resolves the app per call. */
-const feature = serverFeature();
+/**
+ * The pipeline, built ON FIRST USE and then reused.
+ *
+ * Lazily, and that is load-bearing rather than tidy: this module is reached
+ * from the ISOMORPHIC root entry, so `import { actor } from '@sigx/actors'`
+ * evaluates it in a browser bundle and on workerd too. Under the `browser`
+ * export condition `serverFeature` is the throwing stub — building it at
+ * module scope turned every such import into a crash before a single line
+ * of user code ran. Deferring means a client that never dispatches
+ * server-side never touches it, and a server-side call builds it once.
+ *
+ * Every member resolves the app per call, so one instance stays correct
+ * across app restarts and test stamps.
+ */
+let cached: ReturnType<typeof serverFeature> | undefined;
+function feature(): ReturnType<typeof serverFeature> {
+    return (cached ??= serverFeature());
+}
 
 /** What kind of thing a policy is deciding about (`op.resource.kind`). */
 export type ActorResourceKind = 'actor' | 'worker' | 'job';
@@ -127,9 +145,9 @@ export async function authorizeActorCall(
     const info = actorInfo(def, method, transport);
     const allowAnonymous = def.__sigxActor.allowAnonymous === true;
     if (options?.skipPrelude !== true) {
-        await feature.prelude(rq, info, { allowAnonymous });
+        await feature().prelude(rq, info, { allowAnonymous });
     }
-    await feature.authorize(rq, {
+    await feature().authorize(rq, {
         fn: info,
         policies: policiesFor(def, method),
         allowAnonymous,
@@ -147,7 +165,7 @@ export async function authorizeActorCall(
  * something unverifiable.
  */
 export async function encodePrincipal(rq: ServerFnContext): Promise<string | undefined> {
-    const codec = feature.principalCodec;
+    const codec = feature().principalCodec;
     if (!codec) {
         warnMissingCodecOnce();
         return undefined;
@@ -171,7 +189,7 @@ export async function encodePrincipal(rq: ServerFnContext): Promise<string | und
  * long after the request is gone.
  */
 export function encodePrincipalValue(value: unknown): string | undefined {
-    const codec = feature.principalCodec;
+    const codec = feature().principalCodec;
     if (!codec || value === null || value === undefined) return undefined;
     try {
         return codec.encode(value);
@@ -186,7 +204,7 @@ export function encodePrincipalValue(value: unknown): string | undefined {
  */
 export function decodePrincipal(encoded: string | undefined): unknown {
     if (encoded === undefined) return null;
-    const codec = feature.principalCodec;
+    const codec = feature().principalCodec;
     if (!codec) return null;
     try {
         return codec.decode(encoded) ?? null;
