@@ -1,6 +1,11 @@
 /**
- * In-memory storage — tests and ephemeral actors. Records are structured
- * clones so a stored value never aliases live activation state.
+ * In-memory storage — tests and ephemeral actors. A stored value never
+ * aliases live activation state: `load` hands out a structured clone (the
+ * reader may mutate it freely), and `save` stores its argument by reference
+ * under the seam's ownership contract — the caller hands the tree over and
+ * must not mutate it afterwards (see `ActorStorage`). The host always
+ * passes a codec-fresh `encodeWithHandlers` tree, so cloning it again here
+ * was pure duplication (#25) — measured at ~14.5% of the `state/*` profile.
  */
 import { ActorStorageConflict } from '../errors';
 import type { ActorStorage, ActorStorageRecord } from '../types';
@@ -21,7 +26,9 @@ export function memoryStorage(): ActorStorage {
                 throw new ActorStorageConflict(type, key);
             }
             const etag = String(++counter);
-            records.set(id(type, key), { state: structuredClone(state), etag });
+            // Stored by reference — `save` takes ownership per the seam
+            // contract; the load-side clone keeps the record isolated.
+            records.set(id(type, key), { state, etag });
             return etag;
         },
         async clear(type, key, expectedEtag) {

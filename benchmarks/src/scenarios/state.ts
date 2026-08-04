@@ -1,9 +1,10 @@
 /**
  * Persistence and the change feed — where the codec walks live.
  *
- * `ctx.save()` encodes the whole state through `@sigx/serialize`, and
- * `memoryStorage` then `structuredClone`s it on the way in (and again on
- * the way out at load). The change feed is worse per turn: `#snapshot()` is
+ * `ctx.save()` encodes the whole state through `@sigx/serialize`;
+ * `memoryStorage` stores that tree by reference (the seam's ownership
+ * contract, #25) and `structuredClone`s only on the way out at load. The
+ * change feed is worse per turn: `#snapshot()` is
  * `revive(encode(raw))`, two full deep walks, computed once per mutating
  * turn as soon as ANYONE is subscribed.
  *
@@ -40,7 +41,7 @@ async function settledWithin(promises: readonly Promise<unknown>[], ms: number):
 
 const explicitSave: Scenario = {
     name: 'state/explicit-save',
-    description: 'ctx.save() per turn against memoryStorage — codec walk + 2 structuredClones',
+    description: 'ctx.save() per turn against memoryStorage — codec walk + load-side clone only',
     async run(ctx: RunContext): Promise<Metric[]> {
         const metrics: Metric[] = [];
         for (const [label, def] of [
