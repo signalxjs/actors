@@ -311,8 +311,12 @@ const ROUTE_CACHE_MAX = 10_000;
  * and reminder-shard ownership rebuilt this array on every call — the
  * allocation behind `choose()` degrading 63× from N=1 to N=100. Keyed on
  * object identity, not `version`: two clusters in one process can share a
- * version number, while every provider (and the memory hub, since #27)
- * returns a STABLE view object between membership changes. `filter` is
+ * version number. Best-effort by design — the in-repo providers (and the
+ * memory hub, since #27) return a stable view object between membership
+ * changes so the memo hits, but a provider minting a fresh object per
+ * `view()` call is still correct: it just misses, and pays the per-call
+ * filter it always paid. What IS assumed is that a view object is a
+ * snapshot — its `hosts` array must not be mutated in place. `filter` is
  * deterministic and order-preserving, so `rendezvous()` sees byte-identical
  * input and the winner per key — pinned storage identity for reminder
  * shards — cannot change.

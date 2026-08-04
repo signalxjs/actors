@@ -58,6 +58,34 @@ describe('consistent-hash placement is pinned', () => {
     });
 });
 
+describe('active-host memoization', () => {
+    it('the filtered list is computed once per view object', () => {
+        // Observable proxy for the memo: a view is a snapshot, so placement
+        // may derive the active-host list once per view OBJECT. Mutating
+        // `hosts` in place (unsupported — see ClusterMembership.view) must
+        // therefore be invisible: after a first choose() on this view, a
+        // host spliced into the raw array is never picked, however often we
+        // sample. If this test ever fails, the memo was removed or bypassed
+        // and every choose() is paying the filter again.
+        const hosts = [host('alpha')];
+        const view: MembershipView = { version: 1, hosts };
+        const self = host('self');
+        const policy = consistentHashPolicy();
+        expect(policy.choose({ type: 'T', key: 'k' }, view, self).hostId).toBe('alpha');
+        hosts.push(host('zulu'));
+        for (let i = 0; i < 100; i++) {
+            expect(policy.choose({ type: 'T', key: `k${i}` }, view, self).hostId).toBe('alpha');
+        }
+        // A NEW view object with the same hosts derives afresh and can see zulu.
+        const fresh: MembershipView = { version: 2, hosts };
+        const winners = new Set<string>();
+        for (let i = 0; i < 100; i++) {
+            winners.add(policy.choose({ type: 'T', key: `k${i}` }, fresh, self).hostId);
+        }
+        expect(winners).toContain('zulu');
+    });
+});
+
 describe('memory hub view caching', () => {
     it('returns a stable view object between membership changes', async () => {
         const hub = memoryClusterHub();
