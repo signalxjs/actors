@@ -1,0 +1,130 @@
+# The public edge, deliberately TWO Ingress objects on one host: annotations
+# in ingress-nginx are per-Ingress, and the actor endpoint needs one the
+# rest of the site must NOT have (see below).
+#
+# TLS comes from the controller's default certificate (a wildcard for the
+# deployment's DNS zone) — no tls block, no cert-manager annotation needed
+# for a host the wildcard covers.
+#
+# Shared annotations, load-bearing for the live connection:
+# - proxy-buffering off: the `$live` subscribe response is long-lived
+#   NDJSON; buffered, the page silently stops being live.
+# - read/send-timeout 3600: belt and braces. Both stream mounts now emit a
+#   keepalive every 30s (`$live` in-band, per-actor streams at the byte
+#   layer), which is what actually keeps a quiet connection alive through
+#   hops nobody here controls; the long timeout makes a drop rarer still on
+#   the hop we do control, and the client reconnects either way.
+# - NO rewrite/regex annotations of any kind: actor symbols travel
+#   percent-encoded (/_sigx/actor/Room%23watch) and a rewriting location
+#   would decode the %23 and break routing.
+{{- if not .Values.ingress.host }}
+{{- fail "ingress.host is required — an empty Ingress host silently matches EVERY hostname the controller serves" }}
+{{- end }}
+{{- $ann := dict
+  "nginx.ingress.kubernetes.io/proxy-buffering" "off"
+  "nginx.ingress.kubernetes.io/proxy-request-buffering" "off"
+  "nginx.ingress.kubernetes.io/proxy-read-timeout" "3600"
+  "nginx.ingress.kubernetes.io/proxy-send-timeout" "3600" }}
+{{- $locality := dig "localityRouting" true (.Values.ingress | default dict) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "chat.fullname" . }}-web
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          # SSR documents, assets and serverFns: plain round-robin. These
+          # carry NO routing token, so hashing them would hash the empty
+          # string and pin every page render onto a single host.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "chat.fullname" . }}-host
+                port:
+                  name: public
+{{- if $locality }}
+          # `$live` (and any other `$`-reserved symbol) is the ONE actor path
+          # that must stay off the hash: one held-open response fans out to
+          # many actors, so the runtime deliberately sends no token — and an
+          # empty hash key would pin every live subscription in the
+          # deployment onto a single host. A longer prefix wins in nginx, so
+          # this carves it back out of the hashed Ingress below. (Every open
+          # room page holds one — `Room.tsx` puts three live subscriptions on
+          # a single connection — so this rule is load-bearing rather than
+          # defensive, and the infra suite asserts it.)
+          # ImplementationSpecific, NOT Prefix: `$` is rejected by the
+          # ingress-nginx admission webhook in a Prefix path ("cannot be
+          # used with pathType Prefix"), which neither `helm lint` nor
+          # `helm template` can see — only a real apply does.
+          - path: /_sigx/actor/$live
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "chat.fullname" . }}-host
+                port:
+                  name: public
+{{- end }}
+{{- if $locality }}
+---
+# The actor endpoint ONLY: hash each call to the host that owns the actor.
+# Every actor request carries the routing token in `x-sigx-actor-route`
+# (and in the path), so a consistent hash on it PLUS `preferLocalPolicy()`
+# in the app makes the edge and the cluster agree on one owner per key —
+# the documented composition, measured at 1.00 local fraction against 0.01
+# for round-robin. Neither half works alone. `$live` and other reserved
+# symbols carry no token and keep paying a hop by design.
+#
+# ⚠ THIS ANNOTATION IS DROPPED BY DEFAULT ON ingress-nginx >= 1.12.
+#
+# Its value is an nginx variable, which rates `upstream-hash-by` as
+# Critical risk, and the controller has defaulted `--annotations-risk-level`
+# to `High` since 1.12 — so it strips the VALUE, leaves this object exactly
+# as written, logs nothing, and load-balances round-robin. Every actor call
+# then lands on a random host and pays a hop.
+#
+# Measured on v1.15.1 over 7 hosts: 40 requests carrying ONE token spread
+# 6/6/6/5/6/0/6, the owning host received none of them from the edge, and
+# `infra/locality-ab` reported token_speedup 0.99 — which reads like a
+# finding about locality rather than a broken deployment. Confirmed in the
+# controller's own programmed backend, where the value is simply absent:
+#     upstreamHashByConfig: {"upstream-hash-by-subset-size":3}
+#     loadBalancing: round_robin
+#
+# The fix is a CONTROLLER flag, which a chart cannot set — and which is
+# cluster-wide, so it is not one to flip casually on a shared ingress:
+#
+#     --annotations-risk-level=Critical
+#
+# `infra.test.ts` now asserts the hash actually pins a token to one host,
+# so this fails loudly instead of quietly costing you the locality half.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "chat.fullname" . }}-actor
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $ann | nindent 4 }}
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_x_sigx_actor_route"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /_sigx/actor
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "chat.fullname" . }}-host
+                port:
+                  name: public
+{{- end }}

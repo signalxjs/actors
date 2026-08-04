@@ -1,0 +1,134 @@
+# A Deployment, NOT a StatefulSet: host identity is minted per start (a
+# restart is a NEW host by design), so pods need no stable names — only a
+# pod-reachable advertise address, which the downward API provides.
+{{- if not .Values.image.repository }}
+{{- fail "image.repository is required (a registry hostname is deployment identity — the public chart defaults to none)" }}
+{{- end }}
+{{- if not .Values.image.tag }}
+{{- fail "image.tag is required (immutable git-sha tags; the chart never deploys :latest)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chart.fullname" . }}-host
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: host
+spec:
+  {{- if not .Values.hpa.enabled }}
+  # Omitted when the HPA is on: the HPA owns .spec.replicas via the scale
+  # subresource, and a second owner makes every later `helm upgrade` fail
+  # with a server-side-apply conflict — including the one turning the HPA
+  # off (#154).
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "chart.hostSelector" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Surge first, drain second: the new host joins membership before
+      # any old host announces 'leaving' — the zero-drop rolling deploy.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        app.kubernetes.io/component: host
+    spec:
+      # Always rendered, never omitted: under server-side apply an omitted
+      # field is RELINQUISHED, not removed, so switching membership k8s ->
+      # redis used to strand `serviceAccountName: <release>-host` on the
+      # template while deleting the ServiceAccount itself — token mounts
+      # fail and the rollout wedges (#154).
+      serviceAccountName: {{ if eq .Values.membership "k8s" }}{{ include "chart.fullname" . }}-host{{ else }}default{{ end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.affinity.hostAntiRedis "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "redis") | nindent 14 }}
+          {{- end }}
+          {{- if eq .Values.affinity.hostSelfSpread "required" }}
+          {{- if ne .Values.affinity.hostAntiRedis "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          {{- end }}
+            - {{ include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "host") | nindent 14 }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                {{- include "chart.antiAffinityTerm" (dict "instance" .Release.Name "component" "host") | nindent 16 }}
+          {{- end }}
+      containers:
+        - name: host
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.port | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: REDIS_URL
+              {{- if .Values.redis.enabled }}
+              value: {{ .Values.redis.url | default (printf "redis://%s-redis:6379" (include "chart.fullname" .)) | quote }}
+              {{- else }}
+              value: {{ required "redis.url is required when redis.enabled=false (external Redis)" .Values.redis.url | quote }}
+              {{- end }}
+            - name: SIGX_NAMESPACE
+              value: {{ .Values.env.sigxNamespace | quote }}
+            - name: FETCH_CONNECTIONS
+              value: {{ .Values.env.fetchConnections | quote }}
+            - name: MEMBERSHIP
+              value: {{ .Values.membership | quote }}
+            - name: CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-secrets
+                  key: clusterSecret
+            - name: OPS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-secrets
+                  key: opsSecret
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /_sigx/health
+              port: http
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /_sigx/health
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /_sigx/health/ready
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.lifecycle.preStopSleepSeconds }}"]

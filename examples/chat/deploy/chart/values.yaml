@@ -1,0 +1,156 @@
+image:
+  # REQUIRED at install: --set image.repository=<registry>/sigx-chat. No
+  # default on purpose — a registry hostname is deployment identity.
+  # `testenv.mjs` derives it from $ACR.
+  repository: ""
+  # REQUIRED at install: --set image.tag=<git-short-sha>. Immutable tags only.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+# Spread hosts across nodes. A host is one single-threaded Node process, so
+# replicas on the same node share one node's cores and add no throughput —
+# this is what makes replicaCount mean something.
+spread:
+  enabled: true
+  maxSkew: 1
+  # ScheduleAnyway keeps it a preference: the pool is shared with the
+  # actors test rig, and a spread rule must not block a rollout.
+  whenUnsatisfiable: ScheduleAnyway
+
+ports:
+  # What the ingress routes to: SSR + assets + serverFns + actor endpoint.
+  public: 8080
+  # Probes, peer hosts (advertise target), ops via port-forward. Never
+  # routed by the ingress.
+  internal: 7311
+
+ingress:
+  # REQUIRED at install: --set ingress.host=<host inside your DNS zone>.
+  # `testenv.mjs` passes $CHAT_HOST.
+  host: ""
+  # Hash actor calls to the actor's owner at the edge (a second Ingress for
+  # /_sigx/actor with upstream-hash-by on the routing token). Only useful
+  # together with preferLocalPolicy() in the app — the pair is what turns
+  # ~0.85 cross-host hops per request into ~0.
+  localityRouting: true
+
+env:
+  # Redis key namespace (cluster + storage + reminders).
+  sigxNamespace: chat
+  fetchConnections: 64
+
+  # --- runtime knobs, all defaulting to the shipped posture ---------------
+  #
+  # Every value below reproduces current behaviour when left alone. They
+  # exist so a real deployment can be A/B'd against itself — and because
+  # each one MOVES the perf curve, `testenv.mjs` reads them back off the
+  # live Deployment and folds them into INFRA_SHAPE, so `bench:infra`
+  # refuses to compare a run under one setting against a baseline taken
+  # under another.
+
+  # prefer-local | activation-count | random.
+  # prefer-local is half of the locality pair with the ingress's
+  # upstream-hash-by; activation-count deliberately opposes it (it steers
+  # to the least-loaded host instead of the hashed one), which is the
+  # trade `infra/cold-placement` exists to settle.
+  placement: prefer-local
+  # Load-view refresh cadence for activation-count, ms. "" = policy default
+  # (5000).
+  placementRefreshMs: ""
+
+  # Automatic rebalancing: "1" turns it on, anything else off. Each host
+  # sheds only its own idlest activations, and only down to the cluster
+  # mean.
+  rebalance: ""
+  rebalanceIntervalMs: ""
+  rebalanceThreshold: ""
+  rebalanceMinIdleMs: ""
+  rebalanceMaxMoves: ""
+
+  # Soft LRU cap on live activations per host; 0 = unlimited. It rides the
+  # sweeper, so a cap with sweepIntervalMs at 0 would be inert.
+  maxActivations: 0
+  sweepIntervalMs: 60000
+
+  # The Digest worker pool. "" = the runtime default (hardwareConcurrency
+  # clamped to 16) — deliberately the untested-until-now path.
+  digestMaxLocal: ""
+  # Default and ceiling for the per-call sha256 chain length.
+  digestIters: 2000
+  digestMaxIters: 200000
+  # Threads in the shared worker_threads pool the *Threaded arms use.
+  # "" takes `availableParallelism()`, which reports the NODE's cores and
+  # NOT this container's CPU limit — so on a capped host set it to the cap,
+  # or you get threads that cannot run. Threads are the only way ONE host
+  # process uses more than one core: `digestMaxLocal` buys mailboxes, which
+  # is concurrency, not parallelism.
+  digestThreads: ""
+
+  # migrateState write-back mode: lazy | eager. Lazy (the default) rides
+  # the next save the room would have made anyway; eager buys one CAS
+  # write-back at activation so a read-only room still persists its
+  # migration.
+  migratePersist: lazy
+
+secrets:
+  # Empty = generated on install and PRESERVED on upgrade (lookup guard).
+  clusterSecret: ""
+  opsSecret: ""
+  # Signs the session cookies — rotating it signs everyone out.
+  authSecret: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 2
+  liveness:
+    periodSeconds: 10
+  readiness:
+    periodSeconds: 5
+
+lifecycle:
+  preStopSleepSeconds: 10
+terminationGracePeriodSeconds: 60
+
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+# The dedicated tainted node pool shared with the actors test rig.
+nodeSelector:
+  workload: sigx-actors-test
+tolerations:
+  - key: workload
+    operator: Equal
+    value: sigx-actors-test
+    effect: NoSchedule
+
+redis:
+  # Deliberately its OWN Redis: the perf rig's runbook kills and tears
+  # down the sigx-actors-test one as part of its scenarios — the public
+  # demo must not couple to that.
+  image: redis:7-alpine
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  appendonly: true
+  # Prefer a node without hosts on it (soft — see the template).
+  awayFromHosts: true
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: managed-csi

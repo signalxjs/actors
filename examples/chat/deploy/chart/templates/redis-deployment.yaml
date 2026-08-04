@@ -1,0 +1,72 @@
+# The chat's own Redis — membership, directory, and every room's history.
+# Recreate strategy (RWO PVC); AOF so state survives pod restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chat.fullname" . }}-redis
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "chat.redisSelector" . | nindent 6 }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "chat.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /* dig: survives --reuse-values from before this key. */}}
+      {{- if dig "awayFromHosts" true (.Values.redis | default dict) }}
+      # Preferred, not required: Redis is cheap (single-digit millicores
+      # here) so sharing a node is survivable, but given a choice it should
+      # not compete with a host's event loop — and a required rule would
+      # risk an unschedulable Redis on a busy pool.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "chat.hostSelector" . | nindent 20 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image | quote }}
+          {{- if .Values.redis.appendonly }}
+          args: ["redis-server", "--appendonly", "yes"]
+          {{- end }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          {{- if .Values.redis.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- end }}
+      {{- if .Values.redis.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "chat.fullname" . }}-redis
+      {{- end }}

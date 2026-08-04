@@ -15,8 +15,13 @@ export default defineConfig({
     },
     test: {
         environment: 'happy-dom',
+        // Examples are included for the env-gated INFRA suite: it tests a
+        // DEPLOYMENT (proxy behaviour, sealed mounts, chaos), which no
+        // package-level test can reach. It skips itself without INFRA_URL,
+        // so `pnpm test` and CI are unaffected.
         include: [
             'packages/**/__tests__/**/*.test.{ts,tsx}',
+            'examples/**/__tests__/**/*.test.ts',
             // The benchmarks themselves are never run by vitest — they are a
             // measurement, not an assertion. Their REPORTING is a different
             // matter: the A/B report is what a reviewer acts on in CI without
