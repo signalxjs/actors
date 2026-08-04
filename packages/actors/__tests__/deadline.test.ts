@@ -13,7 +13,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000 };
 function probeActor() {
     return defineActor({
         type: 'DeadlineProbe',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({ count: 0 }),
         methods: (ctx) => ({
             async noop() {

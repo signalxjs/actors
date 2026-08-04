@@ -141,7 +141,7 @@ describe('durableObjectStorage — CAS edges', () => {
 describe('durableObjectReminders', () => {
     const Waking = defineActor({
         type: 'Waking',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({ woke: 0 }),
         onReminder(ctx) {
             ctx.state.woke++;
@@ -325,7 +325,7 @@ describe('durableObjectReminders', () => {
         const alarms = fakeAlarms();
         const Rescheduling = defineActor({
             type: 'Rescheduling',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ fired: 0 }),
             async onReminder(ctx) {
                 ctx.state.fired++;
@@ -410,7 +410,7 @@ describe('durableObjectReminders', () => {
         const alarms = fakeAlarms();
         const Rescheduling = defineActor({
             type: 'Rescheduling',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ fired: 0 }),
             async onReminder(ctx) {
                 ctx.state.fired++;

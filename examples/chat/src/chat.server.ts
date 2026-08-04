@@ -15,7 +15,7 @@
 import { serverFn, ServerFnError } from '@sigx/server';
 import { actor } from '@sigx/actors';
 import { RoomActor } from './room.actor';
-import { cookieFor, currentUser, requireUser } from './guards';
+import { cookieFor, currentUser } from './guards';
 
 /**
  * Who am I? Drives the header; also proves serverFns work beside actors.
@@ -23,7 +23,7 @@ import { cookieFor, currentUser, requireUser } from './guards';
  * one would be circular.
  */
 export const me = serverFn({
-    unguarded: true,
+    allowAnonymous: true,
     handler: async (rq): Promise<string | null> => currentUser(rq),
 });
 
@@ -33,7 +33,7 @@ export const me = serverFn({
  * signature means nobody else can either.
  */
 export const signIn = serverFn({
-    unguarded: true, // deliberate: this IS the sign-in
+    allowAnonymous: true, // deliberate: this IS the sign-in
     handler: async (rq, input: { name: string }): Promise<string> => {
         const name = input.name.trim();
         if (!/^[\w-]{1,32}$/.test(name)) {
@@ -49,7 +49,7 @@ export const signIn = serverFn({
 });
 
 export const signOut = serverFn({
-    unguarded: true,
+    allowAnonymous: true,
     handler: async (rq): Promise<null> => {
         rq.responseHeaders.append('set-cookie', 'user=; Path=/; HttpOnly; Max-Age=0');
         return null;
@@ -57,7 +57,6 @@ export const signOut = serverFn({
 });
 
 export const postMessage = serverFn({
-    use: [requireUser],
     handler: async (rq, input: { room: string; text: string }): Promise<number> => {
         const from = rq.locals.user as string;
         const text = input.text.trim();

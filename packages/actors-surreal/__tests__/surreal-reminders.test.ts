@@ -181,7 +181,7 @@ describe.skipIf(!SURREAL_URL)('surrealReminders', () => {
         const fired: string[] = [];
         const Pinger = defineActor({
             type: 'Pinger',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ armed: false }),
             methods: (ctx) => ({
                 async arm() {

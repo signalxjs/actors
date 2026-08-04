@@ -51,7 +51,7 @@ describe('defineJob: the state machine', () => {
         const step = gate();
         const SumJob = defineJob({
             type: 'Sum',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { upTo: number }) => {
                 let sum = 0;
                 for (let i = 1; i <= input.upTo; i++) {
@@ -86,7 +86,7 @@ describe('defineJob: the state machine', () => {
     it('watch() streams the lifecycle live', async () => {
         const JobDef = defineJob({
             type: 'Watched',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: number) => {
                 await job.progress({ done: 1, total: 2 });
                 await job.progress({ done: 2, total: 2 });
@@ -118,7 +118,7 @@ describe('defineJob: the state machine', () => {
         vi.spyOn(console, 'error').mockImplementation(() => {});
         const BadJob = defineJob({
             type: 'Bad',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => {
                 throw new Error('provider exploded');
             }
@@ -136,7 +136,7 @@ describe('defineJob: the state machine', () => {
         const release = gate();
         const SlowJob = defineJob({
             type: 'Slow',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => {
                 await release.opened;
                 return 1;
@@ -157,7 +157,7 @@ describe('defineJob: cancellation', () => {
         const observed: string[] = [];
         const CancelJob = defineJob({
             type: 'Cancellable',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job) => {
                 await aborted(job.signal);
                 observed.push(String(job.signal.reason));
@@ -185,7 +185,7 @@ describe('defineJob: late writes', () => {
         const tried = gate();
         const LateJob = defineJob({
             type: 'LateWriter',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ notes: [] as string[] }),
             run: async (job) => {
                 await job.update((extra) => extra.notes.push('before'));
@@ -217,7 +217,7 @@ describe('defineJob: crash-resume', () => {
         const storage = memoryStorage();
         const ResumeJob = defineJob({
             type: 'Resumable',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { rows: number }) => {
                 attempts.push({ attempt: job.attempt, resumedFrom: job.resumedFrom });
                 if (job.attempt === 1) {
@@ -247,7 +247,7 @@ describe('defineJob: crash-resume', () => {
         const storage = memoryStorage();
         const LoopJob = defineJob({
             type: 'CrashLoop',
-            unguarded: true,
+            allowAnonymous: true,
             maxAttempts: 2,
             run: async (job) => {
                 await aborted(job.signal); // parks forever, every attempt
@@ -275,7 +275,7 @@ describe('defineJob: pause / resume', () => {
         const storage = memoryStorage();
         const Approval = defineJob({
             type: 'Approval',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { doc: string }) => {
                 runs.push({ attempt: job.attempt, resumeData: job.resumeData });
                 if (job.resumeData === undefined) {
@@ -307,7 +307,7 @@ describe('defineJob: pause / resume', () => {
     it('resume on a non-paused job throws JobStateError', async () => {
         const NopJob = defineJob({
             type: 'Nop',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => 1
         });
         const host = createHost({ actors: [NopJob], defaults: quiet });
@@ -319,7 +319,7 @@ describe('defineJob: pause / resume', () => {
         const storage = memoryStorage();
         const Hitl = defineJob({
             type: 'Hitl',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { question: string }) => {
                 if (job.resumeData === undefined) {
                     await job.reminders.set('timeout', { due: 40 });
@@ -350,7 +350,7 @@ describe('defineJob: extra state, retention, discard', () => {
     it('job.update() maintains extra fields visible in JobInfo', async () => {
         const EventfulJob = defineJob({
             type: 'Eventful',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ events: [] as string[] }),
             run: async (job) => {
                 await job.update((extra) => extra.events.push('node:a'));
@@ -370,7 +370,7 @@ describe('defineJob: extra state, retention, discard', () => {
         const storage = memoryStorage();
         const Ephemeral = defineJob({
             type: 'Ephemeral',
-            unguarded: true,
+            allowAnonymous: true,
             retainMs: 40,
             run: async () => 'done'
         });
@@ -393,7 +393,7 @@ describe('defineJob: extra state, retention, discard', () => {
         const release = gate();
         const DiscardJob = defineJob({
             type: 'Discardable',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => {
                 await release.opened;
                 return 1;

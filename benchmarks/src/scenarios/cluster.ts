@@ -77,7 +77,7 @@ function exactIfDeterministic(label: string): { exact?: true } {
 
 const Counted = defineActor({
     type: 'ClusterBench',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         noop() {

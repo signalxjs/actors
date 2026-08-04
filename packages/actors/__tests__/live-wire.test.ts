@@ -18,7 +18,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 
 const Cart = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[] }),
     methods: (ctx) => ({
         async total() {
@@ -34,7 +34,9 @@ const Cart = defineActor({
 
 const Secret = defineActor({
     type: 'Secret',
-    use: [
+    // A thrown ServerFnError passes through a policy verbatim, so a
+    // deliberate 401 still reads as one rather than the generic deny.
+    authorize: [
         () => {
             throw new ServerFnError(401, 'nope');
         }
@@ -395,7 +397,7 @@ describe('$live over the wire', () => {
         expect(() =>
             defineActor({
                 type: '$live',
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: () => ({})
             })
@@ -403,7 +405,7 @@ describe('$live over the wire', () => {
         expect(() =>
             defineActor({
                 type: '@actor',
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: () => ({})
             })
@@ -421,9 +423,12 @@ describe('$live: context bag edge capture', () => {
     it('a guard stamp is visible to the watched method', async () => {
         const Stamped = defineActor({
             type: 'LiveStamped',
-            use: [
-                (rq) => {
+            // The bag is still the app-DATA channel; only identity moved
+            // out of it. Stamping from a policy keeps working.
+            authorize: [
+                (_p, rq) => {
                     stampCallBag(rq, { user: 'ada' });
+                    return true;
                 }
             ],
             state: () => ({}),

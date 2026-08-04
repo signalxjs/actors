@@ -21,7 +21,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { defineActor, defineWorker } from './actors.app';
 import { digestPool } from './digest-pool';
-import { requireUser } from './guards';
 
 /**
  * Members per (type, key) on ONE host. Left undefined by default so the
@@ -87,7 +86,6 @@ async function run(
 
 export const Digest = defineWorker({
     type: 'Digest',
-    use: [requireUser],
     ...(MAX_LOCAL === undefined ? {} : { maxLocal: MAX_LOCAL }),
     methods: () => {
         // Once per POOL MEMBER — the id is what makes concurrency visible.
@@ -108,7 +106,6 @@ export const Digest = defineWorker({
  */
 export const DigestActor = defineActor({
     type: 'DigestActor',
-    use: [requireUser],
     state: () => ({ calls: 0 }),
     methods: (ctx) => {
         const member = randomUUID().slice(0, 8);
@@ -153,7 +150,6 @@ async function runThreaded(
 /** Many activations AND many threads — the only genuinely parallel arm. */
 export const DigestThreaded = defineWorker({
     type: 'DigestThreaded',
-    use: [requireUser],
     ...(MAX_LOCAL === undefined ? {} : { maxLocal: MAX_LOCAL }),
     methods: () => {
         const member = randomUUID().slice(0, 8);
@@ -173,7 +169,6 @@ export const DigestThreaded = defineWorker({
  */
 export const DigestActorThreaded = defineActor({
     type: 'DigestActorThreaded',
-    use: [requireUser],
     state: () => ({ calls: 0 }),
     methods: (ctx) => {
         const member = randomUUID().slice(0, 8);

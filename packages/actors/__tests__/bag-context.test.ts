@@ -14,7 +14,7 @@ describe('ctx.bag', () => {
     it('reads the current turn\'s bag, frozen, and empty when the call has none', async () => {
         const Probe = defineActor({
             type: 'BagProbe',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async read() {
@@ -35,7 +35,7 @@ describe('ctx.bag', () => {
         const ticks: Record<string, string>[] = [];
         const Timed = defineActor({
             type: 'BagTimed',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async arm() {
@@ -54,7 +54,7 @@ describe('ctx.bag', () => {
         const seen: Record<string, string>[] = [];
         const Tasked = defineActor({
             type: 'BagTasked',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async kick() {

@@ -23,7 +23,7 @@ interface SweepCheckpoint {
 export const SweepJob = defineJob<SweepInput, SweepResult, SweepCheckpoint>({
     type: 'SweepJob',
     // Public on purpose, like the Counter: the load generator drives it bare.
-    unguarded: true,
+    allowAnonymous: true,
     // Generous: scenario (k) kills hosts repeatedly and every kill that
     // lands on a running sweep costs an attempt.
     maxAttempts: 10,

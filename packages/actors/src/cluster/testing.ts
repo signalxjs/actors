@@ -169,7 +169,7 @@ interface EchoState {
 function echoActor(log: string[] = []): AnyActorDefinition {
     return defineActor({
         type: ECHO,
-        unguarded: true,
+        allowAnonymous: true,
         state: (): EchoState => ({ count: 0, activations: 0 }),
         onActivate: (ctx) => {
             log.push(`activate:${ctx.key}`);
@@ -210,7 +210,7 @@ function echoActor(log: string[] = []): AnyActorDefinition {
 function streamerActor(log: string[]): AnyActorDefinition {
     return defineActor({
         type: STREAMER,
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: () => ({
             warm() {
@@ -247,7 +247,7 @@ interface BackMethods {
 function chainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinition } {
     const alpha = defineActor({
         type: `${CHAIN}Alpha`,
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: (ctx: ActorContext<object>) => ({
             async poke() {
@@ -263,7 +263,7 @@ function chainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinition } 
     });
     const beta = defineActor({
         type: `${CHAIN}Beta`,
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: (ctx: ActorContext<object>) => ({
             async poke() {
@@ -289,7 +289,7 @@ function chainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinition } 
 function alwaysChainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinition } {
     const alpha = defineActor({
         type: `${CHAIN}AlwaysAlpha`,
-        unguarded: true,
+        allowAnonymous: true,
         reentrant: 'always',
         state: () => ({}),
         methods: (ctx: ActorContext<object>) => ({
@@ -306,7 +306,7 @@ function alwaysChainActors(): { alpha: AnyActorDefinition; beta: AnyActorDefinit
     });
     const beta = defineActor({
         type: `${CHAIN}AlwaysBeta`,
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: (ctx: ActorContext<object>) => ({
             async poke() {

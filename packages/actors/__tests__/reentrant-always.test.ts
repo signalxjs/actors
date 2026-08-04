@@ -37,7 +37,7 @@ describe('reentrant: always — interleaving', () => {
         const events: string[] = [];
         const Al = defineActor({
             type: 'Al',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({}),
             methods: () => ({
@@ -67,7 +67,7 @@ describe('reentrant: always — interleaving', () => {
     it('A→B→A completes as a concurrent turn when A is always-reentrant', async () => {
         const a = defineActor({
             type: 'A',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({ hits: 0 }),
             methods: (ctx) => ({
@@ -82,7 +82,7 @@ describe('reentrant: always — interleaving', () => {
         });
         const b = defineActor({
             type: 'B',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async callBack() {
@@ -98,7 +98,7 @@ describe('reentrant: always — interleaving', () => {
     it('S→S on a warm always-reentrant activation completes, not a hang or throw', async () => {
         const self = defineActor({
             type: 'S',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({ depth: 0 }),
             methods: (ctx) => ({
@@ -138,7 +138,7 @@ describe('reentrant: always — per-turn call context', () => {
         const gate = deferred();
         const x = defineActor({
             type: 'X',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async kick() {
@@ -151,7 +151,7 @@ describe('reentrant: always — per-turn call context', () => {
         });
         const a = defineActor({
             type: 'Actx',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({}),
             methods: (ctx) => ({
@@ -187,7 +187,7 @@ describe('reentrant: always — per-turn call context', () => {
         const events: string[] = [];
         const x = defineActor({
             type: 'Xt',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async kick() {
@@ -200,7 +200,7 @@ describe('reentrant: always — per-turn call context', () => {
         });
         const a = defineActor({
             type: 'At',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({}),
             methods: (ctx) => ({
@@ -229,7 +229,7 @@ describe('reentrant: always — per-turn call context', () => {
         const events: string[] = [];
         const x = defineActor({
             type: 'Xb',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async kick() {
@@ -242,7 +242,7 @@ describe('reentrant: always — per-turn call context', () => {
         });
         const a = defineActor({
             type: 'Ab',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({}),
             methods: (ctx) => ({
@@ -272,7 +272,7 @@ describe('methodReentrancy — per-method interleaving', () => {
     function mixedActor(events: string[], gates: { write: Promise<void>; read: Promise<void> }) {
         return defineActor({
             type: 'Mixed',
-            unguarded: true,
+            allowAnonymous: true,
             methodReentrancy: { read: 'always', parkedRead: 'always' },
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
@@ -341,7 +341,7 @@ describe('methodReentrancy — per-method interleaving', () => {
     it('an in-chain call to a mapped method completes; to an unmapped one still deadlocks', async () => {
         const self = defineActor({
             type: 'SelfMap',
-            unguarded: true,
+            allowAnonymous: true,
             methodReentrancy: { read: 'always' },
             state: () => ({ n: 7 }),
             methods: (ctx) => ({
@@ -375,7 +375,7 @@ describe('methodReentrancy — per-method interleaving', () => {
     it("on a 'call-chain' actor with a map, unmapped in-chain calls still run inline", async () => {
         const self = defineActor({
             type: 'ChainMap',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'call-chain',
             methodReentrancy: { read: 'always' },
             state: () => ({ depth: 0 }),
@@ -405,7 +405,7 @@ describe('methodReentrancy — per-method interleaving', () => {
     it("`reentrant: true` still means call-chain — unchanged v1 behavior", async () => {
         const self = defineActor({
             type: 'V1',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: true,
             state: () => ({ depth: 0 }),
             methods: (ctx) => ({
@@ -430,7 +430,7 @@ describe('reentrant: always — persistence', () => {
         const gateB = deferred();
         const Dual = defineActor({
             type: 'Dual',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({ a: 0, b: 0 }),
             methods: (ctx) => ({
@@ -474,7 +474,7 @@ describe('reentrant: always — persistence', () => {
         const gate2 = deferred();
         const Con = defineActor({
             type: 'Con',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
@@ -532,7 +532,7 @@ describe('reentrant: always — persistence', () => {
     it('write-behind on an always-reentrant actor persists merged state without self-faulting', async () => {
         const Wb = defineActor({
             type: 'AlWb',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             persistence: { mode: 'write-behind', debounceMs: 10 },
             state: () => ({ a: 0, b: 0 }),
@@ -571,7 +571,7 @@ describe('reentrant: always — lifecycle', () => {
         const events: string[] = [];
         const Dr = defineActor({
             type: 'Dr',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             persistence: { mode: 'write-behind', debounceMs: 60_000 },
             state: () => ({ n: 0 }),
@@ -610,7 +610,7 @@ describe('reentrant: always — lifecycle', () => {
         const gate = deferred();
         const Bye = defineActor({
             type: 'Bye',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({}),
             methods: (ctx) => ({
@@ -644,7 +644,7 @@ describe('reentrant: always — lifecycle', () => {
         const scheduler = manualScheduler();
         const Sw = defineActor({
             type: 'Sw',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             idleAfterMs: 1,
             state: () => ({}),
@@ -687,7 +687,7 @@ describe('declaration validation (first activation, every build)', () => {
     // entry's size gate keeps define.ts lean): the first call to a key of
     // the type fails with ActorActivationError carrying the message.
     const base = {
-        unguarded: true as const,
+        allowAnonymous: true as const,
         state: () => ({ n: 0 }),
         methods: () => ({
             async get() {

@@ -5,7 +5,7 @@
  * cancellable and crash-resumable; this layer standardizes the state
  * machine, progress, checkpoints and the client surface around it.
  */
-import type { ServerFnGuard } from '@sigx/server';
+import type { ServerPolicy } from '@sigx/server';
 import type { ActorPlacementStrategy, ReminderApi } from '../types';
 
 export type JobStatus =
@@ -103,8 +103,17 @@ export interface JobControl<Extra extends object = Record<never, never>> {
 export interface JobOptions<In, Out, C, Extra extends object> {
     /** Stable type id — wire, directory and storage name. */
     type: string;
-    use?: readonly ServerFnGuard[];
-    unguarded?: boolean;
+    /**
+     * Policy chain for this job's generated wire surface, decided at
+     * ENQUEUE — `start`/`status`/`cancel`/`resume`/`update` — with
+     * `op.resource.kind === 'job'` and the run id as `op.resource.key`.
+     * The executing job runs under the principal snapshot recorded at
+     * start and never re-authorizes: a job outlives the request that
+     * enqueued it, so there is no live caller left to decide about.
+     */
+    authorize?: ServerPolicy | readonly ServerPolicy[];
+    /** The explicit word for a job reachable without a principal. */
+    allowAnonymous?: true;
     /**
      * Total attempts before a crash-looping job is marked `failed`.
      * Counts the first run and every crash-resume; pause-resume is free.

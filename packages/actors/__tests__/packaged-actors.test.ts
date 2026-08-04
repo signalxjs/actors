@@ -11,6 +11,7 @@
  * no implementation.
  */
 import { readFileSync } from 'node:fs';
+import { withoutServerApp } from '../../../vitest.setup';
 import { describe, expect, it, vi } from 'vitest';
 import { actor, type ActorClientWith } from '@sigx/actors';
 import { defineActorApp } from '@sigx/actors/host';
@@ -59,25 +60,33 @@ describe('a package can ship actors the app registers', () => {
         }
     });
 
-    it('warns when a packaged actor declares no guard decision', async () => {
+    it('warns when a packaged actor declares no authorization decision', async () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        // The consuming app's `requireGuards` build gate never sees package
-        // source, so this is the only place the omission can be caught.
+        // The consuming app's `requireAuthorization` build gate never sees
+        // package source, so this is the only place the omission can be
+        // caught — and under the fail-closed runtime the warning is a UX aid
+        // ("these calls will be DENIED") rather than a security alarm.
         const ungated = {
             ...Presence,
             type: 'acme/ungated',
-            __sigxActor: { ...Presence.__sigxActor, unguarded: undefined }
+            __sigxActor: { ...Presence.__sigxActor, allowAnonymous: undefined }
         } as unknown as typeof Presence;
-        const app = defineActorApp({ defaults: quiet }).withActors([ungated]);
-        try {
-            await app.start();
-            expect(warn).toHaveBeenCalledWith(
-                expect.stringContaining('declares neither a `use` guard chain')
-            );
-        } finally {
-            await app.stop();
-            warn.mockRestore();
-        }
+        // The warning only fires with NO server app configured: with one,
+        // its default policy IS the answer for an actor that declares
+        // nothing, and warning would be noise. The suite stamps an app for
+        // every other test, so this one takes it away.
+        await withoutServerApp(async () => {
+            const app = defineActorApp({ defaults: quiet }).withActors([ungated]);
+            try {
+                await app.start();
+                expect(warn).toHaveBeenCalledWith(
+                    expect.stringContaining('declares no `authorize` policy')
+                );
+            } finally {
+                await app.stop();
+                warn.mockRestore();
+            }
+        });
     });
 });
 

@@ -23,7 +23,7 @@ beforeEach(() => {
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async bump() {

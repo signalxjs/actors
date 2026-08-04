@@ -26,7 +26,7 @@ let invocations = 0;
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async read() {

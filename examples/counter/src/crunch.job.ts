@@ -21,7 +21,7 @@ export interface CrunchResult {
 export const CrunchJob = defineJob<CrunchInput, CrunchResult, CrunchCheckpoint>({
     type: 'Crunch',
     // Demo-public, like the Counter. Real jobs declare `use: [...]`.
-    unguarded: true,
+    allowAnonymous: true,
     maxAttempts: 5,
     run: async (job, input: CrunchInput) => {
         // Resume from the last checkpoint — attempt 1 starts at 0.

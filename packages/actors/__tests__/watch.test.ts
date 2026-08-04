@@ -17,7 +17,7 @@ let invocations = 0;
 
 const Cart = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[] }),
     methods: (ctx) => ({
         async total() {

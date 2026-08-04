@@ -18,7 +18,7 @@ const BASE = '/_sigx/do';
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {
@@ -50,7 +50,7 @@ const Counter = defineActor({
 
 const Work = defineWorker({
     type: 'Work',
-    unguarded: true,
+    allowAnonymous: true,
     maxLocal: 2,
     methods: () => ({
         async double(n: number) {
@@ -119,6 +119,9 @@ function fakeNamespace(): DurableObjectNamespaceLike & {
                 const request =
                     typeof input === 'string' ? new Request(input, init) : input;
                 return handleHostRequestForRuntime(request, {
+                    // The mount names its own base, exactly as the real
+                    // object does: everything after it IS the symbol (#563).
+                    base: BASE,
                     runtime: hostEndpointRuntime(host)
                 });
             }

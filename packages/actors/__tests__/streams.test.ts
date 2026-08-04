@@ -22,7 +22,7 @@ const cleanups: string[] = [];
 
 const feed = defineActor({
     type: 'Feed',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ n: 0, big: [0] }),
     methods: (ctx) => ({
         async bump() {
@@ -89,7 +89,7 @@ describe('streams', () => {
         expect(() =>
             defineActor({
                 type: 'Bad',
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({ x: 1 }),
                 methods: () => ({}),
                 streams: (ctx) => {

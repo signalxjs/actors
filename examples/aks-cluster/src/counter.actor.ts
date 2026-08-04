@@ -6,7 +6,7 @@ import { defineActor } from './actors.app.ts';
 export const Counter = defineActor({
     type: 'Counter',
     // Public on purpose: the load generator and smoke tests call it bare.
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {

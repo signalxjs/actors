@@ -1,6 +1,6 @@
 /**
  * The build-time story: extraction, the client module swap, the
- * requireGuards gate, mid-edit refusal, and the prod registry.
+ * requireAuthorization gate, mid-edit refusal, and the prod registry.
  */
 import { describe, expect, it } from 'vitest';
 import { extractActors, mayDefineActors, sigxActors } from '@sigx/actors/vite';
@@ -11,7 +11,7 @@ import { requireUser } from './guards';
 
 export const CartActor = defineActor({
     type: 'Cart',
-    use: [requireUser],
+    authorize: [requireUser],
     state: () => ({ items: [] }),
     methods: (ctx) => ({
         async add(item) { ctx.state.items.push(item); await ctx.save(); }
@@ -25,12 +25,12 @@ export const CartActor = defineActor({
 export const helper = () => 42;
 `;
 
-function opts(requireGuards: boolean | 'warn' = true) {
-    return { endpoint: '/_sigx/actor', requireGuards };
+function opts(requireAuthorization: boolean | 'warn' = true) {
+    return { endpoint: '/_sigx/actor', requireAuthorization };
 }
 
 describe('extractActors', () => {
-    it('reads type, streams, and guardedness statically', () => {
+    it('reads type, streams, and the authorization decision statically', () => {
         const result = extractActors(CART, 'src/cart.actor.ts', opts());
         expect(result.errors).toEqual([]);
         expect(result.actors).toHaveLength(1);
@@ -38,7 +38,7 @@ describe('extractActors', () => {
             exportName: 'CartActor',
             type: 'Cart',
             streams: ['watch', 'tail'],
-            guarded: true
+            authorized: true
         });
         expect(result.otherExports).toEqual(['helper']);
     });
@@ -62,7 +62,7 @@ import { defineActor } from '@sigx/actors';
 
 export const ProductActor = defineActor({
     type: 'Product',
-    unguarded: true,
+    allowAnonymous: true,
     reads: { summary: { maxAge: 5 }, price: { maxAge: 60, public: true } },
     state: () => ({ cents: 1 }),
     methods: (ctx) => ({ async summary() { return ctx.state.cents; } })
@@ -88,7 +88,7 @@ import { requireUser } from './guards';
 
 export const Resize = defineWorker({
     type: 'Resize',
-    use: [requireUser],
+    authorize: [requireUser],
     maxLocal: 4,
     reads: { probe: { maxAge: 5 } },
     methods: () => ({ async run(input) { return transform(input); } }),
@@ -103,7 +103,7 @@ export const Resize = defineWorker({
             type: 'Resize',
             streams: ['chunks'],
             reads: ['probe'],
-            guarded: true
+            authorized: true
         });
         expect(result.clientModule).toContain(
             `export const Resize = __actorRef("Resize", "/_sigx/actor", ["chunks"], ["probe"]);`
@@ -111,19 +111,19 @@ export const Resize = defineWorker({
         expect(result.clientModule).not.toContain('transform');
     });
 
-    it('the requireGuards gate applies to workers too', () => {
+    it('the requireAuthorization gate applies to workers too', () => {
         const code = `
 import { defineWorker } from '@sigx/actors';
 export const Bare = defineWorker({ type: 'Bare', methods: () => ({}) });
 `;
         const result = extractActors(code, 'src/bare.actor.ts', opts());
-        expect(result.errors[0]?.message).toMatch(/declares no `use:` guard chain/);
+        expect(result.errors[0]?.message).toMatch(/declares no `authorize:` policy/);
     });
 
     it('recognizes a defineWorker imported from the app module (isDefineSource)', () => {
         const code = `
 import { defineWorker } from '../actors.app';
-export const AppWorker = defineWorker({ type: 'AppWorker', unguarded: true, methods: () => ({}) });
+export const AppWorker = defineWorker({ type: 'AppWorker', allowAnonymous: true, methods: () => ({}) });
 `;
         expect(mayDefineActors(code, ['../actors.app'])).toBe(true);
         const result = extractActors(code, 'src/w.actor.ts', {
@@ -131,7 +131,7 @@ export const AppWorker = defineWorker({ type: 'AppWorker', unguarded: true, meth
             isDefineSource: (source) => source === '../actors.app'
         });
         expect(result.errors).toEqual([]);
-        expect(result.actors[0]).toMatchObject({ type: 'AppWorker', unguarded: true });
+        expect(result.actors[0]).toMatchObject({ type: 'AppWorker', anonymous: true });
     });
 
     it('refuses a `reads:` value the build cannot read statically', () => {
@@ -143,7 +143,7 @@ const shared = { summary: { maxAge: 5 } };
 
 export const ProductActor = defineActor({
     type: 'Product',
-    unguarded: true,
+    allowAnonymous: true,
     reads: shared,
     state: () => ({}),
     methods: () => ({ async summary() {} })
@@ -165,7 +165,7 @@ const PRICE = 'price';
 
 export const ProductActor = defineActor({
     type: 'Product',
-    unguarded: true,
+    allowAnonymous: true,
     reads: { [PRICE]: { maxAge: 5 } },
     state: () => ({}),
     methods: () => ({ async price() {} })
@@ -181,7 +181,7 @@ const WATCH = 'watch';
 
 export const RoomActor = defineActor({
     type: 'Room',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({}),
     methods: () => ({}),
     streams: () => ({ async *[WATCH]() { yield 1; } })
@@ -196,27 +196,27 @@ export const RoomActor = defineActor({
         const code = `
 import { defineActor } from '@sigx/actors';
 const name = 'Cart';
-export const CartActor = defineActor({ type: name, unguarded: true, state: () => ({}), methods: () => ({}) });
+export const CartActor = defineActor({ type: name, allowAnonymous: true, state: () => ({}), methods: () => ({}) });
 `;
         const result = extractActors(code, 'x.actor.ts', opts());
         expect(result.errors[0]?.message).toMatch(/string literal/);
         expect(result.clientModule).toBeNull();
     });
 
-    it('requireGuards: an unguarded actor without the explicit word is a build error', () => {
+    it('requireAuthorization: an actor without the explicit word is a build error', () => {
         const code = `
 import { defineActor } from '@sigx/actors';
 export const Open = defineActor({ type: 'Open', state: () => ({}), methods: () => ({}) });
 `;
         const strict = extractActors(code, 'x.actor.ts', opts(true));
-        expect(strict.errors[0]?.message).toMatch(/no \`use:\` guard chain/);
+        expect(strict.errors[0]?.message).toMatch(/no \`authorize:\` policy/);
 
         const warn = extractActors(code, 'x.actor.ts', opts('warn'));
         expect(warn.errors).toEqual([]);
-        expect(warn.warnings[0]).toMatch(/no \`use:\` guard chain/);
+        expect(warn.warnings[0]).toMatch(/no \`authorize:\` policy/);
 
         const explicit = extractActors(
-            code.replace(`type: 'Open',`, `type: 'Open', unguarded: true,`),
+            code.replace(`type: 'Open',`, `type: 'Open', allowAnonymous: true,`),
             'x.actor.ts',
             opts(true)
         );
@@ -227,7 +227,7 @@ export const Open = defineActor({ type: 'Open', state: () => ({}), methods: () =
         const code = `
 import { defineActor } from '@sigx/actors';
 const table = {};
-export const X = defineActor({ type: 'X', unguarded: true, state: () => ({}), methods: () => ({}), streams: () => table });
+export const X = defineActor({ type: 'X', allowAnonymous: true, state: () => ({}), methods: () => ({}), streams: () => table });
 `;
         const result = extractActors(code, 'x.actor.ts', opts());
         expect(result.errors[0]?.message).toMatch(/inline object literal/);
@@ -341,7 +341,7 @@ describe('sigxActors() transform', () => {
         expect(client.warnings).toEqual([]);
     });
 
-    it('the requireGuards gate fails the client transform loudly', () => {
+    it('the requireAuthorization gate fails the client transform loudly', () => {
         const plugin = makePlugin();
         const client = makeCtx('client');
         const code = `
@@ -349,7 +349,7 @@ import { defineActor } from '@sigx/actors';
 export const Open = defineActor({ type: 'Open', state: () => ({}), methods: () => ({}) });
 `;
         expect(() => plugin.transform!.call(client, code, '/app/src/open.actor.ts')).toThrow(
-            /no `use:` guard chain/
+            /no `authorize:` policy/
         );
     });
 
@@ -378,7 +378,7 @@ import { defineActor } from '../actors.app';
 
 export const Session = defineActor({
     type: 'Session',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ hits: 0 }),
     methods: (ctx) => ({
         async touch() { return ++ctx.state.hits; }
@@ -424,12 +424,14 @@ describe('app-bound defineActor extraction', () => {
     });
 
     it('still enforces the guard gate on app-bound actors', () => {
-        const unguarded = APP_BOUND.replace('unguarded: true,', '');
+        const unguarded = APP_BOUND.replace('allowAnonymous: true,', '');
         const result = extractActors(unguarded, 'src/actors/session.actor.ts', {
             ...opts(true),
             isDefineSource: appSource('src/actors', 'src/actors.app.ts')
         });
-        expect(result.errors.map((e) => e.message).join(' ')).toMatch(/guard|use|unguarded/i);
+        expect(result.errors.map((e) => e.message).join(' ')).toMatch(
+            /authorize|allowAnonymous/i
+        );
     });
 
     it('pre-filters app-module importers only when hinted', () => {

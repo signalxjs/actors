@@ -4,13 +4,13 @@
  */
 import { defineActor } from '@sigx/actors';
 
-/** A guard chain is the package author's responsibility — the consuming
- *  app's build gate only ever sees its own source. */
-const requireCaller = (): void => {};
+/** A policy is the package author's responsibility — the consuming app's
+ *  build gate only ever sees its own source. */
+const requireCaller = (): boolean => true;
 
 export const Greeter = defineActor({
     type: 'acme/greeter',
-    use: [requireCaller],
+    authorize: [requireCaller],
     state: () => ({ greeted: 0 }),
     methods: (ctx) => ({
         async greet(name: string) {
@@ -34,7 +34,7 @@ export const Greeter = defineActor({
 
 export const Presence = defineActor({
     type: 'acme/presence',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ online: false }),
     methods: (ctx) => ({
         async setOnline(value: boolean) {

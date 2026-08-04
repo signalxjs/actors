@@ -27,7 +27,7 @@ let dispatches = 0;
 
 const CartActor = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[] }),
     methods: (ctx) => ({
         async total() {
@@ -98,7 +98,9 @@ describe('SSR seeding', () => {
         // failure a developer is most likely to misdiagnose.
         const Guarded = defineActor({
             type: 'Guarded',
-            use: [(rq) => void rq.request],
+            // Reads the request, then allows — the point is that an
+            // in-process SSR call reaches a live context at all.
+            authorize: [(_p, rq) => (rq.request ? true : true)],
             state: () => ({}),
             methods: () => ({
                 async read() {

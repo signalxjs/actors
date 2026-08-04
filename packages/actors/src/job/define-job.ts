@@ -131,8 +131,9 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
 
     return defineActor<S, JobMethodTable<In, Out, Extra>, JobStreamTable<Extra>>({
         type: options.type,
-        ...(options.use ? { use: options.use } : {}),
-        ...(options.unguarded !== undefined ? { unguarded: options.unguarded } : {}),
+        kind: 'job',
+        ...(options.authorize ? { authorize: options.authorize } : {}),
+        ...(options.allowAnonymous !== undefined ? { allowAnonymous: options.allowAnonymous } : {}),
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.placement ? { placement: options.placement } : {}),
         persistence: 'explicit',

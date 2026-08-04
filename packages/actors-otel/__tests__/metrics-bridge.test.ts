@@ -19,7 +19,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {

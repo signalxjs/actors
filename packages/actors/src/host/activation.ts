@@ -7,6 +7,7 @@ import { effect, effectScope, signal, toRaw } from '@sigx/reactivity';
 import { createSharedWatch, watchKey, type SharedWatch } from './watch';
 import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
+import { decodePrincipal } from '../guards';
 import { ownFn, warnIfInheritedTable } from '../own-member';
 import type { Turns } from './turns';
 import {
@@ -450,6 +451,13 @@ export class Activation {
     get id(): string {
         return actorId(this.ref);
     }
+
+    /**
+     * Lazy `ctx.principal` decode, keyed on the ENCODED string so the memo
+     * stays correct across the reused ctx object and across turns carrying
+     * different identities.
+     */
+    #principalMemo: { encoded: string; value: unknown } | null = null;
 
     /**
      * The call context of the turn asking — the ONE reader `ctx.actor()`
@@ -1546,6 +1554,20 @@ export class Activation {
                 // is reused across turns. Empty outside any turn.
                 return self.#callContext()?.bag ?? EMPTY_CALL_BAG;
             },
+            get principal(): unknown {
+                // Same per-read resolution as `bag`, then decoded lazily and
+                // memoized against the ENCODED string — so an actor that
+                // never reads it never pays the decode, and one that reads
+                // it in a loop pays once per distinct identity. Keying on
+                // the encoded value (not on the turn) is what makes the memo
+                // correct across the reused ctx object.
+                const encoded = self.#callContext()?.principal;
+                if (encoded === undefined) return null;
+                if (self.#principalMemo?.encoded !== encoded) {
+                    self.#principalMemo = { encoded, value: decodePrincipal(encoded) };
+                }
+                return self.#principalMemo.value;
+            },
             async save(): Promise<void> {
                 // Fold any tracked mutations first so `wanted` sits above
                 // them and savedVersion bookkeeping stays consistent when a
@@ -1671,9 +1693,13 @@ export class Activation {
                         // crosses an uninstrumented middle hop still joins.
                         traceparent: current.traceparent,
                         // Same relay rule: the edge-stamped identity is the
-                        // only one inner hops will ever see — guards do not
-                        // re-run on actor-to-actor calls.
+                        // only one inner hops will ever see. Authentication
+                        // is per-REQUEST and authorization per ENTRY POINT,
+                        // and a hop is neither — so the caller a downstream
+                        // actor sees is the original one, not the actor that
+                        // called it.
                         bag: current.bag,
+                        principal: current.principal,
                         abortSignal: current.abortSignal
                     };
                 });
@@ -1700,6 +1726,9 @@ export class Activation {
                           deadline: current.deadline,
                           traceparent: current.traceparent,
                           bag: current.bag,
+                          // A subscriber is attributed to whoever published,
+                          // which is whoever entered the system.
+                          principal: current.principal,
                           abortSignal: current.abortSignal
                       }
                     : null;

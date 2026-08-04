@@ -37,7 +37,7 @@ describe('defineWorker definition', () => {
     it('returns a plain actor definition carrying the stateless marker', () => {
         const def = defineWorker({
             type: 'w',
-            unguarded: true,
+            allowAnonymous: true as const,
             maxLocal: 2,
             methods: () => ({
                 async run() {
@@ -52,7 +52,7 @@ describe('defineWorker definition', () => {
 
     it('rejects a non-positive or fractional maxLocal in every build', () => {
         const bad = (maxLocal: number) => () =>
-            defineWorker({ type: 'w', unguarded: true, maxLocal, methods: () => ({}) });
+            defineWorker({ type: 'w', allowAnonymous: true as const, maxLocal, methods: () => ({}) });
         expect(bad(0)).toThrow(/positive integer/);
         expect(bad(-1)).toThrow(/positive integer/);
         expect(bad(1.5)).toThrow(/positive integer/);
@@ -61,7 +61,7 @@ describe('defineWorker definition', () => {
     it('enumerates stream names exactly like defineActor', () => {
         const def = defineWorker({
             type: 'w',
-            unguarded: true,
+            allowAnonymous: true as const,
             methods: () => ({}),
             streams: () => ({
                 async *ticks() {
@@ -77,7 +77,7 @@ describe('defineWorker definition', () => {
         // each of these contradictions throws in every build.
         const base = {
             type: 'w',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({}),
             methods: () => ({}),
             stateless: {}
@@ -108,12 +108,21 @@ describe('defineWorker definition', () => {
     });
 
     it('still applies the shared type-name and guard rules', () => {
-        expect(() => defineWorker({ type: '$w', unguarded: true, methods: () => ({}) })).toThrow(
+        expect(() => defineWorker({ type: '$w', allowAnonymous: true as const, methods: () => ({}) })).toThrow(
             /reserved/
         );
+        // rfc-server-v4 §1.2 REMOVED the pre-v4 contradiction throw, with no
+        // analog. `unguarded` + `use` was a lie — the chain ran anyway.
+        // This pair is coherent: the identity gate is waived, and the
+        // declared policy still decides, against a nullable principal.
         expect(() =>
-            defineWorker({ type: 'w', unguarded: true, use: [() => {}], methods: () => ({}) })
-        ).toThrow(/unguarded/);
+            defineWorker({
+                type: 'w',
+                allowAnonymous: true as const,
+                authorize: [() => true],
+                methods: () => ({})
+            })
+        ).not.toThrow();
     });
 });
 
@@ -132,7 +141,7 @@ function poolWorker(opts: {
     let minted = 0;
     return defineWorker({
         type: 'Pool',
-        unguarded: true,
+        allowAnonymous: true as const,
         ...(opts.maxLocal !== undefined ? { maxLocal: opts.maxLocal } : {}),
         ...(opts.idleAfterMs !== undefined ? { idleAfterMs: opts.idleAfterMs } : {}),
         onActivate(ctx) {
@@ -311,7 +320,7 @@ describe('worker pool runtime', () => {
     it('guards the identity-bound ctx members with loud throws', async () => {
         const probes = defineWorker({
             type: 'Probes',
-            unguarded: true,
+            allowAnonymous: true as const,
             methods: (ctx) => ({
                 async probe(member: string) {
                     const c = ctx as unknown as Record<string, unknown>;
@@ -343,7 +352,7 @@ describe('worker pool runtime', () => {
     it('a same-key self-call is a deterministic deadlock; another key is not', async () => {
         const selfish = defineWorker({
             type: 'Selfish',
-            unguarded: true,
+            allowAnonymous: true as const,
             maxLocal: 4,
             methods: (ctx) => ({
                 async callSelf(key: string): Promise<unknown> {
@@ -379,7 +388,7 @@ describe('worker pool runtime', () => {
     it('streams work on a worker; watch is refused', async () => {
         const streamy = defineWorker({
             type: 'Streamy',
-            unguarded: true,
+            allowAnonymous: true as const,
             methods: () => ({ async noop() {} }),
             streams: () => ({
                 async *chunks(n: number) {

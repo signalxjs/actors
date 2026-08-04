@@ -19,7 +19,7 @@
 import { ServerFnError, type ServerFnContext } from '@sigx/server';
 import { mintCallId } from '../call-id';
 import { takeCallBag } from '../call-context-bag';
-import { runGuards } from '../guards';
+import { authorizeActorCall, encodePrincipal } from '../guards';
 import { isTraceparent } from '../traceparent';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, type LiveFrame, type LiveSubscription } from '../wire-shared';
@@ -182,20 +182,27 @@ export function subscribeAll(
         try {
             const def = await host.definition(sub.t);
             if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
-            // The SAME guard chain a unary call runs, against this request.
-            // A watch therefore exposes nothing a poller could not already
-            // read — which is why there is no per-actor opt-in.
-            await runGuards(def as AnyActorDefinition, sub.m, rq);
+            // The SAME pipeline a unary call runs, against this request and
+            // this instance. A watch therefore exposes nothing a poller
+            // could not already read — which is why there is no per-actor
+            // opt-in. This IS an entry point (one `$live` connection carries
+            // many subscriptions, each authorized on its own), so unlike the
+            // unary wire path it runs the prelude itself: core's endpoint
+            // ran it once for `$live#subscribe`, not for each subscription.
+            await authorizeActorCall(def as AnyActorDefinition, sub.m, sub.k, rq, 'wire');
 
             const traceparent = rq.request.headers.get('traceparent');
             // Same edge rule as the unary endpoint: the bag comes only from
-            // what a guard stamped on this request, never from a header.
+            // what this request stamped, never from a header — and identity
+            // rides its own slot.
             const bag = takeCallBag(rq.locals);
+            const principal = await encodePrincipal(rq);
             const iterable = host.dispatchWatch!({ type: sub.t, key: sub.k }, sub.m, sub.a ?? [], {
                 callChain: [],
                 callId: mintCallId(),
                 ...(isTraceparent(traceparent) ? { traceparent } : {}),
                 ...(bag !== undefined ? { bag } : {}),
+                ...(principal !== undefined ? { principal } : {}),
                 abortSignal: rq.abortSignal
             });
             const iterator = iterable[Symbol.asyncIterator]();

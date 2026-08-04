@@ -1,21 +1,30 @@
 /**
- * The guard that makes this example a real test rather than a demo.
+ * Session verification — what makes this example a real test rather than a
+ * demo, and, since rfc-server-v4, ONLY that.
+ *
+ * `currentUser` is now the body of the app's `authenticate` (see
+ * `server-app.ts`). It used to be one third of a `requireUser` guard that
+ * also threw the 401 and stamped the call bag; the 401 is the app's default
+ * policy and the propagation is automatic, so both of those are gone and
+ * this file does one job.
  *
  * It reads `rq.request` — which works over the wire but THROWS on a
  * detached context. During SSR the context comes from the request scope the
  * document handler opens, and that scope only exists because `@sigx/server`
  * was imported (it stamps `__SIGX_SERVERFN_SCOPE__` on import). If the
- * server entry ever stops importing it, this guard is what fails.
+ * server entry ever stops importing it, authentication is what fails.
  *
  * Sessions are REAL here: the cookie is `user=<name>.<hmac>`, minted by the
  * `signIn` serverFn with a server secret and verified with a timing-safe
- * compare. A missing, malformed, or forged signature is NO session — the
- * guard answers 401, never a masked 500. (The cookie is also HttpOnly, so
- * the old `document.cookie = "user=ada"` party trick is over.)
+ * compare. A missing, malformed, or forged signature is NO session — this
+ * returns `null`, never throws. That distinction is load-bearing under v4:
+ * `null` is anonymous (a valid outcome the pre-v4 guard model could not
+ * express), while a throw would be an infrastructure failure and a masked
+ * 500. (The cookie is also HttpOnly, so the old
+ * `document.cookie = "user=ada"` party trick is over.)
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { stampCallBag } from '@sigx/actors';
-import { ServerFnError, type ServerFnContext } from '@sigx/server';
+import type { ServerFnContext } from '@sigx/server';
 
 // The chart injects a generated secret; the dev fallback keeps the local
 // no-env experience working (and is worthless outside your machine). A
@@ -57,16 +66,18 @@ export function currentUser(rq: ServerFnContext): string | null {
     return name;
 }
 
-/** Refuses the call with a 401 when there is no session. */
-export function requireUser(rq: ServerFnContext): void {
-    const user = currentUser(rq);
-    if (!user) throw new ServerFnError(401, 'sign in to use the chat');
-    // Guards run before the turn; `locals` carries the result onward for
-    // serverFns in this request…
-    rq.locals.user = user;
-    // …and the context bag carries it into the CALL CHAIN: the called
-    // actor's `ctx.bag.user`, every `ctx.actor`/`ctx.publish` hop it makes
-    // (the ActivityFeed subscriber attributes entries from exactly this),
-    // and across host-to-host hops in a cluster.
-    stampCallBag(rq, { user });
-}
+// `requireUser` is deliberately gone. It was the conflated guard
+// rfc-server-v4 exists to split, and each of its three jobs now has a home:
+//
+//   the verify      → `authenticate` in `server-app.ts`  (this file's body)
+//   the 401         → the app's default policy, i.e. core's built-in
+//                     `requireAuthenticated` — nothing to write, and the
+//                     two public surfaces say `allowAnonymous: true`
+//   the propagation → automatic: identity rides its own envelope slot, so
+//                     `ctx.principal` works in every actor and across every
+//                     hop with nobody remembering to stamp it
+//
+// The `stampCallBag` call went with it. That channel still exists and is
+// still the right one for app DATA — it is just no longer how identity
+// travels, which is what stops a forgotten stamp from silently dropping the
+// caller somewhere down a call chain.

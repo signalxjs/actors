@@ -13,7 +13,7 @@ const activity = topic<string>('bag-activity');
 
 const Prober = defineActor({
     type: 'Prober',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ seen: null as Record<string, string> | null }),
     subscriptions: {
         'bag-activity': async (ctx, _event) => {
@@ -32,7 +32,7 @@ const Prober = defineActor({
 
 const Relay = defineActor({
     type: 'BagRelay',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({}),
     methods: (ctx) => ({
         async relay(key: string) {

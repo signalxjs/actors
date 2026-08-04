@@ -1,26 +1,33 @@
 /**
  * A chat room — one actor per room name, single-threaded, persistent.
  *
- * `use: [requireUser]` runs on EVERY transport: the wire call from the
- * browser and the in-process dispatch during an SSR render. Proving those
- * two agree is why this example exists, because they reach the request very
- * differently.
+ * **This actor declares no authorization at all, and that is the point.**
+ * The app's default policy (`server-app.ts`) decides, on EVERY transport:
+ * the wire call from the browser and the in-process dispatch during an SSR
+ * render. Proving those two agree is why this example exists, because they
+ * reach the request very differently. Before rfc-server-v4 this line was
+ * `use: [requireUser]`, repeated on every actor in the example.
  *
- * NOTE ON AUTHORIZATION. A guard receives `(rq, { symbol, name })` — not the
- * actor key and not the arguments. So "is this signed in?" is expressible
- * here, but "does this user own THIS room?" is not. For "who is the
- * caller?", `requireUser` now also stamps the session user onto the
- * request-context bag (`stampCallBag`), so every method here can read
- * `ctx.bag.user` and every hop this actor makes inherits it — the
- * ActivityFeed subscriber attributes its entries from exactly that.
- * `post` still takes `from` as an explicit serverFn-supplied argument:
- * the wire signature is pinned, and the serverFn
- * remains a fine trust boundary — the bag is the channel for the calls
- * that DON'T go through one (`setTopic`, the publish fan-out).
+ * NOTE ON AUTHORIZATION. This is where the split earns itself. A pre-v4
+ * guard received `(rq, { symbol, name })` — not the actor key, not the
+ * arguments — so "is this signed in?" was expressible and "does this user
+ * own THIS room?" was not. A policy receives the resolved principal AND the
+ * instance, so the second question is now ordinary:
+ *
+ * ```ts
+ * authorize: (user, _rq, op) => op.resource!.key.startsWith(`${user.name}:`)
+ * ```
+ *
+ * For "who is the caller?", `ctx.principal` is the answer everywhere — no
+ * stamping, no bag key, and it survives every `ctx.actor`/`ctx.publish` hop
+ * and every host-to-host forward, so the ActivityFeed subscriber attributes
+ * its entries from exactly the identity the edge authenticated.
+ *
+ * `post` still takes `from` as an explicit serverFn-supplied argument: the
+ * wire signature is pinned, and the serverFn remains a fine trust boundary.
  */
 import { defineActor } from './actors.app';
 import { roomActivity } from './activity.actor';
-import { requireUser } from './guards';
 
 export interface Message {
     readonly from: string;
@@ -46,7 +53,6 @@ interface RoomState {
 
 export const RoomActor = defineActor({
     type: 'Room',
-    use: [requireUser],
     state: (): RoomState => ({
         v: ROOM_STATE_VERSION,
         topic: 'general chatter',

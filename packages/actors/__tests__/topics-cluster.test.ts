@@ -21,7 +21,7 @@ const peerPolicy: PlacementPolicy = {
 
 const Feed = defineActor({
     type: 'Feed',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ log: [] as unknown[], events: [] as TopicEvent[] }),
     methods: (ctx) => ({
         async log() {

@@ -137,7 +137,7 @@ describe.skipIf(!PG_URL)('pgStorage', () => {
     describe('end to end', () => {
         const Cart = defineActor({
             type: 'PgCart',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ items: [] as string[] }),
             methods: (ctx) => ({
                 async add(item: string) {

@@ -1,11 +1,12 @@
 /**
  * The load-bearing integration test: the actor client proxy talks to the
  * REAL `handleServerFnRequest` (through `handleActorRequest`) — envelope,
- * rich types, error brands, 404 skew, guards, and NDJSON streaming are all
+ * rich types, error brands, 404 skew, authorization, and NDJSON streaming are all
  * pinned against core's actual endpoint, not a mock.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { isServerFnError, ServerFnError } from '@sigx/server';
+import { stubServerApp } from '@sigx/server/testing';
 import { actor, defineActor } from '@sigx/actors';
 import { createHost, type Host } from '@sigx/actors/host';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
@@ -18,12 +19,13 @@ const guardLog: string[] = [];
 
 const cart = defineActor({
     type: 'Cart',
-    use: [
-        (_rq, info) => {
-            guardLog.push(`use:${info.symbol}`);
+    authorize: [
+        (_p, _rq, op) => {
+            guardLog.push(`use:${op.fn.symbol}`);
+            return true;
         }
     ],
-    methodUse: {
+    methodAuthorize: {
         forbidden: [
             () => {
                 throw new ServerFnError(403, 'no entry');
@@ -212,14 +214,14 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         // dispatch and the guard lookup have to agree with them.
         const bare = defineActor({
             type: 'Bare',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ async ping() { return 'pong'; } })
         });
         /** Declares a method that SHADOWS a prototype member — must still work. */
         const shadow = defineActor({
             type: 'Shadow',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ async toString() { return 'mine'; } })
         });
@@ -308,7 +310,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
     it('external wire calls inherit the host callTimeoutMs deadline (504 on overrun)', async () => {
         const slowpoke = defineActor({
             type: 'Slowpoke',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({
                 async nap() {
@@ -332,23 +334,32 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         );
     });
 
-    it('the endpoint-level guard is a wire-only backstop over the same mount', async () => {
-        const host = createHost({ actors: [cart], defaults: quiet });
-        const response = await handleActorRequest(
-            new Request(`${ENDPOINT}/${encodeURIComponent('Cart#add')}`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ args: ['k', 'x', null] })
-            }),
-            {
-                host,
-                origin: false,
-                guard: () => {
-                    throw new ServerFnError(401, 'endpoint backstop');
+    it('app middleware vetoes over the same mount — the endpoint guard it replaces', async () => {
+        // rfc-server-v4 §3.1 REMOVED the endpoint `guard` option: it was
+        // wire-only by construction, the transport asymmetry the revision
+        // exists to correct. App middleware runs in the same pre-decode slot
+        // AND reaches in-process calls, so this is its successor.
+        const restore = stubServerApp({
+            middleware: [
+                () => {
+                    throw new ServerFnError(401, 'middleware backstop');
                 }
-            }
-        );
-        expect(response.status).toBe(401);
+            ]
+        });
+        try {
+            const host = createHost({ actors: [cart], defaults: quiet });
+            const response = await handleActorRequest(
+                new Request(`${ENDPOINT}/${encodeURIComponent('Cart#add')}`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args: ['k', 'x', null] })
+                }),
+                { host, origin: false }
+            );
+            expect(response.status).toBe(401);
+        } finally {
+            restore();
+        }
     });
 });
 
@@ -362,9 +373,10 @@ import { stampCallBag } from '@sigx/actors';
 
 const stamped = defineActor({
     type: 'Stamped',
-    use: [
-        (rq) => {
+    authorize: [
+        (_p, rq) => {
             stampCallBag(rq, { user: 'ada', from: 'guard' });
+            return true;
         }
     ],
     state: () => ({}),

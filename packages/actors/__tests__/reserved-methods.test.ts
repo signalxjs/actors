@@ -26,7 +26,7 @@ let reminderRuns = 0;
 /** Unguarded on purpose: the refusal must hold with no guard in the way. */
 const Inbox = defineActor({
     type: 'Inbox',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ notes: [] as string[] }),
     methods: (ctx) => ({
         async count() {

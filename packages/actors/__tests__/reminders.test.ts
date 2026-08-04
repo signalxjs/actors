@@ -29,7 +29,7 @@ afterEach(async () => {
 function wakingActor(events: string[]) {
     return defineActor({
         type: 'Waking',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         onActivate(ctx) {
             events.push(`activate:${ctx.key}`);
@@ -57,7 +57,7 @@ describe('reminders', () => {
         });
         const bad = defineActor({
             type: 'BadPeriod',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async go() {

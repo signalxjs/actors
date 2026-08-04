@@ -22,7 +22,7 @@ import { createCluster, type ClusterHarness } from './harness';
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ n: 0 }),
     methods: (ctx) => ({
         async bump() {

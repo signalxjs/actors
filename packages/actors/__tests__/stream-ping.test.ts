@@ -24,7 +24,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 
 const Room = defineActor({
     type: 'Room',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ topic: 'hello' }),
     methods: (ctx) => ({
         async topic() {

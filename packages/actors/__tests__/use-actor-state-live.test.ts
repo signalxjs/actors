@@ -31,7 +31,7 @@ const fast = { debounceMs: 2, retryMs: 5, maxRetryMs: 20 };
 
 const RoomActor = defineActor({
     type: 'Room',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ messages: [] as string[] }),
     methods: (ctx) => ({
         async count() {

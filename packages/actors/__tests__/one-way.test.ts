@@ -25,7 +25,7 @@ import { createCluster, quiet, selfPolicy } from './harness';
 function slowActor(events: string[] = []) {
     return defineActor({
         type: 'OneWaySubject',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({ count: 0 }),
         methods: (ctx) => ({
             async increment(by: number) {
@@ -91,7 +91,7 @@ describe('one-way calls: local semantics', () => {
         const host = createHost({ actors: [def], defaults: quiet });
         const stranger = defineActor({
             type: 'Unregistered',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ async poke() {} })
         });
@@ -103,7 +103,7 @@ describe('one-way calls: local semantics', () => {
     it('pre-acceptance failures still reject: activation failure', async () => {
         const exploding = defineActor({
             type: 'ExplodingState',
-            unguarded: true,
+            allowAnonymous: true,
             state: (): { n: number } => {
                 throw new Error('state() failed');
             },
@@ -146,7 +146,7 @@ describe('one-way calls: local semantics', () => {
         const events: string[] = [];
         const selfCaller = defineActor({
             type: 'SelfKicker',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx: ActorContext<object>) => ({
                 async kick() {
@@ -225,7 +225,7 @@ describe('one-way calls: metrics', () => {
         const host = await metricsHost(m, def);
         const stranger = defineActor({
             type: 'NopeOneWay',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ async poke() {} })
         });

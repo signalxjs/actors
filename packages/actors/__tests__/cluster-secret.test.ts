@@ -22,7 +22,7 @@ import { createHost, memoryStorage } from '@sigx/actors/host';
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         increment(by: number) {

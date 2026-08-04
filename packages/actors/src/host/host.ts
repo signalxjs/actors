@@ -9,6 +9,7 @@ import {
 } from '@sigx/serialize';
 import { mergeCallBag } from '../call-context-bag';
 import { isActorDefinition } from '../define';
+import { hasAuthorization, serverAppConfigured } from '../guards';
 import { clearHost, stampHost } from '../seam';
 import { assertTopic } from '../topics';
 import {
@@ -159,6 +160,13 @@ interface HostCallOptions {
     /** Explicit context-bag entries, merged (explicit wins) over whatever
      *  the call inherits; validated by `mergeCallBag` (throws). */
     bag?: Readonly<Record<string, string>>;
+    /**
+     * The entry point's ENCODED principal (rfc-server-v4 §7) — set by the
+     * endpoints and the in-process client after the pipeline ran, never by
+     * an actor. It rides its own envelope slot rather than the bag
+     * precisely so `.with({ bag })` cannot forge or clobber identity.
+     */
+    principal?: string;
 }
 
 export function createHost(options: CreateHostOptions): Host {
@@ -226,21 +234,27 @@ class HostImpl implements Host {
                             "the other's callers — rename one of them."
                     );
                 }
-                if (!def.__sigxActor.use?.length && !def.__sigxActor.unguarded) {
-                    // NOT `__DEV__`-gated, deliberately. The Vite
-                    // `requireGuards` build error is the real safety net, but
-                    // it only sees first-party source and only exists if you
-                    // use the plugin — a plain `createHost` +
-                    // `createActorHandler` deployment, `requireGuards: false`,
-                    // and any actor arriving from a package all bypass it.
-                    // Gating this on `__DEV__` stripped the one signal those
-                    // deployments could ever get, from precisely the build
-                    // where it matters. It costs one string per registered
-                    // type, once, at startup.
+                if (!hasAuthorization(def) && !serverAppConfigured()) {
+                    // POLARITY FLIPPED for rfc-server-v4: the runtime is
+                    // fail-closed now, so an actor declaring nothing is
+                    // DENIED rather than exposed. The warning stopped being
+                    // a security alarm and became a UX aid — "your calls
+                    // will 401, here is why" — which is also why it only
+                    // fires when no server app is configured: with one, the
+                    // app default is the answer and there is nothing wrong.
+                    //
+                    // Still NOT `__DEV__`-gated. The Vite
+                    // `requireAuthorization` build error sees only
+                    // first-party source and only exists if you use the
+                    // plugin; a plain `createHost` + `createActorHandler`
+                    // deployment and any actor arriving from a package both
+                    // bypass it. One string per registered type, at startup.
                     console.warn(
-                        `[sigx actors] actor "${def.type}" declares neither a \`use\` guard ` +
-                            'chain nor `unguarded: true`. Every method is reachable from the ' +
-                            'public endpoint.'
+                        `[sigx actors] actor "${def.type}" declares no \`authorize\` policy and ` +
+                            'no server app is configured in this process, so every call to it ' +
+                            'will be DENIED (401). Configure one with createServerApp({ ' +
+                            'authenticate, … }), declare `authorize:`, or mark it ' +
+                            '`allowAnonymous: true` if it is deliberately public.'
                     );
                 }
                 this.#registry.set(def.type, def);
@@ -590,6 +604,13 @@ class HostImpl implements Host {
         if (callOptions?.bag) {
             const bag = mergeCallBag(base.bag, callOptions.bag);
             if (bag) base = { ...base, bag };
+        }
+        // An entry point's principal wins over anything inherited: this IS
+        // the boundary that just authenticated. In-chain hops pass none and
+        // therefore keep the chain's, which is what makes identity flow
+        // unchanged through `ctx.actor`.
+        if (callOptions?.principal !== undefined) {
+            base = { ...base, principal: callOptions.principal };
         }
         return base;
     }
