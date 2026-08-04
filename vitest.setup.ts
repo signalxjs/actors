@@ -46,12 +46,18 @@ export const TEST_PRINCIPAL: TestPrincipal = { id: 'test-principal' };
  */
 export async function withoutServerApp<T>(fn: () => T | Promise<T>): Promise<T> {
     const seam = globalThis as { __SIGX_SERVER_APP__?: unknown };
+    // Restore PRESENCE, not just value: if the process had no app and `fn`
+    // stamps one (any `stubServerApp` call inside it does), restoring only a
+    // non-undefined previous would leave that stamp behind and silently
+    // configure every later test in the file.
+    const had = '__SIGX_SERVER_APP__' in seam;
     const previous = seam.__SIGX_SERVER_APP__;
     delete seam.__SIGX_SERVER_APP__;
     try {
         return await fn();
     } finally {
-        if (previous !== undefined) seam.__SIGX_SERVER_APP__ = previous;
+        if (had) seam.__SIGX_SERVER_APP__ = previous;
+        else delete seam.__SIGX_SERVER_APP__;
     }
 }
 

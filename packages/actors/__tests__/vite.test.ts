@@ -203,6 +203,32 @@ export const CartActor = defineActor({ type: name, allowAnonymous: true, state: 
         expect(result.clientModule).toBeNull();
     });
 
+    it('sees through as-const — both directions of the gate', () => {
+        // The AST is TS-aware, so `true as const` is a TSAsExpression around
+        // the literal. Missing that got BOTH halves wrong, each the unsafe
+        // way round: a correct `allowAnonymous: true as const` failed the
+        // gate, and `authorize: [] as const` PASSED it while the runtime
+        // reads an empty chain as no declaration at all. `as const` is what
+        // an author reaches for the moment a shared options object would
+        // widen `true` to `boolean`, so it is not an exotic spelling.
+        const anon = `
+import { defineActor } from '@sigx/actors';
+export const A = defineActor({ type: 'A', allowAnonymous: true as const, state: () => ({}), methods: () => ({}) });
+`;
+        expect(extractActors(anon, 'x.actor.ts', opts(true)).errors).toEqual([]);
+        expect(extractActors(anon, 'x.actor.ts', opts(true)).actors[0]).toMatchObject({
+            anonymous: true
+        });
+
+        const emptyChain = `
+import { defineActor } from '@sigx/actors';
+export const B = defineActor({ type: 'B', authorize: [] as const, state: () => ({}), methods: () => ({}) });
+`;
+        const result = extractActors(emptyChain, 'x.actor.ts', opts(true));
+        expect(result.actors[0]).toMatchObject({ authorized: false });
+        expect(result.errors[0]?.message).toMatch(/no \`authorize:\` policy/);
+    });
+
     it('requireAuthorization: an actor without the explicit word is a build error', () => {
         const code = `
 import { defineActor } from '@sigx/actors';

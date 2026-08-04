@@ -81,6 +81,35 @@ export interface ExtractOptions {
     isDefineSource?: (source: string) => boolean;
 }
 
+/**
+ * Peel TypeScript wrapper nodes off a value before reading it structurally.
+ *
+ * The AST is TS-aware, so `allowAnonymous: true as const` is a
+ * `TSAsExpression` around the literal, not the literal — and without this
+ * both halves of the gate get the wrong answer in the WRONG DIRECTION:
+ * `allowAnonymous: true as const` would fail to count as a decision (a
+ * build error for correct code), while `authorize: [] as const` would slip
+ * past the empty-array rule and satisfy the gate with a chain the runtime
+ * reads as no declaration at all.
+ *
+ * `as const` is not exotic here: it is exactly what an author reaches for
+ * when a shared options object would otherwise widen `true` to `boolean`.
+ */
+function unwrapTs(node: Node | undefined): Node | undefined {
+    let current = node;
+    while (
+        current &&
+        (current.type === 'TSAsExpression' ||
+            current.type === 'TSSatisfiesExpression' ||
+            current.type === 'TSTypeAssertion' ||
+            current.type === 'TSNonNullExpression' ||
+            current.type === 'ParenthesizedExpression')
+    ) {
+        current = current.expression as Node | undefined;
+    }
+    return current;
+}
+
 const LANG_BY_EXT: Record<string, 'ts' | 'tsx' | 'js' | 'jsx'> = {
     '.ts': 'ts',
     '.tsx': 'tsx',
@@ -153,17 +182,14 @@ export function extractActors(
             return;
         }
         const authorizeProp = props.get('authorize');
+        const authorizeValue = unwrapTs(authorizeProp?.value as Node | undefined);
         // An empty `authorize: []` does NOT count — it would vacuously allow,
         // and actors keeps the stricter reading.
         const authorized =
             authorizeProp !== undefined &&
-            !(
-                authorizeProp.value?.type === 'ArrayExpression' &&
-                authorizeProp.value.elements.length === 0
-            );
-        const anonymous =
-            props.get('allowAnonymous')?.value?.type === 'Literal' &&
-            props.get('allowAnonymous')!.value.value === true;
+            !(authorizeValue?.type === 'ArrayExpression' && authorizeValue.elements.length === 0);
+        const anonymousValue = unwrapTs(props.get('allowAnonymous')?.value as Node | undefined);
+        const anonymous = anonymousValue?.type === 'Literal' && anonymousValue.value === true;
 
         const streams: string[] = [];
         const streamsProp = props.get('streams');
