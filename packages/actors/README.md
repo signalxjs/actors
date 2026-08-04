@@ -507,6 +507,11 @@ by forgetting to stamp it. It is inherited unchanged by `ctx.actor` and
 **whoever entered the system**, not the actor that called it. Decoding is
 lazy and memoized, so an actor that never reads it pays nothing.
 
+Inside a `defineJob` run body it is `job.principal` instead: a job outlives
+the request that started it, so authorization happens once at enqueue and
+the run reads the snapshot recorded there — persisted, so it survives
+deactivation and every crash-resume.
+
 It needs `codec` on `createServerApp` (a principal has to round-trip as a
 string to ride the envelope). Without one it propagates nothing and
 dev-warns once — fail-closed at the reader. **Treat `null` as

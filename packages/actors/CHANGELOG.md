@@ -31,6 +31,12 @@
     that called it. Requires `codec` on `createServerApp`; without one it
     propagates nothing and dev-warns once, which is fail-closed at the
     reader. `stampCallBag` survives for app DATA.
+  - **Jobs authorize at ENQUEUE, and the run reads a snapshot.** A job
+    outlives the request that started it — a crash-resume can happen on
+    another host hours later with nobody waiting — so `start` is the entry
+    point that decides, and the detached run body reads `job.principal`
+    (persisted with the run) rather than re-authorizing. `ctx.principal` is
+    null inside a task body by design, which is exactly why this exists.
   - **App-wide auth is one line.** `sigxActors({ serverApp })` satisfies
     the build gate for actors that declare nothing, because the app's
     default policy is then the answer. `examples/chat` declares

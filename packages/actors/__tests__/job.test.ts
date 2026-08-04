@@ -8,6 +8,8 @@ import {
     type JobInfo
 } from '@sigx/actors/job';
 import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
+import { actor } from '@sigx/actors';
+import { stubServerApp } from '@sigx/server/testing';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -44,6 +46,63 @@ afterEach(async () => {
     vi.restoreAllMocks();
     await running?.stop({ timeoutMs: 1000 });
     running = null;
+});
+
+describe('defineJob: the principal snapshot (rfc-server-v4 §7)', () => {
+    it('records the ENQUEUEING caller and hands it to the detached run', async () => {
+        // A job outlives the request that started it: the run body is
+        // detached and a crash-resume can happen on another host hours
+        // later, with nobody waiting. So authorization happens once at
+        // enqueue and the run reads the snapshot rather than re-deciding —
+        // `ctx.principal` would be null in a task body by design.
+        const seen: unknown[] = [];
+        const restore = stubServerApp({
+            authenticate: () => ({ id: 'ada' }),
+            codec: {
+                encode: (u) => (u as { id: string }).id,
+                decode: (e) => (e === '' ? null : { id: e })
+            }
+        });
+        try {
+            const Attributed = defineJob({
+                type: 'Attributed',
+                allowAnonymous: true,
+                run: async (job) => {
+                    seen.push(job.principal);
+                    return 'done';
+                }
+            });
+            running = createHost({ actors: [Attributed], storage: memoryStorage(), defaults: quiet });
+            await running.start();
+            await actor(Attributed, 'r1').start(undefined as never);
+            await until(async () => (await actor(Attributed, 'r1').status()).status === 'completed');
+            expect(seen).toEqual([{ id: 'ada' }]);
+        } finally {
+            restore();
+        }
+    });
+
+    it('is null for an anonymous starter — unattributed, never a default', async () => {
+        const seen: unknown[] = [];
+        const restore = stubServerApp({ authenticate: () => null });
+        try {
+            const Anon = defineJob({
+                type: 'AnonJob',
+                allowAnonymous: true,
+                run: async (job) => {
+                    seen.push(job.principal);
+                    return 'done';
+                }
+            });
+            running = createHost({ actors: [Anon], storage: memoryStorage(), defaults: quiet });
+            await running.start();
+            await actor(Anon, 'r1').start(undefined as never);
+            await until(async () => (await actor(Anon, 'r1').status()).status === 'completed');
+            expect(seen).toEqual([null]);
+        } finally {
+            restore();
+        }
+    });
 });
 
 describe('defineJob: the state machine', () => {

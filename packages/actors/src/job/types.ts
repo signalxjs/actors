@@ -65,6 +65,20 @@ export interface JobHandle<In, C, Extra extends object> {
     readonly resumedFrom: C | undefined;
     /** The payload `resume(data)` carried, on a pause-resume. */
     readonly resumeData: unknown;
+    /**
+     * The principal that ENQUEUED this job (rfc-server-v4 §7), recorded at
+     * `start` and persisted with the run.
+     *
+     * Not `ctx.principal`: a job outlives the request that started it, so
+     * a detached run body — and every crash-resume after it, possibly on
+     * another host hours later — has no live caller to read. Authorization
+     * happened once, at enqueue; this is who it happened for, which is what
+     * an audit line or a downstream call should be attributed to.
+     *
+     * `null` when the starter was anonymous or the app configured no
+     * `codec`. Treat it as unattributed, never as a default principal.
+     */
+    readonly principal: unknown;
     /** Publish progress. Pushed to `watch()`ers via the change feed with no
      *  write of its own — it is persisted only as part of the NEXT
      *  `checkpoint()` (or terminal) save, so after a crash, progress

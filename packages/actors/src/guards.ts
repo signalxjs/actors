@@ -165,6 +165,22 @@ export async function encodePrincipal(rq: ServerFnContext): Promise<string | und
 }
 
 /**
+ * Encode a principal VALUE (one already resolved, e.g. `ctx.principal`
+ * inside a turn) rather than one read off the request. The job snapshot is
+ * the caller: it records at enqueue what the executing run will see later,
+ * long after the request is gone.
+ */
+export function encodePrincipalValue(value: unknown): string | undefined {
+    const codec = feature.principalCodec;
+    if (!codec || value === null || value === undefined) return undefined;
+    try {
+        return codec.encode(value);
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * Decode a principal off the envelope. Never throws: a malformed slot is
  * anonymous, the same posture the bag takes on a malformed entry.
  */
