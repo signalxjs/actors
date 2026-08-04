@@ -693,6 +693,14 @@ turns on at `:1322` immediately before the first `#subs.add`. A `watch(…, {dee
 true})` re-traverses state on every mutation just to bump `#version`. That is
 the cliff.
 
+**Since (#28):** the per-mutation walk is gone — a scheduler-deferred effect
+flips a dirty bit synchronously at write time and the ONE deep walk happens
+when the turn boundary folds it into `#version` (re-tracking whatever the
+turn added). The floor that remains is one walk per dirty turn; removing the
+walk entirely needs a write-hook primitive upstream (signalxjs/core#546
+tracks it, with these numbers). The profile figures above predate the
+change.
+
 ### `state/*`: `structuredClone` is the cost, and it is the redundant one
 
 | what | self% |
