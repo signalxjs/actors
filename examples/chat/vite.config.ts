@@ -32,7 +32,7 @@ export default defineConfig({
     },
     plugins: [
         sigxPlugin({ ssr: { entry: 'src/entry-server.tsx' } }),
-        sigxServer(),
+        sigxServer({ serverApp: '/src/server-app.ts' }),
         // Dev runs the very app module the production server imports.
         sigxActors({ app: '/src/actors.app.ts', serverApp: '/src/server-app.ts' })
     ]
