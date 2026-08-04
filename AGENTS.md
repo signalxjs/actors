@@ -379,6 +379,24 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `define`d or the host throws on the first request, and the public mount
   needs an explicit `origin` policy. `MODE=load` exists but its local numbers
   describe `wrangler dev`, not Cloudflare — see the README. Not published.
+- `examples/aks-cluster` — the production-shaped Kubernetes deployment
+  test: N identical host pods (env-driven `server.mjs`, `cluster()` with
+  `redisCluster` or `k8sMembership` per values toggle, `redisStorage`
+  CAS persistence), an in-cluster closed-loop load generator, a Helm
+  chart, and `deploy/testenv.mjs` — the whole Azure environment as one
+  command per verb (up / status / test / baseline / bench / load /
+  migrate-check / down). Identity (RG, cluster, ACR, region, DNS, load-VM
+  names) is REQUIRED env with no defaults — the code is public, the
+  estate is not; in CI the values come from Actions secrets (see
+  `deploy/RUNBOOK.md` §1c). `test` runs `__tests__/infra.test.ts`
+  (env-gated on `INFRA_URL`, chaos behind `INFRA_CHAOS=1`) and then the
+  Tier-3 bench compare; the Tier-3 scenarios live in
+  `benchmarks/src/scenarios/infra.ts` (`BENCH_INFRA=1`, `pnpm
+  bench:infra`) and drive load from a same-region VM via
+  `deploy/edge-ladder.mjs`. The charts (this one and
+  `examples/chat/deploy/`) are validated by `.github/workflows/charts.yml`
+  against a kind cluster with the ingress-nginx admission webhook — the
+  check `helm lint` cannot be. Not published.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-actor heap footprint, leak detection, and the CPU/allocation

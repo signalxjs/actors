@@ -1,0 +1,17 @@
+# ClusterIP only — nothing in this chart is exposed publicly. Reach ops
+# and the wire endpoint via `kubectl port-forward svc/<release>-host`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chart.fullname" . }}-host
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: host
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "chart.hostSelector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.port }}
+      targetPort: http

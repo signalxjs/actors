@@ -1,0 +1,155 @@
+# A Deployment — host identity is minted per start, a restart is a new host.
+{{- if not .Values.image.repository }}
+{{- fail "image.repository is required (a registry hostname is deployment identity — the public chart defaults to none)" }}
+{{- end }}
+{{- if not .Values.image.tag }}
+{{- fail "image.tag is required (immutable git-sha tags)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chat.fullname" . }}-host
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: host
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "chat.hostSelector" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Surge first, drain second — the zero-drop rolling deploy.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "chat.labels" . | nindent 8 }}
+        app.kubernetes.io/component: host
+    spec:
+      # Always rendered (SSA relinquish lesson, #154): the default SA.
+      serviceAccountName: default
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /* dig with defaults: a `helm upgrade --reuse-values` replays values
+             from before this key existed, and a bare .Values.spread.enabled
+             would nil-pointer the whole render. */}}
+      {{- $spread := .Values.spread | default dict }}
+      {{- if dig "enabled" true $spread }}
+      # WITHOUT this, replicaCount buys no capacity: every host is a
+      # single-threaded Node process, so three of them packed onto one
+      # 2-vCPU node contend for ~1.9 cores and the public endpoint tops out
+      # (measured: 1,738m on one node = 91% of it, while sibling nodes sat
+      # at 6% — a hard ~1,100 ops/s ceiling). ScheduleAnyway, not
+      # DoNotSchedule: this pool is shared and a spread PREFERENCE must
+      # never wedge a rollout.
+      topologySpreadConstraints:
+        - maxSkew: {{ dig "maxSkew" 1 $spread }}
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: {{ dig "whenUnsatisfiable" "ScheduleAnyway" $spread }}
+          labelSelector:
+            matchLabels:
+              {{- include "chat.hostSelector" . | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: host
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: public
+              containerPort: {{ .Values.ports.public }}
+            - name: internal
+              containerPort: {{ .Values.ports.internal }}
+          env:
+            - name: PORT
+              value: {{ .Values.ports.public | quote }}
+            - name: INTERNAL_PORT
+              value: {{ .Values.ports.internal | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: REDIS_URL
+              value: "redis://{{ include "chat.fullname" . }}-redis:6379"
+            - name: SIGX_NAMESPACE
+              value: {{ .Values.env.sigxNamespace | quote }}
+            - name: FETCH_CONNECTIONS
+              value: {{ .Values.env.fetchConnections | quote }}
+            # Runtime knobs. The always-set ones carry their shipped
+            # defaults; the rest are omitted entirely when empty, so the app
+            # sees an ABSENT variable rather than "". That distinction is
+            # load-bearing: `Number("")` is 0, which would silently pin a
+            # numeric knob to zero instead of leaving the runtime default.
+            - name: PLACEMENT
+              value: {{ .Values.env.placement | quote }}
+            - name: MAX_ACTIVATIONS
+              value: {{ .Values.env.maxActivations | quote }}
+            - name: SWEEP_INTERVAL_MS
+              value: {{ .Values.env.sweepIntervalMs | quote }}
+            - name: DIGEST_ITERS
+              value: {{ .Values.env.digestIters | quote }}
+            - name: DIGEST_MAX_ITERS
+              value: {{ .Values.env.digestMaxIters | quote }}
+            - name: MIGRATE_PERSIST
+              value: {{ .Values.env.migratePersist | quote }}
+            {{- range $name, $value := dict
+                  "PLACEMENT_REFRESH_MS" .Values.env.placementRefreshMs
+                  "REBALANCE" .Values.env.rebalance
+                  "REBALANCE_INTERVAL_MS" .Values.env.rebalanceIntervalMs
+                  "REBALANCE_THRESHOLD" .Values.env.rebalanceThreshold
+                  "REBALANCE_MIN_IDLE_MS" .Values.env.rebalanceMinIdleMs
+                  "REBALANCE_MAX_MOVES" .Values.env.rebalanceMaxMoves
+                  "DIGEST_MAX_LOCAL" .Values.env.digestMaxLocal
+                  "DIGEST_THREADS" .Values.env.digestThreads }}
+            {{- if $value }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            - name: CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chat.fullname" . }}-secrets
+                  key: clusterSecret
+            - name: OPS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chat.fullname" . }}-secrets
+                  key: opsSecret
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chat.fullname" . }}-secrets
+                  key: authSecret
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # Probes hit the INTERNAL listener — the public one seals /_sigx/health.
+          startupProbe:
+            httpGet:
+              path: /_sigx/health
+              port: internal
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /_sigx/health
+              port: internal
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /_sigx/health/ready
+              port: internal
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.lifecycle.preStopSleepSeconds }}"]

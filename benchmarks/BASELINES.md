@@ -822,7 +822,7 @@ the load driven from a VM in the same region.
 
 | | |
 |---|---|
-| Cluster | AKS 1.34, westeurope, `Standard_D2ls_v6` (2 vCPU, **1900m allocatable**) |
+| Cluster | AKS 1.34, `Standard_D2ls_v6` (2 vCPU, **1900m allocatable**) |
 | Hosts | one per node, `spread.whenUnsatisfiable=DoNotSchedule`, `limits.cpu 1000m` |
 | App | `examples/chat`, redisStorage + redisCluster, one Redis pod |
 | Driver | `Standard_D4s_v5` in-region, `edge-ladder.mjs`, Node v22.22.0 |
