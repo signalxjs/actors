@@ -98,5 +98,5 @@ is safe and saves connections.
 The provider suite is gated on `REDIS_URL`:
 
 ```sh
-REDIS_URL=redis://localhost:6379 pnpm test -- actors-redis
+REDIS_URL=redis://localhost:6379 pnpm test actors-redis
 ```

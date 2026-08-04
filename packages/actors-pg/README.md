@@ -85,5 +85,5 @@ Env-gated on `PG_URL` (CI provides a `postgres:16` service container; the
 rest of the matrix skips cleanly):
 
 ```sh
-PG_URL=postgres://postgres:postgres@localhost:5432/postgres pnpm test -- actors-pg
+PG_URL=postgres://postgres:postgres@localhost:5432/postgres pnpm test actors-pg
 ```

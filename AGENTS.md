@@ -135,8 +135,12 @@ pnpm install
 pnpm build       # build all packages
 pnpm test        # vitest run (unit tests across packages)
 pnpm test:workers # the Cloudflare suite on REAL workerd (own config + CI job)
-pnpm test -- <path>                # single test file/dir (substring match)
-pnpm test -- -t "name of test"     # single test by name (vitest -t)
+pnpm test <path>                   # single test file/dir (substring match)
+pnpm test -t "name of test"        # single test by name (vitest -t)
+                                   # NB: no `--` — vitest discards operands
+                                   # after it, so `pnpm test -- x` silently
+                                   # runs the WHOLE suite. pnpm forwards
+                                   # args natively; the `--` is npm-only.
 pnpm test:watch
 pnpm test:coverage
 pnpm typecheck   # tsgo (a fast TS compiler), config: tsconfig.json

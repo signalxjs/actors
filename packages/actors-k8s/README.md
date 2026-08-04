@@ -152,9 +152,9 @@ ServiceAccount mount present, it simply sends no credentials).
 ## Tests
 
 The provider suite runs against an in-process fake API server — no cluster
-needed, `pnpm test -- actors-k8s`. The real-cluster lifecycle suite is
+needed, `pnpm test actors-k8s`. The real-cluster lifecycle suite is
 gated on `KUBECONFIG` and drives a spawned `kubectl proxy`:
 
 ```sh
-KUBECONFIG=~/.kube/config pnpm test -- actors-k8s
+KUBECONFIG=~/.kube/config pnpm test actors-k8s
 ```
