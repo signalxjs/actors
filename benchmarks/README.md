@@ -351,7 +351,7 @@ macOS and would cost a Linux VM for no benefit; use it only if you
 specifically want parity with CI's `redis:7` service.
 
 The same variable un-skips the provider tests:
-`REDIS_URL=redis://localhost:6399 pnpm test -- actors-redis`. Measuring it
+`REDIS_URL=redis://localhost:6399 pnpm test actors-redis`. Measuring it
 for real needs a Redis instance, and interpreting a real 100-host run needs
 cluster-wide stats that do not exist yet (issue #38).
 

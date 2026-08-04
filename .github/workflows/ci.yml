@@ -86,7 +86,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test against Redis
-        run: pnpm test -- actors-redis
+        run: pnpm test actors-redis
         env:
           REDIS_URL: redis://localhost:6379
 
@@ -120,7 +120,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test against Postgres
-        run: pnpm test -- actors-pg
+        run: pnpm test actors-pg
         env:
           PG_URL: postgres://postgres:postgres@localhost:5432/postgres
 
