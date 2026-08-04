@@ -3,7 +3,7 @@
  * change feed. Created lazily by the local host on first dispatch; nothing
  * outside this file touches activation memory.
  */
-import { effectScope, signal, toRaw, watch } from '@sigx/reactivity';
+import { effect, effectScope, signal, toRaw } from '@sigx/reactivity';
 import { createSharedWatch, watchKey, type SharedWatch } from './watch';
 import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
@@ -267,7 +267,16 @@ export class Activation {
     #version = 0;
     #notifiedVersion = 0;
     #savedVersion = 0;
-    #deepWatchStop: (() => void) | null = null;
+    /** Set synchronously by the tracking effect's scheduler on the first
+     *  write since the last fold — the one bit change detection needs. */
+    #dirty = false;
+    /** The effect's re-run job, parked by the scheduler; invoking it walks
+     *  the state once and re-subscribes anything added since the last walk. */
+    #retrack: (() => void) | null = null;
+    /** Install-once latch. Disposal is NOT held here: the tracking effect
+     *  registers with `#scope`, and `#scope.stop()` in `deactivate()` is
+     *  what tears it down. */
+    #trackingInstalled = false;
     #cancelWriteBehind: (() => void) | null = null;
     #currentCall: ActorCallContext | null = null;
     /**
@@ -394,7 +403,7 @@ export class Activation {
             // ownership exact and timing-independent — and no turn can
             // trip either, since `methods` still gets the real ctx.
             if (opts.persistence && typeof opts.persistence === 'object') {
-                a.#ensureDeepWatch();
+                a.#ensureChangeTracking();
             }
             if (opts.onActivate) {
                 await a.#scope.run(() => opts.onActivate!(a.#ctx));
@@ -711,6 +720,10 @@ export class Activation {
             this.#cancelWriteBehind();
             this.#cancelWriteBehind = null;
         }
+        // Fold writes with no turn boundary behind them — an `onActivate`
+        // mutation on a never-called actor, or an `onDeactivate` that just
+        // amended state above — so the flush check sees them.
+        this.#consumeDirty();
         // A stale activation must not overwrite the winning state.
         if (reason !== 'conflict' && this.#version > this.#savedVersion && this.#isWriteBehind()) {
             try {
@@ -915,6 +928,10 @@ export class Activation {
 
     #afterTurn(startedMs: number): void {
         this.lastActivityMs = Math.max(this.lastActivityMs, startedMs, Date.now());
+        // Fold the turn's writes into #version FIRST — the walk that
+        // re-subscribes anything this turn added happens here, once per
+        // dirty boundary, before the comparisons below read #version.
+        this.#consumeDirty();
         if (this.#version > this.#notifiedVersion) {
             this.#notifiedVersion = this.#version;
             if (this.#subs.size > 0) {
@@ -1015,18 +1032,55 @@ export class Activation {
         }
     }
 
-    #ensureDeepWatch(): void {
-        if (this.#deepWatchStop) return;
+    /**
+     * Change detection without a walk per mutation (#28). The old shape was
+     * `watch(() => this.#state, () => this.#version++, { deep: true })` — a
+     * full deep traversal of actor state on EVERY mutation, to learn one
+     * bit, measured at 13% of the `state/*` profile and the cause of the
+     * change-feed 0→1-subscriber cliff.
+     *
+     * Both consumers of `#version` read it only at a boundary (`#afterTurn`,
+     * the deactivation flush, `ctx.save()`), so per-mutation granularity
+     * buys nothing. The effect's `scheduler` is the seam: a write flips
+     * `#dirty` synchronously (out-of-turn and `onActivate` mutations are
+     * still caught at write time) and parks the re-run — the ONE deep walk
+     * happens when `#consumeDirty()` folds at the next boundary, re-tracking
+     * whatever the turn added. The floor that remains is one walk per DIRTY
+     * boundary, not per mutation; removing the walk entirely needs an
+     * upstream write-hook primitive (see the issue).
+     */
+    #ensureChangeTracking(): void {
+        if (this.#trackingInstalled) return;
+        this.#trackingInstalled = true;
         this.#scope.run(() => {
-            const stop = watch(
-                () => this.#state,
-                () => {
-                    this.#version++;
-                },
-                { deep: true }
-            );
-            this.#deepWatchStop = () => stop.stop();
+            // The first run is immediate and inline — tracking is
+            // established (and every current node subscribed) right here.
+            // `effect()` registers its own disposer with the active scope,
+            // so `#scope.stop()` at deactivation is the teardown.
+            effect(() => trackDeep(this.#state), {
+                scheduler: (run) => {
+                    this.#dirty = true;
+                    this.#retrack = run;
+                }
+            });
         });
+    }
+
+    /**
+     * Fold a pending dirty mark into `#version` and re-establish tracking —
+     * one deep walk per dirty boundary. MUST run at every boundary before
+     * the next turn's writes: an object added since the last walk is
+     * untracked until the re-run subscribes it.
+     */
+    #consumeDirty(): void {
+        if (!this.#dirty) return;
+        this.#dirty = false;
+        this.#version++;
+        const retrack = this.#retrack;
+        this.#retrack = null;
+        // Re-runs the tracking walk (validated by the effect itself); a
+        // no-op if the effect was stopped with the scope in the meantime.
+        retrack?.();
     }
 
     #snapshot(): object {
@@ -1493,7 +1547,11 @@ export class Activation {
                 return self.#callContext()?.bag ?? EMPTY_CALL_BAG;
             },
             async save(): Promise<void> {
-                // Explicit-mode saves don't need the deep watch; bump the
+                // Fold any tracked mutations first so `wanted` sits above
+                // them and savedVersion bookkeeping stays consistent when a
+                // subscriber's tracking runs alongside explicit saves.
+                self.#consumeDirty();
+                // Explicit-mode saves don't need change tracking; bump the
                 // version so savedVersion bookkeeping stays consistent.
                 // Through the gate: resolves once a snapshot at-or-after
                 // this caller's mutations is durable.
@@ -1685,7 +1743,7 @@ export class Activation {
             return this.#changeFeed(sub);
         }
         // The feed needs change detection even in explicit mode.
-        this.#ensureDeepWatch();
+        this.#ensureChangeTracking();
         // Seed BEFORE the subscription goes live, in this same synchronous
         // call: a `yield ctx.snapshot()` prologue would instead subscribe
         // only after the consumer resumes, losing every mutation in that
@@ -1745,6 +1803,37 @@ export class Activation {
             this.#subs.delete(sub);
         }
         subs.clear();
+    }
+}
+
+/**
+ * Deep traversal through the reactive proxy, mirroring reactivity's own
+ * `watch({ deep })` walk (objects via their keys, arrays, Map entries, Set
+ * values, a `seen` set for cycles) — it is not exported from there. Every
+ * get lands in the proxy's track trap, so after one walk every reachable
+ * node notifies the tracking effect on write. Keep the shape identical to
+ * upstream `traverse`: divergence here is divergence in what counts as a
+ * change.
+ */
+function trackDeep(value: unknown, seen: Set<unknown> = new Set()): void {
+    if (value === null || typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i++) trackDeep(value[i], seen);
+    } else if (value instanceof Map) {
+        value.forEach((v, k) => {
+            trackDeep(k, seen);
+            trackDeep(v, seen);
+        });
+    } else if (value instanceof Set) {
+        value.forEach((v) => {
+            trackDeep(v, seen);
+        });
+    } else {
+        for (const key of Object.keys(value)) {
+            trackDeep((value as Record<string, unknown>)[key], seen);
+        }
     }
 }
 

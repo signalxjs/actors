@@ -4,6 +4,17 @@
 
 ### Changed
 
+- **State-change detection no longer walks the state on every mutation**
+  (#28). The change feed and write-behind persistence used a
+  `watch({ deep: true })` whose full deep traversal ran per mutation to
+  learn one bit — 13% of the `state/*` CPU profile and the cause of the
+  change-feed first-subscriber cliff. A scheduler-deferred effect now flips
+  a dirty bit synchronously at write time, and the one deep walk happens at
+  the turn boundary (re-subscribing anything the turn added). Observable
+  behaviour is unchanged: one snapshot per mutating turn, `onActivate` and
+  out-of-turn mutations still detected, deactivation flush still covers
+  writes with no turn behind them.
+
 - **`ActorStorage.save()` now takes ownership of its `state` argument**
   (#25) — the caller must not mutate the tree after the call, and an
   implementation may store it by reference. `load()`'s half of the contract
