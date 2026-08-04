@@ -1,0 +1,172 @@
+# The AKS test environment, driven from the Actions tab.
+#
+# One dispatch = one `testenv.mjs` verb against the real cluster — see
+# `examples/aks-cluster/deploy/RUNBOOK.md` (§1c covers this workflow, the
+# secrets and the Azure role assignments). The estate's identity (resource
+# group, cluster, registry, region, DNS, load-VM names) exists ONLY as
+# Actions secrets: GitHub masks each value wherever it appears in a log,
+# and `testenv.mjs` registers the values it derives (the ingress IP) with
+# `::add-mask::` itself. Nothing in this repo names the infrastructure.
+#
+# A plain hosted runner is enough — and deliberately not the bench box: a
+# cluster run here can never wedge or perturb a bench A/B. Every step is
+# orchestration (az / kubectl / helm / `az acr build`); the measurements
+# happen in-cluster (loadgen Jobs) and on the same-region load VM, so the
+# runner's own performance is irrelevant.
+name: Cluster test
+
+on:
+  workflow_dispatch:
+    inputs:
+      verb:
+        description: 'testenv.mjs verb'
+        type: choice
+        required: true
+        default: status
+        options:
+          - status
+          - up
+          - test
+          - baseline
+          - bench
+          - load
+          - migrate-check
+          - vm-up
+          - down
+      args:
+        description: 'extra args for the verb (e.g. LADDER=64,128 for load, --runs=3 for bench, -t sealed for test)'
+        type: string
+        default: ''
+      confirm:
+        description: 'type "down" to allow the down verb — it deletes the node pool, the DNS record and the load-VM resource group'
+        type: string
+        default: ''
+
+# Dispatch requires write access, so there is no fork exposure; the token
+# still gets nothing it does not ask for.
+permissions: {}
+
+# ONE global group, queued rather than cancelled: the cluster is a single
+# shared environment, two runs against it would trample each other, and
+# killing a run mid-deploy or mid-teardown is how a half-environment that
+# `status` cannot explain gets made.
+concurrency:
+  group: cluster-testenv
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # Belt and braces on top of dispatch-only: a fork that somehow fired
+    # this has no secrets and no business reaching for the cluster.
+    if: github.repository == 'signalxjs/actors'
+    runs-on: ubuntu-latest
+    # `up` is ~15 minutes (two ACR builds), `test` can be ~45-60. The
+    # ceiling exists for hangs, not for pacing.
+    timeout-minutes: 120
+    permissions:
+      # OIDC only — no client secret exists for this identity to leak.
+      id-token: write
+      contents: read
+    env:
+      # The identity mapping testenv.mjs validates per verb. Every value is
+      # a secret so GitHub masks it in every log line — including inside
+      # derived strings like kube context names and az resource IDs.
+      RG: ${{ secrets.TESTENV_RG }}
+      CLUSTER: ${{ secrets.TESTENV_CLUSTER }}
+      ACR: ${{ secrets.TESTENV_ACR }}
+      LOCATION: ${{ secrets.TESTENV_LOCATION }}
+      DNS_ZONE: ${{ secrets.TESTENV_DNS_ZONE }}
+      DNS_RG: ${{ secrets.TESTENV_DNS_RG }}
+      CHAT_HOST: ${{ secrets.TESTENV_CHAT_HOST }}
+      LOAD_RG: ${{ secrets.TESTENV_LOAD_RG }}
+      LOAD_VM: ${{ secrets.TESTENV_LOAD_VM }}
+    steps:
+      # First, before any setup is paid for: `down` deletes real
+      # infrastructure, so it takes a typed confirmation, not a click.
+      - name: Guard the destructive verb
+        if: inputs.verb == 'down' && inputs.confirm != 'down'
+        run: |
+          echo "::error::'down' deletes the node pool, the DNS record and the load-VM resource group. Re-run with confirm=down."
+          exit 1
+
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6.0.9
+
+      - uses: actions/setup-node@v6
+        with:
+          # The bench harness runs erasable TS directly through `node`
+          # (native type stripping), which needs >= 22.18.
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The dist is what Tier 3 measures, and `post-fn.mjs` reads the chat
+      # build's serverFn registry — both verbs that need neither still
+      # finish the build in a couple of minutes, which is noise against a
+      # cluster operation.
+      - name: Build
+        run: pnpm build
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Secrets mask their own values; values DERIVED from them do not mask
+      # themselves. The API server FQDN embeds a random hash segment (and
+      # the region, which is itself a secret here) and surfaces in kubectl
+      # error paths, so it is registered before the first kubectl runs.
+      # The ingress IP is handled inside testenv.mjs the moment it is read.
+      - name: Mask derived identifiers
+        run: |
+          fqdn=$(az aks show -g "$RG" -n "$CLUSTER" --query fqdn -o tsv 2>/dev/null || true)
+          [ -n "$fqdn" ] && echo "::add-mask::$fqdn"
+          true
+
+      - name: Run the verb
+        env:
+          # Maintainer-typed (dispatch needs write access), but routed via
+          # env rather than interpolated into the script so a quote in the
+          # input cannot rewrite the shell line.
+          VERB: ${{ inputs.verb }}
+          EXTRA_ARGS: ${{ inputs.args }}
+        run: |
+          set -o pipefail
+          # Word-splitting EXTRA_ARGS is the point — it is a list. Globbing
+          # is not: `set -f`, or a `-t sealed*` test filter would expand
+          # against whatever the checkout happens to contain.
+          set -f
+          # shellcheck disable=SC2086
+          case "$VERB" in
+            bench) node examples/aks-cluster/deploy/testenv.mjs bench \
+                     --json="$RUNNER_TEMP/infra.json" $EXTRA_ARGS ;;
+            *)     node examples/aks-cluster/deploy/testenv.mjs "$VERB" $EXTRA_ARGS ;;
+          esac 2>&1 | tee "$RUNNER_TEMP/testenv.log"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Cluster test: \`${{ inputs.verb }}\`"
+            echo
+            echo '```'
+            tail -100 "$RUNNER_TEMP/testenv.log" 2>/dev/null || echo '(no log)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Every verb uploads its (post-masking) log; `infra.json` exists only
+      # for `bench` — the one verb that MEASURES — carrying metric names,
+      # values and the deployment shape (replicas/nodes/tag/knobs), no
+      # hostnames. Still worth an eyeball on the first runs.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cluster-test-${{ inputs.verb }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/infra.json
+            ${{ runner.temp }}/testenv.log
+          if-no-files-found: ignore
