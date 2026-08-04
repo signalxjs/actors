@@ -135,7 +135,10 @@ jobs:
           EXTRA_ARGS: ${{ inputs.args }}
         run: |
           set -o pipefail
-          # Word-splitting EXTRA_ARGS is the point — it is a list.
+          # Word-splitting EXTRA_ARGS is the point — it is a list. Globbing
+          # is not: `set -f`, or a `-t sealed*` test filter would expand
+          # against whatever the checkout happens to contain.
+          set -f
           # shellcheck disable=SC2086
           case "$VERB" in
             bench) node examples/aks-cluster/deploy/testenv.mjs bench \
@@ -154,9 +157,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # `infra.json` carries metric names, values and the deployment shape
-      # (replicas/nodes/tag/knobs) — no hostnames. The log is captured
-      # post-masking. Still worth an eyeball on the first runs.
+      # Every verb uploads its (post-masking) log; `infra.json` exists only
+      # for `bench` — the one verb that MEASURES — carrying metric names,
+      # values and the deployment shape (replicas/nodes/tag/knobs), no
+      # hostnames. Still worth an eyeball on the first runs.
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
