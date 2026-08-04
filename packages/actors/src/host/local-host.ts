@@ -107,9 +107,9 @@ export class LocalHost implements ActorDispatcher {
         this.#bindings = bindings;
     }
 
-    // Deliberately NOT `async`: `#dispatchInner` is already async, so it
-    // cannot throw synchronously and there is nothing for an outer promise to
-    // catch — it would only add an allocation and a tick to every call.
+    // Deliberately NOT `async`: `#dispatchInner` cannot throw synchronously
+    // (its try/catch converts the prologue's throws to rejections), so an
+    // outer promise would only add an allocation and a tick to every call.
     dispatch(
         ref: ActorRef,
         method: string,
@@ -233,7 +233,26 @@ export class LocalHost implements ActorDispatcher {
     }
 
 
-    async #dispatchInner(
+    // A plain function, not `async` (#24): the warm path below returns the
+    // enqueue promise straight through, and the `async` wrapper used to cost
+    // a promise allocation and ~2 microtask ticks on every call for nothing.
+    // The try/catch keeps the frame's contract intact — the prologue's sync
+    // throws (`#checkShutdown`) still surface as rejections, tick-identical
+    // to what an async function throwing before its first await produced.
+    #dispatchInner(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext
+    ): Promise<unknown> {
+        try {
+            return this.#dispatchWarmOrSlow(ref, method, args, call);
+        } catch (error) {
+            return Promise.reject(error);
+        }
+    }
+
+    #dispatchWarmOrSlow(
         ref: ActorRef,
         method: string,
         args: readonly unknown[],
@@ -277,6 +296,17 @@ export class LocalHost implements ActorDispatcher {
                     : target.then((a) => a.enqueue(method, args, call));
             }
         }
+        return this.#dispatchSlow(ref, method, args, call, id);
+    }
+
+    /** The cold/reentrant tail, hoisted verbatim — the only frame that awaits. */
+    async #dispatchSlow(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        id: string
+    ): Promise<unknown> {
         const inline = await this.#checkReentrancy(ref, call, method, id);
         if (inline) return inline.runInline(method, args, call);
         const activation = await this.#activationFor(ref, id);

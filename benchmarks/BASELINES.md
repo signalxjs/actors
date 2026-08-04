@@ -713,9 +713,17 @@ host's own path cannot need it.
 Recorded here so the next person does not have to re-derive them. **None of
 these are known problems** — they are measurements looking for a decision.
 
-0. **`#activationFor` and `#checkReentrancy` are `async` on a synchronous
+0. ~~**`#activationFor` and `#checkReentrancy` are `async` on a synchronous
    path** — the largest single cost in the runtime's own code, and present in
-   every profile. See the section above.
+   every profile. See the section above.~~
+   **Fixed (#24):** the warm path already bypassed both helpers; #24
+   de-asynced the frames around it — `#dispatchInner` is a plain function
+   (the awaited tail hoisted into `#dispatchSlow`) and `HostImpl.dispatch`
+   branches on a thenable instead of `await`ing the default placement's
+   synchronous `dispatcherFor`. Gated by the turn counts, all spread 0:
+   `dispatch/warm-turns` 10 → 7, `dispatch/warm-turns-deadline` 11 → 8,
+   `dispatch/always-warm-turns` 7 → 4. The helpers themselves stay `async` —
+   they are cold-path only now.
 1. ~~**`raceDeadline` costs 38% of dispatch throughput.** A shared timer wheel, or
    skipping the race when the deadline is far away, would recover most of it.
    (Profiled at 6.1% self in `local-host.ts:410` plus 0.9% in its inner closure
@@ -728,8 +736,8 @@ these are known problems** — they are measurements looking for a decision.
    (`dispatch/warm-turns` unchanged at 10). A far deadline now fires up to
    ~2 s late, never early; the `deadline` field crossing hops is untouched.
    Remaining per-call cost is the wrapper promise plus the two settle
-   closures — de-asyncing the dispatch frames (see #215's pattern) is the
-   next rung, not deadline machinery.
+   closures — the dispatch frames themselves are de-asynced since #24 (see
+   item 0), which took the deadline rung from 11 to 8 turns.
 2. ~~**The change feed's per-turn snapshot is two full deep walks.**~~
    **Superseded by the profile:** the snapshot is already shared across
    subscribers, and the 1-subscriber cliff is the `{deep: true}` watch, not the
