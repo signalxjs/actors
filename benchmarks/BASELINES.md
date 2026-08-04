@@ -107,6 +107,12 @@ the comparer *cannot* gate on one:
 | `dispatch/via-proxy` | 1.07 M | **−12%** — client proxy + `mintCallId()` |
 | `wire/endpoint-roundtrip` | 115 k | **−89%** — wire codec, JSON, endpoint (no socket) |
 
+> **Annotated since (#23):** the `wire/endpoint-roundtrip` figure includes the
+> benchmark's own `new Request(...)` construction inside the timed closure
+> (see the 2026-07-31 profile note below), so the −89% overstates the
+> endpoint. `wire/request-construction` now prices that setup as its own
+> rung; the corrected attribution awaits the next recorded run.
+
 Two findings stand out:
 
 - **The default call deadline costs ~38% of dispatch throughput.** Every
@@ -667,7 +673,8 @@ Note also a measurement artifact: `benchmarks/src/scenarios/wire.ts:27`
 constructs `new Request(...)` **inside** the timed closure, so part of the
 undici share is the benchmark's own setup rather than the endpoint's work. The
 rung overstates the endpoint. Worth splitting before anyone optimizes against
-it.
+it. **Split since (#23):** `wire/request-construction` is the control —
+subtract it from `endpoint-roundtrip` before quoting a wire cost.
 
 ### The change-feed cliff is the deep watch, not the snapshot
 
