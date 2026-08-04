@@ -75,7 +75,14 @@ export interface ClusterMembership {
     setStatus(status: HostStatus): Promise<void>;
     /** Graceful exit: stop heartbeating and remove the entry. */
     leave(): Promise<void>;
-    /** Current cached view — SYNC; `dispatcherFor` is on the hot path. */
+    /**
+     * Current cached view — SYNC; `dispatcherFor` is on the hot path.
+     * Treat the returned object as an immutable snapshot: build a NEW view
+     * per membership change rather than mutating one in place. Returning
+     * the SAME object between changes is recommended (placement memoizes
+     * derived data per view object — a fresh object per call is still
+     * correct but pays the derivation on every call).
+     */
     view(): MembershipView;
     /** Force a store round-trip. */
     refresh(): Promise<MembershipView>;

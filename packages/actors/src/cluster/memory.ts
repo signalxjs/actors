@@ -32,7 +32,18 @@ export function memoryClusterHub(): MemoryClusterHub {
     const suspectCbs = new Map<string, Set<() => void>>();
     const entries = new Map<string, DirectoryEntry>();
 
-    const view = (): MembershipView => ({ version, hosts: [...members.values()] });
+    // Cached per version bump (#27): every mutation goes through `bump()`,
+    // so a snapshot is valid until the next one — and a STABLE object
+    // identity is what lets placement's active-host memo (a WeakMap keyed
+    // on the view) hit. The snapshot arrays are typed readonly and never
+    // mutated; a captured view stays a faithful picture of its version.
+    let cachedView: MembershipView | null = null;
+    const view = (): MembershipView => {
+        if (cachedView === null || cachedView.version !== version) {
+            cachedView = { version, hosts: [...members.values()] };
+        }
+        return cachedView;
+    };
     const bump = (): void => {
         version++;
         const snapshot = view();
