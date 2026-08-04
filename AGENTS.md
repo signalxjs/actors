@@ -251,6 +251,34 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   DDL is explicit, the providers never issue it. `pg` ≥8 as a peer
   dependency; provider tests are env-gated on `PG_URL` (a dedicated CI
   job provides a postgres service).
+- `packages/actors-surreal` → `@sigx/actors-surreal` — SurrealDB (≥3.0,
+  3.2.4+ recommended) providers: `surrealStorage` (etag-CAS `ActorStorage`
+  on a COMPOSITE record id `{prefix}state:[type, key]` — the primary index,
+  so no load or save ever scans; state held as a JSON STRING so top-level
+  arrays, scalars, `null` and NUL round-trip exactly), `surrealMembership`
+  (TTL heartbeat on the DATABASE clock, live-query push with poll fallback,
+  signature-based change detection), `surrealDirectory` (claim/CAD/
+  `evictHost`), `surrealReminders` (due-time-indexed table),
+  `surrealCluster`, `surrealSchemaSql()`/`ensureSurrealSchema()` and
+  `surrealRetryable`. `surrealdb` ≥2.0.8 as a peer dependency; tests
+  env-gated on `SURREAL_URL` (its CI job starts the container with
+  `docker run`, NOT `services:` — the image is `ENTRYPOINT ["/surreal"]`
+  with no CMD, so a service entry cannot pass the `start` subcommand).
+  **Four v3 rules this package is built around, all verified against a live
+  3.2.4 server — do not "simplify" past them**: (1) `UPSERT … WHERE` does
+  NOT gate its create path, so it resurrects a record a concurrent writer
+  deleted — state CAS uses `UPDATE … WHERE` plus an explicit create; (2)
+  there is no `SELECT … FOR UPDATE`, `SKIP LOCKED` or advisory lock, so the
+  commit-time write–write conflict is the only mutual exclusion and client
+  RETRY IS PART OF THE CONTRACT (`surrealRetryable`; a shared connection
+  must install it, and the SDK ships retry disabled with a predicate that
+  never matches) — which is also why reminders partition by `ownsShard`,
+  the opposite of `pgReminders`; (3) `UPDATE`/`DELETE` ignore indexes, so
+  predicate-driven writes go through a `SELECT` subquery; (4) reading an
+  undefined table ERRORS (2.x returned `[]`), so the DDL step is mandatory.
+  Record-scoped live queries also fail to listen on 3.2.4 while
+  table-scoped ones work, which is why membership watches the version
+  table.
 - `packages/actors-k8s` → `@sigx/actors-k8s` — Kubernetes membership
   provider for `@sigx/actors/cluster`: `k8sMembership()`, host liveness via
   a coordination.k8s.io Lease per host (renewed on the heartbeat cadence)

@@ -1,0 +1,91 @@
+/**
+ * `surrealStorage` — the `ActorStorage` seam over SurrealDB, with
+ * optimistic concurrency on a client-minted etag.
+ *
+ * One record per actor at `{prefix}state:[type, key]`. A COMPOSITE record id,
+ * not a secondary index: the array id is v3's partitioning tool, so every
+ * load and save is a primary-index hit with no `WHERE` scan anywhere, and
+ * `[type, …]` stays range-scannable for operators without costing a write.
+ *
+ * Each of the four operations is ONE statement, therefore one implicit
+ * transaction and one round trip, and each answers with a bare boolean —
+ * the verdict, not the row. `array::len(…) > 0` collapses the result
+ * server-side so a rejected CAS costs nothing on the wire.
+ *
+ * **`UPDATE … WHERE`, deliberately not `UPSERT … WHERE`.** `UPSERT`'s create
+ * arm carries no condition check, so a writer holding a stale etag whose
+ * record had since been deleted would RESURRECT it. `UPDATE` never creates,
+ * so "record missing" and "etag mismatch" both land as an empty result —
+ * and both are conflicts under this seam's contract, which is why that path
+ * needs no `record::exists` disambiguation.
+ *
+ * State is stored as a JSON STRING, deliberately not as a native document.
+ * Actor state is whatever the codec produced: it may be a top-level array or
+ * scalar, may contain NUL, and distinguishes `null` from absent. Round
+ * -tripping that through SurrealDB's value model would risk `none`/`null`
+ * conflation, datetime and record-id reinterpretation, and v3's collapsing
+ * of differently-typed numeric ids into one key. The serialized form has
+ * none of those hazards and costs one `JSON.stringify` rather than a
+ * per-field CBOR walk on the hot path.
+ *
+ * No NUL escaping layer: `type`/`key` ride a record-id array, and SurrealDB
+ * carries a NUL in a string verbatim and injectively. (Postgres `text`
+ * cannot, which is the only reason `@sigx/actors-pg` has `pgText`.)
+ */
+import { ActorStorageConflict, type ActorStorage, type ActorStorageRecord } from '@sigx/actors';
+import { RecordId } from 'surrealdb';
+import { surrealHandle, tablesFor, type SurrealConnectionOptions } from './connection';
+
+export type SurrealStorageOptions = SurrealConnectionOptions;
+
+const LOAD = `SELECT e, s FROM ONLY $id`;
+/** Create-if-absent. Two racers both observe `!exists` and both CREATE; the
+ *  commit-time write–write check aborts one, which retries, sees the record
+ *  and reports the conflict truthfully (see `surrealRetryable`). */
+const CREATE =
+    `RETURN IF record::exists($id) { false } ` +
+    `ELSE { CREATE $id CONTENT { e: $e, s: $s } RETURN NONE; true }`;
+const CAS = `RETURN array::len((UPDATE $id SET e = $e, s = $s WHERE e = $x RETURN VALUE e)) > 0`;
+const CAD = `RETURN array::len((DELETE $id WHERE e = $x RETURN BEFORE)) > 0`;
+const EXISTS = `RETURN record::exists($id)`;
+
+export function surrealStorage(options: SurrealStorageOptions): ActorStorage {
+    const db = surrealHandle(options);
+    const t = tablesFor(options.prefix);
+    const rid = (type: string, key: string): RecordId => new RecordId(t.state, [type, key]);
+
+    return {
+        async load(type, key): Promise<ActorStorageRecord | null> {
+            const [row] = await db.query<[{ e: string; s: string } | null]>(LOAD, {
+                id: rid(type, key)
+            });
+            return row ? { state: JSON.parse(row.s) as unknown, etag: row.e } : null;
+        },
+
+        async save(type, key, state, expectedEtag): Promise<string> {
+            const etag = globalThis.crypto.randomUUID();
+            const s = JSON.stringify(state);
+            const id = rid(type, key);
+            const [written] =
+                expectedEtag === null
+                    ? await db.query<[boolean]>(CREATE, { id, e: etag, s })
+                    : await db.query<[boolean]>(CAS, { id, e: etag, s, x: expectedEtag });
+            if (written !== true) throw new ActorStorageConflict(type, key);
+            return etag;
+        },
+
+        async clear(type, key, expectedEtag): Promise<void> {
+            const id = rid(type, key);
+            if (expectedEtag === null) {
+                // "Assert absence": clearing with no etag is only valid when
+                // nothing is stored. A record here means someone wrote after
+                // the caller last read.
+                const [exists] = await db.query<[boolean]>(EXISTS, { id });
+                if (exists === true) throw new ActorStorageConflict(type, key);
+                return;
+            }
+            const [removed] = await db.query<[boolean]>(CAD, { id, x: expectedEtag });
+            if (removed !== true) throw new ActorStorageConflict(type, key);
+        }
+    };
+}
