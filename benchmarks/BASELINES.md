@@ -669,8 +669,8 @@ and the AsyncLocalStorage scope adds ~7% in promise hooks. And **`@sigx/actors`
 is a bit player on its own hottest rung**, so tuning our codec cannot move it
 much.
 
-Note also a measurement artifact: `benchmarks/src/scenarios/wire.ts:27`
-constructs `new Request(...)` **inside** the timed closure, so part of the
+Note also a measurement artifact: `actorRequest()` in
+`benchmarks/src/scenarios/wire.ts` runs **inside** the timed closure, so part of the
 undici share is the benchmark's own setup rather than the endpoint's work. The
 rung overstates the endpoint. Worth splitting before anyone optimizes against
 it. **Split since (#23):** `wire/request-construction` is the control —

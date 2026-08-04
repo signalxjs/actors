@@ -53,7 +53,7 @@ async function assertOk(response: Response, label: string): Promise<void> {
  */
 const requestConstruction: Scenario = {
     name: 'wire/request-construction',
-    description: 'new Request(...) + JSON.stringify alone — the harness setup endpoint-roundtrip pays inside its timed closure, priced so it can be subtracted',
+    description: 'actorRequest() alone — URL building, JSON.stringify, new Request(...) — the harness setup endpoint-roundtrip pays inside its timed closure, priced so it can be subtracted',
     async run(ctx: RunContext): Promise<Metric[]> {
         const call = async (): Promise<Request> => actorRequest(Tiny.type, 'noop', ['warm']);
         const outcome = await closedLoop({
