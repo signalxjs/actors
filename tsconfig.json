@@ -24,6 +24,7 @@
       "@sigx/actors/cluster/frames": ["./packages/actors/src/cluster/frames.ts"],
       "@sigx/actors/cluster/testing": ["./packages/actors/src/cluster/testing.ts"],
       "@sigx/actors/cluster": ["./packages/actors/src/cluster/index.ts"],
+      "@sigx/actors/testing": ["./packages/actors/src/testing/index.ts"],
       "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"],
       "@sigx/actors-ws": ["./packages/actors-ws/src/index.ts"],
       "@sigx/actors-otel/prometheus": ["./packages/actors-otel/src/prometheus.ts"],

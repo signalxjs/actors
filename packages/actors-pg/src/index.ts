@@ -206,14 +206,93 @@ CREATE INDEX IF NOT EXISTS reminders_due ON ${s}.reminders (next_due);
 }
 
 /**
- * Run the DDL. For dev and tests; production migrations should carry
- * `pgSchemaSql()` through whatever tool already owns their schema.
+ * The `classid` half of the bootstrap's advisory-lock key — an arbitrary
+ * constant reserved for this package ("SGAC"), fitting int4. The `objid` half
+ * hashes the schema name, so two DIFFERENT schemas bootstrap concurrently
+ * while one schema does not. A collision with an unrelated application's key
+ * costs milliseconds of extra serialisation — never correctness.
+ */
+const SCHEMA_LOCK_CLASS = 0x53474143;
+/** Bounded, matching the surreal sibling. */
+const SCHEMA_ATTEMPTS = 5;
+const SCHEMA_BACKOFF_MS = 25;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** FNV-1a 32-bit, as a signed int4 — the `objid` half of the lock key. */
+function schemaLockKey(schema: string): number {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < schema.length; i++) {
+        hash ^= schema.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return hash | 0;
+}
+
+/**
+ * Run the DDL. Safe to call from EVERY replica at boot, concurrently.
+ *
+ * Production migrations should still carry `pgSchemaSql()` through whatever
+ * tool already owns their schema — but a booting host calling this directly is
+ * the documented quickstart, and `CREATE … IF NOT EXISTS` is check-then-create,
+ * NOT atomic against a concurrent creator: two hosts starting together race the
+ * catalog and one of them takes a `23505`, `42P07`, `42710` or `40P01` and
+ * crashes its boot (#78, the Postgres half of #76).
+ *
+ * Two mechanisms, with distinct jobs:
+ *
+ *  - **The advisory lock serialises**, so replicas queue for milliseconds and
+ *    every one of them takes the clean path — nothing raises, nothing backs
+ *    off. Three details make it work, and each is easy to break:
+ *      1. It is the FIRST statement of the SAME string. node-pg sends a
+ *         values-free multi-statement string as a SIMPLE query, which Postgres
+ *         runs as ONE implicit transaction — so an xact-scoped lock covers the
+ *         whole DDL and is released at its commit, before the pooled client is
+ *         recycled. No session lock can leak into the pool, and no explicit
+ *         `pg_advisory_unlock` is needed. Split into two `pool.query()` calls
+ *         it can land on two different connections and protect nothing.
+ *      2. The key is INTERPOLATED, not bound. A `values` array switches node-pg
+ *         to the extended protocol, which refuses multiple commands outright.
+ *      3. `pgSchemaSql()` stays pure DDL — it is the string you hand a
+ *         migration tool, which splits statements, wraps them in its own
+ *         transaction and brings its own migration lock. The lock belongs to
+ *         *this* function, whose whole job is "run this now, from a booting
+ *         process".
+ *  - **The retry is the backstop**, for racers that never take the lock at all
+ *    (a migration tool, psql, an older version of this package). It is blind to
+ *    the error's shape for the same reasons as its surreal sibling: the whole
+ *    DDL is idempotent and the implicit transaction is all-or-nothing, so a
+ *    bounded retry cannot change a permanent failure's outcome — only its
+ *    latency — and cannot be defeated by a SQLSTATE we failed to enumerate.
+ *    Backoff is jittered so two racers do not then retry in lockstep.
+ *
+ * This function expects to OWN its transaction. Called with a `PgQueryable`
+ * already inside a caller's open transaction, a failure poisons that
+ * transaction and the retry burns its attempts on `25P02`.
  */
 export async function ensurePgSchema(
     pool: PgQueryable,
     options: { schema?: string } = {}
 ): Promise<void> {
-    await pool.query(pgSchemaSql(options.schema ?? 'sigx'));
+    // Built ONCE, outside the loop: an invalid schema is a caller bug and must
+    // throw on the first pass, not after five backoffs.
+    const schema = checkSchema(options.schema ?? 'sigx');
+    const sql =
+        `SELECT pg_advisory_xact_lock(${SCHEMA_LOCK_CLASS}, ${schemaLockKey(schema)});\n` +
+        pgSchemaSql(schema);
+    let last: unknown;
+    for (let attempt = 1; attempt <= SCHEMA_ATTEMPTS; attempt++) {
+        try {
+            await pool.query(sql);
+            return;
+        } catch (error) {
+            last = error;
+            if (attempt < SCHEMA_ATTEMPTS) {
+                await sleep(SCHEMA_BACKOFF_MS * 2 ** (attempt - 1) * (0.5 + Math.random()));
+            }
+        }
+    }
+    throw last;
 }
 
 /** Membership + directory for ONE host. */

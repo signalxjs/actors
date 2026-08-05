@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- **Two replicas booting at once crashed one of them (#76).**
+  `ensureSurrealSchema()` issued its DDL exactly once, with no retry of its
+  own, so a simultaneous bootstrap from a second host lost the commit-time
+  write–write check and the loser's boot failed. Nothing caught it: the only
+  retry in play was the SDK's connection-wide one, which ships **disabled**, so
+  a caller-owned `db` — the documented setup — had none at all, and the
+  reported conflict (`Multiple key errors`) was not a wording
+  `surrealRetryable` matched even when it was installed.
+  The bootstrap now carries its own bounded, jittered retry, independent of the
+  connection's retry posture, and — because a racer may have completed the
+  schema while every attempt lost — verifies the tables exist before giving up,
+  rethrowing the ORIGINAL error when they do not. The retry is deliberately
+  **blind to the error's shape**: the DDL is idempotent and every statement is
+  its own transaction, so a bounded retry can only delay a permanent failure,
+  never mask one — and matching on wording is what failed here (this server
+  family has now produced three distinct conflict wordings).
+  `surrealRetryable` is **not** widened: it is the connection-wide predicate for
+  a shared `db`, where the same broad rule would turn a caller's genuine
+  unique-index violation into a backoff loop that fails anyway.
+  Measured against a live 3.2.4 server: eight hosts racing the bootstrap
+  produced eight failed boots before, and none after.
+
 - **A stalled host kept serving actors a survivor had taken over (#45).**
   Self-suspicion fired only from a heartbeat write *rejection*, so a host
   whose event loop stalled past `ttlMs` resumed, upserted late and

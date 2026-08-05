@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A schema-bootstrap conformance suite** (#78), for contributors — **not a
+  published import**. `bootstrapConformance` is the set of cases a provider's
+  `ensure…Schema` must pass, plus the harness interface the provider supplies.
+  It lives at `packages/actors/src/testing/` and is reachable inside this
+  workspace as `@sigx/actors/testing` via a tsconfig/vitest alias; the subpath
+  is deliberately absent from `package.json` exports, exactly like
+  `@sigx/actors/cluster/testing`, so it cannot be imported from outside the
+  repo until it is promoted. Three cases — a bootstrap leaves storage usable,
+  bootstrapping twice is a no-op, and N concurrent bootstraps from independent
+  connections all converge — the last being #76/#78 as a runnable assertion.
+  It asserts the OUTCOME rather than the mechanism, because the two providers
+  that run it converge differently (an advisory lock in Postgres; jittered
+  retry in SurrealDB, which has no lock primitive). The `ActorStorage`
+  conformance suite of #65 belongs beside it and composes with it:
+  `storage()`/`stop()` are the shared intersection and `bootstrap?()` is
+  optional.
+
 ### Changed
 
 - **BREAKING: actor proxies answer introspection props locally instead of

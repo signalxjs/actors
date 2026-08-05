@@ -4,6 +4,30 @@
 
 ### Fixed
 
+- **Two replicas booting at once crashed all but one of them (#78).** The
+  Postgres half of #76, found by sweeping the providers for that bug class.
+  `ensurePgSchema()` ran its DDL once, unguarded — and `CREATE SCHEMA/TABLE/
+  INDEX IF NOT EXISTS` is check-then-create, *not* atomic against a concurrent
+  creator, so racing boots collide in the catalog (`23505` on
+  `pg_namespace_nspname_index` and friends, `42P07`, `42710`, `40P01`). Because
+  node-postgres sends the values-free multi-statement string as a simple query,
+  Postgres runs it as one implicit transaction and the whole bootstrap rolls
+  back: the boot fails.
+  It now takes `pg_advisory_xact_lock`, keyed on the schema name, as the FIRST
+  statement of that same string — so the lock spans the whole DDL and is
+  released at its commit, before the pooled client is recycled — with the same
+  bounded jittered retry as the surreal sibling underneath, as a backstop for
+  racers that take no lock (a migration tool, psql, an older release).
+  `pgSchemaSql()` is unchanged and still pure DDL. Measured against a live
+  Postgres 16: eight hosts racing the bootstrap produced seven failed boots
+  before, and none after.
+
+### Documentation
+
+- **Corrected: state is stored as `text`, not `jsonb`.** The README claimed
+  `jsonb` while the DDL and `pgStorage` have always used `text`, deliberately —
+  actor state may contain NUL, which `jsonb` rejects.
+
 - **A stalled host kept serving actors a survivor had taken over (#45).**
   Self-suspicion fired only from a heartbeat write *rejection*, so a host
   whose event loop stalled past `ttlMs` resumed, upserted late and

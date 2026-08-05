@@ -40,6 +40,15 @@ await db.connect('ws://127.0.0.1:8000', {
 await ensureSurrealSchema(db);
 ```
 
+`ensureSurrealSchema()` is safe to call from **every replica at boot,
+concurrently**. `DEFINE … IF NOT EXISTS` is check-then-create, so simultaneous
+bootstraps collide on the commit-time write–write check (measured on 3.2.4:
+eight racing hosts, eight rejections) — and the boot that loses crashes. It
+therefore carries its own bounded, jittered retry, **independent of whatever
+retry the connection has**, and verifies the tables exist before it gives up.
+See "Retry is part of the contract" below for why it does not simply lean on
+`surrealRetryable`.
+
 Then wire a clustered host:
 
 ```ts
@@ -89,6 +98,19 @@ which in practice never arrives — a conflicting statement surfaces
 `Transaction conflict: Write conflict, retry the transaction. This transaction
 can be retried` through the `NotExecuted` path instead. `surrealRetryable`
 matches that, as SurrealDB's own tests do.
+
+**The schema bootstrap does not rely on it, and the predicate is deliberately
+narrow.** `surrealRetryable` is a *connection-wide* predicate — on a shared
+`db` it governs your queries too — so widening it to cover every conflict
+wording would turn a genuine unique-index violation of yours from an instant,
+correct failure into a five-attempt backoff that fails anyway. And a bootstrap
+that leaned on it would still have crashed in the case that produced this
+behaviour (#76): that connection was caller-owned and carried the SDK default,
+i.e. no retry at all. So `ensureSurrealSchema()` retries in its own loop,
+blind to the error's shape — the DDL is idempotent, so a bounded retry can only
+delay a permanent failure, never mask one, and no future change of wording can
+reopen the hole. The bootstrap is the one place that rule is safe; everywhere
+else, the narrow predicate is the right one.
 
 ## Semantics worth knowing
 

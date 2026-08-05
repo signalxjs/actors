@@ -21,7 +21,33 @@ export function testNamespace(): string {
     return `sigx_test_${worker}_${salt}`;
 }
 
-export async function connect(namespace: string, database = 'test'): Promise<TestDb> {
+export interface ConnectOptions {
+    /**
+     * Issue the `DEFINE NAMESPACE`/`DEFINE DATABASE` DDL. Default true.
+     *
+     * Set false for connections that open CONCURRENTLY: that DDL is the same
+     * race as #76 — `IF NOT EXISTS` is check-then-create — so N simultaneous
+     * connects would collide here, and a bootstrap race case would go red for
+     * a reason that has nothing to do with what it is testing.
+     */
+    define?: boolean;
+    /**
+     * Install `surrealRetryable` as the connection's retry predicate. Default
+     * true, matching what the package does on a connection it owns.
+     *
+     * Set false to reproduce a caller-owned connection carrying the SDK's
+     * DEFAULT posture — retry DISABLED — which is the configuration #76 arrived
+     * on. A test of the bootstrap's own convergence must not have the SDK's
+     * retry wrapper underneath it, or it is testing the wrapper.
+     */
+    retry?: boolean;
+}
+
+export async function connect(
+    namespace: string,
+    database = 'test',
+    options: ConnectOptions = {}
+): Promise<TestDb> {
     const db = new Surreal();
     await db.connect(url(), {
         namespace,
@@ -32,13 +58,18 @@ export async function connect(namespace: string, database = 'test'): Promise<Tes
         },
         // The same posture the package installs on a connection it owns —
         // without it a lost CAS race raises instead of reporting a conflict.
-        retry: { enabled: true, attempts: 5, retryable: surrealRetryable }
+        retry:
+            options.retry === false
+                ? { enabled: false }
+                : { enabled: true, attempts: 5, retryable: surrealRetryable }
     });
     // `connect()` SELECTS a namespace/database, it does not create them.
-    await db.query(
-        `DEFINE NAMESPACE IF NOT EXISTS ${namespace}; ` +
-            `USE NS ${namespace}; DEFINE DATABASE IF NOT EXISTS ${database};`
-    );
+    if (options.define !== false) {
+        await db.query(
+            `DEFINE NAMESPACE IF NOT EXISTS ${namespace}; ` +
+                `USE NS ${namespace}; DEFINE DATABASE IF NOT EXISTS ${database};`
+        );
+    }
     return db;
 }
 
