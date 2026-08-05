@@ -2,10 +2,12 @@
     "name": "counter-example",
     "private": true,
     "type": "module",
+    "description": "The actor runtime with no framework at all - plain DOM, a 3-host cluster demo and a durable job, both with no infrastructure to install",
     "scripts": {
         "dev": "vite",
         "build": "vite build",
         "start": "node server.mjs",
+        "typecheck": "tsc --noEmit",
         "cluster": "node cluster-demo.mjs",
         "cluster:serve": "node cluster-demo.mjs --serve",
         "job": "node job-demo.mjs"
@@ -19,6 +21,7 @@
     "devDependencies": {
         "@sigx/actors-cli": "workspace:*",
         "@sigx/cli": "^0.9.0",
+        "typescript": "^6.0.3",
         "vite": "^8.0.3"
     }
 }

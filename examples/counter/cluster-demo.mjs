@@ -1,32 +1,18 @@
 /**
  * Multi-host cluster demo — three hosts on real localhost HTTP sockets,
- * one actor system. Uses the in-process memory cluster hub (so it needs no
- * Redis) with shared storage, and drives the same Counter actor the rest
- * of the example uses. Shows: placement spread, the single-activation
- * guarantee under cross-host calls, a watch stream consumed from a
- * non-owner host, and crash failover with state recovered from storage.
+ * one actor system, no infrastructure to install.
  *
- * Run after `pnpm build`:   node examples/counter/cluster-demo.mjs
+ *     pnpm --filter counter-example cluster           # after `pnpm build`
+ *     pnpm --filter counter-example cluster:serve     # keep it up, under load
  *
- * `--serve` (or CLUSTER_DEMO_SERVE=1) skips the shutdown and keeps the
- * cluster up under steady traffic, so there is something live to point a
- * dashboard at:
+ * What each step proves, and the dashboard recipe, are in README.md. Every
+ * step below throws on a wrong result, so this file is an assertion suite
+ * that happens to narrate itself.
  *
- *     # terminal 1
- *     node examples/counter/cluster-demo.mjs --serve
- *     # terminal 2 — from THIS package, since the sigx CLI discovers its
- *     # plugins from the dependencies of the project it runs in
- *     pnpm --filter counter-example exec sigx actors top \
- *         --url http://127.0.0.1:5391 --secret demo-ops-secret
- *
- * Needs Node >= 22.18 (built-in type stripping for the .ts actor import).
- * Ports default to 5391-5393; override with
- * CLUSTER_DEMO_PORTS=7001,7002,7003.
- *
- * Each host is a `defineActorApp` with the `cluster()` plugin, mounted
- * with ONE `createAppHandler`. The plugin contributes the host-to-host
- * route, so `secret` is stated once and the internal mount needs no
- * hand-written Node bridge.
+ * Each host is a `defineActorApp` with the `cluster()` plugin, mounted with
+ * ONE `createAppHandler`. The plugin contributes the host-to-host route, so
+ * `secret` is stated once and the internal mount needs no hand-written Node
+ * bridge.
  */
 import { createServer } from 'node:http';
 import { defineActorApp, health, memoryStorage, metrics, ops } from '@sigx/actors/host';

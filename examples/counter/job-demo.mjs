@@ -12,13 +12,13 @@
  * The client-visible timeline never breaks: the same key keeps answering
  * status() and watch() before, during and after the crash.
  *
- * Run after `pnpm build`:   node examples/counter/job-demo.mjs
- * Needs Node >= 22.18 (built-in type stripping for the .ts job import).
- * Ports default to 5394-5396; override with JOB_DEMO_PORTS=7001,7002,7003.
+ *     pnpm --filter counter-example job               # after `pnpm build`
+ *
+ * Requirements and ports are in README.md.
  *
  * (Without any client call, the liveness reminder re-activates the actor
- * on a survivor within ~60-90s — the demo calls status() so you don't
- * have to watch paint dry; see the README's Tasks section.)
+ * on a survivor within ~60-90s — the demo calls status() so you don't have
+ * to watch paint dry; see the package README's Tasks section.)
  */
 import { createServer } from 'node:http';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
