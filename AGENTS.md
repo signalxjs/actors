@@ -24,8 +24,10 @@ See "Adopting this setup in another sigx repo" at the bottom.
 SignalX Actors is the home of `@sigx/actors` — virtual actors for
 SignalX: addressable, single-threaded, persistent server objects riding
 the serverFn wire protocol. A pnpm workspace (ESM, `"type": "module"`) with
-one published package under `packages/` plus runnable demos under
-`examples/`. Tech stack: TypeScript (strict), Vite, Vitest, oxlint.
+one published package under `packages/`, runnable demos under `examples/`,
+and the performance/deployment rig under `perf/` — which is deliberately
+NOT under `examples/`, because it is measured, not read.
+Tech stack: TypeScript (strict), Vite, Vitest, oxlint.
 Published to npm under the `@sigx` scope.
 
 ## Development workflow (issue → PR → Copilot review → merge)
@@ -392,8 +394,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `define`d or the host throws on the first request, and the public mount
   needs an explicit `origin` policy. `MODE=load` exists but its local numbers
   describe `wrangler dev`, not Cloudflare — see the README. Not published.
-- `examples/aks-cluster` — the production-shaped Kubernetes deployment
-  test: N identical host pods (env-driven `server.mjs`, `cluster()` with
+- `perf/aks` → `sigx-perf-aks` — the production-shaped Kubernetes
+  deployment test, and the reason `perf/` exists as a tree of its own: it
+  is 4k lines of rig around a 300-line app, which under `examples/` read
+  as the thing to copy.
+  N identical host pods (env-driven `server.mjs`, `cluster()` with
   `redisCluster` or `k8sMembership` per values toggle, `redisStorage`
   CAS persistence), an in-cluster closed-loop load generator, a Helm
   chart, and `deploy/testenv.mjs` — the whole Azure environment as one

@@ -60,7 +60,7 @@ and a 404 is CHEAPER than a write, so without it a wholly broken run
 reports as a throughput WIN. Not hypothetical — that is exactly how the
 id pasted into `edge-ladder.mjs` went stale unnoticed.
 
-Recorded with `node examples/aks-cluster/deploy/testenv.mjs baseline`;
+Recorded with `node perf/aks/deploy/testenv.mjs baseline`;
 compared by `… testenv.mjs test`. Absolute capacity is a different
 question from regression detection — for that, `testenv.mjs load` runs the
 generator directly with as many clients as you care to point at it.

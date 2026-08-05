@@ -17,11 +17,13 @@ on:
     branches: [main]
     paths:
       - 'examples/**/deploy/**'
+      - 'perf/**/deploy/**'
       - '.github/workflows/charts.yml'
   push:
     branches: [main]
     paths:
       - 'examples/**/deploy/**'
+      - 'perf/**/deploy/**'
       - '.github/workflows/charts.yml'
 
 # Read-only: this renders charts and submits server-side dry runs against a
@@ -135,20 +137,20 @@ jobs:
           }
 
           echo "helm lint:"
-          for chart in examples/aks-cluster/deploy/chart examples/chat/deploy/chart; do
+          for chart in perf/aks/deploy/chart examples/chat/deploy/chart; do
             helm lint "$chart" \
               --set image.repository=registry.example.com/citest \
               --set image.tag=citest \
               --set ingress.host=chat.example.test >/dev/null && echo "  ✓ $chart"
           done
 
-          echo "aks-cluster chart:"
-          check "defaults"            examples/aks-cluster/deploy/chart sigx-actors-test
-          check "hpa on"              examples/aks-cluster/deploy/chart sigx-actors-test --set hpa.enabled=true
-          check "membership=k8s"      examples/aks-cluster/deploy/chart sigx-actors-test --set membership=k8s
-          check "external redis"      examples/aks-cluster/deploy/chart sigx-actors-test --set redis.enabled=false --set redis.url=redis://ext:6379
-          check "loadgen job"         examples/aks-cluster/deploy/chart sigx-actors-test --set loadgen.enabled=true --set loadgen.nameSuffix=ci
-          check "required spread"     examples/aks-cluster/deploy/chart sigx-actors-test --set affinity.hostSelfSpread=required
+          echo "perf/aks chart:"
+          check "defaults"            perf/aks/deploy/chart sigx-actors-test
+          check "hpa on"              perf/aks/deploy/chart sigx-actors-test --set hpa.enabled=true
+          check "membership=k8s"      perf/aks/deploy/chart sigx-actors-test --set membership=k8s
+          check "external redis"      perf/aks/deploy/chart sigx-actors-test --set redis.enabled=false --set redis.url=redis://ext:6379
+          check "loadgen job"         perf/aks/deploy/chart sigx-actors-test --set loadgen.enabled=true --set loadgen.nameSuffix=ci
+          check "required spread"     perf/aks/deploy/chart sigx-actors-test --set affinity.hostSelfSpread=required
 
           echo "chat chart:"
           chat_host='--set ingress.host=chat.example.test'
@@ -188,7 +190,7 @@ jobs:
           repo='--set image.repository=registry.example.com/citest'
           tag='--set image.tag=citest'
           host='--set ingress.host=chat.example.test'
-          for chart in examples/aks-cluster/deploy/chart examples/chat/deploy/chart; do
+          for chart in perf/aks/deploy/chart examples/chat/deploy/chart; do
             refuse image.tag        "$chart" $repo $host
             refuse image.repository "$chart" $tag $host
           done

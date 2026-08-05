@@ -70,12 +70,15 @@ streaming through the edge and a reminder firing from a real alarm. Shows the
 app **factory** shape Workers needs — a module-scope app binds whichever
 object constructs it first.
 
-[`examples/aks-cluster`](examples/aks-cluster) — the **Kubernetes**
-scale-out test: N identical host pods, cluster state in Redis, an
-in-cluster load generator, a Helm chart, and a one-command driver
-([`deploy/testenv.mjs`](examples/aks-cluster/deploy/testenv.mjs)) for the
-full perf/failure runbook. Deployment identity is required environment —
-the example names nobody's infrastructure.
+### Performance & deployment rig
+
+[`perf/`](perf) is not an example — it is how the repo measures itself.
+[`perf/aks`](perf/aks) is the **Kubernetes** scale-out test: N identical
+host pods, cluster state in Redis, an in-cluster load generator, a Helm
+chart, and a one-command driver
+([`deploy/testenv.mjs`](perf/aks/deploy/testenv.mjs)) for the full
+perf/failure runbook. Deployment identity is required environment — the
+rig names nobody's infrastructure.
 
 ### Watching it happen
 

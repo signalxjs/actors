@@ -1,7 +1,7 @@
 # The AKS test environment, driven from the Actions tab.
 #
 # One dispatch = one `testenv.mjs` verb against the real cluster — see
-# `examples/aks-cluster/deploy/RUNBOOK.md` (§1c covers this workflow, the
+# `perf/aks/deploy/RUNBOOK.md` (§1c covers this workflow, the
 # secrets and the Azure role assignments). The estate's identity (resource
 # group, cluster, registry, region, DNS, load-VM names) exists ONLY as
 # Actions secrets: GitHub masks each value wherever it appears in a log,
@@ -141,9 +141,9 @@ jobs:
           set -f
           # shellcheck disable=SC2086
           case "$VERB" in
-            bench) node examples/aks-cluster/deploy/testenv.mjs bench \
+            bench) node perf/aks/deploy/testenv.mjs bench \
                      --json="$RUNNER_TEMP/infra.json" $EXTRA_ARGS ;;
-            *)     node examples/aks-cluster/deploy/testenv.mjs "$VERB" $EXTRA_ARGS ;;
+            *)     node perf/aks/deploy/testenv.mjs "$VERB" $EXTRA_ARGS ;;
           esac 2>&1 | tee "$RUNNER_TEMP/testenv.log"
 
       - name: Job summary
