@@ -10,9 +10,13 @@ import { resolve, sep } from 'node:path';
  * order here matters: decode first, resolve second, and only then check that
  * the result is still inside the directory you meant to serve.
  *
- * Both `root` and the return value are absolute paths.
+ * The return value is absolute. `root` is normalized first, so a caller
+ * passing a relative path or a trailing separator gets the same answer —
+ * the containment check below compares against `root + sep`, and `/dist/`
+ * would otherwise reject every file genuinely inside it.
  */
 export function resolveStatic(root: string, target: string): string | null {
+    const base = resolve(root);
     let pathname: string;
     try {
         // Not every request target parses: `//` and absolute forms like
@@ -30,8 +34,8 @@ export function resolveStatic(root: string, target: string): string | null {
         return null; // half-encoded input — a URIError, not a file
     }
 
-    const file = resolve(root, '.' + decoded);
-    // `=== root` covers the root itself; the `+ sep` stops `/dist-other`
+    const file = resolve(base, '.' + decoded);
+    // `=== base` covers the root itself; the `+ sep` stops `/dist-other`
     // passing a naive prefix check against `/dist`.
-    return file === root || file.startsWith(root + sep) ? file : null;
+    return file === base || file.startsWith(base + sep) ? file : null;
 }

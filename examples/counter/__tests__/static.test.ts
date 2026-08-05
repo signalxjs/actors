@@ -66,4 +66,14 @@ describe('resolveStatic', () => {
     it('still resolves a name that merely shares the root prefix', () => {
         expect(resolveStatic(ROOT, '/distraction.js')).toBe(ROOT + sep + 'distraction.js');
     });
+
+    it('normalizes the root, so a trailing separator is not a footgun', () => {
+        // The containment check compares against `root + sep`. Were the root
+        // taken verbatim, `/dist/` would produce `/dist//` and reject every
+        // file genuinely inside it — failing closed, but on valid requests.
+        expect(resolveStatic(ROOT + sep, '/assets/main.js')).toBe(
+            ROOT + sep + 'assets' + sep + 'main.js'
+        );
+        expect(resolveStatic(ROOT + sep, '/..%2fpackage.json')).toBeNull();
+    });
 });
