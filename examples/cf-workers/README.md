@@ -169,3 +169,6 @@ alarm testing and repeated deploys will want Workers Paid.
 | `src/page.ts` | the page served at `/` — dependency-free |
 | `verify.mjs` | the six checks, plus `MODE=load` |
 | `DEPLOY.md` | the runbook, with the failures included |
+| `src/env.d.ts` | the `Env` bindings the Worker and the object share |
+| `tsconfig.json` | its own program — Worker globals cannot join the root one |
+| `package.json` | scripts, and wrangler as the only real dependency |

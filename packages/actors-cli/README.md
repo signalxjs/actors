@@ -32,9 +32,9 @@ pnpm --filter my-app exec sigx actors top
 
 ```sh
 sigx actors                                        # the dashboard
-sigx actors top --url http://host:3000             # …against a running host
+sigx actors top --url http://host:7311             # …against a running host
 sigx actors stats --json | jq '.cluster.totals'    # a snapshot, for piping
-sigx actors health --url http://host:3000          # exit code by readiness
+sigx actors health --url http://host:7311          # exit code by readiness
 ```
 
 ## Two ways to reach a host
