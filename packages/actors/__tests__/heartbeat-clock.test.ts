@@ -78,6 +78,33 @@ describe('heartbeatClock', () => {
         expect(h.suspects()).toBe(2);
     });
 
+    it('a write that STARTED in time but completed past the TTL suspects too', () => {
+        // The stall on the store's side rather than ours: the beat was
+        // punctual, the write succeeded, but the round trip outlasted the
+        // whole TTL. We cannot know when it actually landed — anywhere
+        // between send and ack — so the record may have expired mid-flight
+        // with peers evicting our claims.
+        const h = harness(1_000);
+        h.clock.arm();
+        h.advance(300);
+        h.clock.beat(); // punctual: nothing to suspect yet
+        expect(h.suspects()).toBe(0);
+
+        h.advance(2_000); // …a very slow round trip
+        h.clock.confirmed();
+        expect(h.suspects()).toBe(1);
+    });
+
+    it('a write that completes inside the window is silent', () => {
+        const h = harness(1_000);
+        h.clock.arm();
+        h.advance(300);
+        h.clock.beat();
+        h.advance(300); // a normal round trip
+        h.clock.confirmed();
+        expect(h.suspects()).toBe(0);
+    });
+
     it('arming stamps the window — a slow join does not fence on the first beat', () => {
         // join() writes, THEN sadds, bumps the version and runs a full O(N)
         // refresh before arming the beat. On a large or slow store that

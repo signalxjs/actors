@@ -35,7 +35,11 @@
   - **Providers** share a new `heartbeatClock()` (exported from
     `@sigx/actors/cluster`): presence is only assumed until
     `lastConfirmedWrite + ttlMs`, and a beat starting past that fires
-    `onSelfSuspect` before it writes. It watches the monotonic **and** the
+    `onSelfSuspect` before it writes. A write that *started* in time but
+    took longer than the TTL to come back fires too — the stall on the
+    store's side rather than ours, and equally invisible, since a client
+    cannot tell when its write actually landed. It watches the monotonic
+    **and** the
     wall clock, because `CLOCK_MONOTONIC` does not advance across a VM
     suspend — and `setTimeout` rides that same clock, so a suspended host
     would otherwise think every beat was punctual. The window is stamped

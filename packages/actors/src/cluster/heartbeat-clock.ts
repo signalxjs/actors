@@ -65,7 +65,21 @@ export interface HeartbeatClock {
      * millisecond a doomed activation keeps accepting turns.
      */
     beat(): void;
-    /** A heartbeat write CONFIRMED: re-open the window, clear the latch. */
+    /**
+     * A heartbeat write CONFIRMED: fire if the window lapsed while it was in
+     * flight, then re-open it and clear the latch.
+     *
+     * The in-flight check is not redundant with `beat()`. A write can START
+     * inside the window and take longer than the whole TTL to come back — a
+     * store failover, a stalled connection — and it is impossible to tell
+     * from here WHEN it actually landed: anywhere between the send and the
+     * ack. So the record may well have expired mid-flight, with peers
+     * evicting this host's claims, and the write still succeeds in the end.
+     * That is #45 again with the stall on the store's side instead of ours,
+     * so it is judged the same way. Suspecting on a possible rather than a
+     * certain lapse is the deliberate direction to err in: the cost is one
+     * pod restart, and the alternative is two live activations of one actor.
+     */
     confirmed(): void;
     /** A heartbeat write FAILED: fire if the window has lapsed. */
     failed(): void;
@@ -113,9 +127,16 @@ export function heartbeatClock(options: HeartbeatClockOptions): HeartbeatClock {
     };
 
     return {
+        // `arm` deliberately does NOT check first: it is called before the
+        // beat exists, when this host holds no claims and there is nothing
+        // for a peer to have evicted. Checking there would fence at startup
+        // whenever the rest of join outlasted the TTL.
         arm: open,
         beat: suspect,
-        confirmed: open,
+        confirmed: () => {
+            suspect(); // …did the window lapse while the write was in flight?
+            open();
+        },
         failed: suspect
     };
 }
