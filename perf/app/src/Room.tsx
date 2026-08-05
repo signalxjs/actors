@@ -95,7 +95,7 @@ export const Room = component<{ room?: string }>((ctx) => {
             <ul class="messages">
                 {messages.match({
                     pending: () => <li>loading…</li>,
-                    error: (e, retry) => (
+                    error: (e, { retry }) => (
                         <li class="error">
                             {e.message} <button onClick={retry}>retry</button>
                         </li>

@@ -355,16 +355,16 @@ that detection window is the price of crash-resume.
 
 ### (l) The real app, from the outside world
 
-The chat example ([`examples/chat/deploy`](../../../examples/chat/deploy)) publicly
+The chat example ([`perf/app/deploy`](../../app/deploy)) publicly
 exposed: SSR + browser client + signed sessions + live NDJSON streams
 through the ingress. Deploy:
 
 ```sh
 TAG=$(git rev-parse --short HEAD)
 az acr build --registry $ACR --image sigx-chat:$TAG \
-  --platform linux/amd64 --file examples/chat/Dockerfile .
+  --platform linux/amd64 --file perf/app/Dockerfile .
 kubectl create namespace sigx-chat
-helm install chat examples/chat/deploy/chart -n sigx-chat --set image.tag=$TAG
+helm install chat perf/app/deploy/chart -n sigx-chat --set image.tag=$TAG
 az network dns record-set a add-record -g <dns-rg> -z <zone> \
   -n chat -a <ingress-lb-ip> --ttl 300
 # pre-DNS smoke: curl -sI --resolve chat.<zone>:443:<lb-ip> https://chat.<zone>/
@@ -430,7 +430,7 @@ steady-state spread, so `testenv.mjs` folds them into `INFRA_SHAPE` and the
 perf comparison refuses to cross them — deliberate, not an obstacle.
 
 ```sh
-helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
+helm upgrade chat perf/app/deploy/chart -n sigx-chat --reset-then-reuse-values \
   --set env.rebalance=1 --set env.rebalanceIntervalMs=30000 \
   --set env.rebalanceMinIdleMs=15000
 INFRA_CHAOS=1 node perf/aks/deploy/testenv.mjs test -t rebalance
@@ -450,7 +450,7 @@ per-peer probe traffic costs at this fleet size.
 ### (o) maxActivations — shedding under a cap
 
 ```sh
-helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
+helm upgrade chat perf/app/deploy/chart -n sigx-chat --reset-then-reuse-values \
   --set env.maxActivations=200 --set env.sweepIntervalMs=15000
 node perf/aks/deploy/testenv.mjs test -t maxActivations
 ```
@@ -468,7 +468,7 @@ kept-alive activations are never shed.
 ### (p) Worker-pool saturation
 
 ```sh
-helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
+helm upgrade chat perf/app/deploy/chart -n sigx-chat --reset-then-reuse-values \
   --set env.digestMaxLocal=8 --set env.digestIters=20000
 node perf/aks/deploy/testenv.mjs load ACTOR_TYPE=Digest \
   READ_METHOD=summarize 'READ_ARGS=["payload",20000]' ROOMS=1 LADDER=8,16,32,64

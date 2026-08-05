@@ -41,9 +41,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnable } from '../spawn.mjs';
-// Derived from the build, never pasted: see post-fn.mjs for the failure
-// mode that motivated it.
-import { postMessageFnId } from '../../../examples/chat/deploy/post-fn.mjs';
 import { LATENCY_NOISE_FLOOR_MS } from '../loop.ts';
 import type { Metric, Scenario } from '../types.ts';
 
@@ -241,6 +238,12 @@ const writeMix: Scenario = {
     name: 'infra/write-mix',
     description: 'a fifth of calls are writes (a storage CAS each), same-region VM',
     async run(ctx) {
+        // Imported HERE, not at module scope. This is the only thing the
+        // benchmarks reach into `perf/` for, and a static import would put
+        // that path back in the load path of `pnpm bench` and `pnpm test`
+        // for everyone — which is exactly what made moving these trees
+        // break Tier 1 and 2.
+        const { postMessageFnId } = await import('../../../perf/app/deploy/post-fn.mjs');
         const rows = driveFromVm({
             MIX: '0.2',
             // Resolved from the build every run. The literal this replaced

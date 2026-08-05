@@ -63,7 +63,7 @@ const REDIS_URL = process.env.REDIS_URL;
 const need = (name) => {
     const value = process.env[name];
     if (!value) {
-        console.error(`[chat] missing required env ${name} (required with REDIS_URL)`);
+        console.error(`[perf-app] missing required env ${name} (required with REDIS_URL)`);
         process.exit(1);
     }
     return value;
@@ -94,7 +94,7 @@ const placementPolicy = () => {
     }
     if (PLACEMENT === 'random') return randomPlacementPolicy();
     console.error(
-        `[chat] PLACEMENT must be prefer-local, activation-count or random, got '${PLACEMENT}'`
+        `[perf-app] PLACEMENT must be prefer-local, activation-count or random, got '${PLACEMENT}'`
     );
     process.exit(1);
 };
@@ -272,7 +272,7 @@ const shutdown = async () => {
     try {
         await host.stop({ timeoutMs: 30_000 });
     } catch (error) {
-        console.error('[chat] drain failed:', error);
+        console.error('[perf-app] drain failed:', error);
         code = 1;
     }
     pub.close();
@@ -285,7 +285,7 @@ process.once('SIGTERM', () => void shutdown());
 process.once('SIGINT', () => void shutdown());
 
 console.log(
-    `[chat] public :${PORT}  internal :${INTERNAL_PORT}  ` +
+    `[perf-app] public :${PORT}  internal :${INTERNAL_PORT}  ` +
         (plugin
             ? `host ${plugin.placement.identity.hostId} clustered via redis  ` +
               `placement=${PLACEMENT} rebalance=${rebalance ? 'on' : 'off'}  `

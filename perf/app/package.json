@@ -1,7 +1,8 @@
 {
-    "name": "chat-example",
+    "name": "sigx-perf-app",
     "private": true,
     "type": "module",
+    "description": "The Tier-3 system under test: the app the AKS harness deploys and measures. Pinned - see perf/README.md",
     "files": [
         "dist",
         "server.mjs"

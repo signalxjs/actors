@@ -1,6 +1,19 @@
-# chat example
+# perf/app — the Tier-3 system under test
 
-Actors inside a **real SignalX app** — SSR with `useActorState`, guards
+> **Not an example.** This is the app the AKS harness deploys and measures:
+> `INFRA_URL` points at it, `edge-ladder.mjs` drives its `Room#recent` and
+> `postMessage`, `infra.test.ts` runs against its namespace, and
+> `INFRA_SHAPE` is computed from the runtime knobs below, read back off its
+> live Deployment.
+>
+> **It is pinned.** Changing an actor body, a knob default or the chart here
+> invalidates the recorded Tier-3 baselines in `benchmarks/BASELINES.md` —
+> that is a deliberate act with numbers attached, not a tidy-up. If you want
+> to read a sigx app, read [`examples/chat`](../../examples/chat), which is
+> written for that and nothing else.
+
+It began as the chat example, and still is one underneath: SSR with
+`useActorState`, guards
 that run on both transports, serverFns beside the actor endpoint,
 hydration with no refetch, and `useActorState(…, { live: true })` keeping
 every open tab live over ONE connection. Open two tabs and type in one.
@@ -24,14 +37,14 @@ for probes, peers and `kubectl port-forward` only.
 
 ```sh
 pnpm install && pnpm build
-pnpm --filter chat-example dev          # Vite dev server on :5173
+pnpm --filter sigx-perf-app dev          # Vite dev server on :5173
 ```
 
 ## Prod, local (single node)
 
 ```sh
-pnpm --filter chat-example build
-pnpm --filter chat-example start        # :3000 public, :7311 internal
+pnpm --filter sigx-perf-app build
+pnpm --filter sigx-perf-app start        # :3000 public, :7311 internal
 ```
 
 ## Prod, local 2-node cluster
@@ -39,9 +52,9 @@ pnpm --filter chat-example start        # :3000 public, :7311 internal
 ```sh
 redis-server --daemonize yes
 REDIS_URL=redis://localhost:6379 CLUSTER_SECRET=dev OPS_SECRET=dev \
-  PORT=8080 INTERNAL_PORT=7311 pnpm --filter chat-example start:prod &
+  PORT=8080 INTERNAL_PORT=7311 pnpm --filter sigx-perf-app start:prod &
 REDIS_URL=redis://localhost:6379 CLUSTER_SECRET=dev OPS_SECRET=dev \
-  PORT=8081 INTERNAL_PORT=7312 pnpm --filter chat-example start:prod &
+  PORT=8081 INTERNAL_PORT=7312 pnpm --filter sigx-perf-app start:prod &
 # browse :8080 and :8081 — same rooms, live across both
 ```
 
@@ -80,5 +93,5 @@ unbroken synchronous loop overlaps with nothing.
 ```sh
 TAG=$(git rev-parse --short HEAD)
 az acr build --registry <acr> --image sigx-chat:$TAG \
-  --platform linux/amd64 --file examples/chat/Dockerfile .
+  --platform linux/amd64 --file perf/app/Dockerfile .
 ```

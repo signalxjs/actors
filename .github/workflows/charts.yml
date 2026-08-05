@@ -3,7 +3,7 @@
 # A chart that renders perfectly can still be refused on apply: an Ingress
 # path containing `$` under `pathType: Prefix` passes `helm lint` AND
 # `helm template`, and is rejected by the ingress-nginx admission webhook.
-# That exact manifest reached main and left `examples/chat/deploy/chart`
+# That exact manifest reached main and left `perf/app/deploy/chart`
 # unable to install (#200). The only check that catches it is a real API
 # server with the webhook in front of it, so this job stands one up.
 #
@@ -137,7 +137,7 @@ jobs:
           }
 
           echo "helm lint:"
-          for chart in perf/aks/deploy/chart examples/chat/deploy/chart; do
+          for chart in perf/aks/deploy/chart perf/app/deploy/chart; do
             helm lint "$chart" \
               --set image.repository=registry.example.com/citest \
               --set image.tag=citest \
@@ -154,19 +154,19 @@ jobs:
 
           echo "chat chart:"
           chat_host='--set ingress.host=chat.example.test'
-          check "defaults"            examples/chat/deploy/chart sigx-chat $chat_host
-          check "locality off"        examples/chat/deploy/chart sigx-chat $chat_host --set ingress.localityRouting=false
-          check "spread strict"       examples/chat/deploy/chart sigx-chat $chat_host --set spread.whenUnsatisfiable=DoNotSchedule
-          check "spread off"          examples/chat/deploy/chart sigx-chat $chat_host --set spread.enabled=false
-          check "no redis persistence" examples/chat/deploy/chart sigx-chat $chat_host --set redis.persistence.enabled=false
+          check "defaults"            perf/app/deploy/chart sigx-chat $chat_host
+          check "locality off"        perf/app/deploy/chart sigx-chat $chat_host --set ingress.localityRouting=false
+          check "spread strict"       perf/app/deploy/chart sigx-chat $chat_host --set spread.whenUnsatisfiable=DoNotSchedule
+          check "spread off"          perf/app/deploy/chart sigx-chat $chat_host --set spread.enabled=false
+          check "no redis persistence" perf/app/deploy/chart sigx-chat $chat_host --set redis.persistence.enabled=false
 
           # A chart that gained a values key must still render when an
           # upgrade replays values from before that key existed (helm
           # --reuse-values does exactly this, and a bare .Values.new.key
           # nil-pointers the whole render).
           echo "missing new keys (the --reuse-values case):"
-          check "chat, spread absent" examples/chat/deploy/chart sigx-chat $chat_host --set spread=null
-          check "chat, ingress toggle absent" examples/chat/deploy/chart sigx-chat $chat_host --set ingress.localityRouting=null
+          check "chat, spread absent" perf/app/deploy/chart sigx-chat $chat_host --set spread=null
+          check "chat, ingress toggle absent" perf/app/deploy/chart sigx-chat $chat_host --set ingress.localityRouting=null
 
           exit $fail
 
@@ -190,8 +190,8 @@ jobs:
           repo='--set image.repository=registry.example.com/citest'
           tag='--set image.tag=citest'
           host='--set ingress.host=chat.example.test'
-          for chart in perf/aks/deploy/chart examples/chat/deploy/chart; do
+          for chart in perf/aks/deploy/chart perf/app/deploy/chart; do
             refuse image.tag        "$chart" $repo $host
             refuse image.repository "$chart" $tag $host
           done
-          refuse ingress.host examples/chat/deploy/chart $repo $tag
+          refuse ingress.host perf/app/deploy/chart $repo $tag

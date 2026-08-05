@@ -878,7 +878,7 @@ the load driven from a VM in the same region.
 |---|---|
 | Cluster | AKS 1.34, `Standard_D2ls_v6` (2 vCPU, **1900m allocatable**) |
 | Hosts | one per node, `spread.whenUnsatisfiable=DoNotSchedule`, `limits.cpu 1000m` |
-| App | `examples/chat`, redisStorage + redisCluster, one Redis pod |
+| App | `perf/app`, redisStorage + redisCluster, one Redis pod |
 | Driver | `Standard_D4s_v5` in-region, `edge-ladder.mjs`, Node v22.22.0 |
 | Settings | 3 runs × 20 000 ms per rung |
 | Shapes | `replicas=3 nodes=3` and `replicas=7 nodes=7`, image `02dded3`, knobs identical (`PLACEMENT=prefer-local, MAX_ACTIVATIONS=0, SWEEP_INTERVAL_MS=60000, MIGRATE_PERSIST=lazy, DIGEST_ITERS=2000`) |

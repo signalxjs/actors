@@ -2,20 +2,21 @@
  * serverFns living beside actors on the same server — and calling into
  * them.
  *
- * `postMessage` is the trust boundary for an attributed write: `requireUser`
- * verifies the session and stashes it in `rq.locals.user`, and the handler
- * hands the actor a `from` the browser never supplied. An actor guard cannot
- * do this itself, because guards receive `(rq, { symbol, name })` — no key
- * and no arguments.
+ * `postMessage` is the trust boundary for an attributed write: the app's
+ * `authenticate` has already verified the session, and the handler hands
+ * the actor a `from` taken from that principal rather than from anything
+ * the browser supplied. An actor guard cannot do this itself, because
+ * guards receive `(rq, { symbol, name })` — no key and no arguments.
  *
- * The `actor()` call here dispatches IN-PROCESS through the host seam: same
- * expression as the browser's, no HTTP hop, and the actor's own
- * `requireUser` chain still runs against this request.
+ * The `actor()` call here dispatches IN-PROCESS through the host seam: the
+ * same expression as the browser's, no HTTP hop, and the app's default
+ * policy still runs against this request.
  */
-import { serverFn, ServerFnError } from '@sigx/server';
+import { requirePrincipal, serverFn, ServerFnError } from '@sigx/server';
 import { actor } from '@sigx/actors';
 import { RoomActor } from './room.actor';
 import { cookieFor, currentUser } from './guards';
+import type { ChatUser } from './server-app';
 
 /**
  * Who am I? Drives the header; also proves serverFns work beside actors.
@@ -58,7 +59,10 @@ export const signOut = serverFn({
 
 export const postMessage = serverFn({
     handler: async (rq, input: { room: string; text: string }): Promise<number> => {
-        const from = rq.locals.user as string;
+        // NOT `rq.locals.user`. That was stamped by the `requireUser` guard
+        // rfc-server-v4 deleted (see guards.ts), so it has been `undefined`
+        // — and every message attributed to `undefined` — ever since.
+        const { name: from } = await requirePrincipal<ChatUser>(rq);
         const text = input.text.trim();
         if (!text) throw new ServerFnError(400, 'message is empty');
         return actor(RoomActor, input.room).post(from, text);
