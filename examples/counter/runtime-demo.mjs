@@ -2,7 +2,10 @@
  * Two runtime primitives that no other example runs: detached tasks, and
  * durable reminders that outlive the process.
  *
- *     pnpm --filter counter-example runtime         # after `pnpm build`
+ *     pnpm --filter counter-example runtime-demo    # after `pnpm build`
+ *
+ * (`runtime-demo`, not `runtime` — pnpm resolves the latter to a builtin
+ * and never reaches this package's script.)
  *
  * What each part proves is in README.md. Every step throws on a wrong
  * result, so this file is an assertion suite that narrates itself.

@@ -1,14 +1,16 @@
 /**
  * A chat room — one actor per room name, single-threaded, persistent.
  *
- * **It declares no authorization at all, and that is the point.** The app's
- * default policy (`server-app.ts`) decides, on every transport: the wire
- * call from the browser and the in-process dispatch during an SSR render.
- * Proving those two agree is most of why this example exists, because they
- * reach the request very differently.
+ * Authorization runs on every transport — the wire call from the browser
+ * and the in-process dispatch during an SSR render. Proving those two agree
+ * is most of why this example exists, because they reach the request very
+ * differently.
  *
- * It does declare `authorize`, for the question the app-wide default
- * cannot reach: *"may they call it on THIS room?"* — see the policy below.
+ * Two layers do it. The app's default policy (`server-app.ts`) answers *"is
+ * this caller signed in?"* for everything, with nothing declared here; the
+ * `authorize` below answers the one question that default cannot reach,
+ * *"may they call it on THIS room?"*, because only a policy sees the
+ * instance.
  */
 import { defineActor } from './actors.app';
 import { roomActivity } from './activity.actor';
@@ -61,7 +63,14 @@ export const RoomActor = defineActor({
         // an unidentified resource is exactly when you want to fail closed.
         if (!op.resource) return false;
         const match = PRIVATE.exec(op.resource.key);
-        return match === null || match[1] === user.name;
+        if (match === null) return true; // an ordinary, shared room
+        // `user` is non-null here in practice — this actor does not declare
+        // `allowAnonymous`, so core's pre-decode prelude has already 401'd
+        // an anonymous caller before any policy runs. The type still admits
+        // null, because a policy on an `allowAnonymous: true` actor DOES
+        // see it. Handle it, rather than leave a latent null dereference
+        // for whoever copies this into that case.
+        return user !== null && match[1] === user.name;
     },
     state: (): RoomState => ({
         v: ROOM_STATE_VERSION,

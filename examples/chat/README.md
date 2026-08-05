@@ -85,11 +85,18 @@ user:
 const PRIVATE = /^dm-([\w-]+?)-/;
 
 authorize: (user, _rq, op) => {
-    if (!op.resource) return false;            // fail closed
+    if (!op.resource) return false;              // fail closed
     const match = PRIVATE.exec(op.resource.key);
-    return match === null || match[1] === user.name;
+    if (match === null) return true;             // an ordinary, shared room
+    return user !== null && match[1] === user.name;
 }
 ```
+
+`user` cannot actually be null here: this actor does not declare
+`allowAnonymous`, so core's pre-decode prelude 401s an anonymous caller
+before any policy runs. The type admits null because a policy on an
+`allowAnonymous: true` actor **does** see it — so the check is there to keep
+the snippet safe to copy into that case.
 
 Signed in as `ada`, open **`/r/dm-ada-notes`** — hers. Then open
 **`/r/dm-bob-notes`** and the page renders the refusal instead of the room,

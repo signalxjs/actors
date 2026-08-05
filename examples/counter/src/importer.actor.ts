@@ -63,9 +63,15 @@ export const Importer = defineActor({
                         c.state.done = i + 1;
                     });
                 }
-            } catch {
-                // Cancelled. Deactivation grants a bounded grace with turns
-                // still open, so a final checkpoint like this one lands.
+            } catch (error) {
+                // ONLY an abort is a cancellation. A task that throws is
+                // terminal by contract — no automatic retry — so swallowing
+                // a real failure here would report a broken import as a
+                // tidy `stopped` and lose the error entirely.
+                if (!ctx.abortSignal.aborted) throw error;
+                // Cancelled or deactivating. Deactivation grants a bounded
+                // grace with turns still open, so this final checkpoint
+                // lands.
                 await ctx.turn(async (c) => {
                     c.state.phase = 'stopped';
                     await c.save();
