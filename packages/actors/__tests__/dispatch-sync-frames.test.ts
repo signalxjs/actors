@@ -19,7 +19,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 function counterActor() {
     return defineActor({
         type: 'Counter',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({ count: 0 }),
         methods: (ctx) => ({
             async increment(by: number) {
@@ -83,7 +83,7 @@ describe('warm dispatch ordering', () => {
         const order: number[] = [];
         const probe = defineActor({
             type: 'Probe',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({
                 async mark(n: number) {

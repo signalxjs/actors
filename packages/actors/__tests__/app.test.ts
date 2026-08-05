@@ -25,7 +25,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {
@@ -165,7 +165,7 @@ describe('defineActorApp — custom placements', () => {
         const pinned: ActorPlacementStrategy = { name: 'prefer-local' };
         const Session = defineActor({
             type: 'Session',
-            unguarded: true,
+            allowAnonymous: true,
             placement: pinned,
             state: () => ({ hits: 0 }),
             methods: (ctx) => ({
@@ -240,7 +240,7 @@ describe('defineActorApp — dispatch middleware', () => {
     it('keeps streams working through middleware that forwards', async () => {
         const Ticker = defineActor({
             type: 'Ticker',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: () => ({}),
             streams: () => ({
@@ -323,7 +323,7 @@ describe('defineActorApp — context extension', () => {
     it('merges every plugin extension onto ctx', async () => {
         const probe = defineActor({
             type: 'Probe',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async read() {
@@ -349,7 +349,7 @@ describe('defineActorApp — context extension', () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const probe = defineActor({
             type: 'Probe2',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ count: 7 }),
             methods: (ctx) => ({
                 async read() {
@@ -552,7 +552,7 @@ describe('defineActorApp — context extension safety', () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const probe = defineActor({
             type: 'Probe3',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async read() {

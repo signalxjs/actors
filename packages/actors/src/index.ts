@@ -11,7 +11,7 @@
 import type { ServerFnContext } from '@sigx/server';
 import { mergeCallBag, takeCallBag } from './call-context-bag';
 import { isActorDefinition } from './define';
-import { runGuards } from './guards';
+import { authorizeActorCall, encodePrincipal } from './guards';
 import { resolveServerContext } from './context';
 import { currentHost } from './seam';
 import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './types';
@@ -59,6 +59,7 @@ export type {
     ActorArgs,
     ActorPlacement,
     ActorPlacementStrategy,
+    ActorPolicy,
     ActorReadName,
     ActorRef,
     ActorReminders,
@@ -114,7 +115,7 @@ function isClientRef(value: unknown): value is ClientRefLike {
  *  - **browser**: `def` is the build-swapped client ref; calls go over the
  *    wire (`/_sigx/actor`) through the generic proxy.
  *  - **server** (serverFns, SSR render, scripts): `def` is the real
- *    definition; the actor's `use`/`methodUse` guard chains run against the
+ *    definition; the actor's `authorize`/`methodAuthorize` policies run against the
  *    ambient request context, then the call dispatches in-process through
  *    the running host (no HTTP hop).
  *
@@ -168,24 +169,35 @@ function serverClient<D extends AnyActorDefinition>(
             } else {
                 member = async (...args: unknown[]) => {
                     const host = currentHost();
-                    // Guards run BEFORE dispatch, so a failing guard rejects a
-                    // one-way call too — guard failure is pre-acceptance.
+                    // The pipeline runs BEFORE dispatch, so a denial rejects
+                    // a one-way call too — refusal is pre-acceptance. This
+                    // is an ENTRY POINT, so it runs the whole thing:
+                    // in-process calls are exactly the transport v3's
+                    // wire-only endpoint guard never covered.
                     const rq = contextFor(options);
-                    await runGuards(def, prop, rq);
-                    // The context bag: what a guard stamped on THIS request,
-                    // with explicit `.with({ bag })` entries winning. The
-                    // detached case degrades to no bag — `contextFor` always
-                    // yields a locals store, empty when there is no scope.
+                    await authorizeActorCall(def, prop, key, rq, 'in-process');
+                    // App DATA the request stamped, with explicit
+                    // `.with({ bag })` entries winning. The detached case
+                    // degrades to no bag — `contextFor` always yields a
+                    // locals store, empty when there is no scope.
                     const bag = mergeCallBag(takeCallBag(rq.locals), options?.bag);
+                    // IDENTITY travels separately, in its own envelope slot,
+                    // so it cannot be forged through `.with({ bag })`.
+                    const principal = await encodePrincipal(rq);
                     // The host client skips absent options, so passing them
                     // through unconditionally is safe and smaller.
                     const raw =
-                        options?.signal || options?.oneWay || bag
-                            ? host.actor(def, key).with({
-                                  signal: options?.signal,
-                                  oneWay: options?.oneWay,
-                                  bag
-                              })
+                        options?.signal || options?.oneWay || bag || principal
+                            ? host.actor(def, key).with(
+                                  withPrincipal(
+                                      {
+                                          signal: options?.signal,
+                                          oneWay: options?.oneWay,
+                                          bag
+                                      },
+                                      principal
+                                  )
+                              )
                             : host.actor(def, key);
                     return (raw as Record<string, (...a: unknown[]) => Promise<unknown>>)[prop](
                         ...args
@@ -197,6 +209,22 @@ function serverClient<D extends AnyActorDefinition>(
         }
     });
     return proxy as ActorClientWith<D>;
+}
+
+/**
+ * Attach the encoded principal to the host client's options.
+ *
+ * `principal` is deliberately ABSENT from the public `ActorCallOptions`: it
+ * is identity, and a caller able to set it could forge it. The host honours
+ * it at runtime (`HostCallOptions`), and these two entry points — which
+ * supply it only from the principal the pipeline just resolved — are the
+ * one place it is ever written. Hence the cast, and hence its narrowness.
+ */
+function withPrincipal(
+    options: ActorCallOptions,
+    principal: string | undefined
+): ActorCallOptions {
+    return (principal === undefined ? options : { ...options, principal }) as ActorCallOptions;
 }
 
 function contextFor(options: ActorCallOptions | undefined): ServerFnContext {
@@ -219,13 +247,16 @@ function guardedStream(
     const open = async (): Promise<AsyncIterator<unknown>> => {
         const host = currentHost();
         const rq = contextFor(options);
-        await runGuards(def, method, rq);
-        // Same lift as the unary member: a guard's stamp reaches the watch's
-        // call context too.
+        await authorizeActorCall(def, method, key, rq, 'in-process');
+        // Same lift as the unary member: what the request stamped reaches
+        // the watch's call context too, identity included.
         const bag = mergeCallBag(takeCallBag(rq.locals), options?.bag);
+        const principal = await encodePrincipal(rq);
         const raw =
-            options?.signal || bag
-                ? host.actor(def, key).with({ signal: options?.signal, bag })
+            options?.signal || bag || principal
+                ? host
+                      .actor(def, key)
+                      .with(withPrincipal({ signal: options?.signal, bag }, principal))
                 : host.actor(def, key);
         const stream = (
             raw as Record<string, (...a: unknown[]) => AsyncIterable<unknown>>

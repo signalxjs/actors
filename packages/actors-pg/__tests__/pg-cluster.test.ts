@@ -200,7 +200,7 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
     describe('2-host smoke over real Postgres', () => {
         const counter = defineActor({
             type: 'Counter',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ count: 0 }),
             methods: (ctx) => ({
                 async increment(by: number) {

@@ -242,7 +242,7 @@ describe.skipIf(!SURREAL_URL)('surreal cluster providers', () => {
     describe('2-host smoke over real SurrealDB', () => {
         const counter = defineActor({
             type: 'Counter',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ count: 0 }),
             methods: (ctx) => ({
                 async increment(by: number) {

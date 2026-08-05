@@ -19,10 +19,10 @@ onlyBuiltDependencies:
 # here in peerDeps/devDeps; `pnpm pack` rewrites it to the concrete range in
 # the published manifest.
 catalog:
-  "@sigx/reactivity": ^0.14.0
-  "@sigx/runtime-core": ^0.14.0
-  "@sigx/serialize": ^0.14.0
-  "@sigx/server": ^0.14.0
-  "@sigx/server-renderer": ^0.14.0
-  "@sigx/vite": ^0.14.0
-  "sigx": ^0.14.0
+  "@sigx/reactivity": ^0.15.0
+  "@sigx/runtime-core": ^0.15.0
+  "@sigx/serialize": ^0.15.0
+  "@sigx/server": ^0.15.0
+  "@sigx/server-renderer": ^0.15.0
+  "@sigx/vite": ^0.15.0
+  "sigx": ^0.15.0

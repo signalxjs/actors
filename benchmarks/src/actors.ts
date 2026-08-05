@@ -11,7 +11,7 @@
  * where the write-behind and change-feed costs actually show up.
  */
 import { defineActor } from '@sigx/actors';
-import type { ServerFnGuard } from '@sigx/server';
+import type { ServerPolicy } from '@sigx/server';
 
 export interface TinyState {
     count: number;
@@ -20,7 +20,7 @@ export interface TinyState {
 /** The baseline actor: explicit persistence, so a call touches no storage. */
 export const Tiny = defineActor({
     type: 'BenchTiny',
-    unguarded: true,
+    allowAnonymous: true,
     state: (): TinyState => ({ count: 0 }),
     methods: (ctx) => ({
         /** Touches nothing — the pure dispatch-path floor. */
@@ -58,7 +58,7 @@ export const Tiny = defineActor({
  */
 export const AlwaysTiny = defineActor({
     type: 'BenchAlwaysTiny',
-    unguarded: true,
+    allowAnonymous: true,
     reentrant: 'always',
     state: (): TinyState => ({ count: 0 }),
     methods: (ctx) => ({
@@ -75,7 +75,7 @@ export const AlwaysTiny = defineActor({
 /** Same shape, but every mutating turn schedules a debounced background save. */
 export const WriteBehind = defineActor({
     type: 'BenchWriteBehind',
-    unguarded: true,
+    allowAnonymous: true,
     persistence: { mode: 'write-behind', debounceMs: 50 },
     state: (): TinyState => ({ count: 0 }),
     methods: (ctx) => ({
@@ -103,7 +103,7 @@ function makeRows(n: number): LargeState['rows'] {
 
 export const Large = defineActor({
     type: 'BenchLarge',
-    unguarded: true,
+    allowAnonymous: true,
     state: (): LargeState => ({ count: 0, rows: makeRows(200) }),
     methods: (ctx) => ({
         noop() {
@@ -139,7 +139,7 @@ export const Large = defineActor({
  * methods: the actor's shape swamped the variable under test. Holding
  * everything else fixed is the whole point of the comparison.
  */
-const passGuard: ServerFnGuard = () => {};
+const passPolicy: ServerPolicy = () => true;
 
 const pricedState = (): TinyState => ({ count: 0 });
 const pricedMethods = () => ({
@@ -150,15 +150,15 @@ const pricedMethods = () => ({
 
 export const Guarded = defineActor({
     type: 'BenchGuarded',
-    use: [passGuard, passGuard],
+    authorize: [passPolicy, passPolicy],
     state: pricedState,
     methods: pricedMethods
 });
 
-/** The control for `Guarded`: same shape, no guard chain. */
+/** The control for `Guarded`: same shape, no policy chain. */
 export const Unguarded = defineActor({
     type: 'BenchUnguarded',
-    unguarded: true,
+    allowAnonymous: true,
     state: pricedState,
     methods: pricedMethods
 });
@@ -166,7 +166,7 @@ export const Unguarded = defineActor({
 /** Registers a durable reminder on activation, so the table has real entries. */
 export const Reminded = defineActor({
     type: 'BenchReminded',
-    unguarded: true,
+    allowAnonymous: true,
     state: (): TinyState => ({ count: 0 }),
     async onActivate(ctx) {
         await ctx.reminders.set('tick', { due: 60_000, period: 60_000 });
@@ -184,7 +184,7 @@ export const Reminded = defineActor({
 /** Holds a volatile timer per activation — for the timer-leak scenario. */
 export const Timered = defineActor({
     type: 'BenchTimered',
-    unguarded: true,
+    allowAnonymous: true,
     state: (): TinyState => ({ count: 0 }),
     onActivate(ctx) {
         ctx.timer(

@@ -143,7 +143,7 @@ const directory: ActorDirectory = {
 
 const Bench = defineActor({
     type: 'Tier2Bench',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         noop() {

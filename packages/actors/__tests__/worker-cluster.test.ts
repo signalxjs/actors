@@ -12,7 +12,7 @@ const NUL = String.fromCharCode(0);
 
 const Work = defineWorker({
     type: 'Work',
-    unguarded: true,
+    allowAnonymous: true,
     maxLocal: 2,
     methods: (ctx) => ({
         async double(n: number) {
@@ -26,7 +26,7 @@ const Work = defineWorker({
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ n: 0 }),
     methods: (ctx) => ({
         async bump() {

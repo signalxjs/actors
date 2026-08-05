@@ -11,7 +11,7 @@ export const Counter = defineActor({
     type: 'Counter',
     // This demo counter is deliberately public. Real actors declare a
     // `use: [...]` guard chain — the build gate insists you pick one.
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0, lastVisit: null as Date | null }),
     methods: (ctx) => ({
         async increment(by: number) {

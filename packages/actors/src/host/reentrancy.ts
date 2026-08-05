@@ -19,7 +19,7 @@ export type ReentrancyMode = 'none' | 'call-chain' | 'always';
 
 /**
  * The mode governing ONE method: the per-method map wins (own keys only —
- * same rule as `methodUse`), then the actor-level setting. `true` is the
+ * same rule as `methodAuthorize`), then the actor-level setting. `true` is the
  * v1 spelling of `'call-chain'`.
  */
 export function effectiveReentrancy(opts: ReentrancyOptions, method: string): ReentrancyMode {

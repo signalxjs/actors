@@ -6,7 +6,7 @@ import { defineActor } from './actors.app';
 
 export const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by = 1) {

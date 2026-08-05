@@ -26,7 +26,7 @@ describe('actor() entry', () => {
     it('throws a descriptive boot-order error when no host is running', async () => {
         const def = defineActor({
             type: 'NoHost',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({
                 async ping() {
@@ -40,7 +40,7 @@ describe('actor() entry', () => {
     it('dispatches in-process through the seam once a host is started', async () => {
         const def = defineActor({
             type: 'Seamed',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 async bump() {
@@ -58,12 +58,13 @@ describe('actor() entry', () => {
         const seen: string[] = [];
         const def = defineActor({
             type: 'Guarded',
-            use: [
-                (_rq: ServerFnContext, info: ServerFnInfo) => {
-                    seen.push(`actor:${info.symbol}:${info.name}`);
+            authorize: [
+                (_p, _rq, op) => {
+                    seen.push(`actor:${op.fn.symbol}:${op.fn.name}`);
+                    return true;
                 }
             ],
-            methodUse: {
+            methodAuthorize: {
                 secret: [
                     () => {
                         seen.push('method:secret');
@@ -98,12 +99,13 @@ describe('actor() entry', () => {
         const events: string[] = [];
         const def = defineActor({
             type: 'OneWayGuarded',
-            use: [
-                (_rq: ServerFnContext, info: ServerFnInfo) => {
-                    events.push(`guard:${info.name}`);
+            authorize: [
+                (_p, _rq, op) => {
+                    events.push(`guard:${op.fn.name}`);
+                    return true;
                 }
             ],
-            methodUse: {
+            methodAuthorize: {
                 sealed: [
                     () => {
                         throw new ServerFnError(403, 'forbidden');
@@ -140,9 +142,10 @@ describe('actor() entry', () => {
         let sawUrl: string | null = null;
         const def = defineActor({
             type: 'CtxSee',
-            use: [
-                (rq: ServerFnContext) => {
+            authorize: [
+                (_p, rq) => {
                     sawUrl = rq.request.url;
+                    return true;
                 }
             ],
             state: () => ({}),
@@ -169,10 +172,11 @@ describe('actor() entry', () => {
         try {
             const def = defineActor({
                 type: 'AmbientLocals',
-                use: [
-                    (rq: ServerFnContext) => {
+                authorize: [
+                    (_p, rq) => {
                         sawUser = rq.locals.user;
                         rq.locals.stamped = true;
+                        return true;
                     }
                 ],
                 state: () => ({}),
@@ -194,9 +198,10 @@ describe('actor() entry', () => {
     it('a guard reading rq.request with no context gets the descriptive detached throw', async () => {
         const def = defineActor({
             type: 'Detached',
-            use: [
-                (rq: ServerFnContext) => {
+            authorize: [
+                (_p, rq) => {
                     void rq.request; // no ambient scope in this test → throws
+                    return true;
                 }
             ],
             state: () => ({}),
@@ -213,7 +218,7 @@ describe('actor() entry', () => {
     it('guards run before the stream opens (wire parity for streams)', async () => {
         const def = defineActor({
             type: 'GStream',
-            use: [
+            authorize: [
                 () => {
                     throw new ServerFnError(401, 'nope');
                 }
@@ -233,16 +238,16 @@ describe('actor() entry', () => {
         await expect(iterate()).rejects.toMatchObject({ status: 401 });
     });
 
-    it('defineActor rejects the unguarded+use contradiction at definition time', () => {
+    it('allows allowAnonymous alongside authorize — no contradiction since v4', () => {
         expect(() =>
             defineActor({
                 type: 'Contradiction',
-                unguarded: true,
-                use: [() => {}],
+                allowAnonymous: true,
+                authorize: [() => true],
                 state: () => ({}),
                 methods: () => ({})
             })
-        ).toThrow(/unguarded: true.*use/s);
+        ).not.toThrow();
     });
 });
 
@@ -256,9 +261,10 @@ import { stampCallBag } from '@sigx/actors';
 describe('actor() entry: context bag', () => {
     const bagged = defineActor({
         type: 'EntryBagged',
-        use: [
-            (rq: ServerFnContext) => {
+        authorize: [
+            (_p, rq) => {
                 stampCallBag(rq, { user: 'ada', from: 'guard' });
+                return true;
             }
         ],
         state: () => ({}),
@@ -291,10 +297,10 @@ describe('actor() entry: context bag', () => {
         ).rejects.toThrow(/\[sigx actors\]/);
     });
 
-    it('an unguarded detached call degrades to an empty bag, never a throw', async () => {
+    it('an anonymous detached call degrades to an empty bag, never a throw', async () => {
         const plain = defineActor({
             type: 'EntryPlainBag',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async bagOf() {
@@ -318,7 +324,7 @@ describe('actor() entry: context bag', () => {
         try {
             const plain = defineActor({
                 type: 'EntryAmbientBag',
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: (ctx) => ({
                     async bagOf() {

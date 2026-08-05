@@ -32,7 +32,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 /** Public reads: no guards at all, so a shared cache is honest. */
 const Product = defineActor({
     type: 'Product',
-    unguarded: true,
+    allowAnonymous: true,
     reads: {
         summary: { maxAge: 5 },
         price: { maxAge: 60, public: true, staleWhileRevalidate: 30 }
@@ -65,14 +65,15 @@ const Product = defineActor({
 /** A guarded actor whose read is still cacheable — per client, not shared. */
 const Cart = defineActor({
     type: 'Cart',
-    use: [
-        (rq) => {
+    authorize: [
+        (_p, rq) => {
             // `authorization`, not `cookie`: this suite runs under happy-dom,
-            // whose `Request` drops a cookie header as forbidden — the guard
+            // whose `Request` drops a cookie header as forbidden — the policy
             // would then reject its own fixture rather than test anything.
             if (rq.request.headers.get('authorization') === null) {
                 throw new ServerFnError(401, 'no session');
             }
+            return true;
         }
     ],
     reads: { total: { maxAge: 10 } },
@@ -123,7 +124,7 @@ describe('the reads: declaration', () => {
         expect(() =>
             defineActor({
                 type: 'Bad',
-                unguarded: true,
+                allowAnonymous: true,
                 reads: { feed: { maxAge: 5 } },
                 state: () => ({}),
                 methods: () => ({}),
@@ -139,7 +140,7 @@ describe('the reads: declaration', () => {
         const bad = (maxAge: unknown): void =>
             void defineActor({
                 type: 'Bad',
-                unguarded: true,
+                allowAnonymous: true,
                 reads: { read: { maxAge: maxAge as number } },
                 state: () => ({}),
                 methods: () => ({ async read() {} })
@@ -158,7 +159,7 @@ describe('the reads: declaration', () => {
         const badWindow = (field: 'staleWhileRevalidate' | 'sMaxAge'): void =>
             void defineActor({
                 type: 'Bad',
-                unguarded: true,
+                allowAnonymous: true,
                 reads: { read: { maxAge: 5, [field]: 1.5 } },
                 state: () => ({}),
                 methods: () => ({ async read() {} })
@@ -174,7 +175,7 @@ describe('the reads: declaration', () => {
         // the request, and nothing can inspect WHAT it reads.
         const definition = {
             type: 'Leaky',
-            use: [(): void => {}],
+            authorize: [() => true],
             reads: { mine: { maxAge: 5, public: true } },
             state: () => ({}),
             methods: () => ({ async mine() {} })
@@ -185,8 +186,8 @@ describe('the reads: declaration', () => {
         expect(() =>
             defineActor({
                 type: 'Leaky',
-                unguarded: true,
-                methodUse: { mine: [(): void => {}] },
+                allowAnonymous: true,
+                methodAuthorize: { mine: [() => true] },
                 reads: { mine: { maxAge: 5, public: true } },
                 state: () => ({}),
                 methods: () => ({ async mine() {} })
@@ -207,7 +208,7 @@ describe('the reads: declaration', () => {
         expect(() =>
             defineActor({
                 type: 'Skewed',
-                unguarded: true,
+                allowAnonymous: true,
                 reads: { price: undefined },
                 state: () => ({}),
                 methods: () => ({ async price() {} })
@@ -221,7 +222,7 @@ describe('the reads: declaration', () => {
         expect(() =>
             defineActor({
                 type: 'Plain',
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: () => ({ async read() {} })
             })

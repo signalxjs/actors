@@ -7,7 +7,7 @@ import { defineActor } from './actors.app.ts';
 
 export const Crunch = defineActor({
     type: 'Crunch',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ burns: 0, last: '' }),
     methods: (ctx) => ({
         async burn(iterations: number, payloadBytes: number) {

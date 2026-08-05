@@ -13,7 +13,7 @@ export interface Env {
 
 export const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0, woke: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {

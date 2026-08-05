@@ -2,7 +2,7 @@
   {
     "name": "@sigx/actors",
     "path": "packages/actors/dist/index.prod.js",
-    "limit": "4 KB",
+    "limit": "4.4 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
@@ -42,11 +42,12 @@
   {
     "name": "@sigx/actors/app",
     "path": "packages/actors/dist/app.prod.js",
-    "limit": "5.4 KB",
+    "limit": "5.7 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
-      "@sigx/serialize"
+      "@sigx/serialize",
+      "@sigx/server"
     ]
   },
   {
@@ -54,7 +55,8 @@
     "path": "packages/actors/dist/job.prod.js",
     "limit": "3 KB",
     "ignore": [
-      "@sigx/serialize"
+      "@sigx/serialize",
+      "@sigx/server"
     ]
   },
   {

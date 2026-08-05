@@ -16,7 +16,7 @@ const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         noop() {
@@ -31,7 +31,7 @@ const Counter = defineActor({
 
 const Other = defineActor({
     type: 'Other',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({}),
     methods: () => ({
         noop() {
@@ -224,7 +224,7 @@ describe('host.stats(): transitional slots', () => {
         });
         const Slow = defineActor({
             type: 'SlowStart',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             async onActivate() {
                 await gate;

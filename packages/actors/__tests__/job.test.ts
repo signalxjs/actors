@@ -8,6 +8,8 @@ import {
     type JobInfo
 } from '@sigx/actors/job';
 import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
+import { actor } from '@sigx/actors';
+import { stubServerApp } from '@sigx/server/testing';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -46,12 +48,69 @@ afterEach(async () => {
     running = null;
 });
 
+describe('defineJob: the principal snapshot (rfc-server-v4 §7)', () => {
+    it('records the ENQUEUEING caller and hands it to the detached run', async () => {
+        // A job outlives the request that started it: the run body is
+        // detached and a crash-resume can happen on another host hours
+        // later, with nobody waiting. So authorization happens once at
+        // enqueue and the run reads the snapshot rather than re-deciding —
+        // `ctx.principal` would be null in a task body by design.
+        const seen: unknown[] = [];
+        const restore = stubServerApp({
+            authenticate: () => ({ id: 'ada' }),
+            codec: {
+                encode: (u) => (u as { id: string }).id,
+                decode: (e) => (e === '' ? null : { id: e })
+            }
+        });
+        try {
+            const Attributed = defineJob({
+                type: 'Attributed',
+                allowAnonymous: true,
+                run: async (job) => {
+                    seen.push(job.principal);
+                    return 'done';
+                }
+            });
+            running = createHost({ actors: [Attributed], storage: memoryStorage(), defaults: quiet });
+            await running.start();
+            await actor(Attributed, 'r1').start(undefined as never);
+            await until(async () => (await actor(Attributed, 'r1').status()).status === 'completed');
+            expect(seen).toEqual([{ id: 'ada' }]);
+        } finally {
+            restore();
+        }
+    });
+
+    it('is null for an anonymous starter — unattributed, never a default', async () => {
+        const seen: unknown[] = [];
+        const restore = stubServerApp({ authenticate: () => null });
+        try {
+            const Anon = defineJob({
+                type: 'AnonJob',
+                allowAnonymous: true,
+                run: async (job) => {
+                    seen.push(job.principal);
+                    return 'done';
+                }
+            });
+            running = createHost({ actors: [Anon], storage: memoryStorage(), defaults: quiet });
+            await running.start();
+            await actor(Anon, 'r1').start(undefined as never);
+            await until(async () => (await actor(Anon, 'r1').status()).status === 'completed');
+            expect(seen).toEqual([null]);
+        } finally {
+            restore();
+        }
+    });
+});
+
 describe('defineJob: the state machine', () => {
     it('runs start → running (with progress) → completed → result; start is idempotent', async () => {
         const step = gate();
         const SumJob = defineJob({
             type: 'Sum',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { upTo: number }) => {
                 let sum = 0;
                 for (let i = 1; i <= input.upTo; i++) {
@@ -86,7 +145,7 @@ describe('defineJob: the state machine', () => {
     it('watch() streams the lifecycle live', async () => {
         const JobDef = defineJob({
             type: 'Watched',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: number) => {
                 await job.progress({ done: 1, total: 2 });
                 await job.progress({ done: 2, total: 2 });
@@ -118,7 +177,7 @@ describe('defineJob: the state machine', () => {
         vi.spyOn(console, 'error').mockImplementation(() => {});
         const BadJob = defineJob({
             type: 'Bad',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => {
                 throw new Error('provider exploded');
             }
@@ -136,7 +195,7 @@ describe('defineJob: the state machine', () => {
         const release = gate();
         const SlowJob = defineJob({
             type: 'Slow',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => {
                 await release.opened;
                 return 1;
@@ -157,7 +216,7 @@ describe('defineJob: cancellation', () => {
         const observed: string[] = [];
         const CancelJob = defineJob({
             type: 'Cancellable',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job) => {
                 await aborted(job.signal);
                 observed.push(String(job.signal.reason));
@@ -185,7 +244,7 @@ describe('defineJob: late writes', () => {
         const tried = gate();
         const LateJob = defineJob({
             type: 'LateWriter',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ notes: [] as string[] }),
             run: async (job) => {
                 await job.update((extra) => extra.notes.push('before'));
@@ -217,7 +276,7 @@ describe('defineJob: crash-resume', () => {
         const storage = memoryStorage();
         const ResumeJob = defineJob({
             type: 'Resumable',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { rows: number }) => {
                 attempts.push({ attempt: job.attempt, resumedFrom: job.resumedFrom });
                 if (job.attempt === 1) {
@@ -247,7 +306,7 @@ describe('defineJob: crash-resume', () => {
         const storage = memoryStorage();
         const LoopJob = defineJob({
             type: 'CrashLoop',
-            unguarded: true,
+            allowAnonymous: true,
             maxAttempts: 2,
             run: async (job) => {
                 await aborted(job.signal); // parks forever, every attempt
@@ -275,7 +334,7 @@ describe('defineJob: pause / resume', () => {
         const storage = memoryStorage();
         const Approval = defineJob({
             type: 'Approval',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { doc: string }) => {
                 runs.push({ attempt: job.attempt, resumeData: job.resumeData });
                 if (job.resumeData === undefined) {
@@ -307,7 +366,7 @@ describe('defineJob: pause / resume', () => {
     it('resume on a non-paused job throws JobStateError', async () => {
         const NopJob = defineJob({
             type: 'Nop',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => 1
         });
         const host = createHost({ actors: [NopJob], defaults: quiet });
@@ -319,7 +378,7 @@ describe('defineJob: pause / resume', () => {
         const storage = memoryStorage();
         const Hitl = defineJob({
             type: 'Hitl',
-            unguarded: true,
+            allowAnonymous: true,
             run: async (job, input: { question: string }) => {
                 if (job.resumeData === undefined) {
                     await job.reminders.set('timeout', { due: 40 });
@@ -350,7 +409,7 @@ describe('defineJob: extra state, retention, discard', () => {
     it('job.update() maintains extra fields visible in JobInfo', async () => {
         const EventfulJob = defineJob({
             type: 'Eventful',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ events: [] as string[] }),
             run: async (job) => {
                 await job.update((extra) => extra.events.push('node:a'));
@@ -370,7 +429,7 @@ describe('defineJob: extra state, retention, discard', () => {
         const storage = memoryStorage();
         const Ephemeral = defineJob({
             type: 'Ephemeral',
-            unguarded: true,
+            allowAnonymous: true,
             retainMs: 40,
             run: async () => 'done'
         });
@@ -393,7 +452,7 @@ describe('defineJob: extra state, retention, discard', () => {
         const release = gate();
         const DiscardJob = defineJob({
             type: 'Discardable',
-            unguarded: true,
+            allowAnonymous: true,
             run: async () => {
                 await release.opened;
                 return 1;

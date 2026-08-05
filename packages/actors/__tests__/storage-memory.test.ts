@@ -45,7 +45,7 @@ describe('memoryStorage contract', () => {
         const storage = memoryStorage();
         const probe = defineActor({
             type: 'Probe',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ rows: [{ n: 0 }] }),
             methods: (ctx) => ({
                 async bumpAndSave() {

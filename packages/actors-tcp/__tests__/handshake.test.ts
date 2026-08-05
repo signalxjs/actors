@@ -23,7 +23,7 @@ import { tcpTransport, TCP_TRANSPORT_NAME } from '../src/index.ts';
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ n: 0 }),
     methods: (ctx) => ({
         bump() {

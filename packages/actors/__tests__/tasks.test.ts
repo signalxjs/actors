@@ -50,7 +50,7 @@ describe('tasks: detached execution', () => {
         const finished = gate();
         const worker = defineActor({
             type: 'Worker',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 1 }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run'),
@@ -81,7 +81,7 @@ describe('tasks: detached execution', () => {
         const stepped = gate();
         const counter = defineActor({
             type: 'Counter',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('count'),
@@ -133,7 +133,7 @@ describe('tasks: detached execution', () => {
         const release = gate();
         const worker = defineActor({
             type: 'Single',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run')
@@ -158,7 +158,7 @@ describe('tasks: detached execution', () => {
     it('rejects an unknown task name, and a start without a tasks: section', async () => {
         const withTasks = defineActor({
             type: 'HasTasks',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('nope')
@@ -169,7 +169,7 @@ describe('tasks: detached execution', () => {
         });
         const without = defineActor({
             type: 'NoTasks',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run')
@@ -185,7 +185,7 @@ describe('tasks: detached execution', () => {
         const outcomes: string[] = [];
         const worker = defineActor({
             type: 'NoDetachedSave',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run')
@@ -220,7 +220,7 @@ describe('tasks: detached execution', () => {
     it('a prototype member is not a task — "toString" is a clean not-found', async () => {
         const worker = defineActor({
             type: 'ProtoSafe',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: (name: string) => ctx.tasks.start(name)
@@ -240,7 +240,7 @@ describe('tasks: detached execution', () => {
         const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
         const boom = defineActor({
             type: 'Boom',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('explode'),
@@ -268,7 +268,7 @@ describe('tasks: cancellation and deactivation', () => {
         const reasons: unknown[] = [];
         const worker = defineActor({
             type: 'Cancellable',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run'),
@@ -296,7 +296,7 @@ describe('tasks: cancellation and deactivation', () => {
         const done = gate();
         const worker = defineActor({
             type: 'WindDown',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ phase: 'running' }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run'),
@@ -329,7 +329,7 @@ describe('tasks: cancellation and deactivation', () => {
         const observed: number[] = [];
         const watcher = defineActor({
             type: 'FeedParked',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('follow'),
@@ -363,7 +363,7 @@ describe('tasks: cancellation and deactivation', () => {
         const storage = memoryStorage();
         const watcher = defineActor({
             type: 'FeedWindDown',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0, phase: 'idle' }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('follow'),
@@ -401,7 +401,7 @@ describe('tasks: cancellation and deactivation', () => {
         const reasons: unknown[] = [];
         const worker = defineActor({
             type: 'Checkpointer',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ phase: 'idle' }),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run'),
@@ -447,7 +447,7 @@ describe('tasks: cancellation and deactivation', () => {
         const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const worker = defineActor({
             type: 'Stubborn',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('forever')
@@ -473,7 +473,7 @@ describe('tasks: cancellation and deactivation', () => {
         const outcomes: unknown[] = [];
         const worker = defineActor({
             type: 'LateStarter',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run')
@@ -500,7 +500,7 @@ describe('tasks: cancellation and deactivation', () => {
     it("the base ctx.abortSignal now fires BEFORE the drain — a parked turn can observe it", async () => {
         const worker = defineActor({
             type: 'Parked',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 park: () => aborted(ctx.abortSignal).then(() => 'released')
@@ -521,7 +521,7 @@ describe('tasks: keep-alive', () => {
         const release = gate();
         const worker = defineActor({
             type: 'KeepAlive',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             idleAfterMs: 0,
             methods: (ctx) => ({

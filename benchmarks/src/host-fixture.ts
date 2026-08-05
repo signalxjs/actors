@@ -9,12 +9,21 @@
  *    reports it as latency. Scenarios that MEASURE that work drive the
  *    manual clock explicitly instead.
  *
+ * 3. A server app is stamped, by importing `./app` for its side effect.
+ *    The runtime is fail-closed since core 0.15: with none, every actor
+ *    that is not `allowAnonymous` answers 401 before dispatching, and a
+ *    scenario that throws fails the Bench step outright. It is also the
+ *    more honest measurement — a real deployment has an app, so the
+ *    numbers keep the framework's per-request pipeline cost rather than
+ *    measuring a shape nobody ships.
+ *
  * 2. `callTimeoutMs` is a parameter, not a constant. The production default
  *    is 30s, and a non-zero deadline routes every dispatch through the
  *    call-deadline registry (`CallDeadlines`). Benchmarking only the `0`
  *    case would flatter the runtime; benchmarking only the default would
  *    hide what the deadline costs. So the dispatch scenarios run both.
  */
+import './app.ts';
 import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 import type {
     ActorCallContext,

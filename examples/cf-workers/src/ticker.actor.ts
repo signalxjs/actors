@@ -10,7 +10,7 @@ import { defineActor } from './actors.app';
 
 export const Ticker = defineActor({
     type: 'Ticker',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ ticks: 0, repeating: false, everyMs: 1_000 }),
     methods: (ctx) => ({
         /** Fire once, `afterMs` from now. */

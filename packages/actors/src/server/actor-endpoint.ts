@@ -20,12 +20,13 @@ import { mintCallId } from '../call-id';
 import { takeCallBag } from '../call-context-bag';
 import { ActorMethodNotFoundError } from '../errors';
 import { isTraceparent } from '../traceparent';
-import { runGuards } from '../guards';
+import { authorizeActorCall, encodePrincipal } from '../guards';
 import {
     ACTOR_FOLLOW_HEADER,
     ACTOR_HOPS_HEADER,
     ACTOR_ONEWAY_HEADER,
-    ACTOR_OWNER_HEADER
+    ACTOR_OWNER_HEADER,
+    ACTOR_ROUTE_SEGMENT
 } from '../route';
 import { relayStream } from '../stream-relay';
 import { toClientError } from './client-error';
@@ -126,8 +127,18 @@ export async function handleActorRequest(
         ...(maxHops !== undefined ? { maxHops } : {}),
         ...(maxLiveSubscriptions !== undefined ? { maxLiveSubscriptions } : {})
     };
-    const response = await handleServerFnRequest(request, {
+    const actorBase = resolverOptions.base ?? DEFAULT_BASE;
+    // Everything after the base IS the symbol (#543), so the routing hint
+    // has to come off the path before core reads it.
+    const routed = stripRouteSegments(request, actorBase);
+    const response = await handleServerFnRequest(routed, {
         ...rest,
+        // The mount's base has to reach CORE, not just the resolver. Core
+        // checks the path prefix itself (#563) and defaults to `/_sigx/fn`,
+        // so leaving it out 404s every actor call before resolution — the
+        // failure that silently ate the whole wire surface until #563 made
+        // it say so. Same value the resolver keys on, deliberately.
+        base: actorBase,
         resolve: resolverFor(host, resolverOptions)
     });
     return withKeepalive(response, streamPingMs ?? DEFAULT_STREAM_PING_MS);
@@ -321,6 +332,38 @@ function warnOnce(hostId: string): void {
  * mount that tests the result for `null` to fall through to another handler
  * must instead compare against its own registry first.
  */
+/**
+ * Rewrite `{base}/r/{token}/{symbol}` to `{base}/{symbol}`, on the RAW
+ * pathname, before core sees the request.
+ *
+ * It has to happen here rather than in the resolver, because by the time
+ * core hands over a symbol it has already decoded each path segment and
+ * rejoined them with `/` (`decodeFnPath`). A `'key'`-mode or custom token
+ * may contain a slash, which arrives percent-encoded and comes back out as
+ * a literal one — and an actor type may contain a slash too (`acme/greeter`
+ * in the packaged-actor fixture). After the decode the two are
+ * indistinguishable; before it, the segments are exact.
+ *
+ * The token is discarded rather than checked, deliberately: routing is an
+ * optimization and never load-bearing for correctness, so the endpoint
+ * cannot start caring whether the hint agrees with the key (`route.ts`).
+ * A malformed hint (`r/` with no following segment) is left alone and falls
+ * through to an honest 404 instead of being guessed at.
+ */
+function stripRouteSegments(request: Request, base: string): Request {
+    const url = new URL(request.url);
+    const prefix = base.endsWith('/') ? base : `${base}/`;
+    if (!url.pathname.startsWith(prefix)) return request;
+    const rest = url.pathname.slice(prefix.length);
+    const marker = `${ACTOR_ROUTE_SEGMENT}/`;
+    if (!rest.startsWith(marker)) return request;
+    const afterToken = rest.indexOf('/', marker.length);
+    if (afterToken === -1) return request;
+    url.pathname = `${prefix}${rest.slice(afterToken + 1)}`;
+    // `new Request(url, request)` carries method, headers, body and signal.
+    return new Request(url, request);
+}
+
 export function createActorResolver(
     host: Host,
     options: ActorResolverOptions = {}
@@ -497,9 +540,14 @@ function synthesize(
                 `actor call "${symbol}" needs a non-empty string key as its first argument`
             );
         }
-        // The transport-independent chains — same pipeline as in-process
-        // calls, run OUTSIDE any turn.
-        await runGuards(def, method, rq);
+        // Authorization for this entry point — the same pipeline in-process
+        // calls run, OUTSIDE any turn, and now with the INSTANCE as the
+        // resource (the key above is exactly what a per-instance policy
+        // needs, and pre-v4 it was peeled off where no guard could see it).
+        // `skipPrelude`: middleware, authentication and the identity gate
+        // already ran inside core's `handleServerFnRequest`, which owns the
+        // pre-decode slot so anonymous bytes never reach the codec.
+        await authorizeActorCall(def, method, key, rq, 'wire', { skipPrelude: true });
         // Redirect BEFORE dispatching, never by letting a wrong-host escape
         // the routing loop. 421 is a status a user agent may retry on its
         // own (RFC 7540 §9.1.2) and actor calls are not idempotent, so the
@@ -510,11 +558,14 @@ function synthesize(
         // Caller-supplied and shape-checked only: relayed for tracing
         // middleware, never control flow. Malformed → dropped, not a 400.
         const traceparent = rq.request.headers.get('traceparent');
-        // The context bag comes ONLY from what a guard stamped on THIS
-        // request (`stampCallBag` → rq.locals) — never from a request
-        // header: a browser-settable bag would be a straight authorization
-        // bypass the moment an actor trusts an entry.
+        // The context bag comes ONLY from what this request stamped
+        // (`stampCallBag` → rq.locals) — never from a request header: a
+        // browser-settable bag would be a straight authorization bypass the
+        // moment an actor trusts an entry.
         const bag = takeCallBag(rq.locals);
+        // Identity, same posture and its own slot: encoded from the
+        // principal THIS endpoint authenticated, never off a header.
+        const principal = await encodePrincipal(rq);
         return {
             key,
             rest,
@@ -523,6 +574,7 @@ function synthesize(
                 callId: mintCallId(),
                 ...(isTraceparent(traceparent) ? { traceparent } : {}),
                 ...(bag !== undefined ? { bag } : {}),
+                ...(principal !== undefined ? { principal } : {}),
                 // One-way: the dispatch below resolves at turn acceptance,
                 // so the response goes out then — the response IS the ack.
                 // Streams ignore the flag (the client refuses it earlier).
@@ -538,6 +590,12 @@ function synthesize(
         return {
             __sigxName: method,
             __sigxStream: true,
+            // Core's endpoint runs the prelude (middleware → authenticate →
+            // identity gate) BEFORE decoding, and reads this flag to know
+            // whether a null principal may pass. Without it an
+            // `allowAnonymous` actor would 401 on the wire while working
+            // in-process — the transport asymmetry v4 exists to prevent.
+            ...(def.__sigxActor.allowAnonymous === true ? { __sigxAnon: true as const } : {}),
             // Resolves to an async ITERATOR, not a generator: `streamResponse`
             // calls `return()` on client disconnect, and a generator parked at
             // `yield*` would queue that instead of forwarding it — stranding
@@ -580,6 +638,7 @@ function synthesize(
 
     return {
         __sigxName: method,
+        ...(def.__sigxActor.allowAnonymous === true ? { __sigxAnon: true as const } : {}),
         ...(read ? { __sigxGet: true as const, __sigxCacheControl: cacheControl(read) } : {}),
         __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
             const { key, rest, call } = await prepare(rq, args);

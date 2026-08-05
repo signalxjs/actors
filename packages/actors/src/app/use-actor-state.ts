@@ -25,6 +25,7 @@
  * into the page under the same canonical key the client then reads.
  */
 import { getCurrentInstance, onMounted, onUnmounted, useData, type AsyncState } from '@sigx/runtime-core';
+import type { AsyncStateImpl } from '@sigx/runtime-core/internals';
 import {
     makeUnhandledReporter,
     matchAsyncState,
@@ -353,7 +354,12 @@ function liveView(
      */
     const unsettled = (): boolean => state.state === 'pending' || state.state === 'idle';
 
-    const view: AsyncState<unknown> = {
+    // The WIDE producer shape (`AsyncStateImpl`), cast to the union at the
+    // seam below. `AsyncState` became a discriminated union in core 0.15
+    // (#485's presence pair), and a stable getter object cannot satisfy a
+    // union structurally — core documents this cast as the pack contract and
+    // dev-checks the invariants it asserts inside `matchAsyncState`.
+    const view: AsyncStateImpl<unknown> = {
         get state() {
             if (pushed.has) return 'ready';
             if (pushed.error && unsettled()) return 'errored';
@@ -379,11 +385,16 @@ function liveView(
             return matchAsyncState(
                 {
                     state: view.state,
+                    // The surviving last-good the error arm reads. Core 0.15
+                    // replaced the old `stale` field with the value/presence
+                    // PAIR, so a legitimately-null last-good is still a value
+                    // (#485) rather than "nothing to show" — which is the
+                    // whole reason `hasValue` has to travel beside it. Both
+                    // come off `view`, whose getters already fold the pushed
+                    // value over the cell's.
                     value: view.value,
+                    hasValue: view.hasValue,
                     error: view.error,
-                    // The last-good value for the error arm. A pushed value is
-                    // as good as a fetched one.
-                    stale: pushed.has ? pushed.value : state.value,
                     retry: () => void view.refresh(),
                     onUnhandledError: report
                 },
@@ -398,5 +409,5 @@ function liveView(
             return state.refresh();
         }
     };
-    return view;
+    return view as AsyncState<unknown>;
 }

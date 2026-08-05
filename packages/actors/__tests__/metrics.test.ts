@@ -28,7 +28,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
  */
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         noop() {
@@ -239,13 +239,13 @@ describe('metrics()', () => {
         const m = metrics({ maxTypes: 1 });
         const a = defineActor({
             type: 'A',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ noop: () => 0 })
         });
         const b = defineActor({
             type: 'B',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ noop: () => 0 })
         });
@@ -290,7 +290,7 @@ describe('metrics()', () => {
         const types = Array.from({ length: 70 }, (_v, i) =>
             defineActor({
                 type: `I${i}`,
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: () => ({ noop: () => 0 })
             })
@@ -314,7 +314,7 @@ describe('metrics()', () => {
         const types = Array.from({ length: 26 }, (_v, i) =>
             defineActor({
                 type: `M${i}`,
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: () =>
                     Object.fromEntries(
@@ -355,7 +355,7 @@ describe('metrics()', () => {
         const types = Array.from({ length: 70 }, (_v, i) =>
             defineActor({
                 type: `T${i}`,
-                unguarded: true,
+                allowAnonymous: true,
                 state: () => ({}),
                 methods: () => ({ noop: () => 0 })
             })
@@ -537,7 +537,7 @@ describe('observeTurns seam', () => {
     it("fires once per interleaved turn on a reentrant: 'always' actor, queue wait ~0", async () => {
         const Al = defineActor({
             type: 'AlObs',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: 'always',
             state: () => ({}),
             methods: () => ({
@@ -641,7 +641,7 @@ describe('observeTurns seam', () => {
         const methods: string[] = [];
         const ticker = defineActor({
             type: 'Ticker',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ ticks: 0 }),
             onActivate(ctx) {
                 ctx.timer(

@@ -39,9 +39,10 @@ export function defineWorker<
     }
     type S = Record<never, never>;
     const pass: Partial<ActorOptions<S, M, St>> = {
-        ...(options.use ? { use: options.use } : {}),
-        ...(options.unguarded !== undefined ? { unguarded: options.unguarded } : {}),
-        ...(options.methodUse ? { methodUse: options.methodUse } : {}),
+        kind: 'worker',
+        ...(options.authorize ? { authorize: options.authorize } : {}),
+        ...(options.allowAnonymous !== undefined ? { allowAnonymous: options.allowAnonymous } : {}),
+        ...(options.methodAuthorize ? { methodAuthorize: options.methodAuthorize } : {}),
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.onActivate ? { onActivate: options.onActivate } : {}),
         ...(options.onDeactivate ? { onDeactivate: options.onDeactivate } : {}),

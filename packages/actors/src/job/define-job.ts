@@ -16,6 +16,7 @@
  * single-activation guarantee IS the "exactly one runner" guarantee.
  */
 import { defineActor } from '../define';
+import { decodePrincipal, encodePrincipalValue } from '../guards';
 import type { ActorContext, ActorDefinition, ActorTaskContext } from '../types';
 import { JobCancelledError, JobFailedError, JobNotDoneError, JobStateError } from './errors';
 import {
@@ -49,6 +50,16 @@ interface JobState<Extra extends object> {
     startedAt: number | null;
     finishedAt: number | null;
     resumeData: unknown;
+    /**
+     * The ENCODED principal recorded at enqueue (rfc-server-v4 §7).
+     *
+     * A job outlives the request that started it — there is no live caller
+     * for a crash-resume three hours later to authorize — so the run body
+     * reads this snapshot as `job.principal` instead of re-deciding.
+     * Persisted, so it survives deactivation and resume; `null` when the
+     * starter was anonymous or the app configured no codec.
+     */
+    principal: string | null;
     extra: Extra;
 }
 
@@ -131,8 +142,9 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
 
     return defineActor<S, JobMethodTable<In, Out, Extra>, JobStreamTable<Extra>>({
         type: options.type,
-        ...(options.use ? { use: options.use } : {}),
-        ...(options.unguarded !== undefined ? { unguarded: options.unguarded } : {}),
+        kind: 'job',
+        ...(options.authorize ? { authorize: options.authorize } : {}),
+        ...(options.allowAnonymous !== undefined ? { allowAnonymous: options.allowAnonymous } : {}),
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.placement ? { placement: options.placement } : {}),
         persistence: 'explicit',
@@ -147,6 +159,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
             startedAt: null,
             finishedAt: null,
             resumeData: null,
+            principal: null,
             extra: options.state ? options.state(key) : ({} as Extra)
         }),
         methods: (ctx) => ({
@@ -157,6 +170,11 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                 s.input = input;
                 s.attempts = 1;
                 s.startedAt = Date.now();
+                // Snapshot the ENQUEUEING caller. `start` is the entry point
+                // that authorized, so this is the identity the whole run is
+                // attributable to — including resumes that happen on another
+                // host, days later, with nobody waiting.
+                s.principal = encodePrincipalValue(ctx.principal) ?? null;
                 await ctx.save();
                 await ctx.tasks.start(RUN, input);
                 return toInfo(ctx.snapshot() as S, ctx.key);
@@ -206,6 +224,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                 let refused = false;
                 let resumedFrom: C | undefined;
                 let resumeData: unknown;
+                let principal: string | null = null;
                 await tctx.turn(async (c) => {
                     const s = c.state;
                     if (s.status !== 'running') {
@@ -226,6 +245,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                     }
                     resumedFrom = (s.checkpoint ?? undefined) as C | undefined;
                     resumeData = s.resumeData ?? undefined;
+                    principal = s.principal;
                     s.resumeData = null;
                     if (attempt > 1) await c.save();
                 });
@@ -238,6 +258,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                     attempt,
                     resumedFrom,
                     resumeData,
+                    principal: decodePrincipal(principal ?? undefined),
                     progress: (p) =>
                         tctx.turn((c) => {
                             if (c.state.status === 'running') c.state.progress = p;

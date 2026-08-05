@@ -53,7 +53,7 @@ afterEach(async () => {
 function parkingWorker(starts: { label: string; sinceIso: string; restarts: number }[]) {
     return defineActor({
         type: 'Durable',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: (ctx) => ({
             begin: (input: { label: string; since: Date }) => ctx.tasks.start('run', input),
@@ -102,7 +102,7 @@ describe('task durability', () => {
         const storage = memoryStorage();
         const def = defineActor({
             type: 'Durable',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 // Both starts race inside one turn — the has() gate alone
@@ -134,7 +134,7 @@ describe('task durability', () => {
         const done = gate();
         const def = defineActor({
             type: 'Durable',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run'),
@@ -177,7 +177,7 @@ describe('task durability', () => {
         const storage = memoryStorage();
         const def = defineActor({
             type: 'Durable',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 begin: () => ctx.tasks.start('run'),

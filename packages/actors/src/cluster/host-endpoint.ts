@@ -66,7 +66,11 @@ export interface HostRuntimeRequestOptions extends HostEndpointOptions {
     secret?: string;
 }
 
-export function matchesHostRequest(request: Request, base = '/_sigx/host'): boolean {
+/** The internal mount's default path — must agree with `matchesHostRequest`
+ *  and with what reaches core (#563). */
+export const DEFAULT_HOST_BASE = '/_sigx/host';
+
+export function matchesHostRequest(request: Request, base = DEFAULT_HOST_BASE): boolean {
     const prefix = base.endsWith('/') ? base : `${base}/`;
     return new URL(request.url).pathname.startsWith(prefix);
 }
@@ -193,62 +197,62 @@ export function handleHostRequest(
     });
 }
 
-export function handleHostRequestForRuntime(
+export async function handleHostRequestForRuntime(
     request: Request,
     options: HostRuntimeRequestOptions
 ): Promise<Response> {
     const { runtime, secret, ...rest } = options;
+    let pathname: string;
     // Malformed percent-encoding would throw inside the core endpoint's
-    // own decode (before any guard) — reject it here so an invalid path
-    // can never crash the mount.
+    // own decode — reject it here so an invalid path can never crash the
+    // mount.
     try {
-        decodeURIComponent(new URL(request.url).pathname);
+        pathname = decodeURIComponent(new URL(request.url).pathname);
     } catch {
         runtime.noteAuthFailure?.();
-        return Promise.resolve(authFailed());
+        return authFailed();
+    }
+    // The HMAC runs BEFORE the endpoint, not inside it.
+    //
+    // Pre-v4 this was the endpoint's `guard` option, which core removed
+    // (rfc-server-v4 §3.1) because it was wire-only by construction — the
+    // asymmetry the whole revision exists to correct. App middleware is its
+    // replacement, but this check must NOT be app middleware: it is this
+    // mount's own perimeter, and middleware is app-global, so it would run
+    // on the PUBLIC endpoint too and reject every browser call. Running it
+    // here keeps the same slot (before any decode or dispatch) with none of
+    // that reach.
+    if (secret !== undefined) {
+        const symbol = pathname.slice(pathname.lastIndexOf('/') + 1);
+        const callHeader = request.headers.get(HOST_CALL_HEADER);
+        let callId = '';
+        try {
+            callId = callHeader ? decodeEnvelope(callHeader).call.callId : '';
+        } catch {
+            callId = '';
+        }
+        const ok =
+            callId !== '' &&
+            (await verifyAuth(secret, request.headers.get(HOST_AUTH_HEADER), symbol, callId));
+        if (!ok) {
+            // Counted, because a 403 here is otherwise completely silent —
+            // and during a secret rotation it is the only signal that half
+            // the cluster has not rotated yet.
+            runtime.noteAuthFailure?.();
+            return authFailed();
+        }
     }
     return handleServerFnRequest(request, {
+        // Same #563 rule as the public mount: core checks the path prefix
+        // itself and defaults to `/_sigx/fn`, so the internal mount must
+        // name its own base or every host-to-host call 404s before it
+        // resolves.
+        base: DEFAULT_HOST_BASE,
         ...rest,
         // Server-to-server traffic sends no Origin header; the per-request
-        // HMAC (bound to symbol + callId, freshness-windowed) is the
+        // HMAC (bound to symbol + callId, freshness-windowed) above is the
         // authentication, checked before anything dispatches.
         origin: false,
-        guard: async (rq) => {
-            if (secret === undefined) return;
-            let symbol: string;
-            try {
-                symbol = decodeURIComponent(
-                    rq.url.pathname.slice(rq.url.pathname.lastIndexOf('/') + 1)
-                );
-            } catch {
-                // Malformed percent-encoding can't crash the endpoint —
-                // an undecodable path is an unauthenticated request.
-                runtime.noteAuthFailure?.();
-                throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
-            }
-            const callHeader = rq.request.headers.get(HOST_CALL_HEADER);
-            let callId = '';
-            try {
-                callId = callHeader ? decodeEnvelope(callHeader).call.callId : '';
-            } catch {
-                callId = '';
-            }
-            const ok =
-                callId !== '' &&
-                (await verifyAuth(
-                    secret,
-                    rq.request.headers.get(HOST_AUTH_HEADER),
-                    symbol,
-                    callId
-                ));
-            if (!ok) {
-                // Counted, because a 403 here is otherwise completely
-                // silent — and during a secret rotation it is the only
-                // signal that half the cluster has not rotated yet.
-                runtime.noteAuthFailure?.();
-                throw new ServerFnError(403, '[sigx actors] cluster authentication failed');
-            }
-        },
         resolve: resolverFor(runtime)
     });
 }
@@ -295,6 +299,12 @@ function createRuntimeResolver(
     // to route, no deadline to re-anchor and no activation to dispatch to.
     const statsFn = {
         __sigxName: HOST_STATS_METHOD,
+        // The internal mount authenticates with the per-request HMAC, not
+        // with a principal, so every wrapper here declares anonymity —
+        // otherwise core's identity gate (which now runs for EVERY wire
+        // request) would 401 host-to-host traffic. Authorization already
+        // happened at the public edge; see this file's header.
+        __sigxAnon: true as const,
         // The wire sends `[ref.key, ...args]`, so what the collector asked
         // for is `args[1]`. Forwarded rather than dropped, which is how the
         // caller gets to say "and the actor list, please" — the responder
@@ -385,6 +395,8 @@ function synthesize(
         return {
             __sigxName: method,
             __sigxStream: true,
+            /** HMAC-authenticated mount — see `HOST_STATS_METHOD` above. */
+            __sigxAnon: true as const,
             __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
                 const { ref, rest, call } = prepare(rq, args);
                 const iterable =
@@ -411,6 +423,8 @@ function synthesize(
 
     return {
         __sigxName: method,
+        /** HMAC-authenticated mount — see `HOST_STATS_METHOD` above. */
+        __sigxAnon: true as const,
         __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
             const { ref, rest, call } = prepare(rq, args);
             try {

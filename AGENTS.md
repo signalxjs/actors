@@ -346,7 +346,7 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   exporters — no env gate, no extra CI job.
 - `examples/chat` — actors in a REAL sigx app, and the composition proof:
   `sigx()` + `sigxServer()` + `sigxActors()` in one Vite build, SSR-seeded
-  `useActorState`, a guard running on both transports, a serverFn calling
+  `useActorState`, app-wide authorization on both transports, a serverFn calling
   an actor in-process, hydration with no refetch, and
   `useActorState(…, { live: true })` — one multiplexed `$live` connection
   for the page — so every open tab stays live — and a topics-fed cross-room

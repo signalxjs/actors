@@ -4,6 +4,75 @@
 
 ### Changed
 
+- **BREAKING: the guard split — `use` / `methodUse` / `unguarded` become
+  `authorize` / `methodAuthorize` / `allowAnonymous` (#17, rfc-server-v4
+  §7).** Core 0.15 split its single guard primitive into **middleware**,
+  **authentication** and **authorization** and made the runtime
+  **fail-closed**; actors follows, pinned `@sigx/server@^0.15.1`. One
+  conceptual change across two repos — the migration guide owns both
+  tables: [`docs/migrations/0.15-guard-split.md`][guard-split] in
+  `signalxjs/core`.
+
+  Three things it buys, in order of how much they matter:
+
+  - **Policies see the INSTANCE.** A policy is
+    `(principal, rq, op) => boolean` and `op.resource` carries
+    `{ kind, type, key, method }`, so the dominant real actor policy —
+    per-instance, *"may this user read cart `u_123`?"* — is expressible for
+    the first time. A pre-v4 guard received `(rq, { symbol, name })` and
+    the actor key was peeled off the wire arguments only after it had run.
+  - **Identity propagates by construction.** The authenticated principal
+    rides a first-class slot on the call envelope, never a bag key: it
+    cannot be forged through `.with({ bag })`, and it cannot be dropped by
+    a guard author forgetting `stampCallBag`. Actors read it as
+    `ctx.principal` — decoded lazily, memoized, and carried unchanged
+    through `ctx.actor`/`ctx.publish` hops and host-to-host, so a
+    downstream actor sees whoever entered the system rather than the actor
+    that called it. Requires `codec` on `createServerApp`; without one it
+    propagates nothing and dev-warns once, which is fail-closed at the
+    reader. `stampCallBag` survives for app DATA.
+  - **Jobs authorize at ENQUEUE, and the run reads a snapshot.** A job
+    outlives the request that started it — a crash-resume can happen on
+    another host hours later with nobody waiting — so `start` is the entry
+    point that decides, and the detached run body reads `job.principal`
+    (persisted with the run) rather than re-authorizing. `ctx.principal` is
+    null inside a task body by design, which is exactly why this exists.
+  - **App-wide auth is one line.** `sigxActors({ serverApp })` satisfies
+    the build gate for actors that declare nothing, because the app's
+    default policy is then the answer. `examples/chat` declares
+    authorization on **zero** actors where it previously repeated
+    `use: [requireUser]` on every one.
+
+  Also in the split: `sigxActors({ requireGuards })` →
+  `requireAuthorization`, and its question is sharper — `use: [logRequest]`
+  used to satisfy the old gate, because one primitive meant logging and
+  access alike. The registration warning flips polarity ("every call will
+  be DENIED") and fires only when no server app is configured. The
+  definition-time `unguarded` + `use` contradiction throw is **removed with
+  no analog**: `allowAnonymous` + `authorize` is coherent — the identity
+  gate is waived and the declared policy still decides, against a nullable
+  principal. `info.transport` (`'wire'` | `'in-process'`) replaces core's
+  old `symbol === ''` discriminator, which actors never honoured, while
+  keeping `Type#method` identity on both transports.
+
+### Fixed
+
+- **Actor wire calls 404'd once core enforced the mount base (#563).**
+  `handleActorRequest` passed `base` to its resolver but never to
+  `handleServerFnRequest`, so core matched the path against its own
+  `/_sigx/fn` default. Latent until core made the prefix load-bearing, then
+  fatal for **every** actor call. The internal cluster mount and the
+  Cloudflare Durable Object mount had the same omission.
+- **A routing token was read as part of the actor type.** Under "everything
+  after the base IS the symbol" (#543), `{base}/r/{token}/{Type}#{method}`
+  resolved a type literally named `r/{token}/{Type}`. The hint is now
+  stripped from the RAW path, before core decodes it: core decodes each
+  path segment separately, and a `'key'`-mode or custom token may contain a
+  slash — as may an actor type (`acme/greeter`) — so after the decode the
+  two are indistinguishable.
+
+[guard-split]: https://github.com/signalxjs/core/blob/main/docs/migrations/0.15-guard-split.md
+
 - **State-change detection no longer walks the state on every mutation**
   (#28). The change feed and write-behind persistence used a
   `watch({ deep: true })` whose full deep traversal ran per mutation to

@@ -23,7 +23,7 @@ import { defineActor } from '@sigx/actors';
 
 const Noop = defineActor({
     type: 'Noop',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({}),
     methods: () => ({
         ping() {

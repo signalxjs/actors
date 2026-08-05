@@ -5,7 +5,7 @@
  *   - `type`  — must be a string LITERAL (it is the wire/storage identity)
  *   - `streams` — the returned object literal's keys (for the client proxy)
  *   - `reads` — the cache declaration's keys (the methods the proxy GETs)
- *   - `use` / `unguarded` — for the `requireGuards` build gate
+ *   - `authorize` / `allowAnonymous` — for the `requireAuthorization` gate
  *
  * and produces the swapped CLIENT module (`__actorRef` per actor,
  * `__serverOnly` for every other value export). The real module never
@@ -22,8 +22,8 @@ export interface ExtractedActor {
     type: string;
     streams: string[];
     reads: string[];
-    guarded: boolean;
-    unguarded: boolean;
+    authorized: boolean;
+    anonymous: boolean;
     /** Offset of the defineActor call (for error locations). */
     offset: number;
 }
@@ -64,14 +64,50 @@ export function mayDefineActors(code: string, hints: readonly string[] = []): bo
 export interface ExtractOptions {
     /** Fetch target baked into the emitted client refs. */
     endpoint: string;
-    /** The guard build gate. */
-    requireGuards: boolean | 'warn';
+    /** The authorization build gate (rfc-server-v4 §5). */
+    requireAuthorization: boolean | 'warn';
+    /**
+     * Whether the project configures a server app (`sigxActors({ serverApp })`).
+     * Its default `authorize` decides for every actor that declares nothing,
+     * so the gate has nothing left to ask — core's `requireAuthorization`
+     * takes the same third escape (0.15 migration guide, row 7).
+     */
+    hasServerApp?: boolean;
     /**
      * Does this import specifier also export `defineActor`? Used for the
      * app module under `sigxActors({ app })`; relative specifiers are
      * resolved by the caller, which knows the importer's directory.
      */
     isDefineSource?: (source: string) => boolean;
+}
+
+/**
+ * Peel TypeScript wrapper nodes off a value before reading it structurally.
+ *
+ * The AST is TS-aware, so `allowAnonymous: true as const` is a
+ * `TSAsExpression` around the literal, not the literal — and without this
+ * both halves of the gate get the wrong answer in the WRONG DIRECTION:
+ * `allowAnonymous: true as const` would fail to count as a decision (a
+ * build error for correct code), while `authorize: [] as const` would slip
+ * past the empty-array rule and satisfy the gate with a chain the runtime
+ * reads as no declaration at all.
+ *
+ * `as const` is not exotic here: it is exactly what an author reaches for
+ * when a shared options object would otherwise widen `true` to `boolean`.
+ */
+function unwrapTs(node: Node | undefined): Node | undefined {
+    let current = node;
+    while (
+        current &&
+        (current.type === 'TSAsExpression' ||
+            current.type === 'TSSatisfiesExpression' ||
+            current.type === 'TSTypeAssertion' ||
+            current.type === 'TSNonNullExpression' ||
+            current.type === 'ParenthesizedExpression')
+    ) {
+        current = current.expression as Node | undefined;
+    }
+    return current;
 }
 
 const LANG_BY_EXT: Record<string, 'ts' | 'tsx' | 'js' | 'jsx'> = {
@@ -145,13 +181,15 @@ export function extractActors(
             });
             return;
         }
-        const useProp = props.get('use');
-        const guarded =
-            useProp !== undefined &&
-            !(useProp.value?.type === 'ArrayExpression' && useProp.value.elements.length === 0);
-        const unguarded =
-            props.get('unguarded')?.value?.type === 'Literal' &&
-            props.get('unguarded')!.value.value === true;
+        const authorizeProp = props.get('authorize');
+        const authorizeValue = unwrapTs(authorizeProp?.value as Node | undefined);
+        // An empty `authorize: []` does NOT count — it would vacuously allow,
+        // and actors keeps the stricter reading.
+        const authorized =
+            authorizeProp !== undefined &&
+            !(authorizeValue?.type === 'ArrayExpression' && authorizeValue.elements.length === 0);
+        const anonymousValue = unwrapTs(props.get('allowAnonymous')?.value as Node | undefined);
+        const anonymous = anonymousValue?.type === 'Literal' && anonymousValue.value === true;
 
         const streams: string[] = [];
         const streamsProp = props.get('streams');
@@ -200,8 +238,8 @@ export function extractActors(
             type: typeValue.value as string,
             streams,
             reads,
-            guarded,
-            unguarded,
+            authorized,
+            anonymous,
             offset: (init.start ?? 0) as number
         });
     };
@@ -246,17 +284,23 @@ export function extractActors(
         }
     }
 
-    // The requireGuards build gate (rfc-server-v3 §1.4 posture, default ON:
-    // actors have no unguarded installed base to migrate).
-    if (options.requireGuards !== false) {
+    // The requireAuthorization gate (rfc-server-v4 §5, default ON).
+    //
+    // The question it asks got SHARPER with the split. Pre-v4 it could only
+    // ask "did you declare a chain?" — `use: [logRequest]` passed — because
+    // one primitive meant logging and access alike, and rfc-server-v3 §1.5
+    // recorded that as the honest limit. `authorize:` means exactly one
+    // thing, so the gate now asks whether ACCESS is decided.
+    if (options.requireAuthorization !== false && options.hasServerApp !== true) {
         for (const actor of actors) {
-            if (actor.guarded || actor.unguarded) continue;
+            if (actor.authorized || actor.anonymous) continue;
             const message =
-                `actor "${actor.type}" declares no \`use:\` guard chain. Add one, or mark it ` +
-                `\`unguarded: true\` if it is deliberately public. ` +
-                `(requireGuards is on by default; set requireGuards: 'warn' | false on ` +
-                `sigxActors() to downgrade.)`;
-            if (options.requireGuards === 'warn') warnings.push(message);
+                `actor "${actor.type}" declares no \`authorize:\` policy. Add one, mark it ` +
+                `\`allowAnonymous: true\` if it is deliberately reachable without a principal, ` +
+                `or configure an app default with createServerApp({ authorize }). ` +
+                `(requireAuthorization is on by default; set ` +
+                `requireAuthorization: 'warn' | false on sigxActors() to downgrade.)`;
+            if (options.requireAuthorization === 'warn') warnings.push(message);
             else errors.push({ message, offset: actor.offset });
         }
     }

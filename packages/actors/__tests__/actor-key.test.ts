@@ -11,7 +11,7 @@ import { __actorRef } from '@sigx/actors/client';
 
 const CartActor = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[] }),
     methods: (ctx) => ({
         async total() {

@@ -12,7 +12,6 @@
  */
 import { topic } from '@sigx/actors';
 import { defineActor } from './actors.app';
-import { requireUser } from './guards';
 
 /** What a room announces. The room name rides the topic KEY. */
 export interface RoomActivity {
@@ -37,7 +36,6 @@ const KEEP = 50;
 
 export const ActivityFeed = defineActor({
     type: 'ActivityFeed',
-    use: [requireUser],
     state: () => ({ recent: [] as ActivityEntry[] }),
     methods: (ctx) => ({
         /** The read the page seeds from and watches live. */
@@ -52,11 +50,15 @@ export const ActivityFeed = defineActor({
             key: () => 'all',
             handle: async (ctx, event) => {
                 const { what } = event.payload as RoomActivity;
-                // ctx.bag here is the PUBLISHING call's bag: the guard
-                // stamped it at the edge, the room's turn carried it, and
+                // `ctx.principal` here is the PUBLISHING call's identity:
+                // the edge authenticated it, the room's turn carried it, and
                 // ctx.publish handed it to this handler — attribution with
-                // no field threaded through any payload.
-                const who = ctx.bag.user;
+                // no field threaded through any payload, and nothing for a
+                // guard author to remember to stamp. Pre-v4 this read
+                // `ctx.bag.user`, which was only populated because every
+                // guard called `stampCallBag`; forget that in one guard and
+                // attribution silently went blank here.
+                const who = (ctx.principal as { name: string } | null)?.name;
                 ctx.state.recent.push({
                     room: event.topic.key,
                     what,

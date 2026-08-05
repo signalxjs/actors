@@ -11,7 +11,7 @@
  *     (values only — types stay the real module's, so the proxy is typed).
  *  2. Prod: emit `virtual:sigx-actors` — the lazy `{ type: () => import }`
  *     registry the server entry passes to `createHost`.
- *  3. `requireGuards` build gate (default on).
+ *  3. `requireAuthorization` build gate (default on).
  *  4. Dev: create/start a host through the SSR module runner (module-graph
  *     identity + HMR survival), mount the actor endpoint middleware, and
  *     deactivate types through storage on actor-file edits.
@@ -50,11 +50,29 @@ export interface SigxActorsOptions {
      *  Default: `base`. Call-time precedence: configureActors > this. */
     endpoint?: string;
     /**
-     * The guard build gate: every actor needs a `use:` chain or a literal
-     * `unguarded: true`. `true` (default) = build error; `'warn'` | `false`
-     * downgrade.
+     * The authorization build gate (rfc-server-v4 §5): every actor needs an
+     * `authorize:` policy or a literal `allowAnonymous: true`. `true`
+     * (default) = build error; `'warn'` | `false` downgrade.
+     *
+     * Sharper than the `requireGuards` it replaces, which could only ask
+     * "did you declare a chain?" — `use: [logRequest]` satisfied it. With
+     * access split out from middleware, this asks whether access is decided.
      */
-    requireGuards?: boolean | 'warn';
+    requireAuthorization?: boolean | 'warn';
+    /**
+     * Root-relative module exporting the `createServerApp` value (e.g.
+     * `'/src/server-app.ts'`) — the app whose `authenticate` and default
+     * `authorize` every actor inherits.
+     *
+     * Declaring it satisfies `requireAuthorization` for actors that state
+     * nothing, because the app default is then the answer: this is what
+     * makes app-wide auth a ONE-LINE app concern instead of a per-actor
+     * chain repeated on every definition. Actors that need something
+     * narrower still declare `authorize:`; deliberately public ones still
+     * say `allowAnonymous: true`, and that grep is still the app's whole
+     * anonymous-reachable surface.
+     */
+    serverApp?: string;
     /**
      * Root-relative module exporting the `defineActorApp` app (as `app` or
      * default) — e.g. `'/src/actors.app.ts'`. THE source of truth: dev
@@ -113,7 +131,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
     const isExcluded = createFilter(options.exclude ?? DEFAULT_EXCLUDE);
     const base = options.base ?? DEFAULT_BASE;
     const endpoint = options.endpoint ?? base;
-    const requireGuards = options.requireGuards ?? true;
+    const requireAuthorization = options.requireAuthorization ?? true;
+    const hasServerApp = options.serverApp !== undefined;
 
     let root = process.cwd();
     let isServe = false;
@@ -173,7 +192,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
         try {
             const extraction = extractActors(code, relPath(file), {
                 endpoint,
-                requireGuards,
+                requireAuthorization,
+                hasServerApp,
                 isDefineSource: (source) => isAppImport(source, file)
             });
             extractions.set(file, extraction);

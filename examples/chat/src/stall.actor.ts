@@ -23,13 +23,11 @@
 import { ServerFnError } from '@sigx/server';
 import { randomUUID } from 'node:crypto';
 import { defineActor } from './actors.app';
-import { requireUser } from './guards';
 
 const MAX_MS = Number(process.env.STALL_MAX_MS ?? 30_000);
 
 export const Stall = defineActor({
     type: 'Stall',
-    use: [requireUser],
     state: () => ({ stalls: 0 }),
     methods: (ctx) => {
         const member = randomUUID().slice(0, 8);

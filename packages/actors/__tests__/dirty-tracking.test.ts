@@ -30,7 +30,7 @@ function trackedStorage(): { storage: ActorStorage; saves: () => number } {
 
 const listFeed = defineActor({
     type: 'ListFeed',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ list: [] as { n: number }[] }),
     methods: (ctx) => ({
         async add() {
@@ -78,7 +78,7 @@ describe('turn-boundary change detection', () => {
         const { storage, saves } = trackedStorage();
         const wb = defineActor({
             type: 'WB',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ stamped: 0 }),
             persistence: { mode: 'write-behind', debounceMs: 60_000 },
             onActivate(ctx) {
@@ -102,7 +102,7 @@ describe('turn-boundary change detection', () => {
         const { storage, saves } = trackedStorage();
         const wb = defineActor({
             type: 'WB2',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             persistence: { mode: 'write-behind', debounceMs: 5 },
             methods: (ctx) => ({
@@ -130,7 +130,7 @@ describe('turn-boundary change detection', () => {
     it('Map and Set mutations are detected', async () => {
         const collections = defineActor({
             type: 'Coll',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ m: new Map<string, number>(), s: new Set<string>() }),
             methods: (ctx) => ({
                 async setKey() {
@@ -178,7 +178,7 @@ describe('turn-boundary change detection', () => {
         const { storage } = trackedStorage();
         const ex = defineActor({
             type: 'Ex',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ a: 0, b: 0 }),
             methods: (ctx) => ({
                 async mixed() {

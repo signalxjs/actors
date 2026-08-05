@@ -19,7 +19,7 @@ import { createCluster, selfPolicy, type ClusterHarness } from '../../actors/__t
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {

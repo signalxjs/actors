@@ -54,11 +54,11 @@
         "url": "https://github.com/signalxjs/actors/issues"
     },
     "dependencies": {
-        "@sigx/terminal": "^0.11.0"
+        "@sigx/terminal": "^0.12.0"
     },
     "peerDependencies": {
         "@sigx/actors": "^0.1.0",
-        "@sigx/cli": ">=0.9.0"
+        "@sigx/cli": ">=0.10.0"
     },
     "peerDependenciesMeta": {
         "@sigx/actors": {
@@ -67,8 +67,8 @@
     },
     "devDependencies": {
         "@sigx/actors": "workspace:*",
-        "@sigx/args": "^0.9.0",
-        "@sigx/cli": "^0.9.0",
+        "@sigx/args": "^0.12.0",
+        "@sigx/cli": "^0.10.0",
         "@sigx/vite": "catalog:",
         "@types/node": "^25.9.1",
         "typescript": "^6.0.3",

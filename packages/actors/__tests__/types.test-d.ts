@@ -18,7 +18,7 @@ import { defineActorApp, type ActorPlugin } from '@sigx/actors/host';
 
 const Cart = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[], updated: null as Date | null }),
     methods: (ctx) => ({
         async add(item: string, at: Date) {
@@ -80,7 +80,7 @@ describe('ActorClient inference', () => {
     it('the methods factory sees a typed state', () => {
         void defineActor({
             type: 'Typed',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx: ActorContext<{ n: number }>) => ({
                 async bump() {
@@ -95,7 +95,7 @@ describe('ActorClient inference', () => {
     it('migrateState does not widen the inferred state type', () => {
         void defineActor({
             type: 'Migrating',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ v: 2, items: [] as string[] }),
             // Returns `any` — what casting a `stored: unknown` naturally
             // produces, and what the issue's own example does. Were this an
@@ -116,7 +116,7 @@ describe('ActorClient inference', () => {
     it('migrateState is a check site: a wrong return shape errors on the hook', () => {
         void defineActor({
             type: 'BadMigrateShape',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ v: 2, items: [] as string[] }),
             // @ts-expect-error the wrong shape is refused HERE rather than
             // being taken as a second candidate for `S`. Drop the `NoInfer`
@@ -130,7 +130,7 @@ describe('ActorClient inference', () => {
     it('migrateState may not be async — the sync rule is the type', () => {
         void defineActor({
             type: 'AsyncMigrate',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             // @ts-expect-error `Promise<S>` is not `S`
             migrateState: async (stored: unknown) => stored as { n: number },
@@ -179,7 +179,7 @@ describe('public type surface', () => {
     it('accepts a declared placement on an actor', () => {
         void defineActor({
             type: 'Placed',
-            unguarded: true,
+            allowAnonymous: true,
             placement: { name: 'prefer-local' },
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
@@ -192,7 +192,7 @@ describe('public type surface', () => {
 
     it('types the reentrancy union and the per-method map', () => {
         const base = {
-            unguarded: true as const,
+            allowAnonymous: true as const,
             state: () => ({ n: 0 }),
             methods: () => ({
                 get() {
@@ -224,7 +224,7 @@ describe('plugin ctx extension inference', () => {
         const app = defineActorApp({ actors: [] }).use(loggerPlugin);
         void app.defineActor({
             type: 'Logged',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 bump() {
@@ -242,7 +242,7 @@ describe('plugin ctx extension inference', () => {
         const app = defineActorApp({ actors: [] }).use(loggerPlugin).use(tracingPlugin);
         void app.defineActor({
             type: 'Both',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 bump() {
@@ -258,7 +258,7 @@ describe('plugin ctx extension inference', () => {
         const { defineActor: bound } = defineActorApp({ actors: [] }).use(loggerPlugin);
         void bound({
             type: 'Destructured',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 bump() {
@@ -273,7 +273,7 @@ describe('plugin ctx extension inference', () => {
         const app = defineActorApp({ actors: [] });
         void app.defineActor({
             type: 'Bare',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 bump() {
@@ -289,7 +289,7 @@ describe('plugin ctx extension inference', () => {
         const app = defineActorApp({ actors: [] }).use(loggerPlugin);
         const Worked = app.defineWorker({
             type: 'Worked',
-            unguarded: true,
+            allowAnonymous: true,
             methods: (ctx) => ({
                 async run() {
                     expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
@@ -309,7 +309,7 @@ describe('plugin ctx extension inference', () => {
         const app = defineActorApp({ actors: [] }).use(loggerPlugin);
         const Logged = app.defineActor({
             type: 'Plain',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 bump() {
@@ -331,7 +331,7 @@ describe('plugin ctx extension inference', () => {
 describe('defineWorker typing', () => {
     const Resize = defineWorker({
         type: 'Resize',
-        unguarded: true,
+        allowAnonymous: true,
         maxLocal: 4,
         methods: (ctx) => ({
             async run(input: string) {
@@ -357,7 +357,7 @@ describe('defineWorker typing', () => {
     it('types away the identity-bound ctx members', () => {
         void defineWorker({
             type: 'CtxShape',
-            unguarded: true,
+            allowAnonymous: true,
             methods: (ctx) => ({
                 async probe() {
                     // still there: addressing, composition, lifecycle
@@ -391,56 +391,56 @@ describe('defineWorker typing', () => {
     it('cannot express the identity-bound options', () => {
         void defineWorker({
             type: 'NoState',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers have no state factory
             state: () => ({ n: 0 }),
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoSubs',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers cannot subscribe to topics
             subscriptions: { chat: () => {} },
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoTasks',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers have no durable tasks
             tasks: () => ({}),
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoPlacement',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers always place locally
             placement: { name: 'prefer-local' },
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoReentrancy',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers are never reentrant
             reentrant: true,
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoAlways',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers are never reentrant, 'always' included
             reentrant: 'always',
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoMethodReentrancy',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers never interleave per method — they pool
             methodReentrancy: { m: 'always' },
             methods: () => ({})
         });
         void defineWorker({
             type: 'NoPersistence',
-            unguarded: true,
+            allowAnonymous: true,
             // @ts-expect-error workers persist nothing
             persistence: 'explicit',
             methods: () => ({})
@@ -455,7 +455,7 @@ describe('topics typing', () => {
         expectTypeOf(topic<number>('n')).toEqualTypeOf<Topic<number>>();
         const client = defineActor({
             type: 'Publisher',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async post() {
@@ -477,7 +477,7 @@ describe('topics typing', () => {
     it('types subscription handlers with the actor state and keeps them off the client', () => {
         const Sub = defineActor({
             type: 'Sub',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ seen: 0 }),
             methods: (ctx) => ({
                 async seen() {

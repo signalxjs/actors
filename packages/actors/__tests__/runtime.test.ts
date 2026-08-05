@@ -16,7 +16,7 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 function counterActor(events: string[] = []) {
     return defineActor({
         type: 'Counter',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({ count: 0 }),
         onActivate(ctx) {
             events.push(`activate:${ctx.key}`);
@@ -110,7 +110,7 @@ describe('activation & dispatch', () => {
         // `dispatchStream` reaches it.
         const ticker = defineActor({
             type: 'Ticker',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({ async noop() {} }),
             streams: () => ({
@@ -146,7 +146,7 @@ describe('activation & dispatch', () => {
         }
         const classy = defineActor({
             type: 'Classy',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => new Impl() as unknown as { hello(): Promise<string> }
         });
@@ -172,7 +172,7 @@ describe('activation & dispatch', () => {
         let attempts = 0;
         const flaky = defineActor({
             type: 'Flaky',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             onActivate() {
                 attempts++;
@@ -210,7 +210,7 @@ describe('persistence', () => {
     it('rich types (Date, Map) survive the storage round-trip', async () => {
         const rich = defineActor({
             type: 'Rich',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ when: null as Date | null, tags: new Map<string, number>() }),
             methods: (ctx) => ({
                 async stamp() {
@@ -265,7 +265,7 @@ describe('persistence', () => {
     it('write-behind persists after the debounce without explicit save()', async () => {
         const wb = defineActor({
             type: 'WB',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             persistence: { mode: 'write-behind', debounceMs: 10 },
             methods: (ctx) => ({
@@ -288,7 +288,7 @@ describe('persistence', () => {
     it('write-behind flushes on deactivation even before the debounce fires', async () => {
         const wb = defineActor({
             type: 'WB2',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             persistence: { mode: 'write-behind', debounceMs: 60_000 },
             methods: (ctx) => ({
@@ -308,7 +308,7 @@ describe('persistence', () => {
     it('clearState resets to initial and deletes the stored record', async () => {
         const clearing = defineActor({
             type: 'Clearing',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 42 }),
             methods: (ctx) => ({
                 async set(n: number) {
@@ -338,7 +338,7 @@ describe('state migration', () => {
     function cartActor(migrateState: MigrateState<CartV2>) {
         return defineActor({
             type: 'Cart',
-            unguarded: true,
+            allowAnonymous: true,
             state: (): CartV2 => ({ v: 2, items: [], coupons: [] }),
             migrateState,
             methods: (ctx) => ({
@@ -380,7 +380,7 @@ describe('state migration', () => {
         let sawKey: string | null = null;
         const stamped = defineActor({
             type: 'Stamped',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ when: null as Date | null, seen: false }),
             migrateState: (stored, info) => {
                 const s = stored as { when: unknown };
@@ -465,7 +465,7 @@ describe('state migration', () => {
         });
         const clearing = defineActor({
             type: 'Clearable',
-            unguarded: true,
+            allowAnonymous: true,
             state: (): CartV2 => ({ v: 2, items: [], coupons: [] }),
             migrateState: migrate,
             methods: (ctx) => ({
@@ -513,7 +513,7 @@ describe('state migration', () => {
     it('write-behind never writes a migration on its own', async () => {
         const wb = defineActor({
             type: 'CartWB',
-            unguarded: true,
+            allowAnonymous: true,
             state: (): CartV2 => ({ v: 2, items: [], coupons: [] }),
             persistence: { mode: 'write-behind', debounceMs: 10 },
             migrateState: (stored) => {
@@ -646,7 +646,7 @@ describe('state migration', () => {
     it('defineActor rejects a malformed migrateState at definition time', () => {
         const base = {
             type: 'BadMigrate',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: () => ({})
         } as const;
@@ -675,7 +675,7 @@ describe('reentrancy & deadlock', () => {
     function pairHost(reentrant: boolean): Host {
         const a = defineActor({
             type: 'A',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant,
             state: () => ({ hits: 0 }),
             methods: (ctx) => ({
@@ -690,7 +690,7 @@ describe('reentrancy & deadlock', () => {
         });
         const b = defineActor({
             type: 'B',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx) => ({
                 async callBack() {
@@ -728,7 +728,7 @@ describe('reentrancy & deadlock', () => {
     function selfHost(reentrant: boolean): Host {
         const self = defineActor({
             type: 'S',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant,
             state: () => ({ depth: 0 }),
             methods: (ctx) => ({
@@ -855,7 +855,7 @@ describe('timers', () => {
         const ticks: number[] = [];
         const ticking = defineActor({
             type: 'Ticking',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             onActivate(ctx) {
                 ctx.timer(
@@ -948,7 +948,7 @@ describe('placement bindings (the cluster seam)', () => {
     it('strictChainPresence turns the reentrant missing-slot fallback into a retryable error', async () => {
         const reentrant = defineActor({
             type: 'Re',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: true,
             state: () => ({}),
             methods: () => ({

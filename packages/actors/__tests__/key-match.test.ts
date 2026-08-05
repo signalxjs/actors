@@ -9,7 +9,7 @@ import { actorKey, defineActor } from '@sigx/actors';
 
 const CartActor = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[] }),
     methods: (ctx) => ({
         async total() {

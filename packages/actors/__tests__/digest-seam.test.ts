@@ -14,7 +14,7 @@ import { defineActorApp, memoryStorage, metrics, type ActorPlugin } from '@sigx/
 
 const Noop = defineActor({
     type: 'Noop',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ n: 0 }),
     methods: (ctx) => ({
         async bump() {

@@ -45,7 +45,7 @@ export function subscriptionHandler(
 }
 
 /** The declared subscription for one topic name — own keys only, same rule
- *  as `methodUse`. */
+ *  as `methodAuthorize`. */
 export function subscriptionFor(
     def: AnyActorDefinition,
     topicName: string

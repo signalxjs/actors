@@ -41,6 +41,18 @@ interface WireEnvelope {
      *  size-capped at both ends (see `call-context-bag.ts`), and dropped
      *  WHOLE when malformed — a partial identity is worse than none. */
     bag?: Readonly<Record<string, string>>;
+    /**
+     * The ENCODED principal (rfc-server-v4 §7). Additive within v1 like
+     * `tp`: a peer that predates it simply reads no identity, so
+     * `ctx.principal` is null there — degrading to anonymous, never to a
+     * different principal.
+     *
+     * A separate slot from `bag` on purpose: identity must not be
+     * forgeable through the app-data channel, and the two have different
+     * validators. Like the bag it rides OUTSIDE the cluster HMAC, so its
+     * trust is the deployment perimeter rather than a proof.
+     */
+    pr?: string;
 }
 
 /** JSON.stringify, with every non-ASCII char escaped: header-value safe. */
@@ -73,6 +85,12 @@ export function encodeEnvelope(call: ActorCallContext, from: string): string {
         // say so, than to ship bytes the receiver discards.
         ...(call.bag !== undefined && isValidCallBag(call.bag) && Object.keys(call.bag).length > 0
             ? { bag: call.bag }
+            : {}),
+        // A string or nothing. The codec that produced it lives on the app,
+        // so this end neither parses nor trusts the contents — the receiver
+        // decodes it, and a failed decode is anonymous.
+        ...(typeof call.principal === 'string' && call.principal.length > 0
+            ? { pr: call.principal }
             : {})
     };
     if (__DEV__ && call.bag !== undefined && !isValidCallBag(call.bag)) {
@@ -161,7 +179,13 @@ export function decodeEnvelope(header: string): DecodedEnvelope {
             // normal awaited delivery — the caller waits longer, nothing is
             // lost — never a 400.
             ...(parsed.ow === 1 ? { oneWay: true as const } : {}),
-            ...(bag !== undefined ? { bag } : {})
+            ...(bag !== undefined ? { bag } : {}),
+            // Lenient tier again: a non-string `pr` is dropped, leaving the
+            // call anonymous rather than 400ing it. The decode itself
+            // happens later, lazily, in `ctx.principal`.
+            ...(typeof parsed.pr === 'string' && parsed.pr.length > 0
+                ? { principal: parsed.pr }
+                : {})
         },
         from: parsed.from
     };

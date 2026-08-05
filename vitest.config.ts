@@ -15,6 +15,7 @@ export default defineConfig({
     },
     test: {
         environment: 'happy-dom',
+        setupFiles: ['./vitest.setup.ts'],
         // Examples are included for the env-gated INFRA suite: it tests a
         // DEPLOYMENT (proxy behaviour, sealed mounts, chaos), which no
         // package-level test can reach. It skips itself without INFRA_URL,

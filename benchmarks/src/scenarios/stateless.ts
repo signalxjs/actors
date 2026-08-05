@@ -30,7 +30,7 @@ const POOL_CAP = 4;
 
 const Work = defineWorker({
     type: 'StatelessBench',
-    unguarded: true,
+    allowAnonymous: true,
     maxLocal: POOL_CAP,
     methods: () => ({
         async noop() {}
@@ -86,7 +86,7 @@ const statelessPoolCap: Scenario = {
         const saturatedTurns = new Promise<void>((r) => (saturate = r));
         const Parked = defineWorker({
             type: 'StatelessPool',
-            unguarded: true,
+            allowAnonymous: true,
             maxLocal: POOL_CAP,
             methods: () => ({
                 async park(gate: Promise<void>) {

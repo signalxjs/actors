@@ -35,7 +35,7 @@ afterEach(async () => {
 function counterActor(events: string[] = []) {
     return defineActor({
         type: 'Counter',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({ count: 0 }),
         onActivate(ctx) {
             events.push(`activate:${ctx.key}`);
@@ -174,7 +174,7 @@ describe('cluster: call-chain & deadline propagation', () => {
         type AlphaMethods = { poke(): Promise<string>; back(): Promise<string>; warm(): Promise<string> };
         const alpha = defineActor({
             type: 'Alpha',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: reentrantAlpha,
             state: () => ({}),
             methods: (ctx: ActorContext<object>) => ({
@@ -191,7 +191,7 @@ describe('cluster: call-chain & deadline propagation', () => {
         });
         const beta = defineActor({
             type: 'Beta',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx: ActorContext<object>) => ({
                 async poke() {
@@ -252,9 +252,10 @@ describe('cluster: guards, streams, reminders, failover', () => {
         const guardLog: string[] = [];
         const guarded = defineActor({
             type: 'Guarded',
-            use: [
-                (_rq, info) => {
-                    guardLog.push(`use:${info.symbol}`);
+            authorize: [
+                (_p, _rq, op) => {
+                    guardLog.push(`use:${op.fn.symbol}`);
+                    return true;
                 }
             ],
             state: () => ({}),
@@ -280,7 +281,7 @@ describe('cluster: guards, streams, reminders, failover', () => {
         const cleanupLog: string[] = [];
         const streamer = defineActor({
             type: 'Streamer',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({
                 async warm() {
@@ -327,7 +328,7 @@ describe('cluster: guards, streams, reminders, failover', () => {
         const events: string[] = [];
         const waking = defineActor({
             type: 'Waking',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             onReminder(_ctx, name) {
                 events.push(`reminder:${name}`);
@@ -522,7 +523,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         type BetaClient = { poke(): Promise<unknown> };
         const alpha = defineActor({
             type: 'Alpha',
-            unguarded: true,
+            allowAnonymous: true,
             reentrant: true,
             state: () => ({}),
             methods: (ctx: ActorContext<object>) => ({
@@ -539,7 +540,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         });
         const beta = defineActor({
             type: 'Beta',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: (ctx: ActorContext<object>) => ({
                 async poke() {
@@ -612,7 +613,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
     it('the leaver announces `leaving` BEFORE the drain, so peers stop placing there', async () => {
         const slow = defineActor({
             type: 'Slow',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({
                 async nap(ms: number) {
@@ -669,7 +670,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
     it('typePolicies pin selected types local while the default policy handles the rest', async () => {
         const sticky = defineActor({
             type: 'Sticky',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({}),
             methods: () => ({
                 async ping() {
@@ -692,7 +693,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         // The placement attribute form: the strategy rides the actor.
         const pinned = defineActor({
             type: 'Pinned',
-            unguarded: true,
+            allowAnonymous: true,
             placement: preferLocalPolicy(),
             state: () => ({}),
             methods: () => ({
@@ -725,7 +726,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         // on.
         const odd = defineActor({
             type: 'Odd',
-            unguarded: true,
+            allowAnonymous: true,
             placement: { name: 'durable-object', backend: 'durable-objects' },
             state: () => ({}),
             methods: () => ({
@@ -757,7 +758,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         let called = false;
         const foreign = defineActor({
             type: 'Foreign',
-            unguarded: true,
+            allowAnonymous: true,
             placement: {
                 name: 'do-pin',
                 backend: 'durable-objects',
@@ -787,7 +788,7 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         // with nothing pointing at the cause.
         const broken = defineActor({
             type: 'Broken',
-            unguarded: true,
+            allowAnonymous: true,
             placement: { name: 'my-strategy' }, // no choose(), no backend
             state: () => ({}),
             methods: () => ({

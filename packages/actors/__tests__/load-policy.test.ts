@@ -158,7 +158,7 @@ describe('choose(), attached', () => {
 describe('the attach seam on the placement', () => {
     const Seed = defineActor({
         type: 'Seed',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: () => ({ async touch() {} })
     });
@@ -201,7 +201,7 @@ describe('the attach seam on the placement', () => {
         };
         const Pinned = defineActor({
             type: 'Pinned',
-            unguarded: true,
+            allowAnonymous: true,
             placement: declared,
             state: () => ({}),
             methods: () => ({ async touch() {} })
@@ -238,13 +238,13 @@ describe('the attach seam on the placement', () => {
 describe('end to end', () => {
     const Seed = defineActor({
         type: 'Seed',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: () => ({ async touch() {} })
     });
     const Balanced = defineActor({
         type: 'Balanced',
-        unguarded: true,
+        allowAnonymous: true,
         state: () => ({}),
         methods: () => ({ async touch() {} })
     });

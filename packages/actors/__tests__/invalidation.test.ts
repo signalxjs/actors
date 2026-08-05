@@ -23,7 +23,7 @@ let reads = 0;
 
 const CartActor = defineActor({
     type: 'Cart',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ items: [] as string[] }),
     methods: (ctx) => ({
         async total() {
@@ -54,7 +54,7 @@ const CartActor = defineActor({
 
 const OrderActor = defineActor({
     type: 'Order',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ n: 7 }),
     methods: (ctx) => ({
         async count() {

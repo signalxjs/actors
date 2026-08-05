@@ -16,7 +16,7 @@ import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 
 const Counter = defineActor({
     type: 'Counter',
-    unguarded: true,
+    allowAnonymous: true,
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {
@@ -145,7 +145,7 @@ describe('the host drives its background work through the seam', () => {
         const ticks: number[] = [];
         const Ticker = defineActor({
             type: 'Coalesce',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 async arm() {
@@ -179,7 +179,7 @@ describe('the host drives its background work through the seam', () => {
         const ticks: number[] = [];
         const Ticker = defineActor({
             type: 'Ticker',
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 async arm() {

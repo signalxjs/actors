@@ -52,7 +52,7 @@ describe('topic()', () => {
 
 describe('the subscriptions: declaration', () => {
     const base = {
-        unguarded: true,
+        allowAnonymous: true as const,
         state: () => ({}),
         methods: () => ({})
     };
@@ -101,7 +101,7 @@ const chat = topic<string>('chat-messages', 'room-1');
 function makeFeed() {
     return defineActor({
         type: 'Feed',
-        unguarded: true,
+        allowAnonymous: true as const,
         state: () => ({ log: [] as string[], events: [] as TopicEvent[] }),
         methods: (ctx) => ({
             async log() {
@@ -159,7 +159,7 @@ describe('publish', () => {
         const Feed = makeFeed();
         const Pub = defineActor({
             type: 'Pub',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({}),
             methods: (ctx) => ({
                 async post(text: string) {
@@ -178,7 +178,7 @@ describe('publish', () => {
         const seen: string[] = [];
         const Agg = defineActor({
             type: 'Agg',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({}),
             methods: (ctx) => ({
                 async key() {
@@ -225,7 +225,7 @@ describe('failure isolation', () => {
         const ok = (type: string) =>
             defineActor({
                 type,
-                unguarded: true,
+                allowAnonymous: true as const,
                 state: () => ({ got: 0 }),
                 methods: (ctx) => ({
                     async got() {
@@ -237,7 +237,7 @@ describe('failure isolation', () => {
         const A = ok('A');
         const B = defineActor({
             type: 'B',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({}),
             methods: () => ({}),
             subscriptions: {
@@ -262,7 +262,7 @@ describe('failure isolation', () => {
         const t = topic('mapped', 'k');
         const Bad = defineActor({
             type: 'BadMap',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({}),
             methods: () => ({}),
             subscriptions: {
@@ -289,7 +289,7 @@ describe('failure isolation', () => {
         let attempts = 0;
         const Flaky = defineActor({
             type: 'Flaky',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({ n: 0 }),
             methods: (ctx) => ({
                 async n() {
@@ -321,7 +321,7 @@ describe('subscription cycles', () => {
         const loop = topic('loop', 'self');
         const Loop = defineActor({
             type: 'Loop',
-            unguarded: true,
+            allowAnonymous: true as const,
             state: () => ({}),
             methods: (ctx) => ({
                 async trigger() {
@@ -341,7 +341,7 @@ describe('subscription cycles', () => {
         let handled = 0;
         const Loop = defineActor({
             type: 'LoopOk',
-            unguarded: true,
+            allowAnonymous: true as const,
             reentrant: true,
             state: () => ({}),
             methods: (ctx) => ({
@@ -362,7 +362,7 @@ describe('subscription cycles', () => {
         let handled = 0;
         const Loop = defineActor({
             type: 'LoopAlways',
-            unguarded: true,
+            allowAnonymous: true as const,
             reentrant: 'always',
             state: () => ({}),
             methods: (ctx) => ({

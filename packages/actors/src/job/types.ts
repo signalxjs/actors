@@ -5,7 +5,7 @@
  * cancellable and crash-resumable; this layer standardizes the state
  * machine, progress, checkpoints and the client surface around it.
  */
-import type { ServerFnGuard } from '@sigx/server';
+import type { ActorPolicy } from '../types';
 import type { ActorPlacementStrategy, ReminderApi } from '../types';
 
 export type JobStatus =
@@ -65,6 +65,20 @@ export interface JobHandle<In, C, Extra extends object> {
     readonly resumedFrom: C | undefined;
     /** The payload `resume(data)` carried, on a pause-resume. */
     readonly resumeData: unknown;
+    /**
+     * The principal that ENQUEUED this job (rfc-server-v4 §7), recorded at
+     * `start` and persisted with the run.
+     *
+     * Not `ctx.principal`: a job outlives the request that started it, so
+     * a detached run body — and every crash-resume after it, possibly on
+     * another host hours later — has no live caller to read. Authorization
+     * happened once, at enqueue; this is who it happened for, which is what
+     * an audit line or a downstream call should be attributed to.
+     *
+     * `null` when the starter was anonymous or the app configured no
+     * `codec`. Treat it as unattributed, never as a default principal.
+     */
+    readonly principal: unknown;
     /** Publish progress. Pushed to `watch()`ers via the change feed with no
      *  write of its own — it is persisted only as part of the NEXT
      *  `checkpoint()` (or terminal) save, so after a crash, progress
@@ -103,8 +117,17 @@ export interface JobControl<Extra extends object = Record<never, never>> {
 export interface JobOptions<In, Out, C, Extra extends object> {
     /** Stable type id — wire, directory and storage name. */
     type: string;
-    use?: readonly ServerFnGuard[];
-    unguarded?: boolean;
+    /**
+     * Policy chain for this job's generated wire surface, decided at
+     * ENQUEUE — `start`/`status`/`cancel`/`resume`/`update` — with
+     * `op.resource.kind === 'job'` and the run id as `op.resource.key`.
+     * The executing job runs under the principal snapshot recorded at
+     * start and never re-authorizes: a job outlives the request that
+     * enqueued it, so there is no live caller left to decide about.
+     */
+    authorize?: ActorPolicy | readonly ActorPolicy[];
+    /** The explicit word for a job reachable without a principal. */
+    allowAnonymous?: true;
     /**
      * Total attempts before a crash-looping job is marked `failed`.
      * Counts the first run and every crash-resume; pause-resume is free.

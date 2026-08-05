@@ -3,8 +3,33 @@
  * shapes. Split from index.ts so the host, wire, and client entries can
  * import types without pulling the public API module in.
  */
-import type { ServerFnGuard, ServerFnReadCache } from '@sigx/server';
+import type { ServerPolicy, ServerFnReadCache } from '@sigx/server';
+
 import type { ActorErrorKind, ActorOwnerHint } from './errors';
+
+/**
+ * A policy as an actor DECLARES it.
+ *
+ * The principal is `any` here, and only here, for a variance reason rather
+ * than a laziness one: a definition cannot know the app's principal type
+ * (that lives on `createServerApp<P>`), so the option's type is
+ * `ServerPolicy<unknown>` — and a parameter is contravariant, so the
+ * natural spelling
+ *
+ * ```ts
+ * authorize: (user: User | null, _rq, op) => op.resource.key === user?.id
+ * ```
+ *
+ * would not be assignable to it. The alternative is a cast at every policy,
+ * which is worse: it moves a compile-time annoyance into runtime-shaped
+ * boilerplate, and a cast that appears on every policy stops being read.
+ *
+ * The narrowing an author actually wants is the one they write in their own
+ * parameter annotation, which this preserves. `null` still reaches a policy
+ * only on an `allowAnonymous` operation.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ActorPolicy = ServerPolicy<any>;
 
 /** Identity of one virtual actor. Serializable; never holds memory. */
 export interface ActorRef {
@@ -72,6 +97,27 @@ export interface ActorCallContext {
      * different principal.
      */
     readonly bag?: Readonly<Record<string, string>>;
+    /**
+     * The authenticated principal, encoded with the app's `codec`
+     * (rfc-server-v4 §3.1/§7) — a FIRST-CLASS slot, deliberately not a bag
+     * key.
+     *
+     * Populated ONLY by an entry point from its own authentication, after
+     * the pipeline ran: the wire endpoint, the live endpoint, and the
+     * in-process `actor()` client. Never read from a request header, and
+     * never writable through `.with({ bag })` — which is the point. The
+     * pre-v4 failure mode was a guard author forgetting `stampCallBag` and
+     * silently dropping identity across hops; identity that is not in the
+     * bag cannot be forgotten, spoofed, or overwritten by app data.
+     *
+     * Inherited unchanged by `ctx.actor`/`ctx.publish` hops and carried
+     * host-to-host on the envelope, where — like `bag` — it rides outside
+     * the cluster HMAC and therefore carries the perimeter's trust, not
+     * cryptographic proof. Callee side reads it as `ctx.principal`, decoded
+     * lazily. A missing slot or a failed decode is `null`: anonymous, never
+     * a different principal.
+     */
+    readonly principal?: string;
     /** Cooperative cancellation from the outermost caller. NOT serialized. */
     readonly abortSignal?: AbortSignal;
 }
@@ -616,6 +662,28 @@ export interface ActorContextBase<S extends object> {
      */
     readonly bag: Readonly<Record<string, string>>;
     /**
+     * The authenticated principal for the request that entered the system,
+     * decoded with the app's `codec` (rfc-server-v4 §7) — or `null` when
+     * the caller was anonymous, no codec is configured, or the encoded slot
+     * failed to decode.
+     *
+     * Resolved LAZILY and memoized per turn: an actor that never asks pays
+     * nothing. It flows unchanged through `ctx.actor`/`ctx.publish` hops and
+     * between hosts, so a downstream actor sees the identity of the ORIGINAL
+     * caller rather than of the actor that called it — authentication is
+     * per-request, authorization is per entry point.
+     *
+     * Empty in contexts that deliberately inherit nothing: detached task
+     * bodies, volatile timer ticks, reminders (the same rule as `bag` and
+     * `traceparent` — a reminder outlives the request that scheduled it, so
+     * there is no caller left to name).
+     *
+     * **Treat `null` as unauthenticated, never as a different principal.**
+     * Between hosts this rides outside the cluster HMAC, exactly like the
+     * bag, so its trust is the deployment's perimeter — not a proof.
+     */
+    readonly principal: unknown;
+    /**
      * Publish to a topic. Settles when every subscriber's handler turn has
      * settled; subscriber failures land in the report, never here. Carries
      * this turn's call chain, so a subscription cycling back into this
@@ -744,18 +812,44 @@ export interface ActorOptions<
      */
     type: string;
     /**
-     * Transport-independent guard chain, run for every method on every
-     * transport (wire and in-process), OUTSIDE any turn. Required unless
-     * `unguarded: true` when the build gate is on (its default).
+     * This actor's authorization policy chain (rfc-server-v4 §7), decided
+     * at every ENTRY POINT — the wire endpoint, the live endpoint, an
+     * in-process `actor()` call — on every transport, OUTSIDE any turn.
+     * Replaces the app default where declared (most-specific-wins).
+     *
+     * Policies receive the resolved principal and
+     * `op.resource = { kind: 'actor', type, key, method }`, so the dominant
+     * actor policy — per-INSTANCE, "may this user read cart `u_123`?" — is
+     * expressible for the first time:
+     *
+     * ```ts
+     * authorize: (user, _rq, op) => op.resource!.key === user.id
+     * ```
+     *
+     * STRICT-`true`: anything else denies (403; 401 when the principal is
+     * null). Required unless `allowAnonymous: true` when the build gate is
+     * on (its default), or an app default policy is configured.
      */
-    use?: readonly ServerFnGuard[];
-    /** The explicit opt-out word for a public actor. */
-    unguarded?: boolean;
-    /** Per-method guard chains, run after `use`. Static map — the method
-     *  table itself is per-activation and cannot carry wire metadata. */
-    methodUse?: Record<string, readonly ServerFnGuard[]>;
+    authorize?: ActorPolicy | readonly ActorPolicy[];
     /**
-     * Per-method interleaving, alongside `methodUse` (same static-map shape,
+     * The explicit word for an actor reachable without a principal. Waives
+     * ONLY the identity gate: app middleware and authentication still run,
+     * and a declared `authorize` chain still runs against a nullable
+     * principal.
+     */
+    allowAnonymous?: true;
+    /** Per-method policy chains, ANDed AFTER `authorize`. Static map — the
+     *  method table itself is per-activation and cannot carry wire metadata. */
+    methodAuthorize?: Record<string, ActorPolicy | readonly ActorPolicy[]>;
+    /**
+     * @internal Set by `defineWorker` / `defineJob` so a policy's
+     * `op.resource.kind` names what it is actually deciding about. Absent
+     * means `'actor'`; a value written by hand is overwritten by those
+     * factories.
+     */
+    kind?: 'worker' | 'job';
+    /**
+     * Per-method interleaving, alongside `methodAuthorize` (same static-map shape,
      * own keys only): a method mapped to `'always'` is exempt from turn
      * exclusivity regardless of the actor-level `reentrant` setting — it
      * never waits for in-flight turns and is never waited for, and an
@@ -976,12 +1070,13 @@ export interface WorkerOptions<
 > {
     /** Stable type id — the worker's wire and registry name. */
     type: string;
-    /** Guard chain, exactly as on `ActorOptions.use`. */
-    use?: readonly ServerFnGuard[];
-    /** The explicit opt-out word for a public worker. */
-    unguarded?: boolean;
-    /** Per-method guard chains, run after `use`. */
-    methodUse?: Record<string, readonly ServerFnGuard[]>;
+    /** Policy chain, exactly as on `ActorOptions.authorize`; `op.resource`
+     *  arrives with `kind: 'worker'`. */
+    authorize?: ActorPolicy | readonly ActorPolicy[];
+    /** The explicit word for a worker reachable without a principal. */
+    allowAnonymous?: true;
+    /** Per-method policy chains, ANDed after `authorize`. */
+    methodAuthorize?: Record<string, ActorPolicy | readonly ActorPolicy[]>;
     /**
      * Pool cap: max concurrent activations per (type, key) on one host.
      * Positive integer. Default: `navigator.hardwareConcurrency` clamped to

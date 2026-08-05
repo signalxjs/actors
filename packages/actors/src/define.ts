@@ -61,15 +61,13 @@ export function defineActor<
                 `both are reserved for the runtime's own wire and data-key namespaces.`
         );
     }
-    // The contradiction is a definition-time throw in every build (not just
-    // __DEV__): shipping an actor that SAYS unguarded but CARRIES guards is a
-    // security-posture bug, same rule as core's form-without-input.
-    if (options.unguarded === true && options.use && options.use.length > 0) {
-        throw new Error(
-            `[sigx actors] actor "${options.type}" declares both \`unguarded: true\` and a ` +
-                `non-empty \`use\` chain — pick one.`
-        );
-    }
+    // `allowAnonymous` + `authorize` is NOT a contradiction and no longer
+    // throws (rfc-server-v4 §1.2 removed the pre-v4 rule with no analog).
+    // `unguarded` + `use` was a lie — the chain ran anyway. This pair is
+    // coherent: middleware and authentication still run, the identity gate
+    // is waived, and the declared policies then decide against a NULLABLE
+    // principal. "Anyone may read it, but only the owner may read a private
+    // one" is exactly that shape.
     if (typeof options.methods !== 'function') {
         throw new Error(`[sigx actors] actor "${options.type}" needs a \`methods\` factory.`);
     }
@@ -202,7 +200,12 @@ function validateSubscriptions(options: {
  * and a name that matches nothing simply decorates a wrapper that 404s.
  */
 function validateReads(
-    options: { type: string; reads?: object; use?: readonly unknown[]; methodUse?: object },
+    options: {
+        type: string;
+        reads?: object;
+        authorize?: unknown;
+        methodAuthorize?: object;
+    },
     streamNames: readonly string[]
 ): void {
     if (!options.reads) return;
@@ -252,28 +255,34 @@ function validateReads(
         if (cache.public === true) {
             // `public` puts the response in SHARED caches, where one caller's
             // copy is served to the next. Core's contract for that is
-            // args-only — never cookies, auth or headers — and a guard is the
-            // one thing here that provably reads the request. There is no way
-            // to inspect what it reads, so the safe reading of "this actor has
-            // a guard" is "this response is per caller".
-            // Own keys only, like the guard pipeline itself: indexing found
+            // args-only — never cookies, auth or headers — and an
+            // authorization policy is the one thing here that provably
+            // decides per CALLER. There is no way to inspect what it reads,
+            // so the safe reading of "this actor authorizes" is "this
+            // response is per caller".
+            //
+            // Own keys only, like the pipeline itself: indexing found
             // `Object.prototype.hasOwnProperty` for a read DECLARED as
-            // `hasOwnProperty`, whose arity of 1 read as "there is a guard".
-            const methodUse = options.methodUse as
-                | Record<string, readonly unknown[]>
+            // `hasOwnProperty`, whose arity of 1 read as "there is a chain".
+            const count = (chain: unknown): number =>
+                chain === undefined ? 0 : Array.isArray(chain) ? chain.length : 1;
+            const methodAuthorize = options.methodAuthorize as
+                | Record<string, unknown>
                 | undefined;
-            const guarded =
-                (options.use?.length ?? 0) > 0 ||
-                ((methodUse && Object.hasOwn(methodUse, method)
-                    ? methodUse[method]?.length
-                    : 0) ?? 0) > 0;
-            if (guarded) {
+            const authorizes =
+                count(options.authorize) > 0 ||
+                count(
+                    methodAuthorize && Object.hasOwn(methodAuthorize, method)
+                        ? methodAuthorize[method]
+                        : undefined
+                ) > 0;
+            if (authorizes) {
                 throw new Error(
-                    `${where} declares \`public: true\`, but the actor runs guards on it. A ` +
+                    `${where} declares \`public: true\`, but the actor authorizes it. A ` +
                         `public read goes in SHARED caches, so its response must depend on its ` +
-                        `arguments alone — with a guard in the chain, one caller's copy can be ` +
-                        `served to the next. Drop \`public\` (the read is still cached, per ` +
-                        `client, with Vary: Cookie) or drop the guard.`
+                        `arguments alone — with a policy deciding per caller, one caller's copy ` +
+                        `can be served to the next. Drop \`public\` (the read is still cached, ` +
+                        `per client, with Vary: Cookie) or drop the policy.`
                 );
             }
         }

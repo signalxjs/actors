@@ -36,7 +36,7 @@ function subscribers(s: number): AnyActorDefinition[] {
     return Array.from({ length: s }, (_v, i) =>
         defineActor({
             type: `TopicSub${i}`,
-            unguarded: true,
+            allowAnonymous: true,
             state: () => ({ seen: 0 }),
             methods: (ctx) => ({
                 seen() {
