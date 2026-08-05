@@ -91,22 +91,27 @@ That second question has to be answered somewhere that can see the key. Two
 patterns work:
 
 **1. Front per-user actors with a serverFn that derives the key from the
-session** (what `examples/chat` does, and the recommended default). The client
-never names the actor:
+session** (the recommended default; `perf/app/src/chat.server.ts` is a working
+instance). The client never names the actor:
 
 ```ts
 export const postMessage = serverFn({
-    use: [requireUser],
+    // No `use:` — the app's default policy already requires an authenticated
+    // caller, and `authenticate` has already resolved them.
     handler: async (rq, input: { room: string; text: string }) => {
-        const from = rq.locals.user as string;      // from the session, not the client
-        return actor(RoomActor, input.room).post(from, text);
+        // From the session, not the client. `requirePrincipal` throws 401
+        // rather than returning a nullable, so `from` cannot be forged and
+        // cannot silently be `undefined`.
+        const { name: from } = await requirePrincipal<User>(rq);
+        return actor(RoomActor, input.room).post(from, input.text);
     }
 });
 ```
 
 **2. Check ownership inside the method, using `ctx.key`**, when the actor must
 stay directly addressable. The actor context does expose the key, so the method
-can compare it against the caller identity your guard put on the request scope.
+can compare it against `ctx.principal` — identity rides its own envelope slot
+and propagates across hops, so there is nothing to remember to stamp.
 
 Never treat the key itself as proof of ownership, and never assume a guard on a
 directly-addressable per-user actor is sufficient — by construction it did not

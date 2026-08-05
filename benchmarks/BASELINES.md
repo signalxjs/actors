@@ -874,6 +874,24 @@ The first numbers this tier has ever produced. Everything below was
 measured against a live AKS cluster over its public HTTPS endpoint, with
 the load driven from a VM in the same region.
 
+> **2026-08-05 — the app under test moved, the measurement did not.** It was
+> `examples/chat` when these were recorded and is now `perf/app`. Every
+> measured body moved byte-identical: `Room#recent`/`#post`, the
+> `Room → ActivityFeed` publish topology, `Digest`/`DigestActor` at
+> `DIGEST_ITERS=2000`, the chart, and `edge-ladder.mjs`. **The figures below
+> stand.**
+>
+> One derived value did change: the `postMessage` serverFn's `__sigxKey` is
+> now `sigx-perf-app/src/chat.server.ts/postMessage`, so its hashed wire id
+> is different. That is invisible — `post-fn.mjs` derives the id from the
+> build, which is the entire reason it exists — but a `write-mix` re-run
+> posts to a different URL path of the same length, and it is worth stating
+> so nobody rediscovers it as a mystery.
+>
+> The move also **pins** the workload. An edit to an actor body in `perf/app`
+> is now a deliberate baseline invalidation rather than a side effect of
+> tidying an example, which is what it was while the two were the same file.
+
 | | |
 |---|---|
 | Cluster | AKS 1.34, `Standard_D2ls_v6` (2 vCPU, **1900m allocatable**) |
