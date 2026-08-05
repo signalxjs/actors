@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
 ### Fixed
 
 - **A stalled host kept serving actors a survivor had taken over (#45).**
@@ -24,6 +26,13 @@
   providers. A host rejoining the set writes no version bump, so `onChange`
   would have stayed silent while the cached view gained a member — leaving
   transports unnotified and the departed-host sweep un-run.
+
+### Changed
+
+- **Peers `@sigx/actors@^0.3.0`.** The actor URL grammar is breaking
+  (#96), so the whole family moves together — see the `@sigx/actors`
+  changelog. **Upgrade every host before any client or peer starts
+  emitting**: a host still on 0.2.x refuses calls from an upgraded one.
 
 ## [0.2.0] - 2026-08-05
 

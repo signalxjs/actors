@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
 ### Added
 
 - **`oneWayFailures` reaches both exporters.** `renderPrometheus()` emits
@@ -10,6 +12,13 @@
   after acceptance has no caller to throw to, and this counter was the only
   place the failure existed while no exporter read it. Legacy digests
   without the field read 0.
+
+### Changed
+
+- **Peers `@sigx/actors@^0.3.0`.** The actor URL grammar is breaking
+  (#96), so the whole family moves together — see the `@sigx/actors`
+  changelog. **Upgrade every host before any client or peer starts
+  emitting**: a host still on 0.2.x refuses calls from an upgraded one.
 
 ## [0.2.0] - 2026-08-05
 
