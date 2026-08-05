@@ -225,6 +225,53 @@ describe('k8s membership provider', () => {
         expect(fake.leases.get('sigx-s.a')).toBeDefined();
     });
 
+    it('a DELETED Lease fires onSelfSuspect and is not recreated (#69)', async () => {
+        // The Lease IS this host's membership token. If it is gone —
+        // operator cleanup, namespace churn — peers have already aged us out
+        // of their views and released every directory claim we held, so a
+        // survivor may be serving our actors. Recreating it (what this used
+        // to do) silently re-advertises a host whose claims are forfeit:
+        // #45's violation reached by a different route.
+        const fake = fakeKube();
+        const membership = membershipFor(fake, { heartbeatMs: 50, ttlMs: 5_000 });
+        await membership.join(descriptor('s.a'));
+        let suspects = 0;
+        membership.onSelfSuspect(() => suspects++);
+
+        fake.leases.delete('sigx-s.a');
+        const before = fake.log.length;
+        await until(() => suspects === 1, 3000);
+
+        // Terminal, not self-healing: nothing re-creates the Lease.
+        expect(fake.leases.has('sigx-s.a')).toBe(false);
+        expect(fake.log.slice(before).filter((line) => line.startsWith('POST'))).toEqual([]);
+
+        // Latched — one fence, not one per beat.
+        await sleep(200);
+        expect(suspects).toBe(1);
+    });
+
+    it('a 404 from our OWN leave() racing a renewal does not suspect (#69)', async () => {
+        // leave() clears the beat and nulls `self` before deleting the
+        // Lease, so a renewal already on the wire comes back 404 during a
+        // perfectly graceful shutdown. That is our own doing, not lost
+        // membership, and must not fence.
+        const fake = fakeKube();
+        const membership = membershipFor(fake, { heartbeatMs: 30, ttlMs: 5_000 });
+        await membership.join(descriptor('s.a'));
+        let suspects = 0;
+        membership.onSelfSuspect(() => suspects++);
+
+        // Hold the next renewal on the wire, then leave underneath it.
+        const release = fake.gatePatches();
+        await until(() => fake.log.some((line) => line.startsWith('PATCH')), 2000);
+        await membership.leave();
+        release();
+
+        await sleep(150);
+        expect(suspects).toBe(0);
+    });
+
     it('a rotated token causes one 401, a re-read, and no suspect', async () => {
         const fake = fakeKube();
         let current = 'token-a';

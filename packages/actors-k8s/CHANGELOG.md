@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **A deleted Lease was silently recreated instead of fencing the host
+  (#69).** The Lease is this host's membership token. If something removes
+  it — operator cleanup, namespace churn — peers have already aged the host
+  out of their views, `evictHost` has released every directory claim it
+  held, and a survivor may be serving those actors. `renew()` answered a
+  404 by recreating the Lease, which re-advertised the host as healthy while
+  its claims were forfeit: the single-activation violation of #45 reached by
+  another route, and one no elapsed-time check can catch, because the
+  recreate succeeds promptly.
+
+  A 404 now fences (via the new `heartbeatClock().lost()` — proof that
+  membership is gone, rather than a suspicion inferred from timing) and the
+  Lease is *not* recreated. Fenced stays terminal: liveness fails and the
+  restart mints a fresh identity that rejoins cleanly.
+
+  A 404 caused by this host's own `leave()` racing an in-flight renewal is
+  a graceful exit, not lost membership, and does not fence.
+
 - **A stalled host kept serving actors a survivor had taken over (#45).**
   Self-suspicion fired only from a Lease renewal *failure*, so a host whose
   event loop stalled past `ttlMs` resumed, patched `renewTime` late and

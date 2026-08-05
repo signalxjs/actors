@@ -164,11 +164,40 @@ describe('heartbeatClock', () => {
         expect(h.suspects()).toBe(1);
     });
 
-    it('never suspects before it is armed', () => {
+    it('lost() fires immediately — proof does not wait for the clocks', () => {
+        // A provider that has been TOLD its record is gone (a 404 on the
+        // Kubernetes Lease) must not wait out a TTL it can no longer prove
+        // anything with. Timing would never catch it: the next write
+        // succeeds promptly and looks perfectly healthy.
+        const h = harness(1_000);
+        h.clock.arm();
+        h.advance(1); // nowhere near the TTL
+        h.clock.lost();
+        expect(h.suspects()).toBe(1);
+    });
+
+    it('lost() is latched, and a confirmed write clears it', () => {
+        const h = harness(1_000);
+        h.clock.arm();
+        h.clock.lost();
+        h.clock.lost();
+        h.clock.lost();
+        expect(h.suspects()).toBe(1);
+
+        h.clock.confirmed();
+        h.clock.lost();
+        expect(h.suspects()).toBe(2);
+    });
+
+    it('never suspects before it is armed — including lost()', () => {
+        // Pre-arm this host holds no claims, so there is nothing for a peer
+        // to have evicted: fencing would buy a refused host and a pod
+        // restart for nothing. Proof-based or not, the trigger stays silent.
         const h = harness(1_000);
         h.advance(999_999);
         h.clock.beat();
         h.clock.failed();
+        h.clock.lost();
         expect(h.suspects()).toBe(0);
     });
 });

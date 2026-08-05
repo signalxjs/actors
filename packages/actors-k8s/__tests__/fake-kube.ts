@@ -30,6 +30,14 @@ export interface FakeKube {
     compact(): void;
     /** Fail the next `n` PATCH renewals with HTTP 500. */
     failRenewals(n: number): void;
+    /**
+     * Hold PATCH renewals in flight until the returned release is called —
+     * the response is computed AFTER the release, so a test can mutate the
+     * store underneath a renewal that has already been issued. The only way
+     * to express "our own `leave()` deleted the Lease while a renewal was on
+     * the wire".
+     */
+    gatePatches(): () => void;
     /** Refuse (HTTP 500) new watch requests while active — holds a
      *  reconnecting client down so a test can mutate during the gap. */
     blockWatches(active?: boolean): void;
@@ -66,6 +74,7 @@ export function fakeKube(namespace = 'test'): FakeKube {
     let renewFailures = 0;
     let allFailing = false;
     let watchesBlocked = false;
+    let patchGate: Promise<void> | null = null;
 
     const base = `/apis/coordination.k8s.io/v1/namespaces/${namespace}/leases`;
 
@@ -123,6 +132,16 @@ export function fakeKube(namespace = 'test'): FakeKube {
         },
         failRenewals(n) {
             renewFailures = n;
+        },
+        gatePatches() {
+            let release!: () => void;
+            patchGate = new Promise<void>((resolve) => {
+                release = () => {
+                    patchGate = null;
+                    resolve();
+                };
+            });
+            return release;
         },
         blockWatches(active = true) {
             watchesBlocked = active;
@@ -229,6 +248,9 @@ export function fakeKube(namespace = 'test'): FakeKube {
             }
 
             if (method === 'PATCH') {
+                // Held renewals resolve against the store as it looks when
+                // the gate opens, not as it looked when the request was made.
+                if (patchGate) return patchGate.then(() => fake.fetch(input, init));
                 if (renewFailures > 0) {
                     renewFailures -= 1;
                     return Promise.resolve(status(500, 'fakeRenewFailure'));

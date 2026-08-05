@@ -144,11 +144,28 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
             await client.patch(selfLease, renewPatch(Date.now(), descriptorDirty ? self : undefined))
         );
         if (res.status === 404) {
-            // Someone deleted our Lease (operator cleanup, namespace churn):
-            // peers already think we're gone — recreate rather than fence.
-            const created = drain(await client.create(selfLeaseBody()));
-            if (!created.ok) throw new Error(`lease recreate failed: HTTP ${created.status}`);
-        } else if (!res.ok) {
+            // Our own `leave()` deleted the Lease while this renewal was on
+            // the wire (it clears the beat and nulls `self` first, but an
+            // in-flight request outlives that). A graceful exit, not lost
+            // membership.
+            if (!self) return;
+            // Otherwise the Lease is GONE — operator cleanup, namespace
+            // churn — and it is the only thing that made this host a member.
+            // Peers have already aged us out of their views, `#sweepDeparted`
+            // ran `evictHost`, and every directory claim we held is
+            // released: a survivor may be serving those actors right now.
+            //
+            // This used to RECREATE the Lease ("peers already think we're
+            // gone — recreate rather than fence"), which named the hazard and
+            // then re-advertised a host whose claims are forfeit. That is the
+            // #45 violation by another route (#69), and no elapsed-time check
+            // can catch it — the recreate succeeds promptly and everything
+            // looks healthy. So: fence. Fenced is terminal, liveness fails,
+            // and the restart mints a fresh identity that rejoins cleanly.
+            clock.lost();
+            return;
+        }
+        if (!res.ok) {
             throw new Error(`lease renew failed: HTTP ${res.status}`);
         }
         descriptorDirty = false;

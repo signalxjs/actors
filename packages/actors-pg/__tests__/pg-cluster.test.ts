@@ -125,10 +125,24 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
             let suspects = 0;
             m1.onSelfSuspect(() => suspects++);
             await m1.join({ hostId: 's.late', epoch: 1, address: 'http://l', status: 'active' });
-
-            await vi.waitFor(() => expect(suspects).toBeGreaterThan(0), { timeout: 3000 });
-            await expect(m1.isAlive('s.late')).resolves.toBe(true); // nothing failed
-            await m1.leave();
+            try {
+                await vi.waitFor(() => expect(suspects).toBeGreaterThan(0), { timeout: 3000 });
+                // Nothing FAILED — the upserts keep landing. Polled, not
+                // sampled once: this config leaves the row expired for
+                // 200 of every 300 ms by construction, so a bare `isAlive`
+                // is a coin flip on where in the beat the assertion lands.
+                await vi.waitFor(
+                    async () => {
+                        await expect(m1.isAlive('s.late')).resolves.toBe(true);
+                    },
+                    { timeout: 3000 }
+                );
+            } finally {
+                // In a `finally` so a failed assertion cannot leave the beat
+                // running — it would keep querying the pool and hang the
+                // suite's teardown long after the real failure.
+                await m1.leave();
+            }
         });
 
         it('setStatus propagates to peers', async () => {
