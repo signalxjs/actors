@@ -132,7 +132,7 @@ describe('the transport seam', () => {
         // The configured endpoint wins over the one baked into the ref; the
         // routing token rides as a MIDDLE segment, leaving the symbol last.
         expect(String(fetchSpy.mock.calls[0][0])).toBe(
-            `http://other.test/actors/r/${hashRouteToken('Cart', 'c4')}/Cart%23add`
+            `http://other.test/actors/r/${hashRouteToken('Cart', 'c4')}/Cart/add`
         );
     });
 
@@ -143,7 +143,7 @@ describe('the transport seam', () => {
         await ref().__sigxActorProxy('c5').add('fig');
 
         expect(String(fetchSpy.mock.calls[0][0])).toBe(
-            `${ENDPOINT}/r/${hashRouteToken('Cart', 'c5')}/Cart%23add`
+            `${ENDPOINT}/r/${hashRouteToken('Cart', 'c5')}/Cart/add`
         );
         const init = fetchSpy.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)['x-tenant']).toBe('acme');
@@ -155,7 +155,7 @@ describe('the transport seam', () => {
 
         await ref().__sigxActorProxy('c6').add('fig');
 
-        expect(String(fetchSpy.mock.calls[0][0])).toBe(`${ENDPOINT}/Cart%23add`);
+        expect(String(fetchSpy.mock.calls[0][0])).toBe(`${ENDPOINT}/Cart/add`);
         const init = fetchSpy.mock.calls[0][1] as RequestInit;
         expect((init.headers as Record<string, string>)[ACTOR_ROUTE_HEADER]).toBeUndefined();
     });

@@ -3,14 +3,14 @@
  *
  * The wire puts the actor KEY in the JSON body:
  *
- *     POST /_sigx/actor/Cart%23addItem     {"args": ["cart-123", …]}
+ *     POST /_sigx/actor/Cart/addItem     {"args": ["cart-123", …]}
  *
  * No load balancer parses a body to route, so the edge cannot tell which
  * actor a request is for, and locality is a coin flip that degrades as 1/N.
  * This module exposes a stable per-actor token in the request line so an
  * off-the-shelf LB can hash it:
  *
- *     POST /_sigx/actor/r/{token}/Cart%23addItem
+ *     POST /_sigx/actor/r/{token}/Cart/addItem
  *     x-sigx-actor-route: {token}
  *
  * Composed with `preferLocalPolicy()`, the LB BECOMES the placement: the
@@ -31,11 +31,15 @@
  *     HAProxy  balance uri depth 4
  *     Envoy    hash_policy: { header: { header_name: x-sigx-actor-route } }
  *
- * The token is a MIDDLE segment, and must be: `@sigx/server` decodes the
- * symbol as the LAST path segment, so a token appended after it would BE the
+ * The token PRECEDES the symbol, and must: everything after the base is the
+ * symbol (`@sigx/server`'s `decodeFnPath`, and the symbol spans several
+ * segments), so a token appended after it would be read as part of the
  * symbol. Conversely `matchesActorRequest` is a prefix match, so a middle
  * segment is already transparent — the server needs no parsing change and
  * deliberately IGNORES the token entirely (see `actorRouteToken`).
+ *
+ * Both LB recipes below still hold: `encodeRouteToken` escapes the token's
+ * slashes, so it remains exactly one segment and stays the fourth.
  *
  * Routing is an optimization and never load-bearing for correctness. A
  * misrouted request still produces the right answer — the receiving host
@@ -44,6 +48,7 @@
  */
 import { fnv1a } from './hash';
 import { actorId } from './types';
+import { encodeSymbolPath } from './wire-url';
 
 /** The marker segment introducing a routing token: `…/r/{token}/{symbol}`.
  *  A fixed literal so every LB regex has something to anchor on, and so a
@@ -172,10 +177,16 @@ export function encodeRouteToken(token: string): string {
 /**
  * `${base}/r/${token}/${symbol}` — or `${base}/${symbol}` when there is no
  * token, which is exactly the URL that shipped before this existed.
+ *
+ * The symbol spans SEVERAL segments (`Cart/addItem`, see `wire-url.ts`); the
+ * token remains exactly one, because `encodeRouteToken` escapes its slashes.
+ * That asymmetry is what keeps `{base}/r/{token}/{symbol}` parseable from the
+ * left: the first segment after `r/` is the whole token, and everything after
+ * it is the whole symbol.
  */
 export function routePath(base: string, token: string | null, symbol: string): string {
     const trimmed = base.endsWith('/') ? base.slice(0, -1) : base;
-    const encoded = encodeURIComponent(symbol);
+    const encoded = encodeSymbolPath(symbol);
     return token === null
         ? `${trimmed}/${encoded}`
         : `${trimmed}/${ACTOR_ROUTE_SEGMENT}/${encodeRouteToken(token)}/${encoded}`;

@@ -91,8 +91,12 @@ describe('the routing token on the wire', () => {
         await expect(actor(CartRef, 'r1').add('socks')).resolves.toBe(1);
         await expect(actor(CartRef, 'r1').total()).resolves.toBe(1);
 
-        expect(seen[0].url).toBe(`${ENDPOINT}/r/${hashRouteToken('Cart', 'r1')}/Cart%23add`);
-        expect(seen[0].url.slice(seen[0].url.lastIndexOf('/') + 1)).toBe('Cart%23add');
+        expect(seen[0].url).toBe(`${ENDPOINT}/r/${hashRouteToken('Cart', 'r1')}/Cart/add`);
+        // The token precedes the symbol, and the symbol runs to the end of
+        // the path — that is what the server reads back.
+        expect(seen[0].url.slice(`${ENDPOINT}/`.length).split('/')[1]).toBe(
+            hashRouteToken('Cart', 'r1')
+        );
     });
 
     it('is byte-identical in effect to the bare URL', async () => {
@@ -105,7 +109,7 @@ describe('the routing token on the wire', () => {
 
         expect(withToken).toBe(withoutToken);
         expect(tokenized.seen[0].url).toContain('/r/');
-        expect(bare.seen[0].url).toBe(`${ENDPOINT}/Cart%23add`);
+        expect(bare.seen[0].url).toBe(`${ENDPOINT}/Cart/add`);
     });
 
     it('sends the SAME token in both carriers', async () => {
@@ -154,14 +158,14 @@ describe('the routing token on the wire', () => {
         for await (const value of actor(CartRef, 'r6').countTo(3)) got.push(value);
         expect(got).toEqual([1, 2, 3]);
         expect(seen[0].url).toBe(
-            `${ENDPOINT}/r/${hashRouteToken('Cart', 'r6')}/Cart%23countTo`
+            `${ENDPOINT}/r/${hashRouteToken('Cart', 'r6')}/Cart/countTo`
         );
     });
 
     it("'key' mode routes on a key containing a slash", async () => {
         const { seen } = wireHost('key');
         await expect(actor(CartRef, 'tenant/a').add('x')).resolves.toBe(1);
-        expect(seen[0].url).toBe(`${ENDPOINT}/r/tenant%2Fa/Cart%23add`);
+        expect(seen[0].url).toBe(`${ENDPOINT}/r/tenant%2Fa/Cart/add`);
         // The server decodes it back to the real key, not the escaped form.
         expect(seen[0].token).toBe('tenant/a');
     });
@@ -169,7 +173,7 @@ describe('the routing token on the wire', () => {
     it("'key' mode routes on a non-ASCII key", async () => {
         const { seen } = wireHost('key');
         await expect(actor(CartRef, 'café').add('x')).resolves.toBe(1);
-        expect(seen[0].url).toBe(`${ENDPOINT}/r/caf%C3%A9/Cart%23add`);
+        expect(seen[0].url).toBe(`${ENDPOINT}/r/caf%C3%A9/Cart/add`);
         expect(seen[0].token).toBe('café');
     });
 
@@ -184,7 +188,9 @@ describe('the routing token on the wire', () => {
             const { seen } = wireHost('key');
             await expect(actor(CartRef, key).add('x')).resolves.toBe(1);
 
-            const segment = seen[0].url.split('/').at(-2);
+            // `…/r/{token}/Cart/add` — the token is third from the end now
+            // that the symbol spends two segments of its own.
+            const segment = seen[0].url.split('/').at(-3);
             expect(seen[0].header).toBe(segment);
             // …and both decode back to the same real key.
             expect(seen[0].token).toBe(key);
@@ -211,7 +217,7 @@ describe('the routing token on the wire', () => {
     it('a custom token function routes, and its result is escaped', async () => {
         const { seen } = wireHost((ref) => `z/${ref.key}`);
         await expect(actor(CartRef, 'r7').add('x')).resolves.toBe(1);
-        expect(seen[0].url).toBe(`${ENDPOINT}/r/z%2Fr7/Cart%23add`);
+        expect(seen[0].url).toBe(`${ENDPOINT}/r/z%2Fr7/Cart/add`);
     });
 
     it('still reports 404 skew against the SYMBOL, not the token', async () => {

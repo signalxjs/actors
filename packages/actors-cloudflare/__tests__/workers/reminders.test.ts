@@ -29,7 +29,7 @@ function stubFor(key: string) {
 
 async function invoke(symbol: string, args: readonly unknown[]): Promise<unknown> {
     const res = await SELF.fetch(
-        `https://edge.test/_sigx/actor/${encodeURIComponent(symbol)}`,
+        `https://edge.test/_sigx/actor/${symbol.replace('#', '/')}`,
         {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

@@ -22,7 +22,7 @@
  * counter runs (state loss = actual < acked; actual > acked is legal — an
  * increment can commit after its response was lost).
  *
- * Wire protocol: POST {TARGET_URL}/_sigx/actor/{Type}%23{method} with
+ * Wire protocol: POST {TARGET_URL}/_sigx/actor/{Type}/{method} with
  * {"args":[key, ...args]} — the actor key is the first wire argument.
  */
 import { hostname } from 'node:os';
@@ -64,7 +64,7 @@ const CONN_ERROR_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED'
 let retriedConnErrors = 0;
 
 async function wireCall(type, method, args, attempt = 0) {
-    const url = `${TARGET_URL}/_sigx/actor/${encodeURIComponent(`${type}#${method}`)}`;
+    const url = `${TARGET_URL}/_sigx/actor/${type}/${method}`;
     try {
         const res = await fetch(url, {
             method: 'POST',
@@ -97,7 +97,7 @@ if (MODE === 'verify') {
     const actuals = {};
     let failed = 0;
     for (const key of keys) {
-        const url = `${TARGET_URL}/_sigx/actor/${encodeURIComponent('Counter#current')}`;
+        const url = `${TARGET_URL}/_sigx/actor/Counter/current`;
         try {
             const res = await fetch(url, {
                 method: 'POST',
@@ -152,7 +152,7 @@ if (MODE === 'jobs') {
     let infos = new Map();
     for (;;) {
         infos = new Map();
-        const url = `${TARGET_URL}/_sigx/actor/${encodeURIComponent('SweepJob#status')}`;
+        const url = `${TARGET_URL}/_sigx/actor/SweepJob/status`;
         for (const key of keys) {
             try {
                 const res = await fetch(url, {

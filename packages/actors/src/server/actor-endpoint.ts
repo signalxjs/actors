@@ -7,9 +7,11 @@
  * `ServerFnError` masking, `onError`, timeouts, NDJSON streaming, and the
  * request scope. WinterCG-clean — no `node:` imports.
  *
- * Wire shape:  POST {base}/{Type}%23{method}   {"args": [key, ...args]}
+ * Wire shape:  POST {base}/{Type}/{method}   {"args": [key, ...args]}
  * The actor KEY is the first wire argument — spliced in by the client
- * proxy, peeled off here before `host.dispatch`.
+ * proxy, peeled off here before `host.dispatch`. The symbol's separator is a
+ * REAL path separator and a type may hold slashes of its own, so the symbol
+ * spans several segments and the LAST one is the method (`wire-symbol.ts`).
  */
 import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
 import {
@@ -29,6 +31,7 @@ import {
     stripRoutePath
 } from '../route';
 import { relayStream } from '../stream-relay';
+import { canonicalSymbol } from '../wire-symbol';
 import { toClientError } from './client-error';
 import { DEFAULT_MAX_LIVE_SUBSCRIPTIONS, LIVE_SYMBOL, subscribeAll } from './live-endpoint';
 import {
@@ -352,7 +355,14 @@ export function createActorResolver(
     options: ActorResolverOptions = {}
 ): (symbol: string) => unknown | Promise<unknown> {
     const cache = new Map<string, unknown>();
-    return (symbol: string) => {
+    return (wire: string) => {
+        // Core hands over the path form (`Cart/addItem`, several segments);
+        // everything downstream — the `$live` identity check, the cache key,
+        // `notFound`'s message, `ServerFnInfo.symbol` — speaks the canonical
+        // `Cart#addItem`. Normalize once, here, and nothing else has to know
+        // a URL was involved.
+        const symbol = canonicalSymbol(wire);
+        if (symbol === '') return notFound(wire);
         const hit = cache.get(symbol);
         if (hit !== undefined) return hit;
         // The runtime's own mount, resolved BEFORE any definition lookup —
@@ -364,7 +374,6 @@ export function createActorResolver(
             return live;
         }
         const hash = symbol.lastIndexOf('#');
-        if (hash <= 0 || hash === symbol.length - 1) return notFound(symbol);
         const type = symbol.slice(0, hash);
         const method = symbol.slice(hash + 1);
         const def = host.definition(type);

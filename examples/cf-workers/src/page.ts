@@ -100,7 +100,7 @@ const HTML = String.raw`<!doctype html>
 const $ = (id) => document.getElementById(id);
 
 async function call(type, method, args) {
-    const res = await fetch('/_sigx/actor/' + encodeURIComponent(type + '#' + method), {
+    const res = await fetch('/_sigx/actor/' + type + '/' + method, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ args })
@@ -129,7 +129,7 @@ async function follow(type, key, onChunk) {
     streams.push(ac);
     const badge = $('stream');
     try {
-        const res = await fetch('/_sigx/actor/' + encodeURIComponent(type + '#watch'), {
+        const res = await fetch('/_sigx/actor/' + type + '/watch', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: [key] }),

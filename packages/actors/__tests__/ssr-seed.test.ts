@@ -179,7 +179,7 @@ describe('SSR seeding', () => {
         await new Promise((r) => setTimeout(r, 10));
 
         expect(fetchSpy).toHaveBeenCalledTimes(1);
-        expect(String(fetchSpy.mock.calls[0][0])).toContain('Cart%23total');
+        expect(String(fetchSpy.mock.calls[0][0])).toContain('Cart/total');
         expect(state.value).toBe(99); // the transport's answer, not the server's
     });
 });

@@ -39,6 +39,7 @@ import {
 } from './stats';
 import { parseWatchOptions, WATCH_SYMBOL_PREFIX } from './watch-symbol';
 import { relayStream } from '../stream-relay';
+import { canonicalSymbol, symbolFromPathname } from '../wire-symbol';
 import { toHostWireError } from './wire-errors';
 
 /** Endpoint knobs a transport may forward: body caps, `onError`, timeouts. */
@@ -86,8 +87,14 @@ export function matchesHostRequest(request: Request, base = DEFAULT_HOST_BASE): 
  */
 export function resolveHostSymbol(
     host: Host,
-    symbol: string
+    wire: string
 ): HostCallTarget | null | Promise<HostCallTarget | null> {
+    // Two spellings reach here and both are legitimate: an HTTP mount
+    // delivers the path form (`Cart/addItem`), while the frame transports
+    // (tcp, ws) and in-process callers hand over the canonical `Cart#addItem`
+    // with no URL anywhere. One resolver, so one of them normalizes.
+    const symbol = canonicalSymbol(wire);
+    if (symbol === '') return null;
     if (symbol === HOST_STATS_SYMBOL) {
         return { type: HOST_STATS_TYPE, method: HOST_STATS_METHOD, mode: 'unary' };
     }
@@ -202,12 +209,15 @@ export async function handleHostRequestForRuntime(
     options: HostRuntimeRequestOptions
 ): Promise<Response> {
     const { runtime, secret, ...rest } = options;
-    let pathname: string;
+    // The same base core is about to route on, or the pre-check would read a
+    // symbol out of a different slice of the path than the resolver does.
+    const base = rest.base ?? DEFAULT_HOST_BASE;
+    let symbol: string;
     // Malformed percent-encoding would throw inside the core endpoint's
     // own decode — reject it here so an invalid path can never crash the
     // mount.
     try {
-        pathname = decodeURIComponent(new URL(request.url).pathname);
+        symbol = symbolFromPathname(new URL(request.url).pathname, base);
     } catch {
         runtime.noteAuthFailure?.();
         return authFailed();
@@ -222,8 +232,14 @@ export async function handleHostRequestForRuntime(
     // on the PUBLIC endpoint too and reject every browser call. Running it
     // here keeps the same slot (before any decode or dispatch) with none of
     // that reach.
+    //
+    // The symbol it signs over is computed the way core's `decodeFnPath`
+    // will compute it a moment later — per segment, then canonicalized. The
+    // old shortcut (decode the whole pathname, take the last segment) was
+    // only equivalent for a type with no slash: for `acme/greeter` it
+    // recovered `greeter#greet` while the sender had signed
+    // `acme/greeter#greet`, so every secured call to a packaged actor 403'd.
     if (secret !== undefined) {
-        const symbol = pathname.slice(pathname.lastIndexOf('/') + 1);
         const callHeader = request.headers.get(HOST_CALL_HEADER);
         let callId = '';
         try {
@@ -247,8 +263,8 @@ export async function handleHostRequestForRuntime(
         // itself and defaults to `/_sigx/fn`, so the internal mount must
         // name its own base or every host-to-host call 404s before it
         // resolves.
-        base: DEFAULT_HOST_BASE,
         ...rest,
+        base,
         // Server-to-server traffic sends no Origin header; the per-request
         // HMAC (bound to symbol + callId, freshness-windowed) above is the
         // authentication, checked before anything dispatches.

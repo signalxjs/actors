@@ -18,7 +18,7 @@ declare module 'cloudflare:test' {
 }
 
 async function call(symbol: string, args: readonly unknown[]): Promise<Response> {
-    return SELF.fetch(`https://edge.test/_sigx/actor/${encodeURIComponent(symbol)}`, {
+    return SELF.fetch(`https://edge.test/_sigx/actor/${symbol.replace('#', '/')}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ args })

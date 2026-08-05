@@ -12,7 +12,7 @@
  * so a batching or WebSocket transport drops in without any call site
  * changing. `fetchTransport()` is the default and IS the wire contract
  * (mirrors `@sigx/server/client`, pinned by integration tests against the
- * real endpoint): POST `{endpoint}/{Type}%23{method}` with
+ * real endpoint): POST `{endpoint}/{Type}/{method}` with
  * `{"args": [key, ...args]}` → `{"data"}` / `{"error"}` envelope, or NDJSON
  * `{"chunk"}* ({"done"}|{"error"})` for stream methods. Errors are
  * re-created with the `__sigxServerFnError` brand so `isServerFnError`
@@ -32,6 +32,7 @@ import {
     type ActorRouteToken
 } from '../route';
 import { introspectionMember, isIntrospectionProp } from '../proxy-introspection';
+import { encodeReadQuery } from '../wire-url';
 import type { ActorRef } from '../types';
 import {
     encodeWire,
@@ -233,25 +234,26 @@ async function send(
     if (init?.oneWay) headers[ACTOR_ONEWAY_HEADER] = '1';
     const path = routePath(endpointOf(config, init), token, symbol);
     const signal = init?.signal ? { signal: init.signal } : {};
-    // A declared read goes out as GET with its arguments in `?args=`, which is
-    // what lets a browser, a CDN or a reverse proxy answer it without the
+    // A declared read goes out as GET with its arguments in the query, which
+    // is what lets a browser, a CDN or a reverse proxy answer it without the
     // request ever reaching an actor. Same symbol, same routing token, same
-    // codec — only the carrier differs.
-    const [url, request]: [string, RequestInit] =
-        init?.get === true
-            ? [
-                  `${path}?args=${encodeURIComponent(JSON.stringify(encodeWire(args)))}`,
-                  { method: 'GET', headers, ...signal }
-              ]
-            : [
-                  path,
-                  {
-                      method: 'POST',
-                      headers,
-                      body: JSON.stringify({ args: encodeWire(args) }),
-                      ...signal
-                  }
-              ];
+    // codec — only the carrier differs. All-scalar arguments ride as named
+    // params (`?a0=p-9&a1=EUR`) and anything richer falls back to the `args=`
+    // blob; `wire-url.ts` owns that grammar and explains why it is core's.
+    let url = path;
+    let request: RequestInit;
+    if (init?.get === true) {
+        const query = encodeReadQuery(args, (blob) => JSON.stringify(encodeWire(blob)));
+        if (query) url = `${path}?${query}`;
+        request = { method: 'GET', headers, ...signal };
+    } else {
+        request = {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ args: encodeWire(args) }),
+            ...signal
+        };
+    }
     return config.fetch ? config.fetch(url, request) : fetch(url, request);
 }
 

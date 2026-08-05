@@ -21,7 +21,67 @@
   `storage()`/`stop()` are the shared intersection and `bootstrap?()` is
   optional.
 
+### Fixed
+
+- **A secured host-to-host call to an actor whose type contains a slash
+  always 403'd** (#96). The internal mount's HMAC pre-check read the symbol
+  as the LAST path segment, which is only the whole symbol when the type has
+  no slash: for the packaged-actor convention this README recommends
+  (`acme/greeter`) it recovered `greeter#greet` while the sender had signed
+  `acme/greeter#greet`, so `verifyAuth` rejected every call under
+  `cluster({ secret })`. It now computes the symbol exactly the way core's
+  `decodeFnPath` does — per segment — which is what the resolver a moment
+  later sees. A mount that worked against every test fixture and failed on
+  the one naming convention the docs recommend.
+
 ### Changed
+
+- **BREAKING: actor URLs no longer spend percent-escapes** (#96), matching
+  the grammar `@sigx/server` adopted in core 0.15. The wire symbol's
+  separator is now a **real path separator** and encoding is per segment,
+  so `@`, `$`, `:`, `.`, `-`, `_` and `~` survive literally:
+
+  ```
+  before  POST /_sigx/actor/r/1xadm0a/Cart%23addItem
+          POST /_sigx/actor/%24live%23subscribe
+          GET  /_sigx/actor/Product%23price?args=%5B%22p-9%22%2C%22EUR%22%5D
+          POST /_sigx/host/Cart%23addItem
+
+  after   POST /_sigx/actor/r/1xadm0a/Cart/addItem
+          POST /_sigx/actor/$live/subscribe
+          GET  /_sigx/actor/Product/price?a0=p-9&a1=EUR
+          POST /_sigx/host/Cart/addItem
+  ```
+
+  A type may hold slashes of its own (`acme/greeter`), so the symbol can
+  span more than two segments and the **last** one is always the method —
+  the same `lastIndexOf` rule the runtime already used for `#`. Declared
+  `reads:` now send all-scalar arguments as named params (arg 0 is the actor
+  key); one richer argument and the whole call falls back to `?args=<JSON>`,
+  all-or-nothing so the cache key stays a pure function of the arguments.
+  That grammar is core's verbatim, deliberately: the same declared read must
+  decode identically on `/_sigx/fn` and `/_sigx/actor`.
+
+  **The in-memory symbol is unchanged.** It is still `` `${type}#${method}` ``
+  everywhere it is not a URL — the per-call HMAC signs it, `ServerFnInfo.symbol`
+  reports it to a policy, and the frame transports (`@sigx/actors-tcp`,
+  `@sigx/actors-ws`) carry it with no URL involved. Only the URL spelling
+  changed.
+
+  **⚠️ Upgrade order matters.** Servers accept both spellings (they must: one
+  resolver serves URL and frame transports alike), so a cached old client
+  bundle keeps working against a new host. The reverse does not: a new client
+  or a new cluster peer talking to an **old** host 404s, and over
+  `/_sigx/host/` it 403s, neither of which is classified retryable. **Upgrade
+  every host before any client or peer starts emitting** — during a rolling
+  cluster upgrade, hosts still on the previous version will refuse calls from
+  upgraded ones.
+
+- **`defineActor` refuses a type with an empty, `.` or `..` path segment**
+  (#96). The type's slashes are wire path separators now, and `new URL()`
+  resolves dot segments away — so such a type would silently RETARGET its
+  route rather than 404. Refused at definition time, the only place it can be
+  loud. `acme/greeter` is unaffected.
 
 - **BREAKING: actor proxies answer introspection props locally instead of
   dispatching them.** Every proxy (`actor()` in the browser and on the

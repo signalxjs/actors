@@ -601,9 +601,12 @@ defineActor({
 });
 ```
 
-`GET {base}/r/{token}/Product%23price?args=["p1"]` → the same envelope a POST
+`GET {base}/r/{token}/Product/price?a0=p1` → the same envelope a POST
 returns, plus `Cache-Control: public, max-age=60, s-maxage=60,
-stale-while-revalidate=30`. The declaration is core's `ServerFnReadCache`
+stale-while-revalidate=30`. Arguments ride as named params when they are all
+simple scalars (arg 0 is the actor key); one richer argument — an object, a
+`Date` — and the whole call falls back to `?args=<JSON>`, all-or-nothing so
+the cache key stays a pure function of the arguments. The declaration is core's `ServerFnReadCache`
 vocabulary, unchanged, and the build stamps the names onto the client ref so
 the proxy issues GET on its own — nothing at the call site changes.
 
@@ -1883,11 +1886,22 @@ the last good client stub is served, or a loud refusal.
 
 ## Wire protocol
 
-`POST {base}/r/{token}/{Type}%23{method}` with `{"args": [key, ...args]}` →
+`POST {base}/r/{token}/{Type}/{method}` with `{"args": [key, ...args]}` →
 `{"data"}` / `{"error"}` envelope (NDJSON for streams). The `/r/{token}/`
 part is an optional routing hint — under `route: 'none'`, and for the
-`$`-reserved symbols below, the URL is plain `{base}/{Type}%23{method}` and
-everything else is unchanged. It is the serverFn
+`$`-reserved symbols below, the URL is plain `{base}/{Type}/{method}` and
+everything else is unchanged.
+
+The symbol's separator is a **real path separator**, and encoding is per
+segment, so a normal call spends no `%` at all — `@`, `$`, `:`, `.`, `-`,
+`_` and `~` all survive literally (`POST {base}/Cart/addItem`,
+`POST {base}/$live/subscribe`). A type may contain slashes of its own
+(`acme/greeter`), so the symbol can span more than two segments and the
+**last** one is always the method. This matches `@sigx/server`'s own URL
+grammar; `%2F`-style routes are a documented proxy/CDN hazard and read as
+line noise in a network tab. A type carrying an empty, `.` or `..` segment
+is refused by `defineActor`, because `new URL()` would resolve it away and
+silently retarget the route. It is the serverFn
 protocol verbatim — same origin policy, body caps, prototype-pollution
 guards, error masking, and codec — because `handleActorRequest` *is*
 `handleServerFnRequest` with a host-backed resolver. `configureActors()`
@@ -1895,8 +1909,8 @@ guards, error masking, and codec — because `handleActorRequest` *is*
 independently of `configureServerFn`.
 
 A method with a `reads:` declaration (below) also answers
-`GET {base}/r/{token}/{Type}%23{method}?args=[key,...args]`, with the same
-codec and the same envelope.
+`GET {base}/r/{token}/{Type}/{method}?a0={key}&a1=…`, with the same codec and
+the same envelope.
 
 **The callable surface is the method table's OWN keys.** A name that is not
 an own, callable key of `methods:` (or `streams:`) is a `404

@@ -134,7 +134,7 @@ function harness(appFactory?: Parameters<typeof createHostDurableObject>[0]['app
 
     const call = async (symbol: string, args: readonly unknown[]): Promise<Response> =>
         worker.fetch(
-            new Request(`https://edge.test/_sigx/actor/${encodeURIComponent(symbol)}`, {
+            new Request(`https://edge.test/_sigx/actor/${symbol.replace('#', '/')}`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args })

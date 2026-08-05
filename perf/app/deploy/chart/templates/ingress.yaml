@@ -14,9 +14,11 @@
 #   layer), which is what actually keeps a quiet connection alive through
 #   hops nobody here controls; the long timeout makes a drop rarer still on
 #   the hop we do control, and the client reconnects either way.
-# - NO rewrite/regex annotations of any kind: actor symbols travel
-#   percent-encoded (/_sigx/actor/Room%23watch) and a rewriting location
-#   would decode the %23 and break routing.
+# - NO rewrite/regex annotations of any kind: an actor symbol is now
+#   several real path segments (/_sigx/actor/Room/watch) and the routing
+#   token beside it is still percent-encoded (/_sigx/actor/r/tenant%2Fa/...).
+#   A rewriting location may merge segments, resolve dot segments, or decode
+#   the token's %2F — each of which breaks routing.
 {{- if not .Values.ingress.host }}
 {{- fail "ingress.host is required — an empty Ingress host silently matches EVERY hostname the controller serves" }}
 {{- end }}

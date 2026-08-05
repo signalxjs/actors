@@ -92,7 +92,7 @@ describe('onMiss: redirect', () => {
         const before = harness.hosts.map((s) => s.stats().activations);
         const remoteBefore = harness.placements.map((p) => p.counters().remoteDispatches);
 
-        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
+        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter/bump`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: ['c2'] })
@@ -124,7 +124,7 @@ describe('onMiss: redirect', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'c3');
 
-        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
+        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter/bump`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: ['c3'] })
@@ -146,7 +146,7 @@ describe('onMiss: redirect', () => {
         harness = await createCluster(2, { actors: [Counter], onMiss: 'redirect' });
         const from = await placeAndFindNonOwner(harness, 'c4');
 
-        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
+        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter/bump`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: ['c4'] })
@@ -162,7 +162,7 @@ describe('onMiss: redirect', () => {
         // and the mount simply behaves as it always did.
         const host = createHost({ actors: [Counter] });
         const response = await handleActorRequest(
-            new Request('http://s.test/_sigx/actor/Counter%23bump', {
+            new Request('http://s.test/_sigx/actor/Counter/bump', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: ['solo'] })
@@ -181,7 +181,7 @@ describe('onMiss: redirect', () => {
         });
         const from = await placeAndFindNonOwner(harness, 'c5');
 
-        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
+        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter/bump`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-sigx-actor-hops': '2' },
             body: JSON.stringify({ args: ['c5'] })
@@ -220,7 +220,7 @@ describe('onMiss: auto', () => {
             publicAddress: PUBLIC
         });
         const from = await placeAndFindNonOwner(harness, 'c7');
-        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
+        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter/bump`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args: ['c7'] })
@@ -235,7 +235,7 @@ describe('onMiss: auto', () => {
             publicAddress: PUBLIC
         });
         const from = await placeAndFindNonOwner(harness, 'c8');
-        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter%23bump`, {
+        const response = await harness.fetch(`${harness.endpointOf(from)}/Counter/bump`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-sigx-actor-follow': '1' },
             body: JSON.stringify({ args: ['c8'] })
