@@ -1,0 +1,25 @@
+{
+    "name": "chat-example",
+    "private": true,
+    "type": "module",
+    "description": "Actors inside a real SignalX app - SSR-seeded useActorState, live reads over one connection, topics, and serverFns beside actors",
+    "scripts": {
+        "dev": "node dev-server.mjs",
+        "build": "vite build",
+        "start": "node --conditions=production server.mjs",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/serialize": "catalog:",
+        "@sigx/server": "catalog:",
+        "@sigx/server-renderer": "catalog:",
+        "sigx": "catalog:"
+    },
+    "devDependencies": {
+        "@sigx/vite": "catalog:",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    }
+}

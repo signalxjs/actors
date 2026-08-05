@@ -1,0 +1,20 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["vite/client"],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true,
+        // JSX compiles to sigx's runtime. Vite's dependency scanner reads
+        // this too, which is why the vite.config `oxc.jsx` setting alone
+        // leaves it looking for `react/jsx-dev-runtime` in dev.
+        "jsx": "react-jsx",
+        "jsxImportSource": "sigx"
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts"]
+}
