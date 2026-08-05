@@ -182,6 +182,43 @@ export function routePath(base: string, token: string | null, symbol: string): s
 }
 
 /**
+ * `routePath`'s inverse, on the RAW pathname: `{base}/r/{token}/{symbol}`
+ * back to `{base}/{symbol}`, or `null` when this path carries no token and
+ * there is nothing to rewrite.
+ *
+ * It works on the pathname rather than a decoded symbol, because by the time
+ * core hands a symbol over it has already decoded each path segment and
+ * rejoined them with `/` (`decodeFnPath`). A `'key'`-mode or custom token may
+ * contain a slash, which arrives percent-encoded and comes back out as a
+ * literal one — and an actor type may contain a slash too (`acme/greeter` in
+ * the packaged-actor fixture). After the decode the two are
+ * indistinguishable; before it, the segments are exact.
+ *
+ * The token is DISCARDED rather than checked, deliberately: routing is an
+ * optimization and never load-bearing for correctness, so the server cannot
+ * start caring whether the hint agrees with the key. A malformed hint (`r/`
+ * with no following segment) is left alone and falls through to an honest
+ * 404 instead of being guessed at.
+ *
+ * EVERY mount has to call this before core reads the path — the WinterCG one
+ * (`handleActorRequest`) and the Node one (`createActorHandler`) alike. A
+ * mount that skips it hands core `r/{token}/{Type}#{method}` as the symbol,
+ * which resolves to the unknown-actor wrapper: a 404 for an authenticated
+ * caller, and — because that wrapper carries no `__sigxAnon` — a 401 for an
+ * `allowAnonymous` actor, on the routed path only (#93).
+ */
+export function stripRoutePath(pathname: string, base: string): string | null {
+    const prefix = base.endsWith('/') ? base : `${base}/`;
+    if (!pathname.startsWith(prefix)) return null;
+    const rest = pathname.slice(prefix.length);
+    const marker = `${ACTOR_ROUTE_SEGMENT}/`;
+    if (!rest.startsWith(marker)) return null;
+    const afterToken = rest.indexOf('/', marker.length);
+    if (afterToken === -1) return null;
+    return `${prefix}${rest.slice(afterToken + 1)}`;
+}
+
+/**
  * The routing token an inbound request carries, or `null`.
  *
  * READ-ONLY, and the endpoint does not call it: the server ignores the token
