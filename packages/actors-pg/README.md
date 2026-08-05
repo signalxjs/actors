@@ -39,6 +39,21 @@ const pool = new pg.Pool({ connectionString: process.env.PG_URL });
 await ensurePgSchema(pool);            // dev/tests; prod: pgSchemaSql() via your migration tool
 ```
 
+`ensurePgSchema()` is safe to call from **every replica at boot,
+concurrently**. `CREATE … IF NOT EXISTS` is check-then-create and is *not*
+atomic against a concurrent creator, so it takes a transaction-scoped advisory
+lock (keyed on the schema name) as the first statement of the same implicit
+transaction as the DDL: concurrent boots queue for milliseconds instead of one
+of them crashing on a `23505` from the catalog. A bounded, jittered retry sits
+underneath as a backstop for racers that take no lock. Two consequences worth
+knowing:
+
+- **`pgSchemaSql()` is pure DDL** and takes no lock — it is the string you hand
+  a migration tool, which brings its own.
+- **`ensurePgSchema()` expects to own its transaction.** Called with a queryable
+  already inside your open transaction, a failure poisons that transaction and
+  the retry cannot recover.
+
 Clustered host, everything on the one pool:
 
 ```ts
@@ -71,10 +86,14 @@ costs one refresh plus at most one catch-up, not N).
 
 - **Etags are client-minted UUIDs**, equality-compared only. Every CAS is
   a single statement whose row count is the verdict — no transactions, no
-  advisory locks.
-- **State is `jsonb`**, always bound as a JSON string with an explicit
-  cast — a top-level array state cannot be silently coerced into a
-  Postgres ARRAY.
+  advisory locks. (The one advisory lock in this package guards the schema
+  bootstrap, not any runtime path.)
+- **State is JSON in a `text` column, deliberately not `jsonb`.** Actor state
+  may legitimately contain NUL — a reminder shard record keys entries by
+  `type<NUL>key` — and `jsonb` parses the JSON escape for NUL into a real NUL byte
+  and rejects it, while the serialized form is plain ASCII and always storable.
+  It is always bound as a JSON string, so a top-level array state cannot be
+  silently coerced into a Postgres ARRAY either.
 - **Directory entries carry no TTL** — one heartbeat per host, not per
   activation; entry validity is the owner's liveness in the membership
   view, and the storage etag CAS remains the integrity floor underneath.

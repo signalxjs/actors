@@ -236,7 +236,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `cluster()` plugin, clusterPlacement (incl. `locate()` and
   `publicAddress`), host-to-host endpoint, cluster provider seams,
   memoryClusterHub), `./vite`
-  (`sigxActors()` plugin).
+  (`sigxActors()` plugin). Two further subpaths are **workspace-only** — wired
+  by tsconfig/vitest aliases and deliberately absent from `package.json`
+  exports: `./cluster/testing` (`transportConformance`) and `./testing`
+  (`bootstrapConformance`, and the home of the `ActorStorage` suite of #65).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
   `redisCluster` (membership and the actor directory) for
   `@sigx/actors/cluster`, and `redisStorage` (etag-CAS `ActorStorage` —
@@ -244,7 +247,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   provider tests are env-gated on `REDIS_URL`.
 - `packages/actors-pg` → `@sigx/actors-pg` — Postgres (≥13) providers, for
   the team whose one durable store is SQL: `pgStorage` (etag-CAS
-  `ActorStorage`, single-statement CAS, `jsonb` state), `pgMembership`
+  `ActorStorage`, single-statement CAS, state as JSON in a `text` column —
+  NOT `jsonb`, which rejects the NUL an actor key may carry), `pgMembership`
   (TTL heartbeat judged on the DATABASE clock, LISTEN/NOTIFY push with
   poll fallback, signature-based change detection so silent deaths
   converge without a version bump), `pgDirectory` (claim/CAD/`evictHost`),
@@ -252,7 +256,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   SKIP LOCKED claim statement per tick — the reminder-scan answer from
   #16 for pg deployments), `pgCluster` bundling membership + directory,
   and `pgSchemaSql()`/`ensurePgSchema()` —
-  DDL is explicit, the providers never issue it. `pg` ≥8 as a peer
+  DDL is explicit, the providers never issue it; `ensurePgSchema` takes a
+  `pg_advisory_xact_lock` as the FIRST statement of the same values-free
+  simple query (that string is ONE implicit transaction, which is what makes
+  the xact lock cover the DDL and release before the pooled client returns), so
+  every replica may bootstrap at boot. `pg` ≥8 as a peer
   dependency; provider tests are env-gated on `PG_URL` (a dedicated CI
   job provides a postgres service).
 - `packages/actors-surreal` → `@sigx/actors-surreal` — SurrealDB (≥3.0,
@@ -277,9 +285,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   RETRY IS PART OF THE CONTRACT (`surrealRetryable`; a shared connection
   must install it, and the SDK ships retry disabled with a predicate that
   never matches) — which is also why reminders partition by `ownsShard`,
-  the opposite of `pgReminders`; (3) `UPDATE`/`DELETE` ignore indexes, so
+  the opposite of `pgReminders`, and why `ensureSurrealSchema` converges by
+  its OWN bounded retry rather than the connection's (#76: the DDL races
+  too, and the predicate cannot be widened without governing the caller's
+  queries); (3) `UPDATE`/`DELETE` ignore indexes, so
   predicate-driven writes go through a `SELECT` subquery; (4) reading an
-  undefined table ERRORS (2.x returned `[]`), so the DDL step is mandatory.
+  undefined table ERRORS (2.x returned `[]`), so the DDL step is mandatory —
+  which is also what makes the bootstrap's "are the tables there?" probe a
+  plain `SELECT` that parses nothing.
   Record-scoped live queries also fail to listen on 3.2.4 while
   table-scoped ones work, which is why membership watches the version
   table.
@@ -498,6 +511,7 @@ the queue, in two moments:
 - **Plan first for non-trivial work.** Both Claude Code and Copilot CLI have a built-in plan mode; use it and let the CLI manage the plan file.
 - **Verify before declaring done.** Run typecheck/tests for code changes; show evidence the change works.
 - **Test-first bug fixes.** Reproduce the bug with a *failing* unit test first (red), then make the fix so the test goes green — the failing test proves both that the bug exists and that the fix actually addresses it, and it stays behind as a regression test. Never fix a bug without a test that would have caught it. While you're in the area, if you find behaviour that should be covered but isn't, add the missing tests in the same PR.
+- **A seam with several implementations gets ONE shared conformance suite, not N copies of the assertions.** They live in `@sigx/actors/cluster/testing` (`transportConformance`) and `@sigx/actors/testing` (`bootstrapConformance`) — framework-free case descriptors, parameterized by a harness the package supplies, run by every implementation. Two rules make them worth having: **assert the outcome, never the mechanism** (Postgres serialises its bootstrap with an advisory lock; SurrealDB has no lock primitive and converges by retry — a case that pinned either one would be false for the other), and **a case that cannot fail is decoration** — prove a new one goes red against the unfixed code before trusting it. Concretely: a provider package with a schema bootstrap runs `bootstrapConformance`, so concurrent boots from independent connections must all converge (#76, #78). Adding a provider means writing a harness, not a test matrix.
 - **Minimal, surgical edits.** Don't refactor unrelated code. Don't add backward-compat shims for things that never shipped.
 - **Cross-platform paths**: Contributors and CI can run on Windows, macOS or Linux (check this repo's CI matrix for what it actually covers) — use the path separator and shell syntax of the environment you're in, and prefer Node scripts over shell one-liners for anything committed to the repo.
 - **Git hygiene**: Stage specific files (`git add <path>`), never `git add -A` / `git add .`. Run `pnpm typecheck` before any commit touching `.ts`. Do **not** add co-author trailers to commits (e.g. `Co-Authored-By: Claude …` / `Co-authored-by: Copilot …`).

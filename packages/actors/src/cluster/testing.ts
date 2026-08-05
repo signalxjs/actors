@@ -15,8 +15,11 @@
  * peer failures by numeric status — and that has its own case.
  *
  * No test framework is imported. Cases are descriptors with a `run()` that
- * throws on failure, so a transport package outside this repo can drive
- * them from whatever runner it uses.
+ * throws on failure, so a transport package drives them from whatever runner
+ * it uses. That is currently the packages in THIS workspace: the subpath is
+ * wired by a tsconfig/vitest alias and deliberately absent from
+ * `package.json` exports, so it cannot be imported from outside the repo
+ * until it is promoted.
  */
 import { mintCallId } from '../call-id';
 import { defineActor } from '../define';

@@ -134,9 +134,71 @@ DEFINE INDEX IF NOT EXISTS ${t.reminder}_actor ON TABLE ${t.reminder} FIELDS tk;
 `;
 }
 
+/** Bounded like `CLAIM_ATTEMPTS` in `reminders.ts`, and for the same reason. */
+const SCHEMA_ATTEMPTS = 5;
+const SCHEMA_BACKOFF_MS = 25;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
- * Run the DDL. For dev and tests; production migrations should carry
- * `surrealSchemaSql()` through whatever tool already owns their schema.
+ * Do the five tables actually exist?
+ *
+ * This parses NOTHING. Reading an undefined table is an ERROR in SurrealDB 3
+ * (it returned `[]` in 2.x) — the same v3 rule that makes the DDL step
+ * mandatory in the first place — so five reads that all resolve are proof the
+ * tables are defined, on any 3.x server, in any wording.
+ *
+ * It proves tables, not fields or indexes. That is the right trade at the only
+ * point it is consulted: after every attempt has already failed, where the
+ * question is "did a racer finish the work?" rather than "is this schema
+ * perfect?". A missing index would be a performance regression the next boot's
+ * DDL repairs, not a correctness break — and the alternative, parsing
+ * `INFO FOR DB`/`INFO FOR TABLE`, ties the check to one server version's
+ * output shape.
+ */
+async function schemaPresent(db: SurrealQueryable, prefix: string | undefined): Promise<boolean> {
+    const t = tablesFor(prefix);
+    const probe = Object.values(t)
+        .map((table) => `SELECT * FROM ${table} LIMIT 0;`)
+        .join('\n');
+    try {
+        await db.query(probe);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Run the DDL. Safe to call from EVERY replica at boot, concurrently.
+ *
+ * Production migrations should still carry `surrealSchemaSql()` through
+ * whatever tool already owns their schema — but a booting host calling this
+ * directly is the documented quickstart, so two replicas starting together is
+ * the normal case rather than the exotic one (#76).
+ *
+ * SurrealDB has no lock primitive (see the v3 rules at the top of this file),
+ * so convergence is by retry — and the retry is deliberately **blind to the
+ * error's shape**:
+ *
+ *  - It cannot change the outcome of a permanent failure, only its latency.
+ *    Bad credentials, an unselected database, a server that is down: all still
+ *    fail, with the SAME error object, ~0.4 s later. There is no error class a
+ *    bounded retry converts into a wrong success — which is what makes the
+ *    broad rule safe here and NOT safe as `surrealRetryable`'s connection-wide
+ *    predicate (see the note there).
+ *  - Every statement is `IF NOT EXISTS` and runs in its own transaction, so a
+ *    re-run is a sequence of no-ops plus whatever is left. Each round has
+ *    strictly less to conflict over than the last: this converges, it does not
+ *    livelock. The backoff is jittered so two hosts that collide do not then
+ *    retry in lockstep.
+ *  - Matching on wording has already failed once, on this exact call. #76
+ *    arrived as `Multiple key errors`; `surrealRetryable` knows a second
+ *    wording and `reminders.ts` a third. A fourth would reopen the bug.
+ *
+ * A caller who installed `surrealRetryable` on their own connection now has
+ * two nested bounded layers (5 × 5). That is intentional and harmless — both
+ * are bounded — so do not "simplify" either one away.
  *
  * The connection's namespace and database must already exist — `connect()`
  * SELECTS them, it does not create them. `DEFINE NAMESPACE`/`DEFINE DATABASE`
@@ -147,7 +209,26 @@ export async function ensureSurrealSchema(
     db: SurrealQueryable,
     options: { prefix?: string } = {}
 ): Promise<void> {
-    await db.query(surrealSchemaSql(options));
+    // Built ONCE, outside the loop: an invalid prefix is a caller bug and must
+    // throw on the first pass, not after five backoffs.
+    const sql = surrealSchemaSql(options);
+    let last: unknown;
+    for (let attempt = 1; attempt <= SCHEMA_ATTEMPTS; attempt++) {
+        try {
+            await db.query(sql);
+            return;
+        } catch (error) {
+            last = error;
+            if (attempt < SCHEMA_ATTEMPTS) {
+                await sleep(SCHEMA_BACKOFF_MS * 2 ** (attempt - 1) * (0.5 + Math.random()));
+            }
+        }
+    }
+    // The tail retrying cannot close: a racer may have completed the schema
+    // while we lost every conflict. If the tables are there, the work is done
+    // and crashing the boot would be a lie.
+    if (await schemaPresent(db, options.prefix)) return;
+    throw last;
 }
 
 /** Membership + directory for ONE host. */
