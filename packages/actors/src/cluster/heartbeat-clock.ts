@@ -92,7 +92,11 @@ export interface HeartbeatClock {
      * provider holds proof instead of a suspicion. Timing cannot detect it,
      * because the very next write would succeed promptly and look healthy.
      *
-     * Latched like the rest, and cleared by the next `confirmed()`.
+     * Latched like the rest, and cleared by the next `confirmed()`. Like
+     * every other trigger it stays silent before `arm()`: a host that has
+     * not begun beating holds no claims, so there is nothing for a peer to
+     * have evicted and fencing it would be all cost — a refused host and a
+     * pod restart bought for nothing.
      */
     lost(): void;
 }
@@ -133,7 +137,7 @@ export function heartbeatClock(options: HeartbeatClockOptions): HeartbeatClock {
         armed && Math.max(monotonicNow() - mono, wallNow() - wall) > ttlMs;
 
     const fire = (): void => {
-        if (suspected) return;
+        if (suspected || !armed) return;
         suspected = true;
         onSuspect();
     };

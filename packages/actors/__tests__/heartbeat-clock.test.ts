@@ -189,11 +189,15 @@ describe('heartbeatClock', () => {
         expect(h.suspects()).toBe(2);
     });
 
-    it('never suspects before it is armed', () => {
+    it('never suspects before it is armed — including lost()', () => {
+        // Pre-arm this host holds no claims, so there is nothing for a peer
+        // to have evicted: fencing would buy a refused host and a pod
+        // restart for nothing. Proof-based or not, the trigger stays silent.
         const h = harness(1_000);
         h.advance(999_999);
         h.clock.beat();
         h.clock.failed();
+        h.clock.lost();
         expect(h.suspects()).toBe(0);
     });
 });
