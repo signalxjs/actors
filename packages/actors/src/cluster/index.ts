@@ -49,6 +49,11 @@ export {
     type RefreshCoalescer,
     type RefreshCoalescerOptions
 } from './coalesce';
+export {
+    heartbeatClock,
+    type HeartbeatClock,
+    type HeartbeatClockOptions
+} from './heartbeat-clock';
 export { httpTransport, HTTP_TRANSPORT_NAME, type HttpTransportOptions } from './transport';
 export type {
     HostCallMode,

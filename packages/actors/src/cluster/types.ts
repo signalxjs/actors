@@ -82,6 +82,12 @@ export interface ClusterMembership {
      * the SAME object between changes is recommended (placement memoizes
      * derived data per view object — a fresh object per call is still
      * correct but pays the derivation on every call).
+     *
+     * **A live host MUST appear in its own view.** Placement reads its own
+     * absence as "my claims have been evicted" and self-fences on it, so a
+     * provider that omits self would fence every host it serves. An empty
+     * view is exempt — that reads as solo/not-started, never as lost
+     * membership.
      */
     view(): MembershipView;
     /** Force a store round-trip. */
@@ -90,8 +96,17 @@ export interface ClusterMembership {
     isAlive(hostId: string): Promise<boolean>;
     onChange(cb: (view: MembershipView) => void): () => void;
     /**
-     * Fires when THIS host can no longer prove its own membership
-     * (heartbeat failures past the TTL) — the self-fencing hook.
+     * Fires when THIS host can no longer prove CONTINUOUS membership — the
+     * self-fencing hook.
+     *
+     * Two ways to lose it, and a provider must report both. A heartbeat
+     * that FAILS past the TTL is the obvious one. A heartbeat that merely
+     * LANDS past it is the one that bit us (#45): a stalled event loop
+     * resumes, writes late, succeeds — while peers already expired this
+     * host and released every directory claim it held. Judge the gap since
+     * the last confirmed write, not the outcome of the current one;
+     * `heartbeatClock` does exactly that and is shared by every provider
+     * in this repo.
      */
     onSelfSuspect(cb: () => void): () => void;
 }

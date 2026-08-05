@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stalled host kept serving actors a survivor had taken over (#45).**
+  Two bugs, both here:
+
+  - Self-suspicion fired only from a heartbeat write *rejection*. A host
+    whose event loop stalled past `ttlMs` resumed, wrote late and
+    succeeded, so it never fenced — while peers had already expired it and
+    released its directory claims. The beat now runs on the shared
+    `heartbeatClock()`: a beat starting more than `ttlMs` after the last
+    confirmed write fires `onSelfSuspect` before it writes.
+  - The heartbeat never re-`sadd`ed `{ns}:hosts`. Since `refresh` lazily
+    `srem`s a member whose host key expired, a host pruned while it was
+    away kept heartbeating into a set it was no longer in — invisible to
+    every peer's view forever, while `isAlive` (which reads the host key it
+    kept recreating) still answered `true`. `SADD` now rides the heartbeat
+    MULTI.
+
+- `refresh` now compares a host **signature**, matching the pg and surreal
+  providers. A host rejoining the set writes no version bump, so `onChange`
+  would have stayed silent while the cached view gained a member — leaving
+  transports unnotified and the departed-host sweep un-run.
+
 ## [0.2.0] - 2026-08-05
 
 ### Changed

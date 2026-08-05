@@ -44,6 +44,7 @@
  */
 import { RecordId, Table } from 'surrealdb';
 import {
+    heartbeatClock,
     refreshCoalescer,
     type ActorDirectory,
     type ClusterMembership,
@@ -198,10 +199,14 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let live: LiveHandle | null = null;
-    let lastOkMs = 0;
-    let suspected = false;
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Set<() => void>();
+    const clock = heartbeatClock({
+        ttlMs,
+        onSuspect: () => {
+            for (const cb of suspectCbs) cb();
+        }
+    });
 
     const writeSelf = async (): Promise<void> => {
         if (!self) return;
@@ -210,8 +215,7 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             d: JSON.stringify(self),
             ttl: ttlMs
         });
-        lastOkMs = Date.now();
-        suspected = false;
+        clock.confirmed();
     };
 
     // Bump the version, then let the live query push it: listeners refresh
@@ -283,14 +287,17 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             await writeSelf();
             await bumpVersion();
             await refresh();
+            // Stamped HERE, not at the upsert above: `bumpVersion` and a full
+            // refresh sit between them and can outlast `ttlMs` on a large or
+            // slow database, which would make the first beat late by
+            // construction — a terminal fence on every host at startup.
+            clock.arm();
             beat = setInterval(() => {
-                void writeSelf().catch(() => {
-                    // Can't prove our own membership past the TTL → fence.
-                    if (!suspected && Date.now() - lastOkMs > ttlMs) {
-                        suspected = true;
-                        for (const cb of suspectCbs) cb();
-                    }
-                });
+                // Before the write, deliberately: if the window lapsed our
+                // claims are already gone, and waiting out a round-trip only
+                // lets a doomed activation take more turns (#45).
+                clock.beat();
+                void writeSelf().catch(() => clock.failed());
             }, heartbeatMs);
             (beat as { unref?: () => void }).unref?.();
             poll = setInterval(() => void coalescer.demand().catch(noop), pollMs);

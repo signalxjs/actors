@@ -78,10 +78,13 @@ Each host owns one Lease; nobody else ever writes it:
   its own declared duration. Watch events for renewals never bump the
   membership view's version — only descriptor-set changes (join, leave,
   drain, expiry) do, so heartbeats cause zero `onChange` traffic.
-- **Self-fencing** — renewal failures past `ttlMs` fire `onSelfSuspect`
-  once, exactly like the Redis provider: the host stops claiming actors and
-  deactivates what it holds. A broken *watch* never fences — that is
-  staleness, covered by the `relistMs` safety net.
+- **Self-fencing** — a renewal that fails past `ttlMs` fires
+  `onSelfSuspect` once, exactly like the Redis provider: the host stops
+  claiming actors and deactivates what it holds. So does one that merely
+  *lands* past `ttlMs` — a stalled event loop renews late and succeeds, but
+  the Lease went stale while it was away and peers released its claims
+  (#45). A broken *watch* never fences — that is staleness, covered by the
+  `relistMs` safety net.
 - **Graceful exit** — `setStatus('leaving')` patches the descriptor
   immediately (drain is visible now, not next beat); `leave()` deletes the
   Lease. A crashed host simply stops renewing and ages out.

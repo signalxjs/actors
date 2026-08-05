@@ -4,7 +4,9 @@
  * host takes its own `providers()` handle. No heartbeats or TTLs: a host
  * is live iff it joined and neither left nor was `kill()`ed. `kill()`
  * simulates a crash — the member vanishes without releasing anything and
- * its own membership handle fires `onSelfSuspect`.
+ * its own membership handle fires `onSelfSuspect`. `expire()` simulates a
+ * TTL lapse instead: the member vanishes the same way but is NEVER told,
+ * which is the case #45 was about.
  */
 import type {
     ActorDirectory,
@@ -21,6 +23,18 @@ export interface MemoryClusterHub {
     providers(): ClusterProviders;
     /** Simulate a crash: drop the member without cleanup, fire its self-suspect. */
     kill(hostId: string): void;
+    /**
+     * Simulate a TTL EXPIRY: drop the member without cleanup and WITHOUT
+     * firing its self-suspect — the host is never told.
+     *
+     * The difference from `kill` is the whole of #45. A crash the provider
+     * noticed fires `onSelfSuspect`; a host whose event loop merely stalled
+     * past the TTL is evicted by its peers and then carries on, its late
+     * heartbeat succeeding, with nothing anywhere having failed. Use this to
+     * exercise what a host does when the only evidence is its own absence
+     * from the view.
+     */
+    expire(hostId: string): void;
     /** Test handle on the shared directory (seed/poison entries). */
     readonly directory: ActorDirectory;
 }
@@ -134,6 +148,13 @@ export function memoryClusterHub(): MemoryClusterHub {
             const cbs = suspectCbs.get(hostId);
             suspectCbs.delete(hostId);
             for (const cb of cbs ?? []) cb();
+        },
+        expire(hostId) {
+            // The victim's `suspectCbs` stay registered and unfired — it is
+            // not told. `bump()` reaches every subscriber including the
+            // victim's own handle, which is the only signal it gets.
+            if (!members.delete(hostId)) return;
+            bump();
         },
         directory
     };

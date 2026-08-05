@@ -2,10 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stalled host kept serving actors a survivor had taken over (#45).**
+  Self-suspicion fired only from a Lease renewal *failure*, so a host whose
+  event loop stalled past `ttlMs` resumed, patched `renewTime` late and
+  succeeded — looking healthy again while peers had already aged its Lease
+  out and released its directory claims. Renewals now run on the shared
+  `heartbeatClock()`: a beat starting more than `ttlMs` after the last
+  confirmed renewal fires `onSelfSuspect` before it patches. The window is
+  stamped when the beat is armed rather than at the Lease create, so the
+  LIST between them cannot fence a host at startup.
+
 ## [0.2.0] - 2026-08-05
 
-### Changed
-
+### Changed
+
 - **Peers `@sigx/actors@^0.2.0`.** The guard split is breaking, so the
   whole family moves together — see the `@sigx/actors` changelog and core's
   [0.15 migration guide](https://github.com/signalxjs/core/blob/main/docs/migrations/0.15-guard-split.md).

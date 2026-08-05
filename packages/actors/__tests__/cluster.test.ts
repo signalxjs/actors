@@ -423,6 +423,110 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         });
     });
 
+    it('a host expired from the view without being told still self-fences (#45)', async () => {
+        // The paused-loop double activation. Peers expire host 0 on the TTL
+        // and sweep its claims; a survivor re-activates the same actor. Host
+        // 0 itself never saw a failure — its heartbeat would simply resume
+        // and succeed — so before #45 it kept its activations live and kept
+        // accepting writes: two live activations of one actor.
+        const events: string[] = [];
+        const cluster = await createCluster(2, {
+            actors: [counterActor(events)],
+            policy: selfPolicy
+        });
+        running = cluster;
+        const def = counterActor();
+        await cluster.hosts[0]!.actor(def, 'ghost').increment(7);
+        expect(cluster.hosts[0]!.stats().activations).toBe(1);
+
+        // Expired, not killed: no onSelfSuspect, nothing failed anywhere.
+        cluster.hub.expire(cluster.placements[0]!.identity.hostId);
+
+        await vi.waitFor(() =>
+            expect(cluster.placements[0]!.counters().status).toBe('fenced')
+        );
+        // It dropped what it held rather than serving a second copy…
+        await vi.waitFor(() => expect(cluster.hosts[0]!.stats().activations).toBe(0));
+        // …and refuses to activate again.
+        await expect(cluster.hosts[0]!.actor(def, 'ghost').get()).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'activation'
+        );
+        // The survivor owns it now, resuming the persisted state.
+        await expect(cluster.hosts[1]!.actor(def, 'ghost').increment(1)).resolves.toBe(8);
+    });
+
+    it('an empty view is solo, not lost membership — no fence', async () => {
+        // `hosts.length === 0` already means "solo / not started" elsewhere
+        // in placement. Fencing on it would turn a membership store failing
+        // over to a cold replica into every host fencing at once — every pod
+        // failing liveness, the whole cluster gone (#141).
+        const hub = memoryClusterHub();
+        const providers = hub.providers();
+        const placement = clusterPlacement({
+            membership: providers.membership,
+            directory: providers.directory,
+            advertise: 'http://self.test'
+        });
+        const host = createHost({ actors: [counterActor()], placement, defaults: quiet });
+        await host.start();
+        try {
+            await host.actor(counterActor(), 'solo').increment(1);
+            // Everyone vanishes, including us — a wiped store, not a fence.
+            hub.expire(placement.identity.hostId);
+            await new Promise((r) => setTimeout(r, 20));
+            expect(placement.view().hosts).toHaveLength(0);
+            expect(placement.counters().status).not.toBe('fenced');
+            await expect(host.actor(counterActor(), 'solo').get()).resolves.toBe(1);
+        } finally {
+            await host.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    it('a stale view alone does not fence — the fresh refresh decides', async () => {
+        // The absence check costs a pod its life, so a cached view that
+        // merely lags must never be enough on its own.
+        const hub = memoryClusterHub();
+        const providers = hub.providers();
+        let hideSelf = true;
+        const membership: ClusterMembership = {
+            ...providers.membership,
+            // A view that lies once, and a store that tells the truth.
+            view: () => {
+                const real = providers.membership.view();
+                if (!hideSelf) return real;
+                return { ...real, hosts: real.hosts.filter((h) => h.hostId !== selfId) };
+            },
+            refresh: async () => {
+                hideSelf = false;
+                return providers.membership.refresh();
+            }
+        };
+        const placement = clusterPlacement({
+            membership,
+            directory: providers.directory,
+            advertise: 'http://self.test'
+        });
+        const selfId = placement.identity.hostId;
+        const host = createHost({ actors: [counterActor()], placement, defaults: quiet });
+        await host.start();
+        try {
+            await host.actor(counterActor(), 'stale').increment(3);
+            // Any membership change re-runs the check against the lying view.
+            const peer = hub.providers();
+            await peer.membership.join({
+                hostId: 's.peer',
+                epoch: 1,
+                address: 'http://peer.test',
+                status: 'active'
+            });
+            await new Promise((r) => setTimeout(r, 20));
+            expect(placement.counters().status).not.toBe('fenced');
+            await expect(host.actor(counterActor(), 'stale').get()).resolves.toBe(3);
+        } finally {
+            await host.stop({ timeoutMs: 1000 });
+        }
+    });
+
     it('a transient view drop does not forget a host — the sweep retries on the next change', async () => {
         const hub = memoryClusterHub();
         const providers = hub.providers();

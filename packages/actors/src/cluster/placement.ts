@@ -437,6 +437,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #routeCache = new Map<string, string>();
     #seq = 0;
     #fenced = false;
+    /** Single-flight guard for `#checkSelfPresence` — see the method. */
+    #checkingSelf = false;
+    /** Have we ever seen ourselves in a view? Absence only counts after. */
+    #seenSelf = false;
     #status: HostDescriptor['status'] = 'joining';
     #unsubscribe: (() => void)[] = [];
     /** Teardowns returned by attached policies, run at `stop()`. */
@@ -710,6 +714,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 this.#pruneRoutes(view);
                 this.#notifyTransports(view);
                 void this.#sweepDeparted(view);
+                void this.#checkSelfPresence(view);
             }),
             this.#options.membership.onSelfSuspect(() => void this.#fence())
         );
@@ -1162,11 +1167,76 @@ class ClusterPlacementImpl implements ClusterPlacement {
         }
     }
 
+    /**
+     * The provider-agnostic half of self-fencing (#45): a host that is not
+     * in its own membership view has had its claims evicted, whether or not
+     * anything here ever failed.
+     *
+     * The provider's heartbeat clock is the primary detector — it knows the
+     * TTL, and a provider whose write re-registers the host (pg's upsert,
+     * surreal's UPSERT, redis' re-`sadd`) puts it back in the view before
+     * anyone here could look. This is the backstop for the rest: a store
+     * wiped or failed over, an operator deleting a row, a third-party
+     * provider with no clock of its own.
+     *
+     * It fences a live pod, so every guard below is load-bearing:
+     *
+     * - **A non-empty view.** `hosts.length === 0` already means "solo / not
+     *   started" throughout placement. Fencing on it would turn a membership
+     *   store failing over to a cold replica into EVERY host fencing at
+     *   once — every pod failing liveness, the cluster gone (#141).
+     * - **Self seen at least once.** Protects join ordering, and any
+     *   provider whose view legitimately excludes self.
+     * - **A fresh read.** A cached view that merely lags must never be the
+     *   evidence; only a refresh that still omits us counts. A refresh that
+     *   THROWS means the store is unreachable, which is the heartbeat path's
+     *   business, not ours.
+     * - **Single flight.** `refresh()` fires `onChange` in every provider,
+     *   which re-enters this method; without the latch a genuine absence
+     *   would spiral into a refresh storm.
+     */
+    async #checkSelfPresence(view: MembershipView): Promise<void> {
+        if (this.#fenced || this.#checkingSelf) return;
+        // Not while joining (no view yet) or leaving — the drain owns that
+        // exit, and fencing mid-handoff would abort it.
+        if (this.#status !== 'active' || this.#startedAt === 0) return;
+        if (view.hosts.length === 0) return;
+        if (view.hosts.some((s) => s.hostId === this.identity.hostId)) {
+            this.#seenSelf = true;
+            return;
+        }
+        if (!this.#seenSelf) return;
+        this.#checkingSelf = true;
+        try {
+            const fresh = await this.#options.membership.refresh().catch(() => null);
+            if (
+                fresh &&
+                fresh.hosts.length > 0 &&
+                !fresh.hosts.some((s) => s.hostId === this.identity.hostId)
+            ) {
+                await this.#fence();
+            }
+        } finally {
+            this.#checkingSelf = false;
+        }
+    }
+
     /** Self-fence: membership lost — stop claiming, drop what we hold. */
     async #fence(): Promise<void> {
         if (this.#fenced) return;
         this.#fenced = true;
         this.#counters.selfFences++;
+        // Withdraw, so peers stop routing to a host that refuses every
+        // activation instead of waiting out their own TTL — and so a
+        // provider whose heartbeat re-registers this host cannot keep
+        // advertising it as active forever. Idempotent (every provider
+        // guards on "am I joined"), so `stop()`'s own leave stays fine.
+        //
+        // Deliberately NOT awaited: we fence precisely when the membership
+        // store may be unreachable, and a leave that hangs must not keep us
+        // from dropping the activations. That is the correctness action;
+        // this is a courtesy.
+        void Promise.resolve(this.#options.membership.leave()).catch(() => {});
         const types = new Set<string>();
         for (const id of this.#claimed.keys()) {
             const nul = id.indexOf('\u0000');

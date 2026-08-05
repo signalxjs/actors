@@ -1486,9 +1486,16 @@ The cluster check fails for three states, each with a `detail` you can read
 off the probe body:
 
 - **`leaving`** — draining (post-`beginStop`). Not-ready, still live.
-- **`fenced`** — this host lost its membership heartbeat and now refuses
-  every activation. Its *published* status still reads `active`, so without
-  this check a balancer would happily keep feeding a black hole. Fenced is
+- **`fenced`** — this host lost its membership and now refuses every
+  activation. Three ways in, and the last two exist because of #45: the
+  heartbeat *failed* past the TTL; the heartbeat *landed* past the TTL (a
+  stalled event loop resumes and writes late — nothing failed, but peers
+  expired this host and released its claims while it was away); or the host
+  found itself absent from its own membership view. Fencing drops the
+  activations it holds and withdraws it from membership, so peers stop
+  routing to it rather than waiting out their own TTL. Its *published*
+  status still reads `active` at the moment of fencing, so without this
+  check a balancer would happily keep feeding a black hole. Fenced is
   also **fatal** (below): the fence is permanent for this host identity, so
   liveness fails too and the orchestrator restarts the pod — the fresh
   process mints a new identity and rejoins. Without that, an outage of the
@@ -2559,7 +2566,9 @@ deactivations, claims released as they drain, callers retry through
 routing — rolling deploys drop zero calls), and
 `placement.migrate(ref)` moves one actor explicitly. For tests,
 `memoryClusterHub()` gives an N-host in-process cluster with no external
-store.
+store — `kill(hostId)` simulates a crash the host notices (its
+`onSelfSuspect` fires), `expire(hostId)` a TTL lapse it is never told
+about.
 
 To see inside a running cluster — readiness that drains a `leaving` or
 fenced host, `clusterStats()` across the view, and the routing/directory

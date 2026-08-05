@@ -115,6 +115,22 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
             await m1.leave();
         });
 
+        it('a beat that lands past the TTL fires onSelfSuspect even though the write SUCCEEDS (#45)', async () => {
+            // Self-suspicion used to fire only from a write REJECTION, so a
+            // host whose event loop stalled past the TTL resumed, upserted
+            // late, succeeded — and, because the upsert re-creates the row,
+            // looked perfectly healthy again while a survivor already held
+            // its actors. `heartbeatMs > ttlMs` makes every beat late.
+            const m1 = pgMembership(pool, { schema, heartbeatMs: 300, ttlMs: 100, pollMs: 60_000 });
+            let suspects = 0;
+            m1.onSelfSuspect(() => suspects++);
+            await m1.join({ hostId: 's.late', epoch: 1, address: 'http://l', status: 'active' });
+
+            await vi.waitFor(() => expect(suspects).toBeGreaterThan(0), { timeout: 3000 });
+            await expect(m1.isAlive('s.late')).resolves.toBe(true); // nothing failed
+            await m1.leave();
+        });
+
         it('setStatus propagates to peers', async () => {
             const opts = { schema, heartbeatMs: 100, ttlMs: 400, pollMs: 100 };
             const m1 = pgMembership(pool, opts);
