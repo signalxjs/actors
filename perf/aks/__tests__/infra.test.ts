@@ -28,7 +28,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 // The one thing this suite does import from the app: the serverFn id is
 // emitted by the build, so pasting it in is how it rots. See post-fn.mjs.
-import { postMessageFnId } from '../../chat/deploy/post-fn.mjs';
+import { postMessageFnId } from '../../../examples/chat/deploy/post-fn.mjs';
 
 const URL_BASE = process.env.INFRA_URL?.replace(/\/$/, '');
 const AUTH_SECRET = process.env.INFRA_AUTH_SECRET;

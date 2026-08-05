@@ -2,7 +2,7 @@
 
 The full scale-out / perf / failure test for `@sigx/actors` on AKS, using
 the [`sigx-actors-test` chart](chart/) and the
-[`aks-cluster` example](../README.md).
+[`perf/aks` harness](../README.md).
 
 Set once, used by every command below:
 
@@ -56,7 +56,7 @@ estate, and this file is public. Export them once in your shell profile;
 a verb fails fast naming exactly what it is missing. `up` is idempotent:
 
 ```sh
-cd examples/aks-cluster/deploy
+cd perf/aks/deploy
 node testenv.mjs up       # node pool + both images + both releases + DNS
 node testenv.mjs status   # replicas, how many NODES they span, VM, endpoint
 node testenv.mjs load     # the edge ladder from a same-region VM
@@ -90,9 +90,9 @@ TAG=$(git rev-parse --short HEAD)
 az acr build --registry $ACR \
   --image sigx-actors-test:$TAG \
   --platform linux/amd64 \
-  --file examples/aks-cluster/Dockerfile .
+  --file perf/aks/Dockerfile .
 
-helm install $RELEASE examples/aks-cluster/deploy/chart \
+helm install $RELEASE perf/aks/deploy/chart \
   -n $NS --set image.tag=$TAG
 # upgrades: helm upgrade $RELEASE ... --reuse-values --set image.tag=$NEWTAG
 ```
@@ -153,11 +153,11 @@ OPS_SECRET=$(kubectl -n $NS get secret $RELEASE-secrets \
 # The live dashboard — the ops fan-out reaches the whole cluster from
 # whichever host the forward lands on. Run from this repo (the sigx CLI
 # discovers its plugins from the project's dependencies):
-pnpm --filter aks-cluster-example exec sigx actors top \
+pnpm --filter sigx-perf-aks exec sigx actors top \
   --url http://127.0.0.1:7311 --secret "$OPS_SECRET"
 
 # One-shot snapshots for the record:
-pnpm --filter aks-cluster-example exec sigx actors stats \
+pnpm --filter sigx-perf-aks exec sigx actors stats \
   --url http://127.0.0.1:7311 --secret "$OPS_SECRET" --json
 ```
 
@@ -168,7 +168,7 @@ Every load run is a fresh Job (Jobs are immutable — unique suffix):
 ```sh
 load() {  # load <mode> <concurrency> <durationS> [extra --set flags...]
   local mode=$1 c=$2 dur=$3; shift 3
-  helm template $RELEASE examples/aks-cluster/deploy/chart -n $NS \
+  helm template $RELEASE perf/aks/deploy/chart -n $NS \
     -s templates/loadgen-job.yaml \
     --set image.tag=$TAG --set loadgen.enabled=true \
     --set loadgen.nameSuffix=$(date +%s)-$RANDOM \
@@ -226,7 +226,7 @@ climbing. Everything later is judged against this curve.
 Start a long run: `load counter 64 600`. Mid-run:
 
 ```sh
-helm upgrade $RELEASE examples/aks-cluster/deploy/chart -n $NS \
+helm upgrade $RELEASE perf/aks/deploy/chart -n $NS \
   --reuse-values --set replicaCount=5
 ```
 
@@ -310,7 +310,7 @@ back; `load verify ...` shows no committed-state loss (AOF held it);
 ### (i) HPA + cluster autoscaler — node scale-out
 
 ```sh
-helm upgrade $RELEASE examples/aks-cluster/deploy/chart -n $NS \
+helm upgrade $RELEASE perf/aks/deploy/chart -n $NS \
   --reuse-values --set hpa.enabled=true --set affinity.hostSelfSpread=required
 load crunch 64 600 --set loadgen.crunchIters=2000
 kubectl -n $NS get hpa -w     # and: kubectl get nodes -w
@@ -355,7 +355,7 @@ that detection window is the price of crash-resume.
 
 ### (l) The real app, from the outside world
 
-The chat example ([`examples/chat/deploy`](../../chat/deploy)) publicly
+The chat example ([`examples/chat/deploy`](../../../examples/chat/deploy)) publicly
 exposed: SSR + browser client + signed sessions + live NDJSON streams
 through the ingress. Deploy:
 
@@ -371,7 +371,7 @@ az network dns record-set a add-record -g <dns-rg> -z <zone> \
 ```
 
 **Most of this matrix is now automated** — `node testenv.mjs test` runs the
-assertion suite (`examples/aks-cluster/__tests__/infra.test.ts`) and then
+assertion suite (`perf/aks/__tests__/infra.test.ts`) and then
 the Tier-3 perf comparison, and prints one verdict. Add `INFRA_CHAOS=1` for
 the destructive rows. What remains manual is the browser: two tabs, a live
 cross-tab update, and a reconnect through a rolling restart.
@@ -408,7 +408,7 @@ record the PREVIOUS one wrote, and a v1 record is simply what an older
 chat image writes — no fixture, no test-only endpoint.
 
 ```sh
-node examples/aks-cluster/deploy/testenv.mjs migrate-check [<old-tag>]
+node perf/aks/deploy/testenv.mjs migrate-check [<old-tag>]
 ```
 
 Writes a room against the old image, rolls the release forward to HEAD,
@@ -433,7 +433,7 @@ perf comparison refuses to cross them — deliberate, not an obstacle.
 helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
   --set env.rebalance=1 --set env.rebalanceIntervalMs=30000 \
   --set env.rebalanceMinIdleMs=15000
-INFRA_CHAOS=1 node examples/aks-cluster/deploy/testenv.mjs test -t rebalance
+INFRA_CHAOS=1 node perf/aks/deploy/testenv.mjs test -t rebalance
 ```
 
 Pass: `counters.rebalanceMigrations` climbs, the joined hosts end up
@@ -452,7 +452,7 @@ per-peer probe traffic costs at this fleet size.
 ```sh
 helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
   --set env.maxActivations=200 --set env.sweepIntervalMs=15000
-node examples/aks-cluster/deploy/testenv.mjs test -t maxActivations
+node perf/aks/deploy/testenv.mjs test -t maxActivations
 ```
 
 Pass: total activations settle at ≤ cap × hosts, `activations.byReason.
@@ -470,7 +470,7 @@ kept-alive activations are never shed.
 ```sh
 helm upgrade chat examples/chat/deploy/chart -n sigx-chat --reset-then-reuse-values \
   --set env.digestMaxLocal=8 --set env.digestIters=20000
-node examples/aks-cluster/deploy/testenv.mjs load ACTOR_TYPE=Digest \
+node perf/aks/deploy/testenv.mjs load ACTOR_TYPE=Digest \
   READ_METHOD=summarize 'READ_ARGS=["payload",20000]' ROOMS=1 LADDER=8,16,32,64
 ```
 
@@ -491,7 +491,7 @@ Re-run (a), (d)–(h) with membership on coordination Leases instead of
 Redis — same image, one value:
 
 ```sh
-helm upgrade $RELEASE examples/aks-cluster/deploy/chart -n $NS \
+helm upgrade $RELEASE perf/aks/deploy/chart -n $NS \
   --reuse-values --set membership=k8s
 ```
 

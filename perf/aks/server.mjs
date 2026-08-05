@@ -38,7 +38,7 @@ import { SweepJob } from './src/sweep.job.ts';
 const need = (name) => {
     const value = process.env[name];
     if (!value) {
-        console.error(`[aks-cluster] missing required env ${name}`);
+        console.error(`[perf-aks] missing required env ${name}`);
         process.exit(1);
     }
     return value;
@@ -68,7 +68,7 @@ const providers = (() => {
             directory: redisDirectory(new Redis(REDIS_URL), { namespace: SIGX_NAMESPACE })
         };
     }
-    console.error(`[aks-cluster] MEMBERSHIP must be redis or k8s, got '${MEMBERSHIP}'`);
+    console.error(`[perf-aks] MEMBERSHIP must be redis or k8s, got '${MEMBERSHIP}'`);
     process.exit(1);
 })();
 
@@ -132,11 +132,11 @@ attachSignalHandlers(host, {
     },
     // The drain already exits non-zero on failure; this is the log line,
     // since a terminated pod leaves little else behind.
-    onError: (error) => console.error('[aks-cluster] drain failed:', error)
+    onError: (error) => console.error('[perf-aks] drain failed:', error)
 });
 
 console.log(
-    `[aks-cluster] host ${plugin.placement.identity.hostId} on :${PORT} ` +
+    `[perf-aks] host ${plugin.placement.identity.hostId} on :${PORT} ` +
         `advertise=http://${POD_IP}:${PORT} membership=${MEMBERSHIP} ` +
         `NODE_ENV=${process.env.NODE_ENV ?? '(unset)'}`
 );

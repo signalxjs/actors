@@ -32,8 +32,8 @@ import { dirname, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHmac } from 'node:crypto';
-import { postMessageFnId } from '../../chat/deploy/post-fn.mjs';
-import { spawnable } from './spawn.mjs';
+import { postMessageFnId } from '../../../examples/chat/deploy/post-fn.mjs';
+import { spawnable } from '../../../benchmarks/src/spawn.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -311,10 +311,10 @@ const ingressIp = () =>
 async function up() {
     const tag = gitSha();
     ensurePool();
-    buildImage('sigx-actors-test', 'examples/aks-cluster/Dockerfile', tag);
+    buildImage('sigx-actors-test', 'perf/aks/Dockerfile', tag);
     buildImage('sigx-chat', 'examples/chat/Dockerfile', tag);
 
-    release('sigx', 'examples/aks-cluster/deploy/chart', cfg.actorsNs, [
+    release('sigx', 'perf/aks/deploy/chart', cfg.actorsNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-actors-test`,
         '--set', `image.tag=${tag}`,
         '--set', `nodeSelector.workload=${cfg.workload}`
