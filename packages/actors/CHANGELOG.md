@@ -38,6 +38,26 @@
 
 ### Fixed
 
+- **The Node mount now strips the routing token from the path, so a routed
+  call behaves exactly like a direct one (#93).** `route: 'hash'` is the
+  client default, so every call through `@sigx/actors/client` arrives as
+  `{base}/r/{token}/{Type}%23{method}`. `handleActorRequest` (the WinterCG
+  mount) rewrote that back to `{base}/{Type}%23{method}` before core decoded
+  the path, but `createActorHandler` — and therefore `createAppHandler` and
+  the Vite dev middleware, i.e. every Node deployment — handed core's adapter
+  the request untouched. Core then read `r/{token}/{Type}#{method}` as the
+  SYMBOL, which resolves to the unknown-actor wrapper: a 404 for an
+  authenticated caller, and a **401 for an `allowAnonymous` actor**, because
+  that wrapper carries no `__sigxAnon` and core's identity gate runs before
+  any wrapper is invoked. The same actor answered 200 on the direct path and
+  401 on the routed one — the transport asymmetry the endpoint comment says
+  v4 exists to prevent, and invisible in-process (`peekHost()` short-circuits
+  before the wire). The strip is now one shared `stripRoutePath` both mounts
+  call; on the Node side it rewrites `req.url`, whose query string (a
+  declared `reads:` GET carries its arguments there) rides along untouched.
+  The workaround — `configureActors({ route: 'none' })` — is no longer
+  needed.
+
 - **An in-chain stream open against a call-chain-reentrant target no longer
   hangs (#46).** `dispatchStream` and `dispatchWatch` ran the reentrancy check
   and discarded its result, so a `reentrant: true | 'call-chain'` target

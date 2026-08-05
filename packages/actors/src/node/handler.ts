@@ -1,8 +1,14 @@
 /**
- * Node bridging for the actor endpoint — a one-liner over core's
- * connect-style adapter (which owns the IncomingMessage→Request bridge,
- * backpressure-aware body pumping, and disconnect→abort wiring), plus
- * process signal wiring for graceful shutdown.
+ * Node bridging for the actor endpoint — core's connect-style adapter
+ * (which owns the IncomingMessage→Request bridge, backpressure-aware body
+ * pumping, and disconnect→abort wiring) plus the one thing the actor wire
+ * adds to it: taking the routing token off the path. Also the process
+ * signal wiring for graceful shutdown.
+ *
+ * Anything this mount does beyond delegating has a twin in
+ * `handleActorRequest`, and the two must not drift — a request served here
+ * and the same request served on the WinterCG mount have to be decided
+ * identically (#93).
  */
 import {
     createServerFnHandler,
@@ -11,6 +17,7 @@ import {
 } from '@sigx/server/node';
 import { createActorResolver } from '../server/actor-endpoint';
 import type { ActorResolverOptions } from '../server/actor-endpoint';
+import { stripRoutePath } from '../route';
 import type { Host } from '../types';
 
 export interface ActorHandlerOptions
@@ -35,7 +42,7 @@ export function createActorHandler(options: ActorHandlerOptions): NodeRequestHan
     // ran uncapped while the WinterCG one was capped.
     const { host, base, onMiss, maxHops, maxLiveSubscriptions, ...rest } = options;
     const mount = base ?? '/_sigx/actor';
-    return createServerFnHandler({
+    const inner = createServerFnHandler({
         ...rest,
         base: mount,
         resolve: createActorResolver(host, {
@@ -45,6 +52,44 @@ export function createActorHandler(options: ActorHandlerOptions): NodeRequestHan
             ...(maxLiveSubscriptions !== undefined ? { maxLiveSubscriptions } : {})
         })
     });
+    return (req, res, next) => {
+        // The routing token has to come off the path before CORE reads it,
+        // and this mount hands core's adapter the request directly — so it
+        // owns the strip, exactly as `handleActorRequest` does for the
+        // WinterCG mount. Skipping it made core read
+        // `r/{token}/{Type}#{method}` as the symbol: a 404 for an
+        // authenticated caller, and a 401 for an `allowAnonymous` actor,
+        // since the unknown-actor wrapper carries no `__sigxAnon` and core's
+        // identity gate runs before the wrapper is ever invoked. `route:
+        // 'hash'` is the CLIENT DEFAULT, so that was every anonymous actor
+        // call on a Node deployment (#93).
+        //
+        // `req.url` is the RAW request target — path plus query — so only
+        // the path is rewritten and the query rides along byte for byte
+        // (a declared `reads:` GET carries its arguments there). Rewriting
+        // it in place is the connect idiom, and it strands nothing
+        // downstream: the rewritten target still starts with this mount's
+        // base, so core answers it rather than calling `next()`.
+        //
+        // ORIGIN-FORM only, deliberately, because that is core's own gate:
+        // its adapter matches `req.url.startsWith('{base}/')`, which an
+        // absolute-form target (`POST http://host/_sigx/actor/…`, the proxy
+        // request line Node passes through verbatim) never satisfies. Such a
+        // request falls through to `next()` before any symbol is decoded, so
+        // there is nothing for a strip to rescue — and handling it here would
+        // rewrite a target this mount does not serve. Pinned by a raw-socket
+        // test: tokenized and bare absolute forms answer identically.
+        const target = req.url;
+        if (target !== undefined) {
+            const query = target.search(/[?#]/);
+            const pathname = query === -1 ? target : target.slice(0, query);
+            const stripped = stripRoutePath(pathname, mount);
+            if (stripped !== null) {
+                req.url = query === -1 ? stripped : stripped + target.slice(query);
+            }
+        }
+        return inner(req, res, next);
+    };
 }
 
 /**

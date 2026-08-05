@@ -26,7 +26,7 @@ import {
     ACTOR_HOPS_HEADER,
     ACTOR_ONEWAY_HEADER,
     ACTOR_OWNER_HEADER,
-    ACTOR_ROUTE_SEGMENT
+    stripRoutePath
 } from '../route';
 import { relayStream } from '../stream-relay';
 import { toClientError } from './client-error';
@@ -333,33 +333,16 @@ function warnOnce(hostId: string): void {
  * must instead compare against its own registry first.
  */
 /**
- * Rewrite `{base}/r/{token}/{symbol}` to `{base}/{symbol}`, on the RAW
- * pathname, before core sees the request.
- *
- * It has to happen here rather than in the resolver, because by the time
- * core hands over a symbol it has already decoded each path segment and
- * rejoined them with `/` (`decodeFnPath`). A `'key'`-mode or custom token
- * may contain a slash, which arrives percent-encoded and comes back out as
- * a literal one — and an actor type may contain a slash too (`acme/greeter`
- * in the packaged-actor fixture). After the decode the two are
- * indistinguishable; before it, the segments are exact.
- *
- * The token is discarded rather than checked, deliberately: routing is an
- * optimization and never load-bearing for correctness, so the endpoint
- * cannot start caring whether the hint agrees with the key (`route.ts`).
- * A malformed hint (`r/` with no following segment) is left alone and falls
- * through to an honest 404 instead of being guessed at.
+ * Rewrite `{base}/r/{token}/{symbol}` to `{base}/{symbol}` before core sees
+ * the request — the `Request`-level half of `stripRoutePath`, whose doc
+ * comment carries the why (it works on the RAW pathname, and the token is
+ * discarded rather than validated).
  */
 function stripRouteSegments(request: Request, base: string): Request {
     const url = new URL(request.url);
-    const prefix = base.endsWith('/') ? base : `${base}/`;
-    if (!url.pathname.startsWith(prefix)) return request;
-    const rest = url.pathname.slice(prefix.length);
-    const marker = `${ACTOR_ROUTE_SEGMENT}/`;
-    if (!rest.startsWith(marker)) return request;
-    const afterToken = rest.indexOf('/', marker.length);
-    if (afterToken === -1) return request;
-    url.pathname = `${prefix}${rest.slice(afterToken + 1)}`;
+    const stripped = stripRoutePath(url.pathname, base);
+    if (stripped === null) return request;
+    url.pathname = stripped;
     // `new Request(url, request)` carries method, headers, body and signal.
     return new Request(url, request);
 }

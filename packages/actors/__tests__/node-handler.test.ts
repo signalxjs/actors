@@ -25,17 +25,25 @@ import {
 import { cluster, memoryClusterHub, preferLocalPolicy } from '@sigx/actors/cluster';
 import { createAppHandler } from '@sigx/actors/node';
 import { createFetchHandler } from '@sigx/actors/server';
+import { hashRouteToken } from '@sigx/actors/client';
+import { withoutServerApp } from '../../../vitest.setup';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
 const Counter = defineActor({
     type: 'Counter',
     allowAnonymous: true,
+    // A declared read is the only call that carries a QUERY STRING, so it is
+    // what proves the routed rewrite keeps one.
+    reads: { total: { maxAge: 5 } },
     state: () => ({ count: 0 }),
     methods: (ctx) => ({
         async increment(by: number) {
             ctx.state.count += by;
             await ctx.save();
+            return ctx.state.count;
+        },
+        async total() {
             return ctx.state.count;
         }
     }),
@@ -159,6 +167,43 @@ describe('createAppHandler over real sockets', () => {
         expect(ok).toBeTruthy();
     });
 
+    it('falls through on an ABSOLUTE-form target, tokenized or not', async () => {
+        // The other raw target Node hands through verbatim: a proxy-style
+        // request line (`GET http://host/path HTTP/1.1`). Core's adapter
+        // gates on `req.url.startsWith('/_sigx/actor/')`, which an absolute
+        // form never satisfies — so the actor mount does not serve one at
+        // all, and the routing token cannot change that either way. Pinned
+        // because the Node strip works on the raw target: this is what says
+        // the two forms are not silently decided differently.
+        const nodes = await serveCluster(1, memoryStorage());
+        running = nodes;
+        const origin = `http://127.0.0.1:${nodes[0]!.port}`;
+
+        const raw = (target: string): Promise<string> =>
+            new Promise((resolve) => {
+                const socket = connect(nodes[0]!.port, '127.0.0.1', () => {
+                    socket.write(
+                        `POST ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\n` +
+                            `content-type: application/json\r\ncontent-length: 2\r\n` +
+                            `Connection: close\r\n\r\n{}`
+                    );
+                });
+                let buffer = '';
+                socket.on('data', (chunk) => (buffer += chunk));
+                socket.on('close', () => resolve(buffer));
+            });
+
+        for (const path of [
+            '/_sigx/actor/Counter%23increment',
+            `/_sigx/actor/r/${hashRouteToken('Counter', 'abs')}/Counter%23increment`
+        ]) {
+            const response = await raw(`${origin}${path}`);
+            // 404 is the harness's own fallthrough, i.e. `next()` ran — the
+            // SAME answer with the token as without it.
+            expect(response.split('\r\n')[0], path).toContain('404');
+        }
+    });
+
     it('streams a cross-host watch() back through the bridge', async () => {
         const storage = memoryStorage();
         const nodes = await serveCluster(2, storage);
@@ -206,6 +251,89 @@ describe('createAppHandler over real sockets', () => {
         );
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toEqual({ data: 7 });
+    });
+
+    it('serves a ROUTED url — the client default — identically to a bare one', async () => {
+        // #93: `route: 'hash'` is the client default, so every call through
+        // `@sigx/actors/client` arrives as `{base}/r/{token}/{symbol}`. The
+        // WinterCG mount strips those segments before core decodes the path;
+        // the Node mount did not, so core read `r/{token}/Counter#increment`
+        // as the SYMBOL — an unknown actor, and (below) a 401 before that.
+        const nodes = await serveCluster(1, memoryStorage());
+        running = nodes;
+        const base = `http://127.0.0.1:${nodes[0]!.port}/_sigx/actor`;
+        // Byte-for-byte what the default `route: 'hash'` client emits.
+        const token = hashRouteToken('Counter', 'routed');
+
+        const routed = await fetch(`${base}/r/${token}/Counter%23increment`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ args: ['routed', 7] })
+        });
+        expect(routed.status).toBe(200);
+        await expect(routed.json()).resolves.toEqual({ data: 7 });
+
+        // The token routes; it never identifies. The bare URL reaches the
+        // same activation, and its count continues from the routed call's.
+        const bare = await fetch(`${base}/Counter%23increment`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ args: ['routed', 1] })
+        });
+        await expect(bare.json()).resolves.toEqual({ data: 8 });
+
+        // A declared read is a GET with `?args=`, so this is also the case
+        // that pins the QUERY surviving the path rewrite.
+        const args = encodeURIComponent(JSON.stringify(['routed']));
+        const read = await fetch(`${base}/r/${token}/Counter%23total?args=${args}`);
+        expect(read.status).toBe(200);
+        await expect(read.json()).resolves.toEqual({ data: 8 });
+        expect(read.headers.get('cache-control')).toContain('max-age=5');
+    });
+
+    it('keeps allowAnonymous on the routed path with no server app configured', async () => {
+        // The reported symptom (#93), exactly: 200 direct, 401 routed. The
+        // suite stamps a signed-in app for every test, which would hide it —
+        // an anonymous process is where fail-closed actually bites, and where
+        // `allowAnonymous` has to reach core's PRE-DECODE identity gate. It
+        // only can if the wrapper core resolves is the actor's, which only
+        // happens if the routing segments came off the path first.
+        const nodes = await serveCluster(1, memoryStorage());
+        running = nodes;
+        const base = `http://127.0.0.1:${nodes[0]!.port}/_sigx/actor`;
+        const token = hashRouteToken('Counter', 'anon');
+
+        await withoutServerApp(async () => {
+            for (const url of [
+                `${base}/Counter%23increment`,
+                `${base}/r/${token}/Counter%23increment`
+            ]) {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args: ['anon', 1] })
+                });
+                expect(response.status, url).toBe(200);
+            }
+        });
+    });
+
+    it('reports 404 skew against the SYMBOL, not the routing token', async () => {
+        const nodes = await serveCluster(1, memoryStorage());
+        running = nodes;
+
+        const response = await fetch(
+            `http://127.0.0.1:${nodes[0]!.port}/_sigx/actor/r/abc123/Ghost%23increment`,
+            {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ args: ['g1', 1] })
+            }
+        );
+        expect(response.status).toBe(404);
+        const body = (await response.json()) as { error: { message: string } };
+        expect(body.error.message).toContain('Ghost#increment');
+        expect(body.error.message).not.toContain('abc123');
     });
 
     it('rejects an oversized body with 413 before buffering it', async () => {
