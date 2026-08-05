@@ -1,9 +1,41 @@
-# Scripts are checked out with LF on every platform.
+# Text is stored with LF and CHECKED OUT with LF on every platform —
+# `text=auto` lets git decide text-vs-binary per file, so the blanket rule
+# governs every file git DETECTS as text (today: everything except the
+# three NUL-carrying fixtures noted below).
+# `eol=lf` beats `core.autocrlf`, which is what made Windows
+# checkouts CRLF: vitest rewrote snapshots with the checkout's endings on
+# every `pnpm test` (a pure-EOL diff dirtying the tree), and staged edits
+# became whole-file rewrites (a 9-line doc change staged as 761/584) —
+# unreviewable under the required review flow.
 #
-# `scripts/public-export.mjs` is imported by its test, not merely executed, and
-# a module checked out with CRLF fails to parse if it opens with a shebang —
-# CI on windows-latest reported "SyntaxError: Invalid or unexpected token"
-# while every LF checkout passed. That shebang is gone, but pinning the
-# endings removes the whole class rather than the one instance.
+# `text=auto` leaves binary-DETECTED files alone. Today that is exactly the
+# three tests carrying literal NUL bytes (the key-separator and timing-safe
+# fixtures); nothing else in the repo is binary, and those files are stored
+# LF around their NULs, so nothing here would touch them anyway.
+* text=auto eol=lf
+
+# Vitest writes snapshots with the working tree's endings, so the pin is
+# explicit rather than inherited: a snapshot that ever gains content that
+# confuses the text heuristic must still round-trip as LF text.
+**/__snapshots__/*.snap text eol=lf
+
+# Scripts predate the blanket rule: a CRLF checkout made a module that
+# opened with a shebang fail to parse on windows-latest ("SyntaxError:
+# Invalid or unexpected token"). The shebang is gone; the pin stays
+# explicit so the story survives the blanket rule above.
 scripts/*.mjs text eol=lf
 scripts/*.js  text eol=lf
+
+# Future binary assets opt out of text handling entirely (= -text -diff
+# -merge), rather than trusting the heuristic per file.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.gz   binary
+*.zip  binary

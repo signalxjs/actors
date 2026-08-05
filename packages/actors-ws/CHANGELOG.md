@@ -4,8 +4,8 @@
 
 ## [0.2.0] - 2026-08-05
 
-### Changed
-
+### Changed
+
 - **Peers `@sigx/actors@^0.2.0`.** The guard split is breaking, so the
   whole family moves together — see the `@sigx/actors` changelog and core's
   [0.15 migration guide](https://github.com/signalxjs/core/blob/main/docs/migrations/0.15-guard-split.md).
