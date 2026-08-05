@@ -55,11 +55,24 @@ export function canonicalSymbol(wire: string): string {
 export function symbolFromPathname(pathname: string, base: string): string {
     const prefix = base.endsWith('/') ? base : `${base}/`;
     if (!pathname.startsWith(prefix)) return '';
-    return canonicalSymbol(
-        pathname
-            .slice(prefix.length)
-            .split('/')
-            .map((segment) => decodeURIComponent(segment))
-            .join('/')
-    );
+    const segments = pathname
+        .slice(prefix.length)
+        .split('/')
+        .map((segment) => decodeURIComponent(segment));
+    const wire = segments.join('/');
+    // In the slash-separated spelling the separators ARE the structure, so a
+    // `%2F` that decodes into one MOVES the type/method boundary:
+    // `Cart%2FaddItem` would resolve to `Cart#addItem` exactly as
+    // `Cart/addItem` does. The writing half never emits that — a type's
+    // slashes go out raw, and a method may not hold one at all — so it is a
+    // second URL for the same call that only a hand-rolled caller can
+    // produce, and a second URL is one an edge path rule or a cache key can
+    // disagree about. Refused, so the mapping stays one-to-one.
+    //
+    // The `#` spelling is exempt and must be: it is ONE segment, so a
+    // slash-bearing type (`acme%2Fgreeter%23greet`) has nowhere else to put
+    // its slashes, and that spelling is what the frame transports and any
+    // pre-#96 caller send.
+    if (!wire.includes('#') && segments.some((segment) => segment.includes('/'))) return '';
+    return canonicalSymbol(wire);
 }

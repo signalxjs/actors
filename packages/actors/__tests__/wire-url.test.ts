@@ -66,11 +66,12 @@ describe('the actor URL path grammar', () => {
         // splits, and the last `/` then makes it `Type/a#b` — a different
         // actor, silently. So this throws in production too, not just dev.
         expect(() => encodeSymbolPath('Type#a/b')).toThrow(/must not contain "\/"/);
-        // The round trip it protects: prove the misroute is real by walking
-        // it by hand, so nobody "optimizes" the check back behind `__DEV__`.
-        const wouldBe = symbolFromPathname(`${BASE}/Type/${encodeURIComponent('a/b')}`, BASE);
-        expect(wouldBe).toBe('Type/a#b');
-        expect(wouldBe).not.toBe('Type#a/b');
+        // Both halves refuse it, and they have to: the escaped spelling
+        // `Type/a%2Fb` decodes to `Type/a/b`, which reads back as `Type/a#b`
+        // — a different actor. The reading half now rejects it outright
+        // rather than resolving it, so neither an emitter nor a hand-rolled
+        // caller can reach that misroute.
+        expect(symbolFromPathname(`${BASE}/Type/${encodeURIComponent('a/b')}`, BASE)).toBe('');
     });
 });
 
@@ -124,6 +125,27 @@ describe('symbolFromPathname', () => {
     it('tolerates a base with or without a trailing slash', () => {
         expect(symbolFromPathname('/_sigx/actor/Cart/addItem', '/_sigx/actor/')).toBe(
             'Cart#addItem'
+        );
+    });
+
+    it('refuses a `%2F` that would move the type/method boundary', () => {
+        // `Cart%2FaddItem` decodes to `Cart/addItem` and would resolve to the
+        // same actor as the canonical spelling — a second URL for one call,
+        // which the writing half never emits and which an edge path rule or a
+        // cache key can disagree about.
+        expect(symbolFromPathname('/_sigx/actor/Cart%2FaddItem', BASE)).toBe('');
+        expect(symbolFromPathname('/_sigx/actor/acme%2Fgreeter/greet', BASE)).toBe('');
+        // …while the canonical spelling of the very same call is fine.
+        expect(symbolFromPathname('/_sigx/actor/acme/greeter/greet', BASE)).toBe(
+            'acme/greeter#greet'
+        );
+    });
+
+    it('exempts the `#` spelling, which has nowhere else to put a slash', () => {
+        // One segment, so a slash-bearing type MUST escape its slashes. This
+        // is what the frame transports and any pre-#96 caller send.
+        expect(symbolFromPathname('/_sigx/host/acme%2Fgreeter%23greet', '/_sigx/host')).toBe(
+            'acme/greeter#greet'
         );
     });
 
