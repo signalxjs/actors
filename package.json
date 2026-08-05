@@ -14,7 +14,7 @@
         "test:watch": "vitest",
         "test:workers": "pnpm --filter @sigx/actors-cloudflare test:workers",
         "test:coverage": "vitest run --coverage",
-        "test:infra": "vitest run examples/aks-cluster/__tests__/infra.test.ts",
+        "test:infra": "vitest run perf/aks/__tests__/infra.test.ts",
         "typecheck": "tsgo --noEmit && pnpm --filter @sigx/actors-cli typecheck && pnpm --filter cf-workers-example typecheck",
         "lint": "oxlint packages/actors/src packages/actors-cli/src packages/actors-pg/src packages/actors-surreal/src packages/actors-redis/src packages/actors-k8s/src packages/actors-otel/src packages/actors-cloudflare/src benchmarks/src examples/cf-workers/src",
         "lint:fix": "oxlint --fix packages/actors/src packages/actors-cli/src packages/actors-pg/src packages/actors-surreal/src packages/actors-redis/src packages/actors-k8s/src packages/actors-otel/src packages/actors-cloudflare/src benchmarks/src examples/cf-workers/src",

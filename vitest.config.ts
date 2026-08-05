@@ -16,12 +16,16 @@ export default defineConfig({
     test: {
         environment: 'happy-dom',
         setupFiles: ['./vitest.setup.ts'],
-        // Examples are included for the env-gated INFRA suite: it tests a
-        // DEPLOYMENT (proxy behaviour, sealed mounts, chaos), which no
-        // package-level test can reach. It skips itself without INFRA_URL,
-        // so `pnpm test` and CI are unaffected.
+        // `perf/` carries two suites, and they are not alike. The INFRA one
+        // tests a DEPLOYMENT — proxy behaviour, sealed mounts, chaos — which
+        // no package-level test can reach; it skips itself without
+        // INFRA_URL, so `pnpm test` and CI are unaffected. The other is
+        // testenv.mjs's identity-validation guard, and that one runs
+        // ALWAYS: it is what keeps a private estate's names from returning
+        // as defaults in a public repo.
         include: [
             'packages/**/__tests__/**/*.test.{ts,tsx}',
+            'perf/**/__tests__/**/*.test.ts',
             'examples/**/__tests__/**/*.test.ts',
             // The benchmarks themselves are never run by vitest — they are a
             // measurement, not an assertion. Their REPORTING is a different

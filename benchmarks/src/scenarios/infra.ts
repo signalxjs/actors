@@ -17,7 +17,7 @@
  * replica count) and see whether it helped, with the same baseline/compare
  * machinery as every other tier. What it is NOT for: absolute capacity.
  * The driver is one Node process, which caps out well below what a real
- * fleet of clients extracts — `examples/aks-cluster/deploy/edge-ladder.mjs`
+ * fleet of clients extracts — `perf/aks/deploy/edge-ladder.mjs`
  * on a same-region VM is the tool for that, and the two must not be quoted
  * interchangeably.
  *
@@ -40,7 +40,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnable } from '../../../examples/aks-cluster/deploy/spawn.mjs';
+import { spawnable } from '../spawn.mjs';
 // Derived from the build, never pasted: see post-fn.mjs for the failure
 // mode that motivated it.
 import { postMessageFnId } from '../../../examples/chat/deploy/post-fn.mjs';
@@ -81,7 +81,7 @@ export const INFRA_SHAPE = process.env.INFRA_SHAPE ?? '';
 // --- driving the load from the region, not from here -----------------------
 
 const LADDER_PATH = fileURLToPath(
-    new URL('../../../examples/aks-cluster/deploy/edge-ladder.mjs', import.meta.url)
+    new URL('../../../perf/aks/deploy/edge-ladder.mjs', import.meta.url)
 );
 
 /** The generator, base64'd so it needs nothing pre-installed on the VM. */
@@ -117,7 +117,7 @@ function driveFromVm(env: Record<string, string>): LadderRow[] {
     // `@file` rather than inline, and `spawnable` rather than a bare `az`:
     // a Windows command line can carry neither a raw newline nor a `.cmd`
     // shim spawned without a shell, and this call is both. See
-    // `examples/aks-cluster/deploy/spawn.mjs`.
+    // `../spawn.mjs`.
     const dir = mkdtempSync(join(tmpdir(), 'sigx-bench-'));
     const file = join(dir, 'ladder.sh');
     let out: string;
@@ -480,6 +480,6 @@ export function tier3Hint(): string | null {
     return (
         `Tier 3 (infra/*) is off: missing ${missing.join(', ')}. It measures a real ` +
         `DEPLOYMENT with the load driven from a same-region VM — ` +
-        `\`node examples/aks-cluster/deploy/testenv.mjs test\` sets all of it up.`
+        `\`node perf/aks/deploy/testenv.mjs test\` sets all of it up.`
     );
 }

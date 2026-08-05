@@ -1,4 +1,4 @@
-# aks-cluster example
+# perf/aks — the AKS scale-out harness
 
 A production-shaped `@sigx/actors` deployment: N identical host pods on
 Kubernetes, cluster state in Redis, one container image that runs both the
@@ -6,6 +6,11 @@ host (`server.mjs`) and the closed-loop load generator (`loadgen.mjs`).
 This is the app half of the AKS scale-out/perf test; the Helm chart lives
 in [`deploy/chart/`](deploy/chart/) and the Azure setup plus the full
 scenario runbook in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
+
+> **This is a rig, not an example.** It exists to be measured and to be
+> broken on purpose, so it optimises for knobs and instrumentation rather
+> than for being read. If you are looking for something to copy, start
+> from [`examples/`](../../examples/) instead — see [`../README.md`](../README.md).
 
 Nothing is hardcoded — both entries read their entire configuration from
 environment variables (documented in each file's header). The host:
@@ -25,11 +30,11 @@ pnpm install && pnpm build
 redis-server --daemonize yes            # or any Redis >= 7 on :6379
 
 REDIS_URL=redis://localhost:6379 CLUSTER_SECRET=dev OPS_SECRET=dev \
-  pnpm --filter aks-cluster-example start
+  pnpm --filter sigx-perf-aks start
 
 # second terminal — a 10s smoke load, one JSON summary line on stdout
 TARGET_URL=http://127.0.0.1:7311 DURATION_S=10 CONCURRENCY=8 \
-  pnpm --filter aks-cluster-example loadgen
+  pnpm --filter sigx-perf-aks loadgen
 ```
 
 Multiple local hosts: run more instances with the same `REDIS_URL` and a
@@ -51,7 +56,7 @@ stdout carries only the JSON summaries, so
 ```sh
 TAG=$(git rev-parse --short HEAD)
 az acr build --registry <acr> --image sigx-actors-test:$TAG \
-  --platform linux/amd64 --file examples/aks-cluster/Dockerfile .
+  --platform linux/amd64 --file perf/aks/Dockerfile .
 ```
 
 Multi-stage: `pnpm install` + `pnpm build` + `pnpm deploy --prod` produce a

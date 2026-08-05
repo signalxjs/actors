@@ -1,6 +1,9 @@
 packages:
   - packages/*
   - examples/*
+  # The performance/deployment rig. A glob of its own, deliberately: it is
+  # not an example, and `examples/*` is what a newcomer reads as one.
+  - perf/*
   - benchmarks
 
 onlyBuiltDependencies:

@@ -1,7 +1,7 @@
 # Load runs are Jobs, and Jobs are immutable — render this per run with a
 # unique nameSuffix instead of managing it through helm upgrade:
 #
-#   helm template <release> examples/aks-cluster/deploy/chart -n <ns> \
+#   helm template <release> perf/aks/deploy/chart -n <ns> \
 #     -s templates/loadgen-job.yaml \
 #     --set image.tag=$TAG --set loadgen.enabled=true \
 #     --set loadgen.nameSuffix=$(date +%s)-$RANDOM \

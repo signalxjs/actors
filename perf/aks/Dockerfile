@@ -1,7 +1,7 @@
 # Build context is the REPO ROOT (workspace deps need the whole tree):
 #
 #   az acr build --registry <acr> --image sigx-actors-test:<git-sha> \
-#     --platform linux/amd64 --file examples/aks-cluster/Dockerfile .
+#     --platform linux/amd64 --file perf/aks/Dockerfile .
 #
 # The runtime needs Node >= 22.18: the entries import .ts modules via
 # built-in type stripping. node:22-bookworm-slim satisfies that today —
@@ -16,7 +16,7 @@ RUN pnpm build
 # A self-contained deployable: prod deps only, workspace packages packed
 # from their `files` (= dist). --legacy is the pnpm 10 flag for exactly
 # this layout (without inject-workspace-packages).
-RUN pnpm --filter aks-cluster-example deploy --prod --legacy /out
+RUN pnpm --filter sigx-perf-aks deploy --prod --legacy /out
 
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production

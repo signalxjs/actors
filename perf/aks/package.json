@@ -1,8 +1,8 @@
 {
-    "name": "aks-cluster-example",
+    "name": "sigx-perf-aks",
     "private": true,
     "type": "module",
-    "description": "Production-shaped multi-host cluster for the AKS deployment test: env-driven host entry + in-cluster load generator, one container image",
+    "description": "Tier-3 performance harness: the AKS estate driver, its Helm chart, and an in-cluster load generator. Not an example",
     "scripts": {
         "start": "node --conditions=production server.mjs",
         "start:dev": "node server.mjs",

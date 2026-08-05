@@ -64,6 +64,18 @@ function run(verb: string, env: Record<string, string> = {}) {
 }
 
 describe('testenv.mjs identity validation', () => {
+    /**
+     * The refusal assertions below only mean anything if the script got far
+     * enough to validate. It imports across two trees — `post-fn.mjs` from
+     * the example it deploys, `spawn.mjs` from `benchmarks/src` — and a
+     * module that fails to resolve exits 1 with a stack, which every
+     * `code === 1` assertion here would happily accept.
+     */
+    it('loads: every cross-tree import resolves', () => {
+        const { stderr } = run('status');
+        expect(stderr).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
+    });
+
     for (const [verb, needs] of Object.entries(NEEDS)) {
         it(`${verb} refuses a bare environment, naming ${needs.join(', ')}`, () => {
             const { code, stderr } = run(verb);
