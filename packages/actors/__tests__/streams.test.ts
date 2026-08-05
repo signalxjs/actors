@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { defineActor } from '@sigx/actors';
+import { defineActor, type Host } from '@sigx/actors';
 import { createHost, manualScheduler } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
@@ -314,6 +314,120 @@ describe('streams', () => {
             scheduler.advance(1_000);
             await new Promise((r) => setTimeout(r, 20));
             expect(host.stats().activations).toBe(0);
+        } finally {
+            await host.stop({ timeoutMs: 1_000 });
+        }
+    });
+});
+
+/** Open, pull once, release — what a stream consumer inside a turn does. */
+async function firstChunk(stream: AsyncIterable<unknown>): Promise<unknown> {
+    const iterator = stream[Symbol.asyncIterator]();
+    try {
+        return (await iterator.next()).value;
+    } finally {
+        await iterator.return?.();
+    }
+}
+
+/**
+ * A stream opened from INSIDE the target's own call chain.
+ *
+ * The setup turn only resolves the generator, but it took the activation's
+ * SERIAL lane to do it — so it queued behind the very turn that was up-stack
+ * awaiting the first chunk. Call-chain reentrancy admitted the cycle and then
+ * hung on it. `within()` is what makes a regression report as a failed
+ * assertion rather than a timed-out run.
+ */
+describe('in-chain stream open', () => {
+    interface Chain {
+        host: Host;
+        client: { start(): Promise<unknown>; startSelf(): Promise<unknown> };
+    }
+
+    function chainHost(reentrant: boolean | 'call-chain' | 'always'): Chain {
+        const a = defineActor({
+            type: 'A',
+            allowAnonymous: true,
+            reentrant,
+            state: () => ({ n: 7 }),
+            methods: (ctx) => ({
+                /** A → B → A: the canonical cycle, one hop away from itself. */
+                async start(): Promise<unknown> {
+                    return ctx.actor(b, 'b1').callBack();
+                },
+                /** The tightest form: A opens its OWN stream while mid-turn. */
+                async startSelf(): Promise<unknown> {
+                    return firstChunk(ctx.actor(a, 'a1').feed());
+                }
+            }),
+            streams: (ctx) => ({
+                async *feed() {
+                    yield ctx.snapshot().n;
+                }
+            })
+        });
+        const b = defineActor({
+            type: 'B',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                async callBack(): Promise<unknown> {
+                    return firstChunk(ctx.actor(a, 'a1').feed());
+                }
+            })
+        });
+        const host = createHost({ actors: [a, b], defaults: quiet });
+        return { host, client: host.actor(a, 'a1') as unknown as Chain['client'] };
+    }
+
+    it("A→B→A opening a stream re-enters when A is 'call-chain' reentrant", async () => {
+        const { host, client } = chainHost('call-chain');
+        try {
+            expect(await within(client.start(), 1_000)).toBe(7);
+            // The inline setup takes a keep-alive ref like any other; a
+            // release path that only fires for the queued setup would pin
+            // the activation for the life of the process.
+            expect(host.activations().find((a) => a.type === 'A')?.keptAlive).toBe(false);
+        } finally {
+            await host.stop({ timeoutMs: 1_000 });
+        }
+    });
+
+    it('A→A opening its own stream mid-turn re-enters', async () => {
+        const { host, client } = chainHost('call-chain');
+        try {
+            expect(await within(client.startSelf(), 1_000)).toBe(7);
+        } finally {
+            await host.stop({ timeoutMs: 1_000 });
+        }
+    });
+
+    it('`reentrant: true` re-enters identically — the v1 alias', async () => {
+        const { host, client } = chainHost(true);
+        try {
+            expect(await within(client.start(), 1_000)).toBe(7);
+        } finally {
+            await host.stop({ timeoutMs: 1_000 });
+        }
+    });
+
+    it('a non-reentrant target still throws the full chain, it does not open', async () => {
+        const { host, client } = chainHost(false);
+        try {
+            await expect(within(client.start(), 1_000)).rejects.toMatchObject({
+                kind: 'deadlock',
+                chain: ['A\u0000a1', 'B\u0000b1', 'A\u0000a1']
+            });
+        } finally {
+            await host.stop({ timeoutMs: 1_000 });
+        }
+    });
+
+    it("`reentrant: 'always'` is unaffected — its turns never hold the tail", async () => {
+        const { host, client } = chainHost('always');
+        try {
+            expect(await within(client.start(), 1_000)).toBe(7);
         } finally {
             await host.stop({ timeoutMs: 1_000 });
         }

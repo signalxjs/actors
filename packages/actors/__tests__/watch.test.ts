@@ -376,3 +376,89 @@ describe('dispatchWatch', () => {
     });
 
 });
+
+/**
+ * A watch opened from INSIDE the target's own call chain.
+ *
+ * Unlike a stream — whose setup turn only resolves a generator and can
+ * therefore run inline — a watch is a long-lived subscription whose reads are
+ * turns of their own (`invoke: () => this.enqueue(...)`, deliberately "the
+ * isolation every other call has"). Only its FIRST read could ever be inline,
+ * and the loop is shared per (method, args, throttleMs), so an in-chain
+ * subscriber joining a loop whose initial read is queued behind the up-stack
+ * turn would deadlock anyway. So the runtime refuses instead of re-entering —
+ * and the refusal is what stops it silently hanging.
+ *
+ * The chains below are SYNTHETIC: no `ctx` API reaches `dispatchWatch`, so an
+ * in-chain watch cannot be opened from inside an actor today. The refusal
+ * exists to keep a future entry point that does carry a chain from hanging.
+ */
+describe('in-chain watch open', () => {
+    const ReCart = defineActor({
+        type: 'ReCart',
+        allowAnonymous: true,
+        reentrant: 'call-chain',
+        state: () => ({ items: [] as string[] }),
+        methods: (ctx) => ({
+            async total(): Promise<number> {
+                return ctx.state.items.length;
+            }
+        })
+    });
+
+    function reHost(): Host {
+        const s = createHost({
+            actors: [Cart, ReCart],
+            defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 }
+        });
+        running.push(s);
+        return s;
+    }
+
+    it('refuses a call-chain-reentrant target rather than queueing behind the up-stack turn', async () => {
+        const s = reHost();
+        await s.start();
+        // Warm it: the reentrancy check only fires on an ACTIVE slot.
+        await s.actor(ReCart, 'r1').total();
+
+        const watching = s.dispatchWatch!({ type: 'ReCart', key: 'r1' }, 'total', [], {
+            callChain: ['ReCart\u0000r1'],
+            callId: 'c'
+        });
+        await expect(watching[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+            kind: 'deadlock'
+        });
+    });
+
+    it('still throws the full chain for a non-reentrant target', async () => {
+        const s = reHost();
+        await s.start();
+        await s.actor(Cart, 'n1').total();
+
+        const watching = s.dispatchWatch!({ type: 'Cart', key: 'n1' }, 'total', [], {
+            callChain: ['Cart\u0000n1'],
+            callId: 'c'
+        });
+        await expect(watching[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+            kind: 'deadlock',
+            chain: ['Cart\u0000n1', 'Cart\u0000n1']
+        });
+    });
+
+    it('a refused open still tears down cleanly on return()', async () => {
+        const s = reHost();
+        await s.start();
+        await s.actor(ReCart, 'r2').total();
+
+        const iterator = s
+            .dispatchWatch!({ type: 'ReCart', key: 'r2' }, 'total', [], {
+                callChain: ['ReCart\u0000r2'],
+                callId: 'c'
+            })
+            [Symbol.asyncIterator]();
+        await expect(iterator.next()).rejects.toMatchObject({ kind: 'deadlock' });
+        // The consumer's `finally` runs after the failed pull; a `return()`
+        // that re-throws the open's rejection would mask the real error.
+        await expect(iterator.return!()).resolves.toMatchObject({ done: true });
+    });
+});

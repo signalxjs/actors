@@ -19,6 +19,28 @@
 
 ### Fixed
 
+- **An in-chain stream open against a call-chain-reentrant target no longer
+  hangs (#46).** `dispatchStream` and `dispatchWatch` ran the reentrancy check
+  and discarded its result, so a `reentrant: true | 'call-chain'` target
+  *admitted* the cycle and then queued the stream's setup turn on its serial
+  lane — behind the very turn that was up-stack awaiting the first chunk.
+  Neither could proceed. `A → B → A.someStream()` now re-enters: the setup
+  resolves the generator inline, exactly as an awaited in-chain call does.
+  Sound rather than merely expedient — the setup sets the call context,
+  resolves the generator and restores it with no `await` in between (invoking
+  an async generator function runs none of its body), so no other turn can
+  interleave. Iteration was already detached from turns, and is unchanged.
+
+  A **watch** has no inline form — it is a long-lived subscription whose reads
+  are turns of their own, so only its first read could ever run inline — and an
+  in-chain open now **throws** `kind: 'deadlock'` instead of hanging. No `ctx`
+  API reaches `dispatchWatch`, so this is not reachable from an actor body
+  today; the refusal is what keeps a future entry point carrying a call chain
+  from hanging silently.
+
+  `reentrant: 'always'` was never affected: its turns are not chained on the
+  serial tail in either direction.
+
 - **A host that stalled past the membership TTL kept serving actors a
   survivor had already taken over — single activation was violated (#45).**
   Block a host's event loop for longer than `ttlMs` (a 20 s GC pause, a
