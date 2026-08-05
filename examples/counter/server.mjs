@@ -12,6 +12,7 @@ import { extname, join } from 'node:path';
 import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
 import { app } from './src/actors.app.ts';
 import { Counter } from './src/counter.actor.ts';
+import { resolveStatic } from './src/static.ts';
 
 // THE SAME app module the dev server runs: storage, defaults and every
 // plugin shared, declared once. Only the registry differs — Vite hands the
@@ -23,6 +24,10 @@ const actorHandler = createAppHandler(app);
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
+// Resolve the built client against THIS file, not the working directory, so
+// `node examples/counter/server.mjs` works from anywhere.
+const clientDir = join(import.meta.dirname, 'dist');
+
 // Once shutdown starts, every response says `connection: close` so keep-alive
 // clients retire their pooled socket after the response they are already
 // receiving — rather than reusing it right up to the moment it is destroyed.
@@ -30,15 +35,22 @@ let stopping = false;
 const server = createServer((req, res) => {
     if (stopping) res.setHeader('connection', 'close');
     void actorHandler(req, res, async () => {
-        // Static fallthrough: the built client app.
-        const path = req.url === '/' ? '/index.html' : req.url ?? '/index.html';
+        // Static fallthrough: the built client app. `resolveStatic` is what
+        // keeps a raw `/../package.json` inside dist/ — see src/static.ts.
+        const file = resolveStatic(clientDir, req.url ?? '/');
+        if (!file) return void res.writeHead(404).end('not found');
+        let body;
         try {
-            const file = await readFile(join('dist', path));
-            res.writeHead(200, { 'content-type': MIME[extname(path)] ?? 'application/octet-stream' });
-            res.end(file);
+            // Read BEFORE writing headers: a miss (or a directory, which
+            // fails with EISDIR) must still be able to answer 404, and
+            // writeHead after the 200 is out throws ERR_HTTP_HEADERS_SENT —
+            // which kills the process rather than the request.
+            body = await readFile(file);
         } catch {
-            res.writeHead(404).end('not found');
+            return void res.writeHead(404).end('not found');
         }
+        res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
+        res.end(body);
     });
 });
 
