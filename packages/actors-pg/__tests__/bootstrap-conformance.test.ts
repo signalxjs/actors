@@ -9,7 +9,7 @@
  * Each racer gets its OWN pool, so the concurrency is real rather than
  * serialised inside one client.
  */
-import { afterAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import pg from 'pg';
 import type {
     BootstrapConformanceFactory,
