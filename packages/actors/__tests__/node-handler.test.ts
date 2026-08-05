@@ -242,7 +242,7 @@ describe('createAppHandler over real sockets', () => {
         running = nodes;
 
         const response = await fetch(
-            `http://127.0.0.1:${nodes[0]!.port}/_sigx/actor/Counter%23increment`,
+            `http://127.0.0.1:${nodes[0]!.port}/_sigx/actor/Counter/increment`,
             {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -343,7 +343,7 @@ describe('createAppHandler over real sockets', () => {
 
         // Declared length is over the cap — rejected without reading.
         const declared = await fetch(
-            `http://127.0.0.1:${nodes[0]!.port}/_sigx/host/Counter%23increment`,
+            `http://127.0.0.1:${nodes[0]!.port}/_sigx/host/Counter/increment`,
             {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -358,7 +358,7 @@ describe('createAppHandler over real sockets', () => {
         // purpose: swallowing a fetch rejection would let this pass without
         // the request ever reaching the server.
         const streamed = await fetch(
-            `http://127.0.0.1:${nodes[0]!.port}/_sigx/host/Counter%23increment`,
+            `http://127.0.0.1:${nodes[0]!.port}/_sigx/host/Counter/increment`,
             {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -398,7 +398,7 @@ describe('createAppHandler over real sockets', () => {
         await app.start();
         try {
             // A matching call still works...
-            const ok = await fetch(`http://127.0.0.1:${port}/_sigx/actor/Counter%23increment`, {
+            const ok = await fetch(`http://127.0.0.1:${port}/_sigx/actor/Counter/increment`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args: ['direct', 4] })
@@ -438,7 +438,7 @@ describe('createAppHandler over real sockets', () => {
         });
         try {
             const response = await fetch(
-                `http://127.0.0.1:${port}/_sigx/actor/Counter%23increment`,
+                `http://127.0.0.1:${port}/_sigx/actor/Counter/increment`,
                 {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
@@ -540,7 +540,7 @@ describe('createFetchHandler (WinterCG)', () => {
         try {
             // public endpoint
             const call = await handler(
-                new Request('http://fetch.test/_sigx/actor/Counter%23increment', {
+                new Request('http://fetch.test/_sigx/actor/Counter/increment', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ args: ['k', 3] })
@@ -555,7 +555,7 @@ describe('createFetchHandler (WinterCG)', () => {
             // the cluster's internal mount is a plugin route too — it exists,
             // and refuses an unauthenticated call rather than 404ing.
             const internal = await handler(
-                new Request('http://fetch.test/_sigx/host/Counter%23increment', {
+                new Request('http://fetch.test/_sigx/host/Counter/increment', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ args: ['k'] })

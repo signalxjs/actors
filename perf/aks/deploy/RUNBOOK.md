@@ -386,7 +386,7 @@ The matrix — every test runs from OUTSIDE the cluster:
 | 4 | `GET /_sigx/health`, `GET /_sigx/ops`, `POST /_sigx/host/x` on the public host | all 404 — the dual listener seals them; never JSON, never SSR HTML |
 | 5 | `POST /_sigx/fn/... -H 'Origin: https://evil.example'` | 403 (same-origin via x-forwarded-*) |
 | 6 | no cookie → 401; forged `user=ada.deadbeef` → 401; signed cookie → 200 | the guard chain, end to end |
-| 7 | `POST /_sigx/actor/Room%23topic` (signed) | 200 — nginx passed `%23` through untouched |
+| 7 | `POST /_sigx/actor/Room/topic` (signed) | 200 — nginx passed the multi-segment symbol through without merging or dot-normalizing it |
 | 8 | hold a quiet `$live` connection ≥ 120 s | stays open — a `{"chunk":{"p":1}}` keepalive every 30 s, plus the 3600 s ingress timeouts; the client also reconnects on its own |
 | 9 | `kubectl -n sigx-chat rollout restart deploy/chat-host` with a tab streaming | tab reconnects by itself and resumes receiving |
 | 10 | post → `kubectl -n sigx-chat delete pod chat-redis-...` | AOF recovery, history intact |

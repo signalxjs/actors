@@ -44,7 +44,7 @@ async function keptAlive(key: string): Promise<boolean | undefined> {
 /** Open a watch through the Worker and read its first frame, proving it live. */
 async function openWatch(key: string): Promise<ReadableStreamDefaultReader<Uint8Array>> {
     const res = await SELF.fetch(
-        `https://edge.test/_sigx/actor/${encodeURIComponent('Counter#watch')}`,
+        `https://edge.test/_sigx/actor/Counter/watch`,
         {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -119,7 +119,7 @@ describe.skip('a disconnected watch releases the object', () => {
 
         // And the survivor still receives changes.
         const res = await SELF.fetch(
-            `https://edge.test/_sigx/actor/${encodeURIComponent('Counter#increment')}`,
+            `https://edge.test/_sigx/actor/Counter/increment`,
             {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },

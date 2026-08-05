@@ -15,6 +15,7 @@ import type { ActorRoute } from '../host/app';
 import type { ActorCallContext, ActorDispatcher } from '../types';
 import { relayStream } from '../stream-relay';
 import { parseWireWith, readNdjson, type WireError } from '../wire-shared';
+import { encodeSymbolPath } from '../wire-url';
 import { encodeEnvelope, signAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from './envelope';
 import type {
     HostTransport,
@@ -74,7 +75,10 @@ export function httpTransport(options: HttpTransportOptions = {}): HostTransport
             call: ActorCallContext,
             signal: AbortSignal | undefined
         ): Promise<Response> => {
-            const url = `${originFor(target)}${base}/${encodeURIComponent(symbol)}`;
+            // The HMAC below signs the CANONICAL symbol, not this spelling —
+            // the receiving mount recomputes the same canonical form from the
+            // path before it verifies (`wire-symbol.ts`).
+            const url = `${originFor(target)}${base}/${encodeSymbolPath(symbol)}`;
             const headers: Record<string, string> = {
                 'content-type': 'application/json',
                 [HOST_CALL_HEADER]: encodeEnvelope(call, config.hostId)

@@ -23,8 +23,10 @@ import { handleActorRequest } from '@sigx/actors/server';
 import { actorsPlugin, useActorState, useActorsContext, type LiveChannel } from '@sigx/actors/app';
 import { __actorRef, configureActors, fetchTransport } from '@sigx/actors/client';
 import type { AsyncState } from 'sigx';
+import { symbolFromPathname } from '../src/wire-symbol';
 
 const ENDPOINT = 'http://actors.test/_sigx/actor';
+const BASE_PATH = new URL(ENDPOINT).pathname;
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 /** Small enough to test, large enough to still coalesce a mount burst. */
 const fast = { debounceMs: 2, retryMs: 5, maxRetryMs: 20 };
@@ -76,7 +78,14 @@ function transportFor(host: Host): Parameters<typeof actorsPlugin>[0] {
             endpoint: ENDPOINT,
             fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
                 const request = new Request(input, init);
-                wire.push(decodeURIComponent(new URL(request.url).pathname.split('/').pop()!));
+                // The symbol spans several path segments, so the last one is
+                // only the method — read it back the way the endpoint does,
+                // after dropping the routing token the endpoint also drops.
+                const tail = new URL(request.url).pathname.slice(BASE_PATH.length + 1);
+                const symbolPath = tail.startsWith('r/')
+                    ? tail.slice(tail.indexOf('/', 2) + 1)
+                    : tail;
+                wire.push(symbolFromPathname(`${BASE_PATH}/${symbolPath}`, BASE_PATH));
                 const response = await handleActorRequest(request, {
                     host,
                     origin: false,

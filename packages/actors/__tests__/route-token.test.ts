@@ -88,38 +88,59 @@ describe('routeTokenFor', () => {
 });
 
 describe('routePath', () => {
-    it('puts the token in a MIDDLE segment, leaving the symbol last', () => {
-        // Load-bearing: @sigx/server reads the symbol as the LAST segment.
+    it('puts the token BEFORE the symbol, which spans the rest of the path', () => {
+        // Load-bearing: @sigx/server reads everything after the base as the
+        // symbol, and the symbol's own separator is now a real `/`. The token
+        // therefore has to precede it — appended after, it would be read as
+        // part of the symbol.
         expect(routePath(BASE, 'abc123', 'Cart#add')).toBe(
-            `${BASE}/${ACTOR_ROUTE_SEGMENT}/abc123/Cart%23add`
+            `${BASE}/${ACTOR_ROUTE_SEGMENT}/abc123/Cart/add`
         );
     });
 
     it('falls back to the bare URL with no token', () => {
-        expect(routePath(BASE, null, 'Cart#add')).toBe(`${BASE}/Cart%23add`);
+        expect(routePath(BASE, null, 'Cart#add')).toBe(`${BASE}/Cart/add`);
     });
 
     it('tolerates a trailing slash on the base', () => {
-        expect(routePath(`${BASE}/`, 'abc', 'Cart#add')).toBe(`${BASE}/r/abc/Cart%23add`);
-        expect(routePath(`${BASE}/`, null, 'Cart#add')).toBe(`${BASE}/Cart%23add`);
+        expect(routePath(`${BASE}/`, 'abc', 'Cart#add')).toBe(`${BASE}/r/abc/Cart/add`);
+        expect(routePath(`${BASE}/`, null, 'Cart#add')).toBe(`${BASE}/Cart/add`);
     });
 
     it('encodes a key containing a path separator', () => {
-        expect(routePath(BASE, 'a/b', 'Cart#add')).toBe(`${BASE}/r/a%2Fb/Cart%23add`);
+        // The TOKEN keeps its percent-escape while the symbol sheds one: the
+        // token must stay exactly one segment (both carriers transmit these
+        // same bytes, so an LB hashing the path and one hashing the header
+        // have to agree), whereas the symbol's slashes ARE its structure.
+        expect(routePath(BASE, 'a/b', 'Cart#add')).toBe(`${BASE}/r/a%2Fb/Cart/add`);
     });
 
     it('encodes non-ASCII', () => {
-        expect(routePath(BASE, 'café', 'Cart#add')).toBe(`${BASE}/r/caf%C3%A9/Cart%23add`);
+        expect(routePath(BASE, 'café', 'Cart#add')).toBe(`${BASE}/r/caf%C3%A9/Cart/add`);
     });
 
     it('encodes a CUSTOM function\'s result too, so it cannot smuggle a segment', () => {
-        // If `x/y` went in raw, `y` would become a segment and the server
-        // would read the WRONG last segment as the symbol.
+        // If `x/y` went in raw it would become two segments, and the server
+        // would read `y/Cart/add` as the symbol.
         const token = routeTokenFor(() => 'x/y', 'Cart', 'c1');
         const url = routePath(BASE, token, 'Cart#add');
-        expect(url).toBe(`${BASE}/r/x%2Fy/Cart%23add`);
-        expect(url.split('/')).toHaveLength(6);
-        expect(url.slice(url.lastIndexOf('/') + 1)).toBe('Cart%23add');
+        expect(url).toBe(`${BASE}/r/x%2Fy/Cart/add`);
+        expect(url.split('/')).toHaveLength(7);
+    });
+
+    it('keeps a type that contains a slash intact, and splits on the LAST one', () => {
+        // `acme/greeter` is the packaged-actor convention the README
+        // recommends; its slashes and the symbol separator are the same
+        // character on the wire, and only "the method is the last segment"
+        // tells them apart.
+        expect(routePath(BASE, null, 'acme/greeter#greet')).toBe(`${BASE}/acme/greeter/greet`);
+    });
+
+    it('spends no escape on the runtime\'s own reserved symbols', () => {
+        // `$` and `:` are RFC 3986 pchar. `%24live%23subscribe` was the single
+        // ugliest URL the runtime emitted, and it is on every page that calls
+        // `useActorState(…, { live: true })`.
+        expect(routePath(BASE, null, '$live#subscribe')).toBe(`${BASE}/$live/subscribe`);
     });
 });
 

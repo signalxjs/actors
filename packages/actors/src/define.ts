@@ -51,6 +51,18 @@ export function defineActor<
             `[sigx actors] actor type "${options.type}" must not contain "#" or NUL.`
         );
     }
+    if (options.type.split('/').some((segment) => segment === '' || /^\.\.?$/.test(segment))) {
+        // A type may contain '/' (`acme/greeter`, the packaged-actor
+        // convention) and those slashes are REAL path separators on the wire.
+        // `new URL()` resolves dot segments away and collapses nothing else,
+        // so a type carrying one would silently RETARGET the route rather
+        // than 404 — the failure core prevents upstream in `routeSafeId`.
+        // Refused at definition time, which is the only place it can be loud.
+        throw new Error(
+            `[sigx actors] actor type "${options.type}" must not contain an empty, "." or ` +
+                `".." path segment — the type's slashes are wire path separators.`
+        );
+    }
     if (options.type.startsWith('$') || options.type.startsWith('@')) {
         // Reserved namespaces, claimed while nothing has shipped: '$' for
         // the runtime's own mounts on the actor endpoint (`$live#subscribe`),

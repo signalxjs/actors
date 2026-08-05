@@ -52,9 +52,6 @@ const PLACEMENT = process.env.INFRA_PLACEMENT ?? 'prefer-local';
 /** A room written by the PREVIOUS image — see the migrateState suite. */
 const MIGRATED_ROOM = process.env.INFRA_MIGRATED_ROOM ?? '';
 
-/** The reserved wire symbol for the multiplexed live mount. */
-const LIVE_SYMBOL = '$live#subscribe';
-
 /** Sign a session the way the app's guard verifies it. */
 const cookieFor = (name: string): string => {
     const sig = createHmac('sha256', AUTH_SECRET ?? '').update(name).digest('hex');
@@ -88,9 +85,8 @@ async function actorCall(
     const { cookie = cookieFor('tester'), origin = URL_BASE, route = true } = options;
     const key = String(args[0] ?? '');
     const token = route ? routeToken(type, key) : null;
-    const path = token
-        ? `/_sigx/actor/r/${token}/${encodeURIComponent(`${type}#${method}`)}`
-        : `/_sigx/actor/${encodeURIComponent(`${type}#${method}`)}`;
+    const symbol = `${type.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(method)}`;
+    const path = token ? `/_sigx/actor/r/${token}/${symbol}` : `/_sigx/actor/${symbol}`;
     return fetch(`${URL_BASE}${path}`, {
         method: 'POST',
         headers: {
@@ -287,19 +283,44 @@ describe.skipIf(!ready)('infra: only a signed session gets in', () => {
 });
 
 describe.skipIf(!ready)('infra: the proxy does not mangle the wire', () => {
-    // `Room#topic` travels as Room%23topic. A proxy that decodes or
-    // normalizes encoded paths turns the symbol into a 404 — silently, and
-    // only in deployment.
-    it('passes a percent-encoded symbol through untouched', async () => {
+    // The hazard this describe exists for CHANGED shape with #96. `Room#topic`
+    // used to travel as `Room%23topic`, and the risk was a hop that decoded or
+    // normalized the escape. The symbol now spends real path separators
+    // (`Room/topic`), so the escape is gone — and the residual risk is its
+    // mirror image: a hop that MERGES, collapses or dot-normalizes segments
+    // turns a multi-segment symbol into a 404, silently and only in
+    // deployment.
+    it('passes a multi-segment symbol through without collapsing it', async () => {
         const res = await actorCall('Room', 'topic', ['encoding-probe']);
         expect(res.status).toBe(200);
         expect(typeof (await dataOf(res))).toBe('string');
     });
 
+    it("passes a literal `$` and `:` in a path segment through", async () => {
+        // `$live/subscribe` is the live connection every page opens, and the
+        // chart carves it out of the hashed Ingress by that literal spelling
+        // (`deploy/chart/templates/ingress.yaml`). Before #96 the client
+        // actually sent `%24live%23subscribe`, so that rule only ever matched
+        // because nginx normalized the URI first — this is the first test
+        // that exercises it as written.
+        const res = await fetch(`${URL_BASE}/_sigx/actor/$live/subscribe`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                origin: URL_BASE!,
+                cookie: cookieFor('tester')
+            },
+            body: JSON.stringify({ args: [[]] })
+        });
+        // An empty subscription list is still a valid, immediately-idle
+        // stream; the point is that the PATH reached the mount.
+        expect(res.status).toBe(200);
+    });
+
     it('passes the routing-token path form through', async () => {
         const token = routeToken('Room', 'encoding-probe');
         const res = await fetch(
-            `${URL_BASE}/_sigx/actor/r/${token}/${encodeURIComponent('Room#topic')}`,
+            `${URL_BASE}/_sigx/actor/r/${token}/Room/topic`,
             {
                 method: 'POST',
                 headers: {
@@ -315,7 +336,7 @@ describe.skipIf(!ready)('infra: the proxy does not mangle the wire', () => {
     });
 
     it('rejects a non-JSON content type (CSRF floor)', async () => {
-        const res = await fetch(`${URL_BASE}/_sigx/actor/${encodeURIComponent('Room#topic')}`, {
+        const res = await fetch(`${URL_BASE}/_sigx/actor/Room/topic`, {
             method: 'POST',
             headers: { 'content-type': 'text/plain', origin: URL_BASE!, cookie: cookieFor('tester') },
             body: JSON.stringify({ args: ['encoding-probe'] })
@@ -370,7 +391,7 @@ describe.skipIf(!ready)('infra: the app works end to end', () => {
         // the test had been 404ing against every deployment since.
         const room = `quiet-${Date.now().toString(36)}`;
         const controller = new AbortController();
-        const res = await fetch(`${URL_BASE}/_sigx/actor/${encodeURIComponent(LIVE_SYMBOL)}`, {
+        const res = await fetch(`${URL_BASE}/_sigx/actor/$live/subscribe`, {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',

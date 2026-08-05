@@ -23,6 +23,7 @@ import {
 } from '@sigx/actors/cluster';
 import { createHost } from '@sigx/actors/host';
 import { __actorRef, configureActors } from '@sigx/actors/client';
+import { encodeSymbolPath } from '../src/wire-url';
 import { createCluster, quiet, selfPolicy, type ClusterHarness } from './harness';
 
 let running: ClusterHarness | null = null;
@@ -151,6 +152,43 @@ describe('cluster: activation & routing', () => {
         // directory sends it straight to the owner.
         await expect(cluster.hosts[0]!.actor(def, 'k').get()).resolves.toBe(5);
         expect(events.filter((e) => e === 'activate:k')).toHaveLength(1);
+    });
+
+    it('the internal mount verifies the HMAC over a slash-containing actor type', async () => {
+        // The pre-check used to read the symbol as the LAST path segment,
+        // which is only the whole symbol when the type has no slash. For a
+        // packaged type (`acme/greeter`) it recovered `greeter#greet` while
+        // the sender had signed `acme/greeter#greet`, so every secured
+        // host-to-host call to such an actor 403'd — a mount that works in
+        // every test fixture and fails on the one naming convention the
+        // README recommends.
+        const greeter = defineActor({
+            type: 'acme/greeter',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: () => ({
+                async greet() {
+                    return 'hi';
+                }
+            })
+        });
+        const cluster = await createCluster(1, { actors: [greeter] });
+        running = cluster;
+        const symbol = 'acme/greeter#greet';
+        const res = await cluster.fetch(
+            `http://host0.test/_sigx/host/${encodeSymbolPath(symbol)}`,
+            {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-sigx-cluster-auth': await signAuth('test-secret', symbol, 'c.t'),
+                    [HOST_CALL_HEADER]: encodeEnvelope({ callChain: [], callId: 'c.t' }, 's.test')
+                },
+                body: JSON.stringify({ args: ['k'] })
+            }
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ data: 'hi' });
     });
 
     it('the internal mount rejects a bad cluster secret', async () => {

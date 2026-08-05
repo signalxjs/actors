@@ -65,7 +65,7 @@ payload carrying a user field.
 Verify it in one command — the same actor method, with and without a session:
 
 ```sh
-curl -X POST localhost:5290/_sigx/actor/Room%23setTopic -H 'origin: http://localhost:5290' \
+curl -X POST localhost:5290/_sigx/actor/Room/setTopic -H 'origin: http://localhost:5290' \
      -H 'content-type: application/json' -d '{"args":["general","hijacked"]}'
 # {"error":{"message":"Authentication required","status":401}}
 ```

@@ -27,9 +27,9 @@ import type { Metric, RunContext, Scenario } from '../types.ts';
 
 const CONCURRENCIES = [1, 64] as const;
 
-/** POST {base}/{Type}%23{method} with `{"args": [key, ...args]}`. */
+/** POST {base}/{Type}/{method} with `{"args": [key, ...args]}`. */
 function actorRequest(type: string, method: string, args: readonly unknown[]): Request {
-    return new Request(`http://bench.test/_sigx/actor/${encodeURIComponent(`${type}#${method}`)}`, {
+    return new Request(`http://bench.test/_sigx/actor/${type}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ args })

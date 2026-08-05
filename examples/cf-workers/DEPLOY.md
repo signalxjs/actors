@@ -91,13 +91,13 @@ The definitive test, and worth doing by hand once:
 ```sh
 U=https://<name>.<subdomain>.workers.dev
 K="quiet-$(date +%s)"
-curl -s -X POST "$U/_sigx/actor/Ticker%23once" \
+curl -s -X POST "$U/_sigx/actor/Ticker/once" \
   -H 'content-type: application/json' -d "{\"args\":[\"$K\",45000]}"
 # → {"data":true}
 
 # now touch NOTHING for a minute.
 
-curl -s -X POST "$U/_sigx/actor/Ticker%23ticks" \
+curl -s -X POST "$U/_sigx/actor/Ticker/ticks" \
   -H 'content-type: application/json' -d "{\"args\":[\"$K\"]}"
 # → {"data":1}
 ```
@@ -114,7 +114,7 @@ inbound request beside it.
 
 ```sh
 for k in a b c; do
-  curl -s -X POST "$U/_sigx/actor/Counter%23increment" \
+  curl -s -X POST "$U/_sigx/actor/Counter/increment" \
     -H 'content-type: application/json' -d "{\"args\":[\"$k\",1]}"; echo
 done
 # → {"data":1} three times: three keys, three objects, three counters.

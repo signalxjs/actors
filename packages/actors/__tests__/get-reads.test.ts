@@ -381,7 +381,11 @@ describe('the client proxy', () => {
 
         const [read, write] = seen;
         expect(read!.method).toBe('GET');
-        expect(read!.url).toContain('?args=');
+        // All-scalar arguments ride as named params — arg 0 is the actor key.
+        // The `%5B%22`-noise of `?args=` was the read path's share of the ugly
+        // URL, and a cacheable GET is the one an operator actually reads.
+        expect(read!.url).toContain('?a0=p1');
+        expect(read!.url).not.toContain('args=');
         // The routing token still travels, in BOTH carriers: an edge that
         // hashes it must route a cacheable read exactly like any other call.
         expect(read!.url).toContain(`/r/${hashRouteToken('Product', 'p1')}/`);
@@ -390,11 +394,19 @@ describe('the client proxy', () => {
     });
 
     it('round-trips rich arguments and results through the query', async () => {
+        // The named-param form is all-or-nothing: one non-scalar argument and
+        // the WHOLE call falls back to the `args=` blob, so a call never mixes
+        // the two encodings and the cache key stays a pure function of the
+        // arguments. `at` is a Date, so this is the fallback under test.
         const host = await startHost();
+        const urls: string[] = [];
         configureActors({
             endpoint: ENDPOINT,
-            fetch: async (input, init) =>
-                handleActorRequest(new Request(input, init), { host, origin: false })
+            fetch: async (input, init) => {
+                const request = new Request(input, init);
+                urls.push(request.url);
+                return handleActorRequest(request, { host, origin: false });
+            }
         });
 
         const at = new Date(1700000000000);
@@ -407,6 +419,8 @@ describe('the client proxy', () => {
         expect(summary.at).toBeInstanceOf(Date);
         expect(summary.at.getTime()).toBe(at.getTime());
         expect(summary.cents).toBe(999);
+        expect(urls[0]).toContain('?args=');
+        expect(urls[0]).not.toContain('a0=');
     });
 
     it('honours an explicit `.with({ get: false })` on a declared read', async () => {
@@ -466,7 +480,9 @@ describe('the client proxy', () => {
             endpoint: ENDPOINT,
             fetch: async (input, init) => {
                 const request = new Request(input, init);
-                methods.push(`${request.method} ${new URL(request.url).pathname.split('/').pop()!}`);
+                // The symbol is the last TWO segments now (`Product/views`).
+                const symbol = new URL(request.url).pathname.split('/').slice(-2).join('/');
+                methods.push(`${request.method} ${symbol}`);
                 return handleActorRequest(request, { host, origin: false });
             }
         });
@@ -479,9 +495,9 @@ describe('the client proxy', () => {
         expect(first.done).toBe(false);
 
         expect(methods).toEqual([
-            `POST ${encodeURIComponent('Product#setPrice')}`,
-            `POST ${encodeURIComponent('Product#views')}`,
-            `POST ${encodeURIComponent('Product#feed')}`
+            'POST Product/setPrice',
+            'POST Product/views',
+            'POST Product/feed'
         ]);
     });
 

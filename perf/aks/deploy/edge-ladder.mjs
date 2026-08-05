@@ -64,7 +64,10 @@ const tokenFor = (type, key) => fnv1a(`${type}\u0000${key}`).toString(36).padSta
 
 // ---- child role -----------------------------------------------------------
 if (process.send) {
-    const symbol = (method) => `${encodeURIComponent(TYPE)}%23${encodeURIComponent(method)}`;
+    // `{Type}/{method}` — real path separator, per-segment encoding, the
+    // grammar the client library emits (`wire-url.ts`).
+    const symbol = (method) =>
+        `${TYPE.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(method)}`;
     const call = async (i) => {
         const write = MIX > 0 && Math.random() < MIX;
         const key = `${KEY_PREFIX}${KEY_SALT}-${i % ROOMS}`;

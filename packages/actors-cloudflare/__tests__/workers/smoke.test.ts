@@ -9,6 +9,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { durableObjectStorage, type DurableAlarms, type DurableStorage } from '@sigx/actors-cloudflare';
+import { encodeSymbolPath } from '../../../actors/src/wire-url';
 import type { Env } from './fixture-worker';
 
 const SEP = '\u0000';
@@ -18,7 +19,7 @@ declare module 'cloudflare:test' {
 }
 
 async function call(symbol: string, args: readonly unknown[]): Promise<Response> {
-    return SELF.fetch(`https://edge.test/_sigx/actor/${encodeURIComponent(symbol)}`, {
+    return SELF.fetch(`https://edge.test/_sigx/actor/${encodeSymbolPath(symbol)}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ args })

@@ -31,10 +31,9 @@ export function serverFnId(name) {
             `[chat] cannot read ${fileURLToPath(REGISTRY)} — run \`pnpm --filter sigx-perf-app build\` first`
         );
     }
-    // The registry also holds a stable `<pkg>/src/…#name` alias, but that
-    // one contains slashes: as a URL segment it becomes %2F, which proxies
-    // are entitled to normalize. The hashed id is the form the browser
-    // actually sends, so it is the form to measure.
+    // The registry also holds a stable `<pkg>/src/…/name` alias, whose
+    // slashes are real path separators. The hashed id is the form the
+    // browser actually sends, so it is the form to measure.
     const found = new RegExp(`"(${name}_fn_[0-9a-f]+)"`).exec(source);
     if (!found) {
         throw new Error(`[chat] no serverFn id for '${name}' in the built registry`);

@@ -39,8 +39,7 @@ if (!TARGET) {
 const log = (msg) => process.stderr.write(`${msg}\n`);
 
 async function callActor(type, method, args) {
-    const symbol = encodeURIComponent(`${type}#${method}`);
-    const res = await fetch(`${TARGET}/_sigx/actor/${symbol}`, {
+    const res = await fetch(`${TARGET}/_sigx/actor/${type}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ args })
@@ -110,7 +109,7 @@ async function verify() {
 
     // 5. Streaming through the edge.
     const streamRes = await fetch(
-        `${TARGET}/_sigx/actor/${encodeURIComponent('Counter#watch')}`,
+        `${TARGET}/_sigx/actor/Counter/watch`,
         {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
