@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
 ### Added
 
 - **A schema-bootstrap conformance suite** (#78), for contributors — **not a
@@ -21,18 +23,15 @@
   `storage()`/`stop()` are the shared intersection and `bootstrap?()` is
   optional.
 
-### Fixed
 
-- **A secured host-to-host call to an actor whose type contains a slash
-  always 403'd** (#96). The internal mount's HMAC pre-check read the symbol
-  as the LAST path segment, which is only the whole symbol when the type has
-  no slash: for the packaged-actor convention this README recommends
-  (`acme/greeter`) it recovered `greeter#greet` while the sender had signed
-  `acme/greeter#greet`, so `verifyAuth` rejected every call under
-  `cluster({ secret })`. It now computes the symbol exactly the way core's
-  `decodeFnPath` does — per segment — which is what the resolver a moment
-  later sees. A mount that worked against every test fixture and failed on
-  the one naming convention the docs recommend.
+- `memoryClusterHub().expire(hostId)` — drop a member the way a TTL lapse
+  does: no cleanup, and the victim is never told (no `onSelfSuspect`),
+  unlike `kill()`. The test seam for #45-shaped scenarios.
+- `heartbeatClock().lost()` — for a provider that holds PROOF its record is
+  gone (a Kubernetes Lease deleted under it) rather than a suspicion
+  inferred from elapsed time. Fires immediately, whatever the clocks say,
+  since the next write would succeed promptly and look healthy (#69).
+  Latched like the rest; cleared by the next `confirmed()`.
 
 ### Changed
 
@@ -103,6 +102,18 @@
   names is refused by the server exactly as before.
 
 ### Fixed
+
+- **A secured host-to-host call to an actor whose type contains a slash
+  always 403'd** (#96). The internal mount's HMAC pre-check read the symbol
+  as the LAST path segment, which is only the whole symbol when the type has
+  no slash: for the packaged-actor convention this README recommends
+  (`acme/greeter`) it recovered `greeter#greet` while the sender had signed
+  `acme/greeter#greet`, so `verifyAuth` rejected every call under
+  `cluster({ secret })`. It now computes the symbol exactly the way core's
+  `decodeFnPath` does — per segment — which is what the resolver a moment
+  later sees. A mount that worked against every test fixture and failed on
+  the one naming convention the docs recommend.
+
 
 - **The Node mount now strips the routing token from the path, so a routed
   call behaves exactly like a direct one (#93).** `route: 'hash'` is the
@@ -185,17 +196,6 @@
 
   `ClusterMembership` gains a documented requirement it always relied on: a
   live host must appear in its own `view()`.
-
-### Added
-
-- `memoryClusterHub().expire(hostId)` — drop a member the way a TTL lapse
-  does: no cleanup, and the victim is never told (no `onSelfSuspect`),
-  unlike `kill()`. The test seam for #45-shaped scenarios.
-- `heartbeatClock().lost()` — for a provider that holds PROOF its record is
-  gone (a Kubernetes Lease deleted under it) rather than a suspicion
-  inferred from elapsed time. Fires immediately, whatever the clocks say,
-  since the next write would succeed promptly and look healthy (#69).
-  Latched like the rest; cleared by the next `confirmed()`.
 
 ## [0.2.0] - 2026-08-05
 

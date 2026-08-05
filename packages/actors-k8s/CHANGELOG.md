@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
 ### Fixed
 
 - **A deleted Lease was silently recreated instead of fencing the host
@@ -31,6 +33,13 @@
   confirmed renewal fires `onSelfSuspect` before it patches. The window is
   stamped when the beat is armed rather than at the Lease create, so the
   LIST between them cannot fence a host at startup.
+
+### Changed
+
+- **Peers `@sigx/actors@^0.3.0`.** The actor URL grammar is breaking
+  (#96), so the whole family moves together — see the `@sigx/actors`
+  changelog. **Upgrade every host before any client or peer starts
+  emitting**: a host still on 0.2.x refuses calls from an upgraded one.
 
 ## [0.2.0] - 2026-08-05
 

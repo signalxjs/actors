@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
 ### Fixed
 
 - **Two replicas booting at once crashed one of them (#76).**
@@ -34,6 +36,13 @@
   its directory claims. The beat now runs on the shared `heartbeatClock()`:
   a beat starting more than `ttlMs` after the last confirmed write fires
   `onSelfSuspect` before it writes.
+
+### Changed
+
+- **Peers `@sigx/actors@^0.3.0`.** The actor URL grammar is breaking
+  (#96), so the whole family moves together — see the `@sigx/actors`
+  changelog. **Upgrade every host before any client or peer starts
+  emitting**: a host still on 0.2.x refuses calls from an upgraded one.
 
 ## [0.2.0] - 2026-08-05
 

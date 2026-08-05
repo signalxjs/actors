@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
 ### Added
 
 - **One-way failures are visible.** `sigx actors stats` prints a
   `one-way fail` row under `calls`, and the dashboard's calls rows append
   `N one-way` — both only when the count is non-zero, and the dashboard row
   tones `warn` exactly as it does for `failed`.
+
+### Changed
+
+- **Peers `@sigx/actors@^0.3.0`.** The actor URL grammar is breaking
+  (#96), so the whole family moves together — see the `@sigx/actors`
+  changelog. **Upgrade every host before any client or peer starts
+  emitting**: a host still on 0.2.x refuses calls from an upgraded one.
 
 ## [0.2.0] - 2026-08-05
 

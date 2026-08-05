@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
+### Changed
+
+- **Peers `@sigx/actors@^0.3.0`.** The actor URL grammar is breaking
+  (#96), so the whole family moves together — see the `@sigx/actors`
+  changelog. **Upgrade every host before any client or peer starts
+  emitting**: a host still on 0.2.x refuses calls from an upgraded one.
+
+  This package's own wire is unaffected: the frame transports carry the
+  in-memory symbol, with no URL involved.
+
 ## [0.2.0] - 2026-08-05
 
 ### Changed
