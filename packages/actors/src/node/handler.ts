@@ -70,6 +70,15 @@ export function createActorHandler(options: ActorHandlerOptions): NodeRequestHan
         // it in place is the connect idiom, and it strands nothing
         // downstream: the rewritten target still starts with this mount's
         // base, so core answers it rather than calling `next()`.
+        //
+        // ORIGIN-FORM only, deliberately, because that is core's own gate:
+        // its adapter matches `req.url.startsWith('{base}/')`, which an
+        // absolute-form target (`POST http://host/_sigx/actor/…`, the proxy
+        // request line Node passes through verbatim) never satisfies. Such a
+        // request falls through to `next()` before any symbol is decoded, so
+        // there is nothing for a strip to rescue — and handling it here would
+        // rewrite a target this mount does not serve. Pinned by a raw-socket
+        // test: tokenized and bare absolute forms answer identically.
         const target = req.url;
         if (target !== undefined) {
             const query = target.search(/[?#]/);

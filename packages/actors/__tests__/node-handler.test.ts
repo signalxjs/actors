@@ -167,6 +167,43 @@ describe('createAppHandler over real sockets', () => {
         expect(ok).toBeTruthy();
     });
 
+    it('falls through on an ABSOLUTE-form target, tokenized or not', async () => {
+        // The other raw target Node hands through verbatim: a proxy-style
+        // request line (`GET http://host/path HTTP/1.1`). Core's adapter
+        // gates on `req.url.startsWith('/_sigx/actor/')`, which an absolute
+        // form never satisfies — so the actor mount does not serve one at
+        // all, and the routing token cannot change that either way. Pinned
+        // because the Node strip works on the raw target: this is what says
+        // the two forms are not silently decided differently.
+        const nodes = await serveCluster(1, memoryStorage());
+        running = nodes;
+        const origin = `http://127.0.0.1:${nodes[0]!.port}`;
+
+        const raw = (target: string): Promise<string> =>
+            new Promise((resolve) => {
+                const socket = connect(nodes[0]!.port, '127.0.0.1', () => {
+                    socket.write(
+                        `POST ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\n` +
+                            `content-type: application/json\r\ncontent-length: 2\r\n` +
+                            `Connection: close\r\n\r\n{}`
+                    );
+                });
+                let buffer = '';
+                socket.on('data', (chunk) => (buffer += chunk));
+                socket.on('close', () => resolve(buffer));
+            });
+
+        for (const path of [
+            '/_sigx/actor/Counter%23increment',
+            `/_sigx/actor/r/${hashRouteToken('Counter', 'abs')}/Counter%23increment`
+        ]) {
+            const response = await raw(`${origin}${path}`);
+            // 404 is the harness's own fallthrough, i.e. `next()` ran — the
+            // SAME answer with the token as without it.
+            expect(response.split('\r\n')[0], path).toContain('404');
+        }
+    });
+
     it('streams a cross-host watch() back through the bridge', async () => {
         const storage = memoryStorage();
         const nodes = await serveCluster(2, storage);
