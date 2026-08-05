@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- **One-way failures are visible.** `sigx actors stats` prints a
+  `one-way fail` row under `calls`, and the dashboard's calls rows append
+  `N one-way` — both only when the count is non-zero, and the dashboard row
+  tones `warn` exactly as it does for `failed`.
+
 ## [0.2.0] - 2026-08-05
 
 ### Changed

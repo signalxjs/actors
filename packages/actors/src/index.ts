@@ -13,6 +13,7 @@ import { mergeCallBag, takeCallBag } from './call-context-bag';
 import { isActorDefinition } from './define';
 import { authorizeActorCall, encodePrincipal } from './guards';
 import { resolveServerContext } from './context';
+import { introspectionMember, isIntrospectionProp } from './proxy-introspection';
 import { currentHost } from './seam';
 import type { ActorCallOptions, ActorClientWith, AnyActorDefinition } from './types';
 
@@ -159,6 +160,7 @@ function serverClient<D extends AnyActorDefinition>(
         get: (_target, prop) => {
             if (typeof prop === 'symbol') return undefined;
             if (prop === 'then') return undefined;
+            if (isIntrospectionProp(prop)) return introspectionMember(prop, def.type, key);
             const hit = cache.get(prop);
             if (hit) return hit;
             let member: unknown;

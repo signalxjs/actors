@@ -76,6 +76,11 @@ describe('otelMetricsBridge', () => {
         const created = dataPoints(resourceMetrics, 'sigx.actors.activations.created');
         expect(created[0]?.value).toBe(digest.activations.created);
 
+        // One-way failures observe 0 (not absent) when none happened, so a
+        // dashboard can alert on the counter existing and rising.
+        const oneWay = dataPoints(resourceMetrics, 'sigx.actors.calls.one_way_failures');
+        expect(oneWay[0]?.value).toBe(digest.calls.oneWayFailures ?? 0);
+
         // Percentile gauges: present, in seconds, on THIS host only.
         const p99 = dataPoints(resourceMetrics, 'sigx.actors.call_duration.p99');
         expect(p99).toHaveLength(1);

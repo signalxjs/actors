@@ -31,6 +31,7 @@ import {
     routeTokenFor,
     type ActorRouteToken
 } from '../route';
+import { introspectionMember, isIntrospectionProp } from '../proxy-introspection';
 import type { ActorRef } from '../types';
 import {
     encodeWire,
@@ -392,6 +393,7 @@ export function __actorRef(
             get(_target, prop) {
                 if (typeof prop === 'symbol') return undefined;
                 if (prop === 'then') return undefined;
+                if (isIntrospectionProp(prop)) return introspectionMember(prop, type, key);
                 const hit = cache.get(prop);
                 if (hit) return hit;
                 const symbol = `${type}#${prop}`;

@@ -201,6 +201,13 @@ export function renderPrometheus(
     out.family(`${prefix}streams_total`, 'counter', 'Actor stream openings.');
     out.push(`${prefix}streams_total ${digest.calls.streams}`);
 
+    out.family(
+        `${prefix}one_way_failures_total`,
+        'counter',
+        'One-way calls that failed after acceptance — no caller saw the error.'
+    );
+    out.push(`${prefix}one_way_failures_total ${digest.calls.oneWayFailures ?? 0}`);
+
     out.family(`${prefix}errors_total`, 'counter', 'Actor call failures, by error kind.');
     for (const [kind, count] of Object.entries(digest.errors.byKind)) {
         out.push(`${prefix}errors_total{kind="${escapeLabel(kind)}"} ${count}`);

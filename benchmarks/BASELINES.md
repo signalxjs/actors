@@ -912,13 +912,15 @@ disabled every call was paying a hop, so the gap is not the ceiling.
 |---|---|---|
 | `token_speedup` | 1.011 | 0.986 |
 | `ownership_spread` | 1.014 | 1.043 |
-| `worker_speedup` | 3.028 | 6.514 |
+| `pool_spread` | 3.028 | 6.514 |
 
 `token_speedup` ≈ 1.0 at both sizes is the disabled edge hash, not a
-statement about locality. **`worker_speedup` does not mean what its name
-says** — it tracks host count (3.03≈3, 6.51≈7) because a worker is always
-placed locally while a stateful actor is pinned to one host. Per host the
-pool did 289 and 266 ops/s against the single activation's 289. See #264.
+statement about locality. `pool_spread` (named `worker_speedup` before the
+rename — the old name claimed a worker win) tracks host count (3.03≈3,
+6.51≈7) because a worker is always placed locally while a stateful actor is
+pinned to one host. Per host the pool did 289 and 266 ops/s against the
+single activation's 289 — flat: a host is one JS thread, and pool members
+buy await-interleaving, not CPU throughput.
 
 ### The single-activation ceiling
 
