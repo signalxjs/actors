@@ -6,9 +6,10 @@
  *  - `sigxActors()` extracts `*.actor.ts` actors, runs the dev host, and
  *                   mounts the actor endpoint
  *
- * They compose with no coordination beyond `sigxActors` reading `sigx`'s
- * `api.adapter.serverBuild` to decide whether to emit its own registry
- * chunk.
+ * They compose with no coordination beyond `sigxActors` reading
+ * `sigx`'s `api.adapter.serverBuild` to decide whether to emit its own
+ * registry chunk (it does, since the node adapter builds the server
+ * `external`).
  */
 import { defineConfig } from 'vite';
 import sigxPlugin from '@sigx/vite';
@@ -17,15 +18,16 @@ import { sigxActors } from '@sigx/actors/vite';
 
 export default defineConfig({
     // JSX compiles to sigx's runtime, not React's. Vite 8 transforms with
-    // oxc, so this is where the import source is declared — tsconfig's
-    // `jsxImportSource` only informs the type checker.
+    // oxc, so this is where the import source is declared (tsconfig's
+    // `jsxImportSource` only informs the type checker).
     oxc: { jsx: { runtime: 'automatic', importSource: 'sigx' } },
     server: {
-        // `fileStorage` writes actor state under `.actors/`, inside the Vite
-        // root, so the dev watcher sees every save. Two reasons to exclude
-        // it: a save is a temp-file + rename, and the HMR path that reads a
-        // newly-seen file loses the race with the rename; and chat state
-        // changing is not a source edit — nothing should reload.
+        // `fileStorage` writes actor state under `.actors/` — inside the
+        // Vite root, so the dev watcher sees every save. Two reasons that
+        // has to be excluded: a save is a temp-file + rename, and the HMR
+        // path that reads a newly-seen file loses the race with the rename
+        // (`ENOENT … .actors/…/general.json.<pid>.tmp` in the overlay); and
+        // chat state changing is not a source edit — nothing should reload.
         watch: { ignored: ['**/.actors/**'] }
     },
     plugins: [

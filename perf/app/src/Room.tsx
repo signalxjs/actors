@@ -1,7 +1,7 @@
 /**
- * The component the example is really about: actor reads that render on the
- * server, ship inside the document, hydrate without a second request — and
- * then keep themselves current in every open tab.
+ * The component the whole example is really about: an actor read that
+ * renders on the server, ships inside the document, and hydrates in the
+ * browser without a second request.
  */
 import { component, errorScope, signal, useAction, useData } from 'sigx';
 import { useActorAction, useActorState, useActorsContext } from '@sigx/actors/app';
@@ -25,21 +25,24 @@ export const Room = component<{ room?: string }>((ctx) => {
         )
     });
 
-    // Actor reads. On the server these dispatch in-process and serialize
-    // into the page; in the browser they restore from it.
+    // Guarded actor reads. On the server these dispatch in-process and
+    // serialize into the page; in the browser they restore from it.
     //
-    // `{ live: true }` is what adds the OTHER tabs. Without it, everything
-    // here only ever refreshes the tab that wrote — nothing in a
+    // `{ live: true }` adds the OTHER tabs. Everything else here only ever
+    // refreshes the tab that wrote — `useActorAction` and the
+    // `cells.invalidate()` below are local bookkeeping, and nothing in a
     // request/response call tells a second browser that anything happened.
-    // With it, all three reads ride ONE held-open connection for the whole
-    // page, each re-running server-side after any turn that mutated what it
-    // reads, whoever caused it. The first paint still comes from the
-    // document alone.
+    // With it, both reads ride ONE held-open connection for the whole page
+    // (the `$live` mount multiplexes them and pings every 30 s so proxies
+    // leave it alone), each re-running server-side after any turn that
+    // mutated the room, whoever caused it — and the first paint still comes
+    // from the document alone.
     const messages = useActorState(RoomActor, room, 'recent', 20, { live: true });
     const topic = useActorState(RoomActor, room, 'topic', { live: true });
-    // The projection: rooms publish, ONE singleton ActivityFeed folds those
-    // events, and this read observes it — so activity in OTHER rooms shows
-    // up here without this page knowing those rooms exist.
+    // The topics projection: every room publishes to `room-activity`, ONE
+    // singleton ActivityFeed folds those events, and this read observes it —
+    // so activity in OTHER rooms shows up here without this page knowing
+    // those rooms exist. Same live channel as the two reads above.
     const activity = useActorState(ActivityFeed, 'all', 'recent', 8, { live: true });
 
     // Unattributed write — straight to the actor.
@@ -53,13 +56,17 @@ export const Room = component<{ room?: string }>((ctx) => {
         return count;
     });
     // A plain serverFn read beside the actor reads: `me` carries core's
-    // `__sigxKey`, so `useData` keys and SSR-serializes it the same way.
+    // `__sigxKey`, so useData keys and SSR-serializes it the same way.
     const session = useData(me);
 
     const send = async (): Promise<void> => {
         const text = draft.text;
         if (!text.trim()) return;
         draft.text = '';
+        // No refresh() here: `postMessage` writes through the actor, and
+        // `useActorAction` invalidates every read of it. This one goes
+        // through a serverFn, so it declares the same thing explicitly —
+        // see `post` above.
         await post.run(text);
     };
 
@@ -70,15 +77,15 @@ export const Room = component<{ room?: string }>((ctx) => {
                 {topic.match({
                     ready: (t) => t,
                     pending: () => 'loading topic…',
-                    // A policy rejection arrives HERE, as state, not as a
+                    // A guard rejection arrives HERE, as state, not as a
                     // thrown error — errorScope covers render failures,
                     // while AsyncState reports its own.
                     error: (e) => <span class="error">{e.message}</span>
                 })}
                 <button
                     disabled={setTopic.loading}
-                    // `useActorAction` invalidates every read of this actor
-                    // on success, so `topic` refreshes itself.
+                    // `useActorAction` invalidates every read of this
+                    // actor on success, so `topic` refreshes itself.
                     onClick={() => void setTopic.run(['random thoughts'])}
                 >
                     change topic
@@ -144,10 +151,11 @@ export const Room = component<{ room?: string }>((ctx) => {
                     pending: () => <span>…</span>,
                     ready: (u) =>
                         u === null ? (
-                            // No session: a real sign-in. The serverFn mints
-                            // an HMAC-signed HttpOnly cookie, then a reload
-                            // re-SSRs the page with it — honest and tiny for
-                            // an example; a router would refresh in place.
+                            // No session: a real sign-in — the serverFn
+                            // mints an HMAC-signed HttpOnly cookie, then a
+                            // reload re-SSRs the page with it (honest and
+                            // tiny for an example; a router would refresh
+                            // in place).
                             <form
                                 onSubmit={(e: Event) => (
                                     e.preventDefault(),
@@ -173,7 +181,11 @@ export const Room = component<{ room?: string }>((ctx) => {
                         ) : (
                             <span>
                                 signed in as <b>{u}</b>{' '}
-                                <button onClick={() => void signOut().then(() => location.reload())}>
+                                <button
+                                    onClick={() =>
+                                        void signOut().then(() => location.reload())
+                                    }
+                                >
                                     sign out
                                 </button>
                             </span>

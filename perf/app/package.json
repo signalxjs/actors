@@ -1,25 +1,31 @@
 {
-    "name": "chat-example",
+    "name": "sigx-perf-app",
     "private": true,
     "type": "module",
-    "description": "Actors inside a real SignalX app - SSR-seeded useActorState, live reads over one connection, topics, and serverFns beside actors",
+    "description": "The Tier-3 system under test: the app the AKS harness deploys and measures. Pinned - see perf/README.md",
+    "files": [
+        "dist",
+        "server.mjs"
+    ],
     "scripts": {
         "dev": "node dev-server.mjs",
         "build": "vite build",
-        "start": "node --conditions=production server.mjs",
-        "typecheck": "tsc --noEmit"
+        "start": "node server.mjs",
+        "start:prod": "node --conditions=production server.mjs"
     },
     "dependencies": {
         "@sigx/actors": "workspace:*",
+        "@sigx/actors-redis": "workspace:*",
         "@sigx/reactivity": "catalog:",
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "@sigx/server-renderer": "catalog:",
-        "sigx": "catalog:"
+        "ioredis": "^5.4.1",
+        "sigx": "catalog:",
+        "undici": "^7.16.0"
     },
     "devDependencies": {
         "@sigx/vite": "catalog:",
-        "typescript": "^6.0.3",
         "vite": "^8.0.3"
     }
 }

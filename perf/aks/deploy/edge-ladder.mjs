@@ -23,7 +23,7 @@ const LADDER = (process.env.LADDER ?? '32,64,128,256,512,1024').split(',').map(N
 // here had silently rotted. A stale id 404s, a 404 is CHEAPER than a real
 // write, and the ladder then reports the breakage as extra throughput — so
 // an absent id must stop a write run rather than start a 404 ladder.
-// `examples/chat/deploy/post-fn.mjs` derives it from the build; testenv and
+// `perf/app/deploy/post-fn.mjs` derives it from the build; testenv and
 // the Tier-3 scenarios pass it in from there.
 const POST_FN = process.env.POST_FN ?? '';
 

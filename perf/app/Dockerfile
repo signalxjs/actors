@@ -1,7 +1,7 @@
 # Build context is the REPO ROOT (workspace deps need the whole tree):
 #
 #   az acr build --registry <acr> --image sigx-chat:<git-sha> \
-#     --platform linux/amd64 --file examples/chat/Dockerfile .
+#     --platform linux/amd64 --file perf/app/Dockerfile .
 #
 # Node >= 22.18 for built-in type stripping (the runtime entries import .ts
 # app modules through the emitted server bundle's externals).
@@ -17,7 +17,7 @@ RUN pnpm build
 # Self-contained deployable. chat's package.json `files` includes dist/ —
 # pnpm deploy packs by publish rules and dist/ is gitignored, so without
 # that field the image would ship no build output.
-RUN pnpm --filter chat-example deploy --prod --legacy /out
+RUN pnpm --filter sigx-perf-app deploy --prod --legacy /out
 
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production

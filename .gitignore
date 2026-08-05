@@ -13,6 +13,7 @@ docs/dist/
 # (e.g. src/vite/virtual.d.ts declaring `virtual:sigx-actors`).
 !packages/*/src/**/*.d.ts
 !examples/*/src/**/*.d.ts
+!perf/*/src/**/*.d.ts
 *.js
 *.js.map
 

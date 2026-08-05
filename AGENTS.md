@@ -361,20 +361,20 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   exporters — no env gate, no extra CI job.
 - `examples/chat` — actors in a REAL sigx app, and the composition proof:
   `sigx()` + `sigxServer()` + `sigxActors()` in one Vite build, SSR-seeded
-  `useActorState`, app-wide authorization on both transports, a serverFn calling
-  an actor in-process, hydration with no refetch, and
+  `useActorState`, one auth policy enforced on BOTH transports (the wire
+  call and the in-process SSR dispatch), a serverFn calling an actor
+  in-process, hydration with no refetch,
   `useActorState(…, { live: true })` — one multiplexed `$live` connection
-  for the page — so every open tab stays live — and a topics-fed cross-room
+  for the page, so every open tab stays current — a topics-fed cross-room
   activity feed (rooms publish `room-activity`, a singleton `ActivityFeed`
-  projects it, the page observes the projection live). Dev and
-  prod start the same app module. Production-shaped: `REDIS_URL` clusters
-  it (redisStorage + redisCluster) behind a dual listener (public SSR/
-  actor/fn surface vs internal health/ops/host), with HMAC-signed HttpOnly
-  sessions and a self-reconnecting live connection. It also carries a
-  `Digest` `defineWorker` pool (with `DigestActor`, the identical body on
-  one activation, as the control arm), `migrateState` on `Room`, and env
-  knobs for `PLACEMENT`, `REBALANCE*` and `MAX_ACTIVATIONS` — every one
-  defaulting to the shipped behaviour. Not published.
+  projects it, and `ctx.principal` survives the publish hop so entries are
+  attributed), `migrateState` on `Room`, and HMAC-signed HttpOnly sessions.
+  Dev and prod start the same app module. Single-node, `fileStorage`, one
+  listener on **5290** — clustering is a README section pointing at
+  `examples/counter`, which shows it with no infrastructure. Deliberately
+  NOT production-shaped: the deployment-shaped version of this app is
+  `perf/app`, and conflating the two is what made this example unreadable
+  before. Not published.
 - `examples/counter` — the same runtime with NO framework (plain DOM):
   dev host, client swap, streams, file persistence, and a runnable 3-host
   cluster demo (`pnpm --filter counter-example cluster`), and the
@@ -412,9 +412,23 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `benchmarks/src/scenarios/infra.ts` (`BENCH_INFRA=1`, `pnpm
   bench:infra`) and drive load from a same-region VM via
   `deploy/edge-ladder.mjs`. The charts (this one and
-  `examples/chat/deploy/`) are validated by `.github/workflows/charts.yml`
+  `perf/app/deploy/`) are validated by `.github/workflows/charts.yml`
   against a kind cluster with the ingress-nginx admission webhook — the
   check `helm lint` cannot be. Not published.
+- `perf/app` → `sigx-perf-app` — the Tier-3 SYSTEM UNDER TEST: the app the
+  harness deploys and measures. It was `examples/chat` until the two were
+  split, which is why it carries a dual listener, a Helm chart, a
+  Dockerfile, `Digest`/`DigestActor`/`Stall` load fixtures the UI never
+  touches, and ~20 env knobs (`PLACEMENT`, `REBALANCE*`, `MAX_ACTIVATIONS`,
+  `SWEEP_INTERVAL_MS`, `DIGEST_*`, `MIGRATE_PERSIST`) that `INFRA_SHAPE` is
+  computed from — `testenv.mjs` reads them back off the live Deployment so a
+  comparison across shapes is refused rather than quietly wrong.
+  **It is pinned.** Changing an actor body, a knob default or the chart
+  invalidates the recorded baselines in `benchmarks/BASELINES.md`; that is a
+  deliberate act with numbers attached, not a tidy-up. Do not "improve" it
+  to look like the example — the readable version is `examples/chat`, and
+  keeping them one file is what made that example unreadable. Replacing it
+  with a purpose-built headless workload is #85. Not published.
 - `benchmarks` → `actors-benchmarks` — local performance baselines:
   closed-loop throughput and latency percentiles against the BUILT prod
   dist, per-actor heap footprint, leak detection, and the CPU/allocation

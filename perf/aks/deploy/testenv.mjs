@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHmac } from 'node:crypto';
-import { postMessageFnId } from '../../../examples/chat/deploy/post-fn.mjs';
+import { postMessageFnId } from '../../app/deploy/post-fn.mjs';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -312,14 +312,14 @@ async function up() {
     const tag = gitSha();
     ensurePool();
     buildImage('sigx-actors-test', 'perf/aks/Dockerfile', tag);
-    buildImage('sigx-chat', 'examples/chat/Dockerfile', tag);
+    buildImage('sigx-chat', 'perf/app/Dockerfile', tag);
 
     release('sigx', 'perf/aks/deploy/chart', cfg.actorsNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-actors-test`,
         '--set', `image.tag=${tag}`,
         '--set', `nodeSelector.workload=${cfg.workload}`
     ]);
-    release('chat', 'examples/chat/deploy/chart', cfg.chatNs, [
+    release('chat', 'perf/app/deploy/chart', cfg.chatNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
         '--set', `image.tag=${tag}`,
         '--set', `ingress.host=${cfg.chatHost}`,
@@ -675,7 +675,7 @@ async function migrateCheck(args) {
     const oldTag = args[0] ?? before.split(':').pop();
     step(`writing ${room} against the OLD image (${oldTag})`);
     if (args[0]) {
-        release('chat', 'examples/chat/deploy/chart', cfg.chatNs, [
+        release('chat', 'perf/app/deploy/chart', cfg.chatNs, [
             '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
             '--set', `image.tag=${oldTag}`,
             '--set', `ingress.host=${cfg.chatHost}`,
@@ -698,8 +698,8 @@ async function migrateCheck(args) {
 
     const tag = gitSha();
     step(`rolling forward to ${tag}`);
-    buildImage('sigx-chat', 'examples/chat/Dockerfile', tag);
-    release('chat', 'examples/chat/deploy/chart', cfg.chatNs, [
+    buildImage('sigx-chat', 'perf/app/Dockerfile', tag);
+    release('chat', 'perf/app/deploy/chart', cfg.chatNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
         '--set', `image.tag=${tag}`,
         '--set', `ingress.host=${cfg.chatHost}`,

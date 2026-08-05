@@ -41,26 +41,28 @@ await actor(CartActor, cartId).addItem(item);
 | [`benchmarks`](benchmarks) | Performance baselines — throughput, latency, heap footprint, leak detection. Run locally, and A/B'd on perf-sensitive PRs: timings inform, metrics marked `exact` gate (not published) |
 
 Full documentation lives in the [package README](packages/actors/README.md).
-Two runnable demos:
+Three runnable examples, in the order they are worth reading:
 
-[`examples/chat`](examples/chat) — actors inside a **real SignalX app**: SSR
-with `useActorState`, authorization that runs on both transports, a serverFn beside
-the actor endpoint, hydration with no refetch, and `{ live: true }` reads
-that keep every open tab live over one connection. Open it twice and type in
-one.
+[`examples/counter`](examples/counter) — the runtime with **no framework at
+all**: plain DOM, one file per idea. The build-time client swap, a `watch`
+stream, file persistence — plus a 3-host cluster demo and a durable job that
+survives its host being killed, both with **no infrastructure to install**.
 
 ```sh
 pnpm install && pnpm build
-pnpm --filter chat-example dev                                    # dev host through Vite
-pnpm --filter chat-example build && pnpm --filter chat-example start
-```
-
-[`examples/counter`](examples/counter) — the same runtime with **no
-framework at all**: plain DOM, plus a 3-host cluster demo.
-
-```sh
 pnpm --filter counter-example dev       # single-host dev server
 pnpm --filter counter-example cluster   # 3-host cluster demo over real HTTP
+```
+
+[`examples/chat`](examples/chat) — actors inside a **real SignalX app**: SSR
+that seeds `useActorState` into the document, one auth policy enforced on
+both transports, serverFns beside the actor endpoint, topics feeding a
+cross-room projection, and `{ live: true }` reads that keep every open tab
+current over one connection. Open it twice and type in one.
+
+```sh
+pnpm --filter chat-example dev                                    # Vite dev host
+pnpm --filter chat-example build && pnpm --filter chat-example start
 ```
 
 [`examples/cf-workers`](examples/cf-workers) — the **Cloudflare** deployment:
@@ -88,8 +90,8 @@ traffic, so there is something live to point the dashboard at:
 ```sh
 pnpm build
 pnpm --filter counter-example cluster:serve        # terminal 1
-npx sigx actors top --url http://127.0.0.1:5391 \
-    --secret demo-ops-secret                       # terminal 2
+pnpm --filter counter-example exec sigx actors top \
+    --url http://127.0.0.1:5391 --secret demo-ops-secret   # terminal 2
 ```
 
 The demo deliberately produces something worth looking at: a hot actor

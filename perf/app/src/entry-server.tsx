@@ -3,7 +3,7 @@
  * returning a FRESH app per request — per-request provides are what make
  * concurrent renders safe.
  *
- * The `@sigx/server` import is LOAD-BEARING, not incidental. Importing it
+ * The `@sigx/server` import is LOAD-BEARING, not incidental: importing it
  * stamps `globalThis.__SIGX_SERVERFN_SCOPE__`, which is what lets the
  * document handler open a request scope around the render. Without it,
  * anything reading `rq.request` mid-render — including this app's
@@ -19,13 +19,13 @@ import { roomFromPath } from './room-path';
 /**
  * Re-exported so the production server starts the SAME actor app the dev
  * server does (`sigxActors({ app })` loads that module directly). One
- * config, two runtimes.
+ * config, two runtimes — the thing `examples/counter` still gets wrong.
  */
 export { app as actorApp } from './actors.app';
 
 export function createApp(
     // `/r/<name>` picks the room; anything else renders #general. The
-    // request/platform arguments stay unread — this is a single-route app.
+    // request/platform arguments stay unread — a single-route app.
     url?: string,
     _request?: Request,
     _platform?: unknown
@@ -34,6 +34,7 @@ export function createApp(
     return defineApp(Room({ room }))
         .use(serverPlugin())
         // No transport on the server: `actor()` dispatches in-process. The
-        // plugin still provides the per-app context the hooks resolve.
+        // plugin still provides the per-app context the hooks resolve, and
+        // deliberately installs nothing page-global here.
         .use(actorsPlugin()) as App<unknown>;
 }

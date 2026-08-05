@@ -1,13 +1,14 @@
 /**
- * The cross-room activity feed — the topics projection pattern.
+ * The cross-room activity feed — the topics projection pattern, live.
  *
- * Every room publishes to `room-activity`, keyed by room name. ONE singleton
- * subscriber (`key: () => 'all'`) folds every room's events into a bounded
- * recent list, and the page observes that list live.
- *
- * Topics is what makes this possible at all: a room cannot know who is
- * interested, and this feed cannot know which rooms exist. The subscription
- * IS the wiring, declared where the interest lives.
+ * Every room publishes to the `room-activity` topic (keyed by room name);
+ * ONE singleton subscriber (`key: () => 'all'`) folds every room's events
+ * into a bounded recent list; and the page observes that list with
+ * `useActorState(…, { live: true })`, which pushes after every handler
+ * turn. Topics is what makes the cross-actor half possible at all: a room
+ * cannot know who is interested, and this feed cannot know which rooms
+ * exist — the subscription IS the wiring, declared where the interest
+ * lives.
  */
 import { topic } from '@sigx/actors';
 import { defineActor } from './actors.app';
@@ -23,8 +24,10 @@ export interface ActivityEntry {
     readonly room: string;
     readonly what: 'message' | 'topic';
     readonly at: Date;
-    /** Who caused it. Absent when the publish came from an unauthenticated
-     *  context — a script, an ops probe. */
+    /** Who caused it — `ctx.principal`, which the publishing room's turn
+     *  inherited from the edge and `ctx.publish` handed to this subscriber.
+     *  Absent when the publish came from an unauthenticated context (a
+     *  script, an ops probe). */
     readonly who?: string;
 }
 
@@ -49,8 +52,12 @@ export const ActivityFeed = defineActor({
                 const { what } = event.payload as RoomActivity;
                 // `ctx.principal` here is the PUBLISHING call's identity:
                 // the edge authenticated it, the room's turn carried it, and
-                // `ctx.publish` handed it to this handler. Attribution with
-                // no field threaded through the payload.
+                // ctx.publish handed it to this handler — attribution with
+                // no field threaded through any payload, and nothing for a
+                // guard author to remember to stamp. Pre-v4 this read
+                // `ctx.bag.user`, which was only populated because every
+                // guard called `stampCallBag`; forget that in one guard and
+                // attribution silently went blank here.
                 const who = (ctx.principal as { name: string } | null)?.name;
                 ctx.state.recent.push({
                     room: event.topic.key,

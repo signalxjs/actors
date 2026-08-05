@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** The emitted registry — `pnpm --filter chat-example build` writes it. */
+/** The emitted registry — `pnpm --filter sigx-perf-app build` writes it. */
 const REGISTRY = new URL('../dist/server/sigx-server-fns.js', import.meta.url);
 
 /**
@@ -28,7 +28,7 @@ export function serverFnId(name) {
         source = readFileSync(fileURLToPath(REGISTRY), 'utf8');
     } catch {
         throw new Error(
-            `[chat] cannot read ${fileURLToPath(REGISTRY)} — run \`pnpm --filter chat-example build\` first`
+            `[chat] cannot read ${fileURLToPath(REGISTRY)} — run \`pnpm --filter sigx-perf-app build\` first`
         );
     }
     // The registry also holds a stable `<pkg>/src/…#name` alias, but that

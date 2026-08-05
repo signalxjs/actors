@@ -1,84 +1,160 @@
 # chat example
 
-Actors inside a **real SignalX app** — SSR with `useActorState`, guards
-that run on both transports, serverFns beside the actor endpoint,
-hydration with no refetch, and `useActorState(…, { live: true })` keeping
-every open tab live over ONE connection. Open two tabs and type in one.
-
-It also shows the **topics projection pattern**: every room publishes to
-the `room-activity` topic (`ctx.publish` in `room.actor.ts`), one singleton
-`ActivityFeed` actor subscribes with a key mapping (`key: () => 'all'`,
-`activity.actor.ts`) and folds the events into a bounded recent list, and
-the page observes that projection live. Open `/room/other` in a second tab
-and post — the "across all rooms" panel in the first tab updates, though
-that page never heard of the other room.
-
-Production-shaped: with `REDIS_URL` set the same app clusters — Redis
-membership/directory (`redisCluster`), Redis actor state (`redisStorage`),
-and a **dual listener**: the public port serves only SSR, assets,
-serverFns and the actor endpoint (default same-origin policy, HMAC-signed
-HttpOnly sessions), while health/ops/host mounts live on an internal port
-for probes, peers and `kubectl port-forward` only.
-
-## Dev (single node, fileStorage, no env)
+Actors inside a **real SignalX app**: an actor read that renders on the
+server, ships inside the document, hydrates with no second request — and
+then keeps itself current in every open tab.
 
 ```sh
 pnpm install && pnpm build
-pnpm --filter chat-example dev          # Vite dev server on :5173
+pnpm --filter chat-example dev
 ```
 
-## Prod, local (single node)
+```
+chat dev  http://localhost:5273
+```
+
+Open it, sign in from the footer, and say something. Then **open a second
+tab and type in one of them** — that is the ten-second version of what this
+example is for.
+
+## What to look at when you open it
+
+| | |
+|---|---|
+| **SSR that actually seeds** | `entry-server.tsx` renders `Room`, the actor reads dispatch **in-process**, and their results are serialized into the document. `entry-client.tsx` hydrates and finds them under the same canonical key, so the first paint costs no request. |
+| **`{ live: true }`** | The three reads in `Room.tsx` ride **one** held-open connection for the whole page, each re-running server-side after any turn that mutated what it reads — whoever caused it. Without it, a write only ever refreshes the tab that made it. |
+| **Topics → projection** | `room.actor.ts` publishes to `room-activity`; ONE singleton `ActivityFeed` (`key: () => 'all'`) folds every room's events; the page observes that projection. Post in `/r/other` and the first tab's "across all rooms" panel moves, though that page never heard of the other room. |
+| **One policy, two transports** | See below — it is the lesson worth copying. |
+| **`migrateState`** | `room.actor.ts` evolves a stored room between the storage read and activation, lazily, so a deploy adds no write amplification. |
+| **Three plugins, one build** | `vite.config.ts`: `sigx()` + `sigxServer()` + `sigxActors()` compose with no coordination. |
+
+**Non-goals.** No router, no styling, no clustering, no deployment. For
+clustering, `examples/counter` runs three hosts with **no infrastructure at
+all** and shows placement, failover and a stream consumed from a non-owner.
+For the edge, see `examples/cf-workers`.
+
+## The shape worth copying
+
+Authentication and authorization look like one job and are three. Splitting
+them is what lets an actor declare **nothing** and still be safe on both
+transports:
+
+```ts
+// server-app.ts — the only place policy lives
+export const app = createServerApp<ChatUser>({
+    authenticate: (rq) => {            // who is this? null is a valid answer
+        const name = currentUser(rq);
+        return name === null ? null : { name };
+    },
+    codec: {                           // so identity can ride the envelope
+        encode: (user) => user.name,
+        decode: (encoded) => (encoded === '' ? null : { name: encoded })
+    }
+});
+```
+
+That is the whole configuration. The *may they?* half is core's default
+`requireAuthenticated`, which every actor and serverFn inherits — the two
+deliberately public surfaces opt out with `allowAnonymous: true`, and
+grepping for it gives you this example's entire anonymous-reachable surface.
+Propagation is not your problem at all: identity rides its own envelope slot,
+so `ctx.principal` works inside every actor and across every `ctx.publish`
+hop, which is how the activity feed attributes an entry to `ada` without any
+payload carrying a user field.
+
+Verify it in one command — the same actor method, with and without a session:
+
+```sh
+curl -X POST localhost:5290/_sigx/actor/Room%23setTopic -H 'origin: http://localhost:5290' \
+     -H 'content-type: application/json' -d '{"args":["general","hijacked"]}'
+# {"error":{"message":"Authentication required","status":401}}
+```
+
+A guard could not have done the harder version of this. Guards are called
+with `(rq, { symbol, name })` — **no key and no arguments** — so *"is this
+caller signed in?"* was expressible and *"does this user own THIS room?"* was
+not. A policy receives the resolved principal *and* the instance, so the
+second question is ordinary:
+
+```ts
+authorize: (user, _rq, op) => op.resource!.key.startsWith(`${user.name}:`)
+```
+
+## Going multi-host from here
+
+Nothing in the app changes. The app module gains a plugin and swaps its
+storage:
+
+```ts
+// actors.app.ts — fileStorage is per-process; a second host sees none of it
+storage: redisStorage({ url: process.env.REDIS_URL })
+
+// server.mjs
+composed = actorApp.use(cluster({
+    providers: redisCluster({ url: process.env.REDIS_URL }),
+    advertise: `http://${process.env.POD_IP}:${INTERNAL_PORT}`,
+    secret: process.env.CLUSTER_SECRET
+}));
+```
+
+Two things that are not optional once you do this: `cluster()`'s internal
+mount runs **no guards at all** by design, so it must not share a listener
+with your public port; and `SECURITY.md` is the file to read before the first
+deploy, not after.
+
+`examples/counter`'s `cluster-demo.mjs` shows the whole model working with
+`memoryClusterHub()` and no Redis at all, which is the faster way to see it.
+
+## Things that will bite you
+
+**`createAppHandler` mounts every plugin route** — health, ops, the
+host-to-host endpoint. Never put it on a public port. This example uses
+`createActorHandler`, which mounts the actor route and nothing else.
+
+**An unmounted `/_sigx/*` route falls through to the SSR document** and
+answers **200 with a page**. So `/_sigx/health` reports healthy on a host
+that never mounted health, and a probe believes it. `server.mjs` 404s the
+whole reserved prefix for exactly this reason — check yours does too.
+
+**`fileStorage` is per-process.** Two hosts do not see each other's rooms.
+It is the right default for an example and wrong for a deployment.
+
+**`AUTH_SECRET` is a boot failure in production, not a default.** Without it
+every session would be forgeable, so `session.ts` throws rather than picking
+one.
+
+**Importing `@sigx/server` in the SSR entry is load-bearing.** It stamps the
+request scope the document handler opens around each render; without it,
+anything reading `rq.request` mid-render throws on a detached context.
+
+**`.actors/` must be excluded from the Vite watcher.** A save is a temp-file
+plus rename, and the HMR path loses that race — and chat state changing is
+not a source edit anyway.
+
+## Production, locally
 
 ```sh
 pnpm --filter chat-example build
-pnpm --filter chat-example start        # :3000 public, :7311 internal
+pnpm --filter chat-example start        # http://localhost:5290
 ```
 
-## Prod, local 2-node cluster
+Port **5290**, not 3000 — that one is contended on every developer's machine.
 
-```sh
-redis-server --daemonize yes
-REDIS_URL=redis://localhost:6379 CLUSTER_SECRET=dev OPS_SECRET=dev \
-  PORT=8080 INTERNAL_PORT=7311 pnpm --filter chat-example start:prod &
-REDIS_URL=redis://localhost:6379 CLUSTER_SECRET=dev OPS_SECRET=dev \
-  PORT=8081 INTERNAL_PORT=7312 pnpm --filter chat-example start:prod &
-# browse :8080 and :8081 — same rooms, live across both
-```
+## Files
 
-Sessions: the footer's sign-in calls a serverFn that mints an HMAC-signed
-(`AUTH_SECRET`) HttpOnly cookie; the `requireUser` guard verifies it with
-a timing-safe compare on every actor call and serverFn. Rooms are URLs:
-`/r/<name>` (default `#general`).
-
-## Runtime knobs
-
-Every one of these defaults to the shipped behaviour, so an unconfigured
-deployment behaves exactly as it did before they existed. They exist to be
-**measured on a real cluster** — each changes the perf curve.
-
-| env | default | what it does |
-|---|---|---|
-| `PLACEMENT` | `prefer-local` | `prefer-local`, `activation-count` or `random`. `prefer-local` is half of the locality pair with the ingress's `upstream-hash-by`; `activation-count` deliberately opposes it, steering new activations at the least-loaded host instead of the hashed one |
-| `PLACEMENT_REFRESH_MS` | policy default (5000) | load-view refresh cadence for `activation-count` |
-| `REBALANCE` | off | `1` runs one `placement.rebalance()` round per interval — each host sheds only its OWN idlest activations, only down to the cluster mean |
-| `REBALANCE_INTERVAL_MS` / `_THRESHOLD` / `_MIN_IDLE_MS` / `_MAX_MOVES` | 60000 / 1.2 / 60000 / 10 | the round's bounds |
-| `MAX_ACTIVATIONS` | `0` (unlimited) | soft LRU cap per host. Rides the sweeper, so a cap with `SWEEP_INTERVAL_MS=0` is inert. Soft: busy, queued and kept-alive activations are never shed, and a shed room re-activates with its state intact |
-| `SWEEP_INTERVAL_MS` | 60000 | how often the idle + capacity passes run |
-| `DIGEST_MAX_LOCAL` | runtime default | pool members per key for the `Digest` worker — unset means `hardwareConcurrency` clamped to 16, which is the interesting case |
-| `DIGEST_ITERS` / `DIGEST_MAX_ITERS` | 2000 / 200000 | default and ceiling for the per-call hash chain |
-| `MIGRATE_PERSIST` | `lazy` | `Room`'s `migrateState` write-back. Lazy rides the next save the room would have made anyway (so a rolling deploy adds no write amplification, and a room only ever READ never persists its migration); `eager` buys one CAS write-back at activation |
-
-`Digest` (`digest.actor.ts`) is a `defineWorker` pool — pure compute, many
-interchangeable members per key, so two calls to the SAME key overlap —
-next to `DigestActor`, the identical body on `defineActor` for contrast.
-The work is chunked with a yield between slices, which is the load-bearing
-detail: a pool gives a key many activations, not many threads, so one
-unbroken synchronous loop overlaps with nothing.
-
-## Image + AKS
-
-```sh
-TAG=$(git rev-parse --short HEAD)
-az acr build --registry <acr> --image sigx-chat:$TAG \
-  --platform linux/amd64 --file examples/chat/Dockerfile .
-```
+| File | |
+|---|---|
+| `src/server-app.ts` | the auth policy — **the thing to copy** |
+| `src/room.actor.ts` | one actor per room: state, `ctx.save()`, `ctx.publish`, `migrateState` |
+| `src/activity.actor.ts` | the topic and its singleton subscriber — the projection |
+| `src/chat.server.ts` | serverFns beside actors; `postMessage` is the attributed write |
+| `src/session.ts` | HMAC-signed HttpOnly cookies, timing-safe verify |
+| `src/Room.tsx` | the page: three live reads, two writes, one serverFn read |
+| `src/entry-server.tsx` | SSR entry; re-exports the actor app so both runtimes share one config |
+| `src/entry-client.tsx` | browser entry; `actor()` here is the build-swapped client ref |
+| `src/room-path.ts` | `/r/<name>` → room, shared by both entries |
+| `src/static.ts` | resolve a request target inside `dist/client`, or refuse |
+| `server.mjs` | the production chain: actors → serverFns → assets → document |
+| `dev-server.mjs` | Vite middleware mode; the plugins mount their own endpoints |
+| `vite.config.ts` | the three-plugin composition |
+| `package.json` / `tsconfig.json` | JSX compiles to sigx's runtime, declared in both |

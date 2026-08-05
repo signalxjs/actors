@@ -31,7 +31,7 @@ import type { ServerFnContext } from '@sigx/server';
 // production build without a real secret would make every session
 // forgeable — that must be a boot failure, not a silent default.
 if (!process.env.AUTH_SECRET && process.env.NODE_ENV === 'production') {
-    throw new Error('[chat] AUTH_SECRET is required in production — sessions are signed with it');
+    throw new Error('[perf-app] AUTH_SECRET is required in production — sessions are signed with it');
 }
 const SECRET = process.env.AUTH_SECRET ?? 'chat-dev-secret';
 
