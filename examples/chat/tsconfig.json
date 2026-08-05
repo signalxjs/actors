@@ -14,7 +14,31 @@
         // this too, which is why the vite.config `oxc.jsx` setting alone
         // leaves it looking for `react/jsx-dev-runtime` in dev.
         "jsx": "react-jsx",
-        "jsxImportSource": "sigx"
+        "jsxImportSource": "sigx",
+        // `@sigx/actors*` resolve from SOURCE, as the root config and
+        // `examples/cf-workers` do, so a clean checkout typechecks before
+        // anything is built. Without this the package's own `exports` map
+        // sends every one of them at `dist/`, and the root `typecheck`
+        // script would depend on a prior `pnpm build` — which CI runs
+        // AFTER it.
+        "paths": {
+            "@sigx/actors": ["../../packages/actors/src/index.ts"],
+            "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/node": ["../../packages/actors/src/node/index.ts"],
+            "@sigx/actors/app": ["../../packages/actors/src/app/index.ts"],
+            "@sigx/actors/vite": ["../../packages/actors/src/vite/index.ts"]
+        }
     },
-    "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts"]
+    // Two ambient files from the runtime's own source, pulled in because
+    // `paths` above compiles that source as part of this program:
+    // `virtual.d.ts` declares `virtual:sigx-actors` (it normally arrives via
+    // the `./vite-client` export, which points into `dist/`), and `env.d.ts`
+    // declares `__DEV__`, the compile-time flag the bundler replaces.
+    "include": [
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "*.ts",
+        "../../packages/actors/src/vite/virtual.d.ts",
+        "../../packages/actors/src/env.d.ts"
+    ]
 }

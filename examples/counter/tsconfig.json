@@ -12,7 +12,22 @@
         "isolatedModules": true,
         // The demo entries import `./src/actors.app.ts` WITH the extension,
         // because Node runs them directly on its own type stripping.
-        "allowImportingTsExtensions": true
+        "allowImportingTsExtensions": true,
+        // `@sigx/actors*` resolve from SOURCE, as the root config and
+        // `examples/cf-workers` do, so a clean checkout typechecks before
+        // anything is built. Without this the package's own `exports` map
+        // sends every one of them at `dist/`, and the root `typecheck`
+        // script would depend on a prior `pnpm build` — which CI runs
+        // AFTER it.
+        "paths": {
+            "@sigx/actors": ["../../packages/actors/src/index.ts"],
+            "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/node": ["../../packages/actors/src/node/index.ts"],
+            "@sigx/actors/job": ["../../packages/actors/src/job/index.ts"],
+            "@sigx/actors/vite": ["../../packages/actors/src/vite/index.ts"]
+        }
     },
-    "include": ["src/**/*.ts", "*.ts"]
+    // `env.d.ts` declares `__DEV__`, the runtime's compile-time flag, pulled
+    // in because `paths` above compiles that source as part of this program.
+    "include": ["src/**/*.ts", "*.ts", "../../packages/actors/src/env.d.ts"]
 }

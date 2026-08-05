@@ -484,6 +484,35 @@ surfaces, two rules:
 | change a build / test / lint script | `AGENTS.md` "Build, Test, Lint", `CONTRIBUTING.md` "Common tasks", `package.json` |
 | change or add public API / behaviour | the package's own `README.md` and `CHANGELOG.md` under `[Unreleased]` |
 | change the workflow / process itself | `AGENTS.md` here — and, since it is the shared standard, upstream the same change to [`signalxjs/repo-template`](https://github.com/signalxjs/repo-template) |
+| add or change an example | the example's own `README.md` — and hold it to the convention below |
+
+**Every `examples/*` has all four of these.** They exist because the examples
+drifted badly enough to need a cleanup once: one had no README at all, another
+had grown into a performance rig with a third of its source unreachable from
+its own UI, and the best-written of the three was the one nobody was being
+pointed at.
+
+1. **A `README.md` on the `examples/cf-workers` skeleton** — a one-sentence
+   thesis; a copy-pasteable quickstart **with its real output**; "what to look
+   at when you open it", including explicit non-goals and cross-references to
+   the other examples; one named lesson worth copying; "things that will bite
+   you" as bolded failure modes; and a Files table covering every tracked file.
+   Quote transcripts from an actual run — a paraphrased one goes stale silently.
+2. **A `description` in `package.json`.**
+3. **A `tsconfig.json` and a `typecheck` script**, chained into the root
+   `typecheck`. Map `@sigx/actors*` through `paths` to `packages/*/src`, as
+   cf-workers does: CI typechecks **before** it builds, so an example resolving
+   the package's `exports` (which point at `dist/`) fails on a clean checkout.
+   Ambient files from that source — `src/env.d.ts` for `__DEV__`,
+   `src/vite/virtual.d.ts` for `virtual:sigx-actors` — need naming in `include`
+   for the same reason.
+4. **Its `src` in the root `lint`.** `.mjs` entries stay out, matching
+   `verify.mjs`.
+
+**An example is not a test rig.** Anything that exists to be *measured* —
+load fixtures, perf knobs, deployment charts — belongs in `perf/`, even when
+that means two versions of the same app. Keeping them as one file is what
+made the chat example unreadable.
 
 **The docs *site* is separate — don't edit it from here.** User-facing changes
 (new or changed public API, features, packages) must end up documented on the
