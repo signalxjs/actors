@@ -105,7 +105,19 @@ function assertTarballContents(pkgFullPath, name) {
     //
     //   npm 10:  [ { name, files: [...], … } ]
     //   npm 11:  { "@scope/name": { name, files: [...], … } }
-    const entry = Array.isArray(listed) ? listed[0] : Object.values(listed)[0];
+    // Keyed BY NAME on npm 11, so ask for this package rather than trusting
+    // position: a shape with more than one key would otherwise silently
+    // assert the wrong package's tarball, which is worse than failing. The
+    // sole-value fallback covers a key that is not spelled exactly `name`
+    // (a scope alias, say); anything else falls through to the error below,
+    // including `null` — `Object.values(null)` throws, and a TypeError here
+    // is precisely the unreadable failure this whole change is about.
+    const entry = Array.isArray(listed)
+        ? listed[0]
+        : listed !== null && typeof listed === 'object'
+          ? (listed[name] ??
+            (Object.keys(listed).length === 1 ? Object.values(listed)[0] : undefined))
+          : undefined;
     if (!entry || !Array.isArray(entry.files)) {
         throw new Error(
             `${name}: could not read the file list from \`npm pack --dry-run --json\` ` +
