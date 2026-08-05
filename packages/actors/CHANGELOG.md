@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: actor proxies answer introspection props locally instead of
+  dispatching them.** Every proxy (`actor()` in the browser and on the
+  server, `host.actor(...)`, `ctx.actor(...)`) manufactured a live
+  dispatcher for ANY string prop, so `String(ref)`, `JSON.stringify(ref)`
+  or a library probing `.constructor` silently issued a real call. Now
+  `toString` reads `[actor Type#key]` — refs interpolate usefully into
+  logs — and every other `Object.prototype` name (plus `toJSON` and Node's
+  legacy `inspect`) reads `undefined`, exactly like symbols and `then`.
+  The breaking edge: an actor method NAMED like an `Object.prototype`
+  member (`toString`, `valueOf`, `hasOwnProperty`, `toJSON`, …) is no
+  longer reachable through a proxy — rename it. Wire dispatch of such
+  names is refused by the server exactly as before.
+
 ## [0.2.0] - 2026-08-05
 
 ### Changed

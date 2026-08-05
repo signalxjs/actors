@@ -2,10 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`oneWayFailures` reaches both exporters.** `renderPrometheus()` emits
+  the `{prefix}one_way_failures_total` counter and `otelMetricsBridge()`
+  observes `sigx.actors.calls.one_way_failures` — a one-way call that fails
+  after acceptance has no caller to throw to, and this counter was the only
+  place the failure existed while no exporter read it. Legacy digests
+  without the field read 0.
+
 ## [0.2.0] - 2026-08-05
 
-### Changed
-
+### Changed
+
 - **Peers `@sigx/actors@^0.2.0`.** The guard split is breaking, so the
   whole family moves together — see the `@sigx/actors` changelog and core's
   [0.15 migration guide](https://github.com/signalxjs/core/blob/main/docs/migrations/0.15-guard-split.md).

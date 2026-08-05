@@ -676,6 +676,12 @@ acceptance:
 | guard veto, unknown type, activation failure, wrong host, auth, unreachable peer, host shutting down | before acceptance | a normal rejection |
 | the method throws, a deadline expires mid-turn | after acceptance | nothing — dropped, counted as `oneWayFailures` in `metrics()` on the host that ran the turn (and a dev-mode console warning) |
 
+That counter is the only trace a post-acceptance failure leaves, so the
+observability surfaces all read it: `@sigx/actors-otel` exports it as the
+`one_way_failures_total` Prometheus counter and the
+`sigx.actors.calls.one_way_failures` OTel counter, and `sigx actors stats` /
+the dashboard show it beside `failed` whenever it is non-zero.
+
 The details that follow from "the caller is gone":
 
 - **Ordering holds.** The call was enqueued before the promise resolved, so
@@ -1153,6 +1159,12 @@ await actor(Resize, 'any').run(img, 800);   // callers look exactly the same
 
 The contract, stated loudly because it is the whole point:
 
+- **Mailboxes, not cores.** A host is one JS thread, so pool members buy
+  concurrency at `await` points — I/O overlap, no serial-tail queuing —
+  never CPU throughput. Measured: 8 members on an 8-core node ran a
+  CPU-bound body at 1.07× a single activation. CPU-bound work scales by
+  adding hosts (a worker activates on every host that receives calls), or
+  by leaving the actor model for `worker_threads`.
 - **Two calls to the same key may run concurrently, on different pool
   members.** The host keeps up to `maxLocal` activations per (type, key),
   spun up under load, and each dispatch rides the member with the fewest

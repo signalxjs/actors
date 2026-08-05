@@ -184,6 +184,35 @@ describe('renderStats says which scope a number belongs to', () => {
         ).join('\n');
         expect(out).toMatch(/calls — cluster-wide \(2 of 2 hosts reporting\)/);
         expect(out).toContain('764');
+        // No one-way failures happened — no row claims otherwise.
+        expect(out).not.toContain('one-way');
+    });
+
+    it('surfaces one-way failures when any happened', () => {
+        const out = renderStats(
+            snapshot({
+                cluster: clusterView({
+                    metrics: {
+                        hosts: 2,
+                        layoutMismatch: [],
+                        calls: { total: 764, failed: 6, streams: 0, oneWayFailures: 2 },
+                        latencyMs: null,
+                        queueMs: null,
+                        turnMs: null,
+                        storageLatencyMs: null,
+                        errors: { byKind: {} },
+                        activations: { created: 8, destroyed: 0, byReason: {} },
+                        storage: { loads: 0, saves: 0, clears: 0, conflicts: 0 },
+                        byType: {},
+                        byMethod: {}
+                    }
+                })
+            }),
+            'http://host-a'
+        ).join('\n');
+        // A one-way failure has no caller to throw to — this row is the only
+        // place an operator sees it.
+        expect(out).toMatch(/one-way fail\s+2/);
     });
 
     it('says so when only some hosts reported metrics', () => {

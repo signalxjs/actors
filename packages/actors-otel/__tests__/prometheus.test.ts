@@ -23,7 +23,7 @@ const digest: MetricsDigest = {
     v: 1,
     layout: 'll-4-26',
     windowMs: 60_000,
-    calls: { total: 12, failed: 2, streams: 3 },
+    calls: { total: 12, failed: 2, streams: 3, oneWayFailures: 2 },
     latency: { count: 8, sumUs: 1234, minUs: 1, maxUs: 20, idx: [1, 20], n: [5, 3] },
     queue: null,
     turn: null,
@@ -60,6 +60,15 @@ describe('renderPrometheus', () => {
             'sigx_actors_method_calls_total{type="(other)",method="(other)"} 2'
         );
         expect(lines).toContain('sigx_actors_streams_total 3');
+        expect(lines).toContain('sigx_actors_one_way_failures_total 2');
+        // A legacy digest without the field renders 0, not NaN.
+        expect(
+            renderPrometheus(
+                { ...digest, calls: { total: 12, failed: 2, streams: 3 } },
+                null,
+                {}
+            ).split('\n')
+        ).toContain('sigx_actors_one_way_failures_total 0');
         expect(lines).toContain('sigx_actors_errors_total{kind="call-timeout"} 1');
         expect(lines).toContain('sigx_actors_activations_created_total 4');
         expect(lines).toContain('sigx_actors_deactivations_total{reason="idle"} 1');

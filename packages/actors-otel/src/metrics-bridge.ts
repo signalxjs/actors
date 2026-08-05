@@ -67,6 +67,13 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                 const streams = meter.createObservableCounter('sigx.actors.streams', {
                     description: 'Actor stream openings.'
                 });
+                const oneWayFailures = meter.createObservableCounter(
+                    'sigx.actors.calls.one_way_failures',
+                    {
+                        description:
+                            'One-way calls that failed after acceptance — no caller saw the error.'
+                    }
+                );
                 const errors = meter.createObservableCounter('sigx.actors.errors', {
                     description: 'Actor call failures, by error kind.'
                 });
@@ -97,6 +104,7 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                     calls,
                     callsFailed,
                     streams,
+                    oneWayFailures,
                     errors,
                     created,
                     destroyed,
@@ -144,6 +152,7 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                         result.observe(callsFailed, row.failed, { type });
                     }
                     result.observe(streams, digest.calls.streams);
+                    result.observe(oneWayFailures, digest.calls.oneWayFailures ?? 0);
                     for (const [kind, count] of Object.entries(digest.errors.byKind)) {
                         result.observe(errors, count as number, { kind });
                     }

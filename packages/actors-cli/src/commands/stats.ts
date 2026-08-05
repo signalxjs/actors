@@ -101,6 +101,11 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
             `  total        ${count(clusterMetrics.calls.total)} (${count(failed)} failed, ${percent(failed, clusterMetrics.calls.total)})`,
             `  streams      ${count(clusterMetrics.calls.streams)}`
         );
+        // One-way failures have no caller to throw to — when any happened,
+        // this row is the only place an operator sees them.
+        if (clusterMetrics.calls.oneWayFailures > 0) {
+            lines.push(`  one-way fail ${count(clusterMetrics.calls.oneWayFailures)}`);
+        }
         for (const [label, snap] of [
             ['latency', clusterMetrics.latencyMs],
             ['queue', clusterMetrics.queueMs],
@@ -136,6 +141,9 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
             `  total        ${count(metrics.calls.total)} (${count(metrics.calls.failed)} failed, ${percent(metrics.calls.failed, metrics.calls.total)})`,
             `  streams      ${count(metrics.calls.streams)}`
         );
+        if ((metrics.calls.oneWayFailures ?? 0) > 0) {
+            lines.push(`  one-way fail ${count(metrics.calls.oneWayFailures ?? 0)}`);
+        }
         if (metrics.latencyMs) {
             lines.push(
                 `  latency      p50 ${durationMs(metrics.latencyMs.p50Ms)}  p90 ${durationMs(metrics.latencyMs.p90Ms)}  p99 ${durationMs(metrics.latencyMs.p99Ms)}`

@@ -288,16 +288,31 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
                         ? [
                               {
                                   label: 'calls',
-                                  value: `${count(clusterCalls.total)}  ${count(clusterCalls.failed)} failed (${percent(clusterCalls.failed, clusterCalls.total)})`,
-                                  tone: clusterCalls.failed > 0 ? 'warn' : undefined
+                                  value:
+                                      `${count(clusterCalls.total)}  ${count(clusterCalls.failed)} failed (${percent(clusterCalls.failed, clusterCalls.total)})` +
+                                      (clusterCalls.oneWayFailures > 0
+                                          ? `  ${count(clusterCalls.oneWayFailures)} one-way`
+                                          : ''),
+                                  tone:
+                                      clusterCalls.failed > 0 || clusterCalls.oneWayFailures > 0
+                                          ? 'warn'
+                                          : undefined
                               }
                           ]
                         : metrics
                           ? [
                                 {
                                     label: 'calls',
-                                    value: `${count(metrics.calls.total)}  ${count(metrics.calls.failed)} failed (${percent(metrics.calls.failed, metrics.calls.total)})`,
-                                    tone: metrics.calls.failed > 0 ? 'warn' : undefined
+                                    value:
+                                        `${count(metrics.calls.total)}  ${count(metrics.calls.failed)} failed (${percent(metrics.calls.failed, metrics.calls.total)})` +
+                                        ((metrics.calls.oneWayFailures ?? 0) > 0
+                                            ? `  ${count(metrics.calls.oneWayFailures ?? 0)} one-way`
+                                            : ''),
+                                    tone:
+                                        metrics.calls.failed > 0 ||
+                                        (metrics.calls.oneWayFailures ?? 0) > 0
+                                            ? 'warn'
+                                            : undefined
                                 }
                             ]
                           : [])
@@ -627,8 +642,15 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
                     rows={[
                         {
                             label: 'calls',
-                            value: `${count(digest.calls.total)}  ${count(failed)} failed (${percent(failed, digest.calls.total)})`,
-                            tone: failed > 0 ? 'warn' : undefined
+                            value:
+                                `${count(digest.calls.total)}  ${count(failed)} failed (${percent(failed, digest.calls.total)})` +
+                                ((digest.calls.oneWayFailures ?? 0) > 0
+                                    ? `  ${count(digest.calls.oneWayFailures ?? 0)} one-way`
+                                    : ''),
+                            tone:
+                                failed > 0 || (digest.calls.oneWayFailures ?? 0) > 0
+                                    ? 'warn'
+                                    : undefined
                         },
                         {
                             label: 'latency',

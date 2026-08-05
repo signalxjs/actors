@@ -90,14 +90,19 @@ describe('activation & dispatch', () => {
     it('a prototype member is not a method — in-process agrees with the wire', async () => {
         // `#methods[method]` walked up to Object.prototype: `toString` and
         // `constructor` ANSWERED, the rest threw a raw TypeError. Own keys
-        // only, and callable, or it is not a method.
+        // only, and callable, or it is not a method. The proxies no longer
+        // dispatch these names at all (they answer introspection locally —
+        // see proxy-introspection.test.ts), so go straight to the dispatch
+        // seam, the way a raw wire request still can.
         const host = createHost({ actors: [counterActor()], defaults: quiet });
-        const client = host.actor(counterActor(), 'proto') as unknown as Record<
-            string,
-            () => Promise<unknown>
-        >;
         for (const member of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
-            await expect(client[member]!()).rejects.toSatisfy(
+            await expect(
+                host.dispatch({ type: 'Counter', key: 'proto' }, member, [], {
+                    deadline: Date.now() + 1000,
+                    callChain: [],
+                    callId: 'p.sig.1'
+                })
+            ).rejects.toSatisfy(
                 (e: unknown) => isActorError(e) && e.kind === 'method-not-found'
             );
         }

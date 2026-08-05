@@ -309,9 +309,16 @@ const localityAb: Scenario = {
  * What makes this Tier 3 rather than Tier 1: the pool sizes itself from the
  * REAL `navigator.hardwareConcurrency` (clamped to 16) on the real node SKU
  * and under the container's real CPU limit. Every unit test and both exact
- * bench gates pin `maxLocal` explicitly, so the default has never actually
- * been exercised — and the number this reports is bounded by cores as much
- * as by activations, which is precisely the thing a single process cannot say.
+ * bench gates pin `maxLocal` explicitly, so the default is only ever
+ * exercised here.
+ *
+ * What the ratio means — measured, not assumed: a host is ONE JS thread,
+ * so a CPU-bound body gains ~nothing from extra pool members on that host
+ * (8 members on an 8-core node: 1.07x). The pool's fleet-wide multiple
+ * comes from workers activating on EVERY host that receives a call while
+ * the single-activation control is pinned to one — the ratio tracks host
+ * count (measured 3.03 on 3 hosts, 6.51 on 7, per-host throughput flat),
+ * and its name says so.
  *
  * One key per arm on purpose: same-key concurrency IS the declared
  * contract, and spreading the load over many keys would measure nothing
@@ -339,13 +346,16 @@ const workerPool: Scenario = {
             ...rowMetrics(pool!, 'worker/'),
             ...rowMetrics(single!, 'actor/'),
             {
-                // >1 is the pool earning its keep. ~1 means either the pool
-                // never grew (one core, or `maxLocal` of 1) or the work has
-                // no await in it for members to interleave across.
-                name: 'worker_speedup',
+                // NOT worker parallelism: this tracks how many hosts the
+                // pool spread over (see the scenario comment). ~1 means the
+                // pool never left the first host — one host in the fleet,
+                // or a load pattern that never fanned out. Informational
+                // because the value is deployment shape, not code speed.
+                name: 'pool_spread',
                 value: single!.opsPerSec === 0 ? 0 : pool!.opsPerSec / single!.opsPerSec,
                 unit: 'x',
                 direction: 'higher',
+                informational: true,
                 noiseFloor: 0.05
             }
         ];

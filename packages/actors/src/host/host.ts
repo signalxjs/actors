@@ -11,6 +11,7 @@ import { mergeCallBag } from '../call-context-bag';
 import { isActorDefinition } from '../define';
 import { hasAuthorization, serverAppConfigured } from '../guards';
 import { clearHost, stampHost } from '../seam';
+import { introspectionMember, isIntrospectionProp } from '../proxy-introspection';
 import { assertTopic } from '../topics';
 import {
     buildTopicIndex,
@@ -561,6 +562,7 @@ class HostImpl implements Host {
             get: (_target, prop) => {
                 if (typeof prop === 'symbol') return undefined;
                 if (prop === 'then') return undefined; // never thenable
+                if (isIntrospectionProp(prop)) return introspectionMember(prop, def.type, key);
                 const cached = cache.get(prop);
                 if (cached) return cached;
                 let member: unknown;
