@@ -801,7 +801,12 @@ methodReentrancy: { stats: 'always' }   // full interleaving, per method
 
 - **`'call-chain'`** (`true`): `A → B → A` runs *inline* against your own
   up-stack turn instead of deadlocking. Unrelated calls still serialize —
-  no foreign interleaving, so state stays turn-consistent.
+  no foreign interleaving, so state stays turn-consistent. A `streams:` open
+  re-enters the same way (its setup only resolves the generator, and
+  iteration was always detached from turns). A **watch** does not: it is a
+  long-lived subscription whose reads are turns of their own, so only its
+  first read could ever be inline — an in-chain watch open is refused with
+  `kind: 'deadlock'` rather than left to hang.
 - **`'always'`**: every call is its own turn, launched immediately —
   unrelated calls interleave at every `await` (the Orleans `[Reentrant]`
   model). The single-threaded guarantee narrows to what JS itself gives

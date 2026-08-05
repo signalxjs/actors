@@ -181,9 +181,16 @@ export class LocalHost implements ActorDispatcher {
         // Must return synchronously; resolve the activation on first pull.
         return this.#lazyIterable(async () => {
             this.#checkShutdown(call);
-            await this.#checkReentrancy(ref, call, method);
-            const activation = await this.#activationFor(ref);
-            return activation.openStream(method, args, call)[Symbol.asyncIterator]();
+            // An in-chain open against a call-chain-reentrant target resolves
+            // the generator INLINE. Dropping this result queued the setup turn
+            // behind the up-stack turn awaiting the first chunk — a hang where
+            // the mode promised a re-entry (#46). `inline` IS the active
+            // activation for this id, so it also saves a lookup.
+            const inline = await this.#checkReentrancy(ref, call, method);
+            const activation = inline ?? (await this.#activationFor(ref));
+            return activation
+                .openStream(method, args, call, inline !== null)
+                [Symbol.asyncIterator]();
         });
     }
 
@@ -207,7 +214,24 @@ export class LocalHost implements ActorDispatcher {
                         `state to watch.`
                 );
             }
-            await this.#checkReentrancy(ref, call, method);
+            // A watch cannot take the inline rescue a stream does, so an
+            // in-chain open is refused rather than left to hang (#46). A
+            // stream's setup only resolves a generator; a watch is a
+            // long-lived subscription whose reads are turns of their own
+            // ("the isolation every other call has" — `openWatch`), so only
+            // its FIRST read could ever run inline. And the loop is shared per
+            // (method, args, throttleMs): a subscriber joining one whose
+            // initial read is already queued behind the up-stack turn would
+            // deadlock however that first read ran.
+            if (await this.#checkReentrancy(ref, call, method)) {
+                throw new ActorError(
+                    'deadlock',
+                    `[sigx actors] ${actorLabel(ref)}.${method}() — a watch cannot re-enter an ` +
+                        `up-stack turn: a watch is a long-lived subscription whose reads are ` +
+                        `turns of their own, so only its first read could ever run inline. Open ` +
+                        `the watch outside the turn.`
+                );
+            }
             const activation = await this.#activationFor(ref);
             return activation.openWatch(method, args, call, options)[Symbol.asyncIterator]();
         });
@@ -223,8 +247,13 @@ export class LocalHost implements ActorDispatcher {
                 },
                 return: async () => {
                     if (inner) {
-                        const it = await inner;
-                        if (it.return) await it.return(undefined);
+                        // A failed open (deadlock, unknown method, shutdown)
+                        // already rejected the pull that triggered it. The
+                        // consumer's `finally` lands here next, and rethrowing
+                        // the same rejection out of `return()` would REPLACE
+                        // the error it is unwinding from with a duplicate.
+                        const it = await inner.catch(() => null);
+                        if (it?.return) await it.return(undefined);
                     }
                     return { value: undefined, done: true as const };
                 }
@@ -327,6 +356,13 @@ export class LocalHost implements ActorDispatcher {
      * launches immediately instead of waiting behind the tail, so the cycle
      * completes as a concurrent turn, never inline. Non-reentrant: throw
      * now with the full chain instead of hanging until a timeout.
+     *
+     * EVERY caller must act on the returned activation, not merely on the
+     * throw. Three do, and each answers "run inline against that turn"
+     * differently: `#dispatchSlow` calls `runInline`, `dispatchStream`
+     * resolves the generator without a setup turn, and `dispatchWatch` — the
+     * one shape that has no inline form — refuses. Discarding it is the #46
+     * bug: the cycle is admitted and then queued behind the turn awaiting it.
      */
     async #checkReentrancy(
         ref: ActorRef,

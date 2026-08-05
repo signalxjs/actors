@@ -520,17 +520,6 @@ export class Activation {
     }
 
     /**
-     * Stream dispatch. The setup turn only RESOLVES the generator and takes
-     * a keep-alive ref — it must NOT pull the first chunk: a feed like
-     * `yield* ctx.changes()` waits for a future turn of this same actor,
-     * and holding the activation for that pull would self-deadlock. Iteration
-     * (including the first pull) is therefore fully detached, and stream
-     * bodies get no turn exclusivity by contract — they are observers,
-     * reading `ctx.snapshot()` / `ctx.changes()`, never live state. The
-     * keep-alive ref makes idle collection skip the activation until the
-     * stream ends or the consumer disconnects.
-     */
-    /**
      * A change-driven READ: the method's result now, and again after every
      * turn that mutated state.
      *
@@ -544,6 +533,12 @@ export class Activation {
      * emission rates, and one loop cannot honour both. Two viewers of the
      * same read share whenever they agree on it — which, since the option
      * is rarely passed, is nearly always.
+     *
+     * Unlike `openStream`, this takes NO inline form. Its reads are ordinary
+     * turns, only the first of which could ever run inline — and a subscriber
+     * joining a shared loop whose initial read is already queued would
+     * deadlock regardless. So an in-chain open is refused up in
+     * `LocalHost.dispatchWatch` rather than re-entered (#46).
      */
     openWatch(
         method: string,
@@ -591,15 +586,30 @@ export class Activation {
         return shared.subscribe(call.abortSignal);
     }
 
+    /**
+     * Stream dispatch. The setup turn only RESOLVES the generator and takes
+     * a keep-alive ref — it must NOT pull the first chunk: a feed like
+     * `yield* ctx.changes()` waits for a future turn of this same actor,
+     * and holding the activation for that pull would self-deadlock. Iteration
+     * (including the first pull) is therefore fully detached, and stream
+     * bodies get no turn exclusivity by contract — they are observers,
+     * reading `ctx.snapshot()` / `ctx.changes()`, never live state. The
+     * keep-alive ref makes idle collection skip the activation until the
+     * stream ends or the consumer disconnects.
+     *
+     * `inline` skips the setup turn entirely, for a call-chain-reentrant open
+     * from inside this activation's own chain — see the comment on `setup`.
+     */
     openStream(
         method: string,
         args: readonly unknown[],
-        call: ActorCallContext
+        call: ActorCallContext,
+        inline = false
     ): AsyncIterable<unknown> {
         // Every `ctx.changes()` this body opens, so a disconnect can close
         // them from OUTSIDE the generator — see `#streamContext`.
         const feeds: StreamFeeds = { subs: new Set(), closed: false };
-        const setup = this.turns.run(async () => {
+        const resolveGen = async (): Promise<AsyncIterator<unknown>> => {
             if (this.#faulted) throw this.#faulted;
             const fn = ownFn<AnyStreamFn>(this.#streamTable(feeds), method);
             if (!fn) throw new ActorMethodNotFoundError(this.ref.type, method);
@@ -616,9 +626,21 @@ export class Activation {
                 throw error;
             } finally {
                 this.#currentCall = prev;
-                this.#afterTurn(Date.now());
+                // Only a real turn has a boundary. Inline, the caller's turn
+                // is still open and owns the next one: flushing dirty state
+                // and notifying subscribers from in here would publish a
+                // half-finished turn.
+                if (!inline) this.#afterTurn(Date.now());
             }
-        });
+        };
+        // Inline is the call-chain-reentrancy rescue (#46), and it is exact
+        // rather than merely expedient: the block above sets `#currentCall`,
+        // resolves the generator and restores it with NO `await` in between —
+        // calling an async generator function is synchronous and runs none of
+        // its body — so there is no window for another turn to interleave. On
+        // the serial lane the same work would queue behind the very turn that
+        // is up-stack awaiting the first chunk, and neither could proceed.
+        const setup = inline ? resolveGen() : this.turns.run(resolveGen);
 
         let released = false;
         const release = () => {
