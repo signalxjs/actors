@@ -1,0 +1,18 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["vite/client"],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true,
+        // The demo entries import `./src/actors.app.ts` WITH the extension,
+        // because Node runs them directly on its own type stripping.
+        "allowImportingTsExtensions": true
+    },
+    "include": ["src/**/*.ts", "*.ts"]
+}
