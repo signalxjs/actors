@@ -61,10 +61,16 @@ describe('the actor URL path grammar', () => {
     });
 
     it('refuses a method containing the separator, at the one chokepoint', () => {
-        // Every wire path goes through the encoder, and the reading half would
-        // otherwise re-split `Type/a/b` as type `Type/a`. `__DEV__` only, so
-        // the production bundle pays nothing.
+        // Escaping it would NOT round-trip: `Type#a/b` encodes to
+        // `Type/a%2Fb`, the reading half decodes each segment before it
+        // splits, and the last `/` then makes it `Type/a#b` — a different
+        // actor, silently. So this throws in production too, not just dev.
         expect(() => encodeSymbolPath('Type#a/b')).toThrow(/must not contain "\/"/);
+        // The round trip it protects: prove the misroute is real by walking
+        // it by hand, so nobody "optimizes" the check back behind `__DEV__`.
+        const wouldBe = symbolFromPathname(`${BASE}/Type/${encodeURIComponent('a/b')}`, BASE);
+        expect(wouldBe).toBe('Type/a#b');
+        expect(wouldBe).not.toBe('Type#a/b');
     });
 });
 

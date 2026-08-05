@@ -77,6 +77,12 @@
   cluster upgrade, hosts still on the previous version will refuse calls from
   upgraded ones.
 
+- **A method name containing `/` is now refused** (#96). Escaping it does not
+  round-trip: `Type#a/b` encodes to `Type/a%2Fb`, the reading half decodes each
+  segment before it splits on the last separator, and the symbol comes back as
+  `Type/a#b` — a different actor, silently. Refused at the encoder, the one
+  chokepoint every wire path goes through, in production as well as dev.
+
 - **`defineActor` refuses a type with an empty, `.` or `..` path segment**
   (#96). The type's slashes are wire path separators now, and `new URL()`
   resolves dot segments away — so such a type would silently RETARGET its

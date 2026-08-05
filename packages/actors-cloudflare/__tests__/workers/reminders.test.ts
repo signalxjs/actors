@@ -14,6 +14,7 @@ import {
     SELF
 } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { encodeSymbolPath } from '../../../actors/src/wire-url';
 import type { Env } from './fixture-worker';
 
 declare module 'cloudflare:test' {
@@ -29,7 +30,7 @@ function stubFor(key: string) {
 
 async function invoke(symbol: string, args: readonly unknown[]): Promise<unknown> {
     const res = await SELF.fetch(
-        `https://edge.test/_sigx/actor/${symbol.replace('#', '/')}`,
+        `https://edge.test/_sigx/actor/${encodeSymbolPath(symbol)}`,
         {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

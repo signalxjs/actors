@@ -83,11 +83,13 @@ export function encodeSymbolPath(symbol: string): string {
     if (hash < 0) return encodeSegment(symbol);
     const type = symbol.slice(0, hash);
     const method = symbol.slice(hash + 1);
-    if (__DEV__ && method.includes('/')) {
-        // The reading half takes the last segment as the method, so a `/`
-        // here would silently re-split as a different type. Loud at the one
-        // chokepoint every wire path goes through, and stripped from the
-        // production build, where the size budget is tight.
+    if (method.includes('/')) {
+        // UNCONDITIONAL, not `__DEV__`: escaping it does not save the round
+        // trip. `Type#a/b` encodes to `Type/a%2Fb`, the reading half decodes
+        // each segment before it splits, and it then takes the LAST `/` — so
+        // the symbol comes back as `Type/a#b`, a different actor, silently.
+        // The one chokepoint every wire path goes through is the only place
+        // this can be caught, and a misroute is not worth the bytes saved.
         throw new Error(
             `[sigx actors] actor method "${method}" must not contain "/" — it is the ` +
                 `wire path separator.`

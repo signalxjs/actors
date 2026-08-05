@@ -9,6 +9,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
+// The runtime's own encoder, not a hand-rolled stand-in: a test that spells
+// the URL differently from the client cannot catch the client getting it
+// wrong.
+import { encodeSymbolPath } from '../../actors/src/wire-url';
 import { defineActorApp, metrics } from '@sigx/actors/host';
 import { encodeEnvelope, HOST_CALL_HEADER } from '@sigx/actors/cluster';
 import {
@@ -134,7 +138,7 @@ function harness(appFactory?: Parameters<typeof createHostDurableObject>[0]['app
 
     const call = async (symbol: string, args: readonly unknown[]): Promise<Response> =>
         worker.fetch(
-            new Request(`https://edge.test/_sigx/actor/${symbol.replace('#', '/')}`, {
+            new Request(`https://edge.test/_sigx/actor/${encodeSymbolPath(symbol)}`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ args })

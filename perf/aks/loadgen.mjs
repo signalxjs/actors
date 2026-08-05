@@ -64,7 +64,10 @@ const CONN_ERROR_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED'
 let retriedConnErrors = 0;
 
 async function wireCall(type, method, args, attempt = 0) {
-    const url = `${TARGET_URL}/_sigx/actor/${type}/${method}`;
+    // Per segment, like the client library: the type's own slashes are real
+    // separators, everything else in a segment is escaped.
+    const symbol = `${type.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(method)}`;
+    const url = `${TARGET_URL}/_sigx/actor/${symbol}`;
     try {
         const res = await fetch(url, {
             method: 'POST',
