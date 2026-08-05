@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Virtual actors for SignalX \u2014 addressable, single-threaded, persistent server state",
     "type": "module",
     "main": "./dist/index.js",
