@@ -86,6 +86,11 @@
 - `memoryClusterHub().expire(hostId)` — drop a member the way a TTL lapse
   does: no cleanup, and the victim is never told (no `onSelfSuspect`),
   unlike `kill()`. The test seam for #45-shaped scenarios.
+- `heartbeatClock().lost()` — for a provider that holds PROOF its record is
+  gone (a Kubernetes Lease deleted under it) rather than a suspicion
+  inferred from elapsed time. Fires immediately, whatever the clocks say,
+  since the next write would succeed promptly and look healthy (#69).
+  Latched like the rest; cleared by the next `confirmed()`.
 
 ## [0.2.0] - 2026-08-05
 

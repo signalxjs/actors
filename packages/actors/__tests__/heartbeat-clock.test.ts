@@ -164,6 +164,31 @@ describe('heartbeatClock', () => {
         expect(h.suspects()).toBe(1);
     });
 
+    it('lost() fires immediately — proof does not wait for the clocks', () => {
+        // A provider that has been TOLD its record is gone (a 404 on the
+        // Kubernetes Lease) must not wait out a TTL it can no longer prove
+        // anything with. Timing would never catch it: the next write
+        // succeeds promptly and looks perfectly healthy.
+        const h = harness(1_000);
+        h.clock.arm();
+        h.advance(1); // nowhere near the TTL
+        h.clock.lost();
+        expect(h.suspects()).toBe(1);
+    });
+
+    it('lost() is latched, and a confirmed write clears it', () => {
+        const h = harness(1_000);
+        h.clock.arm();
+        h.clock.lost();
+        h.clock.lost();
+        h.clock.lost();
+        expect(h.suspects()).toBe(1);
+
+        h.clock.confirmed();
+        h.clock.lost();
+        expect(h.suspects()).toBe(2);
+    });
+
     it('never suspects before it is armed', () => {
         const h = harness(1_000);
         h.advance(999_999);

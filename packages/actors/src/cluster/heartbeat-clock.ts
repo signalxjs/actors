@@ -83,6 +83,18 @@ export interface HeartbeatClock {
     confirmed(): void;
     /** A heartbeat write FAILED: fire if the window has lapsed. */
     failed(): void;
+    /**
+     * Membership is PROVABLY gone — fire now, whatever the clocks say.
+     *
+     * For the case where the store answers "your record does not exist"
+     * rather than leaving it to be inferred from elapsed time: a Kubernetes
+     * Lease deleted out from under its host, and anything else where a
+     * provider holds proof instead of a suspicion. Timing cannot detect it,
+     * because the very next write would succeed promptly and look healthy.
+     *
+     * Latched like the rest, and cleared by the next `confirmed()`.
+     */
+    lost(): void;
 }
 
 export interface HeartbeatClockOptions {
@@ -120,10 +132,15 @@ export function heartbeatClock(options: HeartbeatClockOptions): HeartbeatClock {
     const lapsed = (): boolean =>
         armed && Math.max(monotonicNow() - mono, wallNow() - wall) > ttlMs;
 
-    const suspect = (): void => {
-        if (suspected || !lapsed()) return;
+    const fire = (): void => {
+        if (suspected) return;
         suspected = true;
         onSuspect();
+    };
+
+    const suspect = (): void => {
+        if (suspected || !lapsed()) return;
+        fire();
     };
 
     return {
@@ -137,6 +154,8 @@ export function heartbeatClock(options: HeartbeatClockOptions): HeartbeatClock {
             suspect(); // …did the window lapse while the write was in flight?
             open();
         },
-        failed: suspect
+        failed: suspect,
+        // Proof, not timing — so it does not consult the clocks at all.
+        lost: fire
     };
 }

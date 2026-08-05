@@ -83,8 +83,15 @@ Each host owns one Lease; nobody else ever writes it:
   claiming actors and deactivates what it holds. So does one that merely
   *lands* past `ttlMs` — a stalled event loop renews late and succeeds, but
   the Lease went stale while it was away and peers released its claims
-  (#45). A broken *watch* never fences — that is staleness, covered by the
-  `relistMs` safety net.
+  (#45). And so does a renewal that comes back **404**: the Lease is this
+  host's membership token, so if something deleted it (operator cleanup,
+  namespace churn) peers have already aged the host out and evicted its
+  claims. That case is *not* self-healing — recreating the Lease would
+  re-advertise a host whose actors a survivor may already be serving
+  (#69) — so the host fences and the pod restart mints a fresh identity.
+  A 404 caused by the host's own `leave()` racing a renewal is a graceful
+  exit and never fences. A broken *watch* never fences either — that is
+  staleness, covered by the `relistMs` safety net.
 - **Graceful exit** — `setStatus('leaving')` patches the descriptor
   immediately (drain is visible now, not next beat); `leave()` deletes the
   Lease. A crashed host simply stops renewing and ages out.
