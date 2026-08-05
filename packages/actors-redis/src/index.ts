@@ -20,6 +20,7 @@
  */
 import { Redis } from 'ioredis';
 import {
+    heartbeatClock,
     refreshCoalescer,
     type ActorDirectory,
     type ClusterMembership,
@@ -120,10 +121,16 @@ export function redisMembership(
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let subscriber: RedisClient | null = null;
-    let lastOkMs = 0;
-    let suspected = false;
+    /** Host set + descriptor signature of the last view — see `refresh`. */
+    let signature = '';
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Set<() => void>();
+    const clock = heartbeatClock({
+        ttlMs,
+        onSuspect: () => {
+            for (const cb of suspectCbs) cb();
+        }
+    });
 
     const writeSelf = async (): Promise<void> => {
         if (!self) return;
@@ -131,9 +138,17 @@ export function redisMembership(
             .multi()
             .hset(hostKey(self.hostId), 'd', JSON.stringify(self))
             .pexpire(hostKey(self.hostId), ttlMs)
+            // Re-join the set on EVERY beat, not just at join: `refresh`
+            // lazily `srem`s a member whose host key expired, so a host that
+            // was pruned while it was away would otherwise keep heartbeating
+            // into a set it is no longer in — invisible to every peer's view
+            // forever (#45). SADD on an existing member is a no-op, and
+            // folding it into the MULTI leaves no window where the host key
+            // exists without its set entry. It can race `refresh`'s prune;
+            // both converge within one beat.
+            .sadd(setKey, self.hostId)
             .exec();
-        lastOkMs = Date.now();
-        suspected = false;
+        clock.confirmed();
     };
 
     // Bump the version counter, then push: subscribers refresh immediately
@@ -167,8 +182,18 @@ export function redisMembership(
             await client.srem(setKey, ...dead).catch(noop);
         }
         const next: MembershipView = { version: Number(verRaw ?? 0), hosts };
-        const changed = next.version !== cached.version || dead.length > 0;
+        // Signature, like the pg and surreal providers: a host REJOINING the
+        // set (its beat re-`sadd`ing after a prune) writes no version bump,
+        // and an expiry never did either. Without this, `cached` would
+        // silently gain or lose a host while `onChange` stayed quiet —
+        // leaving transports unnotified and the departed-host sweep un-run.
+        const nextSignature = hosts
+            .map((h) => `${h.hostId}:${h.status}`)
+            .sort()
+            .join(',');
+        const changed = next.version !== cached.version || nextSignature !== signature;
         cached = next;
+        signature = nextSignature;
         if (changed) for (const cb of changeCbs) cb(next);
         return next;
     };
@@ -186,18 +211,20 @@ export function redisMembership(
     return {
         async join(descriptor) {
             self = descriptor;
-            await writeSelf();
-            await client.sadd(setKey, descriptor.hostId);
+            await writeSelf(); // …which `sadd`s us into the set as well
             await bumpVersion();
             await refresh();
+            // Stamped HERE, not at the write above: `bumpVersion` and a full
+            // O(N) `refresh` sit between them and can outlast `ttlMs` on a
+            // large or slow store, which would make the first beat late by
+            // construction — a terminal fence on every host at startup.
+            clock.arm();
             beat = setInterval(() => {
-                void writeSelf().catch(() => {
-                    // Can't prove our own membership past the TTL → fence.
-                    if (!suspected && Date.now() - lastOkMs > ttlMs) {
-                        suspected = true;
-                        for (const cb of suspectCbs) cb();
-                    }
-                });
+                // Before the write, deliberately: if the window lapsed our
+                // claims are already gone, and waiting out a store
+                // round-trip only lets a doomed activation take more turns.
+                clock.beat();
+                void writeSelf().catch(() => clock.failed());
             }, heartbeatMs);
             (beat as { unref?: () => void }).unref?.();
             // The poll goes through the coalescer too, so a poll tick landing

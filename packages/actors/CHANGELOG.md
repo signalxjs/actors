@@ -17,6 +17,54 @@
   longer reachable through a proxy — rename it. Wire dispatch of such
   names is refused by the server exactly as before.
 
+### Fixed
+
+- **A host that stalled past the membership TTL kept serving actors a
+  survivor had already taken over — single activation was violated (#45).**
+  Block a host's event loop for longer than `ttlMs` (a 20 s GC pause, a
+  suspended container) and its peers expire it, sweep its directory claims
+  and re-activate its actors elsewhere. The stalled host, meanwhile, saw
+  nothing fail: its heartbeat resumed, wrote late, and SUCCEEDED. Its
+  activations stayed live and kept accepting writes, and
+  `/_sigx/health/ready` kept answering 200.
+
+  Self-fencing only ever triggered on a heartbeat write *rejection*, so
+  there was no failure to observe. It now judges the GAP instead of the
+  outcome, in two places:
+
+  - **Providers** share a new `heartbeatClock()` (exported from
+    `@sigx/actors/cluster`): presence is only assumed until
+    `lastConfirmedWrite + ttlMs`, and a beat starting past that fires
+    `onSelfSuspect` before it writes. A write that *started* in time but
+    took longer than the TTL to come back fires too — the stall on the
+    store's side rather than ours, and equally invisible, since a client
+    cannot tell when its write actually landed. It watches the monotonic
+    **and** the
+    wall clock, because `CLOCK_MONOTONIC` does not advance across a VM
+    suspend — and `setTimeout` rides that same clock, so a suspended host
+    would otherwise think every beat was punctual. The window is stamped
+    when the beat is armed, not at the join write, so a slow join cannot
+    fence a host at startup.
+  - **Placement** self-fences when it finds itself absent from its own
+    membership view, confirmed against a fresh `refresh()` first. Guarded
+    so it cannot misfire: an EMPTY view still means solo/not-started (a
+    store failing over to a cold replica must not fence the whole cluster),
+    and absence only counts once this host has been seen in a view.
+
+  Fencing now also withdraws the host from membership, so peers stop routing
+  to a host that refuses every activation instead of waiting out their own
+  TTL. Fenced remains terminal and still fails liveness — the orchestrator's
+  restart is the way back.
+
+  `ClusterMembership` gains a documented requirement it always relied on: a
+  live host must appear in its own `view()`.
+
+### Added
+
+- `memoryClusterHub().expire(hostId)` — drop a member the way a TTL lapse
+  does: no cleanup, and the victim is never told (no `onSelfSuspect`),
+  unlike `kill()`. The test seam for #45-shaped scenarios.
+
 ## [0.2.0] - 2026-08-05
 
 ### Changed
@@ -111,7 +159,6 @@
   implementations that retain the argument by reference AND callers that
   mutate a tree after saving it are affected — no in-repo provider or caller
   was.
-
 
 - **`refreshCoalescer()` on `@sigx/actors/cluster`** (#26): the
   notification→refresh coalescing primitive membership providers share —

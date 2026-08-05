@@ -6,7 +6,10 @@ durable store is SurrealDB. Four providers, one connection:
 - **`surrealStorage`** — the `ActorStorage` seam with etag CAS, so two hosts
   can never both persist an activation's state.
 - **`surrealMembership`** — TTL heartbeats judged on the **database** clock, so
-  a skewed host cannot fake a death or a survival.
+  a skewed host cannot fake a death or a survival. A beat that *lands* past
+  the TTL self-fences just like one that fails: the UPSERT re-creates the
+  record, so a host whose loop stalled would otherwise look healthy again
+  while a survivor already held its actors (#45).
 - **`surrealDirectory`** — the single-activation claim: create-if-absent that
   returns the *winner*, plus compare-and-delete release/evict.
 - **`surrealReminders`** — durable reminders on a due-time-indexed table, one

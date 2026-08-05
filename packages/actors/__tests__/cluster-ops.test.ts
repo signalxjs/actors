@@ -17,7 +17,7 @@
  * while the owner sees the turn. That split is asserted below so a future
  * refactor cannot silently turn it into a double count.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import {
     clusterStats,
@@ -380,6 +380,27 @@ describe('cluster ops: readiness', () => {
         );
         expect(response.status).toBe(503);
         expect((await response.json()).checks.cluster.detail).toMatch(/fenced/);
+    });
+
+    it('a fenced host withdraws from membership so peers stop routing to it', async () => {
+        const cluster = await createCluster(2, { actors: [Counter] });
+        running = cluster;
+        const fencedId = cluster.placements[0]!.identity.hostId;
+        await cluster.hosts[0]!.actor(Counter, 'x').increment(1);
+
+        // Expired without being told: the #45 path, not a crash.
+        cluster.hub.expire(fencedId);
+        await vi.waitFor(() => expect(cluster.placements[0]!.counters().status).toBe('fenced'));
+
+        // Rejoining the view is exactly what a provider whose heartbeat
+        // re-registers the host would do; the fence must have withdrawn it
+        // for good, or peers keep feeding a host that refuses everything.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(
+            cluster.placements[1]!.view().hosts.map((h) => h.hostId)
+        ).not.toContain(fencedId);
+        // …and stop() still completes cleanly over the double leave.
+        await expect(cluster.apps[0]!.stop({ timeoutMs: 1000 })).resolves.toBeUndefined();
     });
 
     it('a FENCED host fails LIVENESS too — fenced is terminal, restart is the medicine', async () => {

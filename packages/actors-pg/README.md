@@ -9,7 +9,11 @@ durable store is SQL. Three providers, one pool:
 - **`pgMembership()`** — TTL-heartbeat membership with the expiry judged on
   the **database clock** (host clock skew cannot fake a death or a
   survival), LISTEN/NOTIFY push with a poll fallback, and self-suspect
-  fencing when this host cannot prove its own membership.
+  fencing when this host cannot prove its own membership — whether the beat
+  *failed* past the TTL or merely *landed* past it, which is what a stalled
+  event loop does (#45): the upsert succeeds and silently re-creates the
+  row, so without the gap check the host would look healthy again while a
+  survivor already held its actors.
 - **`pgReminders()`** — durable reminders on an indexed table: a tick is
   one `FOR UPDATE SKIP LOCKED` claim statement for exactly the due rows
   (advance/delete commits BEFORE delivery — at-most-once, no catch-up

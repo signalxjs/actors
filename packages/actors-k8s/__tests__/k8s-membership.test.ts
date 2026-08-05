@@ -208,6 +208,23 @@ describe('k8s membership provider', () => {
         await until(() => suspects === 2, 3000);
     });
 
+    it('a renewal that lands past ttlMs fires onSelfSuspect even though it SUCCEEDS (#45)', async () => {
+        // #45: self-suspicion used to fire only from a renewal REJECTION, so
+        // a host whose event loop stalled past the TTL resumed, renewed
+        // late, succeeded, and kept serving actors a survivor had already
+        // taken over. `heartbeatMs > ttlMs` reproduces that deterministically
+        // — every beat is late by construction and every renewal succeeds.
+        const fake = fakeKube();
+        const membership = membershipFor(fake, { heartbeatMs: 300, ttlMs: 100 });
+        await membership.join(descriptor('s.a'));
+        let suspects = 0;
+        membership.onSelfSuspect(() => suspects++);
+
+        await until(() => suspects >= 1, 3000);
+        // Nothing failed: the Lease is being renewed happily throughout.
+        expect(fake.leases.get('sigx-s.a')).toBeDefined();
+    });
+
     it('a rotated token causes one 401, a re-read, and no suspect', async () => {
         const fake = fakeKube();
         let current = 'token-a';

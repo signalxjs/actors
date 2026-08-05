@@ -7,12 +7,20 @@
  * path) and `version` is a local monotonic counter — resourceVersion is
  * an opaque watch bookmark, never a number.
  *
- * Self-fencing mirrors the Redis provider exactly: renewal failures past
- * `ttlMs` fire `onSelfSuspect` once (latched); the next successful renewal
- * clears the latch. Watch health never fences — a broken watch is stale
- * peers, not lost membership.
+ * Self-fencing mirrors the Redis provider exactly, over the shared
+ * `heartbeatClock`: a renewal that FAILS past `ttlMs` fires `onSelfSuspect`
+ * once (latched), and so does one that merely LANDS past it — a stalled
+ * event loop renews late and succeeds, and peers evicted this host's claims
+ * while it was away (#45). The next successful renewal clears the latch.
+ * Watch health never fences — a broken watch is stale peers, not lost
+ * membership.
  */
-import type { ClusterMembership, MembershipView, HostDescriptor } from '@sigx/actors/cluster';
+import {
+    heartbeatClock,
+    type ClusterMembership,
+    type MembershipView,
+    type HostDescriptor
+} from '@sigx/actors/cluster';
 import { kubeClient, type KubeClientOptions } from './client';
 import {
     buildLease,
@@ -91,11 +99,15 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
     let beat: Timer | null = null;
     let sweep: Timer | null = null;
     let relist: Timer | null = null;
-    let lastOkMs = 0;
-    let suspected = false;
     const leases = new Map<string, LeaseObject>();
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Set<() => void>();
+    const clock = heartbeatClock({
+        ttlMs,
+        onSuspect: () => {
+            for (const cb of suspectCbs) cb();
+        }
+    });
 
     // The view is a pure function of the lease map and the clock; a version
     // bump means the DESCRIPTOR SET changed. Renewals move renewTime, which
@@ -140,16 +152,7 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
             throw new Error(`lease renew failed: HTTP ${res.status}`);
         }
         descriptorDirty = false;
-        lastOkMs = Date.now();
-        suspected = false;
-    };
-
-    const onRenewFailure = (): void => {
-        // Can't prove our own membership past the TTL → fence, once.
-        if (!suspected && Date.now() - lastOkMs > ttlMs) {
-            suspected = true;
-            for (const cb of suspectCbs) cb();
-        }
+        clock.confirmed();
     };
 
     return {
@@ -165,8 +168,6 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
             } else if (!res.ok) {
                 throw new Error(`lease create failed: HTTP ${res.status}`);
             }
-            lastOkMs = Date.now();
-
             loop = listWatchLoop({
                 client,
                 labelSelector,
@@ -192,7 +193,16 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
             // the map even if the watch is still connecting.
             await loop.relist();
 
-            beat = unref(setInterval(() => void renew().catch(onRenewFailure), heartbeatMs));
+            // Stamped HERE, not at the create above: the LIST between them is
+            // O(leases) and can itself outlast a short ttlMs, which would
+            // make the very first beat late by construction.
+            clock.arm();
+            beat = unref(
+                setInterval(() => {
+                    clock.beat();
+                    void renew().catch(() => clock.failed());
+                }, heartbeatMs)
+            );
             // Freshness decays with the clock, not with events: the sweep
             // drops a peer that silently stopped renewing.
             sweep = unref(setInterval(materialize, heartbeatMs));
@@ -209,8 +219,9 @@ export function k8sMembership(options: K8sMembershipOptions = {}): ClusterMember
             const res = drain(await client.patch(selfLease, renewPatch(Date.now(), self)));
             if (!res.ok) throw new Error(`lease status update failed: HTTP ${res.status}`);
             descriptorDirty = false;
-            lastOkMs = Date.now();
-            suspected = false;
+            // A status patch renews `renewTime` exactly like a beat does, so
+            // it re-opens the presence window too.
+            clock.confirmed();
         },
         async leave() {
             if (beat) clearInterval(beat);

@@ -42,14 +42,21 @@ safely shared).
 
 ```
 {ns}:host:{hostId}    HASH {d: descriptor JSON}   PX ttlMs, renewed each beat
-{ns}:hosts            SET of hostIds              lazily pruned
+{ns}:hosts            SET of hostIds              lazily pruned, re-added each beat
 {ns}:mver             INCR'd version counter      cheap view-poll compare
 {ns}:dir:{actorId}    "hostId\nactivationId"      no TTL (validity = owner liveness)
 {ns}:membership       pub/sub channel             change push (poll = fallback)
 ```
 
 A host that cannot heartbeat past `ttlMs` self-fences (stops claiming
-actors, deactivates what it holds); directory entries of dead hosts are
+actors, deactivates what it holds, withdraws from membership) — and so does
+one whose heartbeat merely *lands* past `ttlMs`. A stalled event loop
+resumes and writes successfully, so nothing fails; but the key expired
+while it was away, peers dropped it and released its claims, and a survivor
+may already be serving those actors. The beat therefore also re-`sadd`s
+this host: `refresh` lazily `srem`s a member whose key expired, so without
+it a pruned host would keep heartbeating into a set it is no longer in,
+invisible to every peer's view forever. Directory entries of dead hosts are
 evicted lazily on lookup. State integrity never rests on any of this — the
 actor runtime's storage etag CAS is the floor.
 
