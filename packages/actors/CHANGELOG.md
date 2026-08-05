@@ -2,13 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-05
+
 ### Changed
 
 - **BREAKING: the guard split — `use` / `methodUse` / `unguarded` become
   `authorize` / `methodAuthorize` / `allowAnonymous` (#17, rfc-server-v4
   §7).** Core 0.15 split its single guard primitive into **middleware**,
   **authentication** and **authorization** and made the runtime
-  **fail-closed**; actors follows, pinned `@sigx/server@^0.15.1`. One
+  **fail-closed**; actors follows, pinned `@sigx/server@^0.15.0`. One
   conceptual change across two repos — the migration guide owns both
   tables: [`docs/migrations/0.15-guard-split.md`][guard-split] in
   `signalxjs/core`.
@@ -94,6 +96,20 @@
   implementations that retain the argument by reference AND callers that
   mutate a tree after saving it are affected — no in-repo provider or caller
   was.
+
+
+- **`refreshCoalescer()` on `@sigx/actors/cluster`** (#26): the
+  notification→refresh coalescing primitive membership providers share —
+  leading-edge immediate, single-flight, version-gated hint skipping, with
+  `demand()` preserving `ClusterMembership.refresh()`'s
+  started-at-or-after contract and `settled()` for teardown. Wired into
+  `@sigx/actors-redis`, `@sigx/actors-pg` and `@sigx/actors-surreal`, whose
+  subscriber paths were the measured O(N²) (a burst of N changes cost N
+  full member-list re-reads per subscriber).
+
+## [0.1.0] - 2026-08-03
+
+### Changed
 
 - **BREAKING: `Mailbox` is now `Turns`** (#284) — the class exported from
   `@sigx/actors/host`, its module (`host/mailbox.ts` → `host/turns.ts`), and
@@ -201,15 +217,6 @@
   is unchanged within noise, as expected: parse is ~6% of that rung.
 
 ### Added
-
-- **`refreshCoalescer()` on `@sigx/actors/cluster`** (#26): the
-  notification→refresh coalescing primitive membership providers share —
-  leading-edge immediate, single-flight, version-gated hint skipping, with
-  `demand()` preserving `ClusterMembership.refresh()`'s
-  started-at-or-after contract and `settled()` for teardown. Wired into
-  `@sigx/actors-redis`, `@sigx/actors-pg` and `@sigx/actors-surreal`, whose
-  subscriber paths were the measured O(N²) (a burst of N changes cost N
-  full member-list re-reads per subscriber).
 
 - **The request-context bag — `stampCallBag` / `ctx.bag` /
   `.with({ bag })`** (#246, second half, closing it). A small, string-only,

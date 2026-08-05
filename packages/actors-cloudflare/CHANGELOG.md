@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-05
+
+### Fixed
+
+- **Every actor call to a Durable Object 404'd** once core made the mount
+  base load-bearing (#563). The object's mount lives at `/_sigx/do`, but the
+  base never reached `handleServerFnRequest`, so core matched the path
+  against its own `/_sigx/fn` default. Latent until 0.15; fatal after.
+- **Host-to-host traffic 401'd under the fail-closed runtime.** The internal
+  mount authenticates with a per-request HMAC, not a principal, so its
+  wrappers now declare anonymity — otherwise core's identity gate (which
+  runs for every wire request) refused calls the platform had already
+  guaranteed.
+
+### Changed
+
+- **Peers `@sigx/actors@^0.2.0`.** The guard split is breaking, so the
+  whole family moves together — see the `@sigx/actors` changelog and core's
+  [0.15 migration guide](https://github.com/signalxjs/core/blob/main/docs/migrations/0.15-guard-split.md).
+  Actors, workers and jobs defined against this package declare access with
+  `authorize` / `methodAuthorize` / `allowAnonymous` now, and the runtime is
+  fail-closed: one that declares nothing, in a process with no server app,
+  denies with 401.
+
+## [0.1.0] - 2026-08-03
+
 ### Changed
 
 - **silo → host** (#233): `createSiloDurableObject` →
