@@ -1,5 +1,8 @@
-# Everything is text, stored with LF, and CHECKED OUT with LF on every
-# platform. `eol=lf` beats `core.autocrlf`, which is what made Windows
+# Text is stored with LF and CHECKED OUT with LF on every platform —
+# `text=auto` lets git decide text-vs-binary per file, so the blanket rule
+# governs every file git DETECTS as text (today: everything except the
+# three NUL-carrying fixtures noted below).
+# `eol=lf` beats `core.autocrlf`, which is what made Windows
 # checkouts CRLF: vitest rewrote snapshots with the checkout's endings on
 # every `pnpm test` (a pure-EOL diff dirtying the tree), and staged edits
 # became whole-file rewrites (a 9-line doc change staged as 761/584) —
