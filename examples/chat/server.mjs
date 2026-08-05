@@ -11,7 +11,7 @@
  */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { extname, join, sep } from 'node:path';
 import { createServerFnHandler } from '@sigx/server/node';
 import { createRequestHandler } from '@sigx/server-renderer/node';
 import { createActorHandler, attachSignalHandlers } from '@sigx/actors/node';
@@ -19,6 +19,7 @@ import { resolveStatic } from './src/static.ts';
 
 const here = import.meta.dirname;
 const clientDir = join(here, 'dist/client');
+const assetsDir = join(clientDir, 'assets');
 
 const { createApp, actorApp } = await import('./dist/server/entry-server.js');
 // The emitted registry exports `serverFns`; the handler option is `functions`.
@@ -52,7 +53,10 @@ const RESERVED = /^\/_sigx(?:\/(?!actor(?:\/|$)|fn(?:\/|$))|$)/;
 async function serveAsset(req, res, next) {
     const file = resolveStatic(clientDir, req.url ?? '/');
     // Outside the root, or not an asset request — let the document answer.
-    if (!file || !file.startsWith(join(clientDir, 'assets'))) return next();
+    // The `+ sep` is not decoration: a bare prefix check would also accept
+    // a sibling `assets-other/`, which is the same mistake `static.ts`
+    // guards against one level up.
+    if (!file || (file !== assetsDir && !file.startsWith(assetsDir + sep))) return next();
 
     let body;
     try {
@@ -62,7 +66,11 @@ async function serveAsset(req, res, next) {
         // rather than the request.
         body = await readFile(file);
     } catch {
-        return next();
+        // A miss UNDER /assets/ is a 404. Falling through would render the
+        // SSR document, so a missing script would arrive as 200 text/html
+        // and fail somewhere far less obvious.
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        return void res.end('not found');
     }
     res.writeHead(200, {
         'content-type': MIME[extname(file)] ?? 'application/octet-stream',

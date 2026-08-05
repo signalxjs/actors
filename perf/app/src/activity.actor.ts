@@ -24,10 +24,10 @@ export interface ActivityEntry {
     readonly room: string;
     readonly what: 'message' | 'topic';
     readonly at: Date;
-    /** Who caused it — the session user from the context bag, which the
-     *  publishing room's turn inherited from the edge guard and
-     *  `ctx.publish` handed to this subscriber. Absent when the publish
-     *  came from an unstamped context (a script, an ops probe). */
+    /** Who caused it — `ctx.principal`, which the publishing room's turn
+     *  inherited from the edge and `ctx.publish` handed to this subscriber.
+     *  Absent when the publish came from an unauthenticated context (a
+     *  script, an ops probe). */
     readonly who?: string;
 }
 

@@ -5,10 +5,10 @@
  *
  * The `@sigx/server` import is LOAD-BEARING, not incidental: importing it
  * stamps `globalThis.__SIGX_SERVERFN_SCOPE__`, which is what lets the
- * document handler open a request scope around the render. Without it every
- * guard that reads `rq.request` — including this app's `requireUser` —
- * throws mid-render. `serverPlugin()` brings it in, so installing the
- * plugin is enough.
+ * document handler open a request scope around the render. Without it,
+ * anything reading `rq.request` mid-render — including this app's
+ * `authenticate` — throws on a detached context. `serverPlugin()` brings it
+ * in, so installing the plugin is enough.
  */
 import { defineApp, type App } from 'sigx';
 import { serverPlugin } from '@sigx/server/plugin';
