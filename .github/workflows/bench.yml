@@ -69,6 +69,14 @@ on:
       - 'benchmarks/**'
       - 'pnpm-lock.yaml'
       - '.github/workflows/bench.yml'
+      # Docs cannot move a number, and `packages/**`/`benchmarks/**` otherwise
+      # match every README, CHANGELOG and BASELINES.md under them — which put a
+      # six-file Markdown PR on the dedicated bench machine for a full A/B.
+      # GitHub applies these in order, so the trailing negation wins for .md
+      # while a PR touching source AND docs still matches on the source path.
+      # `merge_group` takes no paths filter, so the gating `exact` metrics are
+      # unaffected: this only changes which PRs get the timing comment.
+      - '!**/*.md'
 
 permissions: {}
 
