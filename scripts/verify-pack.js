@@ -95,7 +95,39 @@ function assertTarballContents(pkgFullPath, name) {
             stdio: ['ignore', 'pipe', 'ignore']
         })
     );
-    const files = listed[0].files.map((f) => f.path);
+    // TWO shapes, because the release workflow runs a different npm from
+    // every other job — Node 24 + `npm@latest`, since trusted publishing
+    // needs >= 11.5.1 — so the shape that passes locally and in CI is not
+    // the shape that runs at publish time. That asymmetry cost a release:
+    // this read `listed[0].files`, which is right for npm 10 and dies with
+    // "Cannot read properties of undefined" on npm 11, INSIDE the release
+    // run, after every other gate was green.
+    //
+    //   npm 10:  [ { name, files: [...], … } ]
+    //   npm 11:  { "@scope/name": { name, files: [...], … } }
+    // Keyed BY NAME on npm 11, so ask for this package rather than trusting
+    // position: a shape with more than one key would otherwise silently
+    // assert the wrong package's tarball, which is worse than failing. The
+    // sole-value fallback covers a key that is not spelled exactly `name`
+    // (a scope alias, say); anything else falls through to the error below,
+    // including `null` — `Object.values(null)` throws, and a TypeError here
+    // is precisely the unreadable failure this whole change is about.
+    const entry = Array.isArray(listed)
+        ? listed[0]
+        : listed !== null && typeof listed === 'object'
+          ? (listed[name] ??
+            (Object.keys(listed).length === 1 ? Object.values(listed)[0] : undefined))
+          : undefined;
+    if (!entry || !Array.isArray(entry.files)) {
+        throw new Error(
+            `${name}: could not read the file list from \`npm pack --dry-run --json\` ` +
+                `(npm ${execSync('npm --version', { encoding: 'utf8' }).trim()}). Got ` +
+                `${JSON.stringify(listed).slice(0, 200)}. The output shape changed — ` +
+                'teach this function the new one rather than loosening the check, which ' +
+                'is what stops a tarball shipping without its LICENSE.'
+        );
+    }
+    const files = entry.files.map((f) => f.path);
     const missing = REQUIRED_IN_TARBALL.filter((re) => !files.some((f) => re.test(f)));
     if (missing.length > 0) {
         throw new Error(
