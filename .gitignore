@@ -76,8 +76,11 @@ lerna-debug.log*
 # Testing
 coverage/
 
-# Runtime data (fileStorage of running examples/dev hosts)
+# Runtime data (fileStorage of running examples/dev hosts). The demo store
+# is separate from the dev one so a demo re-run starts from zero without
+# discarding whatever you typed into the dev server.
 .actors/
+.actors-runtime-demo/
 
 # Benchmark output. Results and the local baseline are machine-specific —
 # only benchmarks/BASELINES.md (hand-curated, with its machine recorded) is

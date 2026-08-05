@@ -166,6 +166,70 @@ checkpoint was lost — and the client-visible timeline never breaks, because
 the same key keeps answering `status()` and `watch()` before, during and
 after.
 
+## Detached work, and a reminder that outlives the process
+
+```sh
+pnpm --filter counter-example runtime-demo
+```
+
+Two primitives no other example runs, on one host and no infrastructure.
+
+**A task runs detached** (`src/importer.actor.ts`). A method call holds the
+activation until it settles — right for milliseconds, wrong for an import. A
+`tasks:` body runs outside any turn, so ordinary reads keep answering:
+
+```
+begin(10):  {"started":true,"total":10}
+  status while running: phase=running done=1/10 running=[run]
+  status while running: phase=running done=4/10 running=[run]
+  status while running: phase=running done=8/10 running=[run]
+(every one of those answered mid-import — a method call could not have)
+```
+
+The trade is that a task body gets no `ctx.state` and no `ctx.save()`. Every
+mutation goes through `ctx.turn(fn)`, which enqueues `fn` as one ordinary
+serialized turn — so the writes stay single-threaded and everything
+downstream of a turn keeps working. `defineJob` is built on exactly this,
+and adds the durable ledger, attempts and `watch()` on top.
+
+Cancelling is a *request*, not a join: it aborts and returns, and the run
+winds down through its own final turn.
+
+```
+stopped at done=4/50 phase=stopped
+```
+
+**A durable reminder survives the process** (`src/reminder.actor.ts`). This
+is what separates `ctx.reminders` from `ctx.timer`: a timer is volatile and
+dies with the activation, while a reminder is stored through `ActorStorage`,
+fired by the *host's* scheduler, and **re-activates an actor that is no
+longer there**.
+
+The demo arms one, stops the host outright, starts a new host on the same
+storage, and then deliberately does nothing:
+
+```
+=== 3. Arm a durable reminder, then kill the host that armed it ===
+armed at 2026-08-05T18:05:27.905Z, due in 1500ms
+pending: [wake]
+host stopped — the activation is gone, and so is its scheduler
+
+=== 4. A NEW host, same storage — the reminder fires with nobody calling ===
+making NO calls to the actor — waiting 5s in silence
+fired=1  lastFiredAt=2026-08-05T18:05:29.464Z
+```
+
+The silence is the point. Polling `status()` would itself activate the
+actor, and then "the reminder woke it" and "I woke it and the reminder
+happened to be due" would be indistinguishable — so the demo touches it
+zero times and reads once at the end.
+
+Two limits worth knowing: a repeating `period` has a **60s floor** (a
+durable reminder is a storage write per tick; use `ctx.timer` for tighter
+cadences), and delivery is coarse — "at or after", at-most-once per tick.
+The demo drops `reminderTickMs` from its 30s default to 250ms so you are not
+watching paint dry.
+
 ## Things that will bite you
 
 **Run `pnpm build` first.** The example resolves `@sigx/actors` from the
@@ -195,9 +259,12 @@ state changing is not a source edit anyway.
 | `src/actors.app.ts` | the app — storage and plugins, shared by dev and prod |
 | `src/main.ts` | the browser: the build-swapped `actor()` call and the stream loop |
 | `src/crunch.job.ts` | `defineJob` — progress, checkpoint, resume |
+| `src/importer.actor.ts` | `ctx.tasks` — detached work, mutating through `ctx.turn` |
+| `src/reminder.actor.ts` | `ctx.reminders` — durable, and re-activates the actor |
 | `src/static.ts` | resolve a request target inside `dist/`, or refuse |
 | `server.mjs` | production entry: the app handler, then static, then a graceful drain |
 | `cluster-demo.mjs` | three hosts over real sockets — spread, single activation, cross-host stream, failover, ops |
 | `job-demo.mjs` | the same three hosts, one job, one deliberate crash |
+| `runtime-demo.mjs` | one host: a detached task, then a reminder that survives a restart |
 | `vite.config.ts` | `sigxActors({ app })` — the dev host and the client swap |
 | `index.html` / `package.json` / `tsconfig.json` | the rest |

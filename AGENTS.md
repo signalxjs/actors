@@ -380,7 +380,12 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   cluster demo (`pnpm --filter counter-example cluster`), and the
   durable-job demo (`pnpm --filter counter-example job`): a checkpointing
   `defineJob` whose owning host is killed mid-run and which resumes from
-  its last checkpoint on a survivor. Not published.
+  its last checkpoint on a survivor. Also the two runtime primitives no
+  other example runs (`pnpm --filter counter-example runtime-demo`, NOT
+  `runtime` — that name collides with a pnpm builtin): `ctx.tasks` detached
+  work mutating through `ctx.turn` while reads keep answering, and a
+  durable `ctx.reminders` entry that outlives the host that armed it and
+  re-activates the actor on a new one. Not published.
   `pnpm --filter counter-example cluster:serve` keeps that cluster UP
   under steady traffic, with `metrics()` and `ops()` mounted — the
   target `sigx actors top` is demonstrated against.

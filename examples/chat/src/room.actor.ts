@@ -1,19 +1,16 @@
 /**
  * A chat room — one actor per room name, single-threaded, persistent.
  *
- * **It declares no authorization at all, and that is the point.** The app's
- * default policy (`server-app.ts`) decides, on every transport: the wire
- * call from the browser and the in-process dispatch during an SSR render.
- * Proving those two agree is most of why this example exists, because they
- * reach the request very differently.
+ * Authorization runs on every transport — the wire call from the browser
+ * and the in-process dispatch during an SSR render. Proving those two agree
+ * is most of why this example exists, because they reach the request very
+ * differently.
  *
- * If you need *"may they call it on THIS room?"* — the question a guard
- * cannot answer, because it never sees the key — a policy can, because it
- * receives the resolved principal and the instance:
- *
- * ```ts
- * authorize: (user, _rq, op) => op.resource!.key.startsWith(`${user.name}:`)
- * ```
+ * Two layers do it. The app's default policy (`server-app.ts`) answers *"is
+ * this caller signed in?"* for everything, with nothing declared here; the
+ * `authorize` below answers the one question that default cannot reach,
+ * *"may they call it on THIS room?"*, because only a policy sees the
+ * instance.
  */
 import { defineActor } from './actors.app';
 import { roomActivity } from './activity.actor';
@@ -34,8 +31,47 @@ interface RoomState {
     messages: Message[];
 }
 
+/** A room only its owner may open: `dm-<user>-<whatever>`. */
+const PRIVATE = /^dm-([\w-]+?)-/;
+
 export const RoomActor = defineActor({
     type: 'Room',
+    /**
+     * The keyed question, which is the one a guard could not answer.
+     *
+     * A guard is called `(rq, { symbol, name })` — no key, no arguments —
+     * because it runs before the endpoint has decoded which actor you meant.
+     * So "is this caller signed in?" was expressible and "does this caller
+     * own THIS instance?" was not. A policy receives the resolved principal
+     * AND `op.resource`, so it is ordinary.
+     *
+     * Strict-`true`: anything other than `true` denies (403, or 401 when the
+     * principal is null). Returning a falsy value by accident fails closed.
+     *
+     * It runs on EVERY transport — the wire endpoint, `$live`, and the
+     * in-process dispatch during SSR — and always outside any turn, so a
+     * slow check never occupies the actor.
+     *
+     * Try it: signed in as `ada`, open `/r/dm-ada-notes`. Then open
+     * `/r/dm-bob-notes` and watch the page render the refusal, because an
+     * actor read reports a policy rejection as state rather than throwing.
+     */
+    authorize: (user, _rq, op) => {
+        // `op.resource` is optional on the shared policy type — a serverFn
+        // op has none. For an actor policy it is always the instance, so
+        // this branch is unreachable here; deny rather than assert, because
+        // an unidentified resource is exactly when you want to fail closed.
+        if (!op.resource) return false;
+        const match = PRIVATE.exec(op.resource.key);
+        if (match === null) return true; // an ordinary, shared room
+        // `user` is non-null here in practice — this actor does not declare
+        // `allowAnonymous`, so core's pre-decode prelude has already 401'd
+        // an anonymous caller before any policy runs. The type still admits
+        // null, because a policy on an `allowAnonymous: true` actor DOES
+        // see it. Handle it, rather than leave a latent null dereference
+        // for whoever copies this into that case.
+        return user !== null && match[1] === user.name;
+    },
     state: (): RoomState => ({
         v: ROOM_STATE_VERSION,
         topic: 'general chatter',

@@ -70,15 +70,50 @@ curl -X POST localhost:5290/_sigx/actor/Room/setTopic -H 'origin: http://localho
 # {"error":{"message":"Authentication required","status":401}}
 ```
 
+### The keyed question
+
 A guard could not have done the harder version of this. Guards are called
-with `(rq, { symbol, name })` — **no key and no arguments** — so *"is this
-caller signed in?"* was expressible and *"does this user own THIS room?"* was
-not. A policy receives the resolved principal *and* the instance, so the
-second question is ordinary:
+with `(rq, { symbol, name })` — **no key and no arguments**, because the
+endpoint has not yet decoded which actor you meant — so *"is this caller
+signed in?"* was expressible and *"does this user own THIS room?"* was not.
+
+A policy receives the resolved principal **and** `op.resource`, so it is
+ordinary. `room.actor.ts` makes any room named `dm-<user>-…` private to that
+user:
 
 ```ts
-authorize: (user, _rq, op) => op.resource!.key.startsWith(`${user.name}:`)
+const PRIVATE = /^dm-([\w-]+?)-/;
+
+authorize: (user, _rq, op) => {
+    if (!op.resource) return false;              // fail closed
+    const match = PRIVATE.exec(op.resource.key);
+    if (match === null) return true;             // an ordinary, shared room
+    return user !== null && match[1] === user.name;
+}
 ```
+
+`user` cannot actually be null here: this actor does not declare
+`allowAnonymous`, so core's pre-decode prelude 401s an anonymous caller
+before any policy runs. The type admits null because a policy on an
+`allowAnonymous: true` actor **does** see it — so the check is there to keep
+the snippet safe to copy into that case.
+
+Signed in as `ada`, open **`/r/dm-ada-notes`** — hers. Then open
+**`/r/dm-bob-notes`** and the page renders the refusal instead of the room,
+because an actor read reports a policy rejection *as state*. Over the wire it
+is a plain 403:
+
+```sh
+curl -X POST localhost:5290/_sigx/actor/Room%23topic -H 'origin: http://localhost:5290' \
+     -H 'content-type: application/json' -H "Cookie: user=$BOB" -d '{"args":["dm-ada-notes"]}'
+# {"error":{"message":"Forbidden","status":403}}
+```
+
+Three things worth knowing. It is **strict-`true`** — anything else denies,
+so a policy that accidentally returns a falsy value fails closed. It runs on
+**every** transport, including the in-process dispatch during SSR, which is
+why the page can render the refusal at all. And it runs **outside any turn**,
+so a slow check never occupies the actor.
 
 ## Going multi-host from here
 

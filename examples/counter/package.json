@@ -10,7 +10,8 @@
         "typecheck": "tsc --noEmit",
         "cluster": "node cluster-demo.mjs",
         "cluster:serve": "node cluster-demo.mjs --serve",
-        "job": "node job-demo.mjs"
+        "job": "node job-demo.mjs",
+        "runtime-demo": "node runtime-demo.mjs"
     },
     "dependencies": {
         "@sigx/actors": "workspace:*",
