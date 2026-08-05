@@ -9,8 +9,9 @@ import { defineActor } from './actors.app.ts';
  */
 export const Counter = defineActor({
     type: 'Counter',
-    // This demo counter is deliberately public. Real actors declare a
-    // `use: [...]` guard chain — the build gate insists you pick one.
+    // Deliberately public. A real actor either declares an `authorize`
+    // policy or inherits the app's default — the build gate insists you
+    // pick one. See examples/chat for both.
     allowAnonymous: true,
     state: () => ({ count: 0, lastVisit: null as Date | null }),
     methods: (ctx) => ({
