@@ -4,6 +4,43 @@
 
 ### Changed
 
+- **Change detection now calls reactivity's own deep traversal instead of a
+  copy of it (#124), and `@sigx/reactivity` 0.15.3 is the new floor.** The
+  host learns "state is dirty" by walking `ctx.state` inside a
+  scheduler-deferred effect. That walk was a private `trackDeep` mirroring
+  upstream `traverse`, under a comment warning that divergence here would be
+  divergence in what counts as a change — and it diverged: upstream stopped
+  enumerating the reactive proxy (signalxjs/core#642), then stopped reading
+  keys back through it at all (core#645, one any-write dep per object), while
+  the copy stayed on the original algorithm.
+
+  It is now `deepTrack` from `@sigx/reactivity/internals`, exported for this
+  caller in core#651. `watch(…, { deep: true })` remains unusable here —
+  `WatchOptions` has no `scheduler`, and parking the re-run so the walk folds
+  once per turn boundary is the whole design.
+
+  **Nothing observable changes**: the same writes mark the same actor dirty at
+  the same boundaries, and the pins in `dirty-tracking.test.ts` are untouched
+  — including the one that matters most, an object added in turn N and
+  mutated in turn N+1 still emitting.
+
+  What changes is the cost, which was severe on anything but small state. One
+  mutating turn over 200-row state, with no subscriber and no write involved,
+  measured **~1.2 ms**. Same machine, back to back:
+
+  | scenario | before | after |
+  |---|---:|---:|
+  | `state/dirty-size` 200 rows, no subscriber | 1.0 k ops/s | **10.1 k ops/s** (+896%) |
+  | `state/dirty-size` 2 000 rows, no subscriber | 88.9 ops/s | **714 ops/s** (+703%) |
+  | `state/dirty-size` 200 rows, 1 subscriber | 741 ops/s | 3.0 k ops/s (+308%) |
+  | `state/dirty-growth` tail turn (job actor, 500 steps) | 2 183 µs | **666 µs** (−69%) |
+
+  The cost still scales with total state size rather than with the size of the
+  change, because a boundary also pays `#snapshot()` — a full encode+revive —
+  whenever anyone is subscribed. With the walk fixed, that is now the larger
+  of the two: at 200 rows a subscriber costs 70% of the turn, against 26%
+  before. Tracked separately.
+
 - **The README is now a pointer to https://sigx.dev/actors** rather than a
   second copy of the manual (#113). It had grown to 2,632 lines duplicating
   the docs site page for page, and had drifted: seven confirmed factual errors

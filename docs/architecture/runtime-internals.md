@@ -73,6 +73,49 @@ storage.
 Saves are single-flighted per activation, so even `reentrant: 'always'` actors
 cannot interleave their compare-and-sets within one activation.
 
+## Change detection
+
+Persistence and the change feed both need one bit — *did anything under
+`ctx.state` change* — and both read it only at a boundary (`#afterTurn`, the
+deactivation flush, `ctx.save()`). Nothing wants per-mutation granularity.
+
+The shape that gives it (`activation.ts`, `#ensureChangeTracking`):
+
+```ts
+effect(() => deepTrack(this.#state), {
+    scheduler: (run) => { this.#dirty = true; this.#retrack = run; }
+});
+```
+
+Two halves, and they answer different questions.
+
+**The `scheduler` decides how OFTEN the walk runs.** A write flips `#dirty`
+synchronously — so out-of-turn and `onActivate` mutations are caught at write
+time — and parks the effect's re-run instead of letting it fire. The one walk
+happens when `#consumeDirty()` folds at the next boundary. The floor is one
+walk per *dirty boundary*, not per mutation. This is why `watch(…, { deep:
+true })` is not usable here: `WatchOptions` has no `scheduler`.
+
+**Re-running the walk is what keeps NEW objects tracked**, and that is the
+invariant to protect. An object added during turn N is unsubscribed until the
+walk runs again, so `#consumeDirty()` must fold before the next turn's writes.
+Get this wrong and a mutation to a recently-added object is silently missed —
+under write-behind, that is lost data.
+`packages/actors/__tests__/dirty-tracking.test.ts` pins it.
+
+**What the walk COSTS is `@sigx/reactivity`'s to own.** `deepTrack` is core's
+own `watch(deep)` traversal, exported on `@sigx/reactivity/internals` for this
+caller (signalxjs/core#651) — hence the `^0.15.3` floor. It used to be a
+private copy here, carrying a comment that divergence from upstream would be
+divergence in what counts as a change; it diverged exactly that way, and one
+mutating turn over 200-row state cost ~1.2 ms (#124). **Do not re-inline it.**
+Calling core's walk instead of mirroring it is the whole point.
+
+Two costs sit on this boundary, not one. The walk is the first; `#snapshot()`
+— `cloneState(toRaw(state))`, a full encode+revive — is the second, paid once
+per version advance when anyone is subscribed. Both scale with total state
+size rather than with the size of the change.
+
 ## Reserved names
 
 `defineActor` refuses **any** actor type starting with `$` or `@`

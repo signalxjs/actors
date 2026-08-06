@@ -7,6 +7,10 @@ objects riding the serverFn wire protocol.
 pnpm add @sigx/actors
 ```
 
+Peer dependencies: **`@sigx/reactivity` 0.15.3 or later** (the host's change
+tracking uses an internals seam added in that release), `@sigx/runtime-core`,
+`@sigx/serialize` and `@sigx/server` on 0.15, and `vite` 6 or later.
+
 ## Documentation
 
 **https://sigx.dev/actors**

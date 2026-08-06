@@ -1087,6 +1087,41 @@ not exist, and `Metric.exact` demands determinism *by construction*. A gate
 that cries wolf is worse than none, so these scenarios gate as timings only
 and stay out of `BENCH_GATE_SCENARIOS`.
 
+### Fixed the same day: `deepTrack` replaces the copied walk
+
+Same machine, run back to back rather than against the table above — the
+figures there were captured under heavier contention, and comparing across them
+would flatter the change. The `after` side is a `pnpm pack`ed build of the
+reactivity release candidate installed as an ordinary tarball dependency, not a
+`link:` — a linked workspace package is inlined rather than externalised, which
+is a different module graph from the one a user gets.
+
+| scenario | before | after | |
+|---|---:|---:|---:|
+| `state/dirty-size` rows=0, subs=0 | 229.3 k ops/s | 487.2 k ops/s | +113% |
+| `state/dirty-size` rows=0, subs=1 | 163.1 k ops/s | 269.6 k ops/s | +65% |
+| `state/dirty-size` rows=200, subs=0 | 1.0 k ops/s | **10.1 k ops/s** | **+896%** |
+| `state/dirty-size` rows=200, subs=1 | 741 ops/s | 3.0 k ops/s | +308% |
+| `state/dirty-size` rows=2000, subs=0 | 88.9 ops/s | **714 ops/s** | **+703%** |
+| `state/dirty-size` rows=2000, subs=1 | 72.1 ops/s | 214 ops/s | +196% |
+| `state/dirty-growth` `head/turn_us` | 267 µs | 89 µs | −67% |
+| `state/dirty-growth` `tail/turn_us` | 2 183 µs | 666 µs | **−69%** |
+
+Every row moved far past the noise; the change is `trackDeep` deleted in favour
+of `deepTrack` from `@sigx/reactivity/internals`, and nothing else.
+
+**The ordering has now flipped, which is the finding to carry forward.** At 200
+rows the subscriber cost 26% of a turn before (1.0 k → 741) and costs **70%**
+after (10.1 k → 3.0 k). `#snapshot()`'s encode+revive was the smaller of the two
+O(state-size) costs on a dirty boundary and is now the larger one. Re-read the
+table above before quoting it: fixing the walk did not make the per-boundary
+cost independent of state size, it just changed which term dominates.
+
+`state/dirty-growth` also allocates measurably less — 26 → 14 GC collections
+and 17.7 ms → 9.1 ms of pause over the same fixed 500 steps. (The
+`state/dirty-size` GC counts went *up*, which is not a regression: those
+scenarios are duration-bounded, so ~9× the throughput means ~9× the turns in
+the same 400 ms.)
 ---
 
 ## 2026-08-06 · Would `worker_threads` pay? (#119)
