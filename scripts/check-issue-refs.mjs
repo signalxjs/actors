@@ -39,8 +39,15 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const REPO = 'signalxjs/actors';
+
+// Pin the root rather than trusting the cwd, as the other scripts here do:
+// `git ls-files` returns paths relative to the repo root, so reading them
+// from anywhere else silently finds nothing and reports a clean run.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Paths under the guard. This list is deliberately narrower than the repo:
@@ -59,6 +66,7 @@ const roots = paths.length > 0 ? paths : DEFAULT_PATHS;
 /** Tracked files under `roots`, minus the binary/lock noise. */
 function trackedFiles() {
     const out = execFileSync('git', ['ls-files', '-z', '--', ...roots], {
+        cwd: REPO_ROOT,
         encoding: 'utf8',
         maxBuffer: 1e8
     });
@@ -86,7 +94,7 @@ function collect() {
     for (const file of trackedFiles()) {
         let text;
         try {
-            text = readFileSync(file, 'utf8');
+            text = readFileSync(path.join(REPO_ROOT, file), 'utf8');
         } catch {
             continue; // unreadable or binary — nothing to check
         }
