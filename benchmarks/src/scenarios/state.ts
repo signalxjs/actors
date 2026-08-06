@@ -54,6 +54,24 @@ interface Subscribers {
 }
 
 /**
+ * `unwind()` belongs on the SUCCESS path only, and the `finally` deliberately
+ * does not call it.
+ *
+ * It is an assertion, not cleanup: releasing the consumers is
+ * `fixture.stop()`'s job either way — `host.stop()` deactivates, and both
+ * `deactivate()` and `forceStop()` call `#closeSubs()`, which marks every sub
+ * done and wakes a parked `next()` (`activation.ts:773`, `:786`, `:1850`).
+ * What `unwind()` adds is the proof that the runtime releases them from the
+ * CONSUMER side, on abort plus a wake-up mutation, without needing the host
+ * torn down underneath it.
+ *
+ * Putting it in `finally` would run that assertion against a host whose
+ * measurement has just thrown — and its failure, or a dispatch failure from
+ * its own wake-up call, would replace the exception that actually broke the
+ * round. Losing the real error to a teardown check is a bad trade.
+ */
+
+/**
  * Open `count` change feeds on `ref` and drain each in the background: an
  * unconsumed feed fills its 16-slot buffer and starts dropping, which would
  * silently stop measuring the fan-out.
