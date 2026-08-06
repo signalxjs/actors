@@ -158,6 +158,7 @@ pnpm bench:compare        # run again and diff against that reference
 pnpm bench:diff --before=a.json --after=b.json   # diff two saved result files
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
+pnpm bench:threads        # compute/: worker_threads vs the event loop (opt-in, needs cores)
 ```
 
 Benchmarks measure the built `dist/*.prod.js` via `--conditions=production`,
