@@ -196,7 +196,7 @@ function rowMetrics(row: LadderRow, prefix = ''): Metric[] {
             value: row.errs,
             unit: 'count',
             direction: 'lower',
-            // A few connection resets at the edge are expected (#142) and
+            // A few connection resets at the edge are expected and
             // must not fail a perf comparison by themselves.
             informational: true,
             noiseFloor: 1

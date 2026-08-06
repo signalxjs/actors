@@ -1,5 +1,5 @@
 /**
- * Stateless workers: the two invariants issue #243 promised, gated exactly.
+ * Stateless workers: the two invariants `defineWorker` promises, gated exactly.
  *
  * 1. `directory_ops == 0` — a stateless dispatch never touches the cluster
  *    directory: no claim, no lookup, no release, at any N. The stateful

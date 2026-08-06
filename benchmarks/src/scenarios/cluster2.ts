@@ -117,7 +117,7 @@ function guardStoreOps(label: string, m: Measured): void {
 }
 
 /**
- * The #89 test.
+ * The socket-cost test.
  *
  * The claim under test is that HTTP/1.1 under undici's default
  * `pipelining: 1` needs one connection per IN-FLIGHT request, so the pool
@@ -158,7 +158,7 @@ const socketScaling: Scenario = {
                     {
                         // THE headline ratio, and the whole point of the
                         // scenario. 1.0 means one connection per in-flight
-                        // request — #89's projection; higher means the pool
+                        // request — the projected rate; higher means the pool
                         // is larger still.
                         //
                         // Computed from the PEAK, not from accepts: a
@@ -198,7 +198,7 @@ const socketScaling: Scenario = {
 /**
  * Per-call cost over a REAL socket, with HMAC as an explicit axis.
  *
- * #84 put per-call HMAC at ~35µs — but that was measured through
+ * The Tier-1 rig put per-call HMAC at ~35µs — but that was measured through
  * `pipeFetch`, with no socket in the picture at all. This is the same
  * comparison with the wire present, which is the only version that says
  * anything about production.
@@ -278,7 +278,7 @@ const transportMatrix: Scenario = {
 };
 
 /**
- * #89's candidates, settled on the rig rather than argued.
+ * The dispatcher candidates, settled on the rig rather than argued.
  *
  * `default` is the global `fetch` — what ships today, whose undici agent has
  * `connections: null` and `pipelining: 1`. `bounded` caps the pool per origin.
@@ -364,13 +364,13 @@ const dispatcherMatrix: Scenario = {
 };
 
 /**
- * THE DECISION SCENARIO (#105).
+ * THE DECISION SCENARIO.
  *
  * All three transports on one rig, back to back, against the *tuned* HTTP
- * baseline from #98 rather than the shipped default — comparing a new
- * transport to an untuned incumbent would flatter it.
+ * baseline (pool bounded to the concurrency) rather than the shipped default
+ * — comparing a new transport to an untuned incumbent would flatter it.
  *
- * The gate was written down in #95 before any of these existed, which is the
+ * The gate below was agreed before any of these existed, which is the
  * only reason it means anything now. Replace HTTP as the default only if a
  * transport clears ALL of: throughput ratio >= 1.30, p99 ratio <= 0.80,
  * bytes/call <= 0.70, and sockets <= 1.2x peers.
@@ -384,7 +384,7 @@ const transportDecision: Scenario = {
         const concurrency = 64;
         const arms = [
             // The BASELINE is tuned HTTP: pool bounded to the concurrency,
-            // which #98 measured as both fewer sockets and slightly faster.
+            // measured as both fewer sockets and slightly faster.
             ['http-tuned', 'bounded' as const, concurrency],
             ['tcp', 'tcp' as const, 0],
             ['ws', 'ws' as const, 0]

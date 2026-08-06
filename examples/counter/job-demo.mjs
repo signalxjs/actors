@@ -18,8 +18,8 @@
  *
  * (Without any client call, the liveness reminder re-activates the actor
  * on a survivor within ~60-90s — the demo calls status() so you don't have
- * to watch paint dry. The mechanism is the task ledger: see "Tasks
- * (long-running operations)" in packages/actors/README.md.)
+ * to watch paint dry. The mechanism is the task ledger: see
+ * <https://sigx.dev/actors/docs/tasks/>.)
  */
 import { createServer } from 'node:http';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';

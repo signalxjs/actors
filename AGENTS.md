@@ -149,6 +149,7 @@ pnpm typecheck   # tsgo (a fast TS compiler), config: tsconfig.json
 pnpm lint        # oxlint over the packages' src
 pnpm lint:fix
 pnpm size        # size-limit bundle-size check (.size-limit.json)
+pnpm verify:refs # resolve every `#N` in the guarded paths against the repo
 
 pnpm bench       # build, then run every benchmark scenario
 pnpm bench:run <filter>   # skip the build; filter by scenario name substring
@@ -345,8 +346,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   renderer-free data layer, deliberately reusable by a future web
   dashboard. `@sigx/cli` and `@sigx/terminal` are NOT core packages, so
   they take literal version specs rather than `catalog:`.
-- `packages/actors-otel` → `@sigx/actors-otel` — observability exporters
-  (#245): `prometheusOps()` + the pure `renderPrometheus()` on the
+- `packages/actors-otel` → `@sigx/actors-otel` — observability exporters:
+  `prometheusOps()` + the pure `renderPrometheus()` on the
   OTel-free `./prometheus` entry (text exposition from the metrics digest;
   real histograms from the raw log-linear buckets via
   `bucketUpperBoundsUs()`; the `ops()` bearer posture verbatim, secret
@@ -496,7 +497,7 @@ surfaces, two rules:
 
 **Package READMEs are pointers, not manuals.** Every published package's
 `README.md` is ~30 lines: thesis, install, peer-dependency and minimum-version
-requirements, and links to https://sigx.dev/actors. Do not grow them back — the
+requirements, and links to <https://sigx.dev/actors>. Do not grow them back — the
 package README was 2,632 lines of second copy of the manual, and it had drifted
 into seven confirmed factual errors by the time it was cut (#113). Anything
 worth writing goes to the docs site (via a docs-repo issue) if a *user* needs

@@ -5,7 +5,7 @@
  * `Request`/`Response`/webstreams overhead, so JSON parse is a far larger
  * fraction of what they do per frame than it is of `wire/endpoint-roundtrip`
  * (~5.7% there — see BASELINES.md "Where the time goes"). This is the rung
- * that shows what #218's guarded fast path (skip the pollution reviver when
+ * that shows what the guarded fast path (skip the pollution reviver when
  * no dangerous key can be present) is worth, and what a custom codec
  * reviver — which must always walk every node — costs relative to it.
  *
@@ -66,8 +66,8 @@ const decode: Scenario = {
     description:
         'decodeFrameBody() alone — the guarded default reviver (fast path) vs a custom reviver (full walk)',
     async run(ctx: RunContext): Promise<Metric[]> {
-        // A custom reviver is the pre-#218 cost: identity says "not the
-        // default", so every node is walked.
+        // A custom reviver is the cost before the guarded fast path landed:
+        // identity says "not the default", so every node is walked.
         const customReviver = (_key: string, value: unknown): unknown => value;
         const metrics: Metric[] = [];
         for (const [size, payload] of [

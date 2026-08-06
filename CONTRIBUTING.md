@@ -48,6 +48,7 @@ parallel checkouts.
 | Tests in watch mode | `pnpm test:watch` |
 | Typecheck | `pnpm typecheck` |
 | Lint | `pnpm lint` |
+| Check issue references | `pnpm verify:refs` |
 | Benchmarks | `pnpm bench` (see `benchmarks/README.md`) |
 | Perf regression check | `pnpm bench:baseline` before your change, `pnpm bench:compare` after |
 | Diff two saved bench results | `pnpm bench:diff --before=a.json --after=b.json` |

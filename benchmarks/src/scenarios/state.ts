@@ -167,7 +167,7 @@ const changesFanout: Scenario = {
 
                 // Unwinding the subscribers needs care. A consumer parked in
                 // ctx.changes() is waiting for the NEXT change, and abort
-                // alone does not wake it (issue #71) — so abort, then push
+                // alone does not wake it — so abort, then push
                 // one more mutation to wake each consumer, which then sees
                 // the aborted signal and breaks, letting `for await` call
                 // return() on the generator.
@@ -182,7 +182,7 @@ const changesFanout: Scenario = {
                     throw new Error(
                         `${subscribers} change-feed consumer(s) did not unwind within ` +
                             `${TEARDOWN_TIMEOUT_MS}ms after abort + a wake-up mutation — ` +
-                            `ctx.changes() is not releasing parked consumers (see issue #71).`
+                            `ctx.changes() is not releasing parked consumers.`
                     );
                 }
             } finally {

@@ -206,6 +206,33 @@ jobs:
       - name: Verify pack
         run: pnpm verify:pack
 
+  # The repo was promoted from a private tracker and the `#N` numbers came
+  # with it; some now land on real but unrelated public issues, which reads
+  # as plausible and is false. Its own job, not a matrix step: it calls the
+  # GitHub API, so running it three times per push buys nothing.
+  issue-refs:
+    runs-on: ubuntu-latest
+    # Explicit, though `contents: read` already reaches a public repo's issues:
+    # the whole job is a no-op if the token cannot read them, and that would
+    # show up as a green check rather than a failure.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # --require-api: both checks need the issue list, so an unreachable API
+      # means nothing was checked. Locally that is a warning; here it fails.
+      - name: Check issue references
+        run: node scripts/check-issue-refs.mjs --require-api
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   coverage:
     runs-on: ubuntu-latest
     steps:
