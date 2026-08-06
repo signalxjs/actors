@@ -714,7 +714,27 @@ export interface ActorContextBase<S extends object> {
      * consumer resumes past that first yield and therefore loses every
      * mutation in between.
      */
-    changes(options?: { initial?: boolean }): AsyncIterable<S>;
+    changes(options?: {
+        initial?: boolean;
+        /**
+         * Coalesce bursts: at most one snapshot per `throttleMs`, leading
+         * edge plus trailing edge, and the trailing one is taken fresh so it
+         * is never staler than the window. Omit (or 0) for a snapshot per
+         * mutating turn — the default, unchanged.
+         *
+         * Worth setting when the consumer redraws rather than accumulates,
+         * because a snapshot is a full encode+revive of the WHOLE state and
+         * a boundary inside an open window builds none at all. An actor
+         * whose state grows through a run — a job appending a step's output
+         * per turn, reporting progress as it goes — otherwise clones
+         * everything it has accumulated on every step (#129).
+         *
+         * Never drops the final state: a window still owing an emit when the
+         * actor deactivates is flushed before the feed ends. Must be a
+         * non-negative finite number; anything else throws.
+         */
+        throttleMs?: number;
+    }): AsyncIterable<S>;
 }
 
 /**

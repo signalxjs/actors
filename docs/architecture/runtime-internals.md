@@ -112,9 +112,35 @@ mutating turn over 200-row state cost ~1.2 ms (#124). **Do not re-inline it.**
 Calling core's walk instead of mirroring it is the whole point.
 
 Two costs sit on this boundary, not one. The walk is the first; `#snapshot()`
-— `cloneState(toRaw(state))`, a full encode+revive — is the second, paid once
-per version advance when anyone is subscribed. Both scale with total state
-size rather than with the size of the change.
+— `cloneState(toRaw(state))`, a full encode+revive — is the second. Both scale
+with total state size rather than with the size of the change, and since #124
+fixed the walk, the snapshot is the larger of the two.
+
+So the boundary builds a snapshot **lazily, and at most once**, and two kinds
+of subscriber avoid it entirely (#129):
+
+| subscriber | gets | pays for a snapshot |
+|---|---|---|
+| `ctx.changes()` | the state | yes, once per boundary, shared with every other such subscriber |
+| `ctx.changes({ throttleMs })` | the state | only when its window is closed — a boundary inside an open window builds nothing |
+| a `$live` watch (`openWatch`) | nothing | **never** |
+
+The last row is the one that is easy to get wrong again. `ctx.changes()` yields
+state, but a watch subscriber does not want state — it wants to know it should
+re-invoke a read method. `createSharedWatch`'s pump reads `const { done } =
+await iterator.next()` and never touches `value`, so it subscribes with the
+internal `ticksOnly` flag and receives a shared frozen sentinel. **If you ever
+make that pump read the value, you re-introduce a full clone of the whole state
+per mutating turn per shared watch** — which is what it cost before #129.
+
+Throttling is leading-plus-trailing, and the trailing emit takes a *fresh*
+snapshot so a throttled consumer never receives a state older than the window
+it waited out. It fires off the `ActorScheduler` seam, out of turn — the same
+trade `#scheduleWriteBehind` already makes, and with the same caveat for
+`reentrant: 'always'` actors, which have no between-turns state. A window still
+owing an emit when the activation deactivates is flushed by `#closeSubs` before
+the feed ends, because for a job's progress feed the final value is the one
+that matters most.
 
 ## Reserved names
 

@@ -1122,6 +1122,36 @@ and 17.7 ms → 9.1 ms of pause over the same fixed 500 steps. (The
 `state/dirty-size` GC counts went *up*, which is not a regression: those
 scenarios are duration-bounded, so ~9× the throughput means ~9× the turns in
 the same 400 ms.)
+
+### And then: a `$live` watch was paying for a snapshot it never read
+
+`streams/live-watch` (new) measures the path `useActorState(…, { live: true })`
+and every wire watch take — `host.dispatchWatch`, which re-invokes a read
+method on change. It is not `streams/changes-fanout`: `createSharedWatch`'s
+pump does `const { done } = await iterator.next()` and **never touches the
+value**, so the snapshot the boundary built for it was discarded, once per
+mutating turn, over the whole state.
+
+| rows | before | after | |
+|---|---:|---:|---:|
+| 0 | 176.0 k ops/s | 218.9 k ops/s | +24% |
+| 200 | 3.0 k ops/s | **9.7 k ops/s** | **+224%** |
+| 2 000 | 216 ops/s | **696 ops/s** | **+222%** |
+
+**Read this next to the `state/dirty-size` table above**, which is the point:
+at 200 rows a live watch now runs at 9.7 k against that scenario's 10.1 k with
+no subscriber at all, and at 2 000 rows 696 against 714. *The marginal cost of
+a `$live` subscriber is now approximately zero* — it was 3.3× before.
+
+**On the evidence.** `bench:diff` **declined a verdict** on this pair: the
+actor-free probe scored 6% apart between the two runs, so it downgraded every
+row to "within run-to-run noise" and said so. That is the tool behaving
+correctly and it is quoted here rather than hidden — but a 3.2× move is ~37×
+the drift it detected. The claim does not rest on the timing anyway: a type
+handler counting its own `serialize` calls proves **zero** snapshots are built
+for a live watch, deterministically and with no clock involved
+(`packages/actors/__tests__/change-throttle.test.ts`). The timings corroborate;
+the counter is the proof.
 ---
 
 ## 2026-08-06 · Would `worker_threads` pay? (#119)
