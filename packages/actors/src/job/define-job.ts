@@ -115,7 +115,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
             try {
                 await options.onSettled(control(c), toInfo(c.snapshot() as S, c.key));
             } catch (error) {
-                if (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production') {
+                if (__DEV__) {
                     console.error(
                         `[sigx actors] onSettled threw for job "${options.type}/${c.key}" ` +
                             `(status "${status}") — the terminal transition stands:`,
