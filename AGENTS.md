@@ -497,7 +497,7 @@ surfaces, two rules:
 
 **Package READMEs are pointers, not manuals.** Every published package's
 `README.md` is ~30 lines: thesis, install, peer-dependency and minimum-version
-requirements, and links to https://sigx.dev/actors. Do not grow them back — the
+requirements, and links to <https://sigx.dev/actors>. Do not grow them back — the
 package README was 2,632 lines of second copy of the manual, and it had drifted
 into seven confirmed factual errors by the time it was cut (#113). Anything
 worth writing goes to the docs site (via a docs-repo issue) if a *user* needs

@@ -23,12 +23,19 @@
  * and writing them that way is the fix when a number belongs elsewhere.
  *
  * Usage:
- *   node scripts/check-issue-refs.mjs            # check the default paths
- *   node scripts/check-issue-refs.mjs --list     # print every ref and skip
- *   node scripts/check-issue-refs.mjs <path>...  # check specific paths
+ *   node scripts/check-issue-refs.mjs               # check the default paths
+ *   node scripts/check-issue-refs.mjs --list        # print every ref and skip
+ *   node scripts/check-issue-refs.mjs --require-api # fail if the API is unreachable
+ *   node scripts/check-issue-refs.mjs <path>...     # check specific paths
  *
- * Offline (no GitHub token / no network) it degrades to the above-max check
- * and says so, rather than passing silently.
+ * Both checks need the repository's issue list, so **neither can run without
+ * the GitHub API** — there is no useful offline subset. Without a token or a
+ * network this exits 0 with a warning, so a contributor's local run is not
+ * blocked by it.
+ *
+ * CI passes `--require-api`, which turns that into a hard failure. A guard
+ * that goes green while checking nothing is the exact failure mode this
+ * script exists to prevent, so it must not be able to happen where it counts.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -45,6 +52,7 @@ const DEFAULT_PATHS = ['benchmarks', 'docs', 'README.md', 'AGENTS.md', 'SECURITY
 
 const args = process.argv.slice(2);
 const list = args.includes('--list');
+const requireApi = args.includes('--require-api');
 const paths = args.filter((a) => !a.startsWith('--'));
 const roots = paths.length > 0 ? paths : DEFAULT_PATHS;
 
@@ -135,8 +143,14 @@ if (numbers.length === 0) process.exit(0);
 let max = null;
 try {
     max = highestNumber();
-} catch {
-    console.warn('⚠ could not reach the GitHub API — checking nothing but syntax.');
+} catch (err) {
+    if (requireApi) {
+        console.error('✗ could not reach the GitHub API, and --require-api is set.');
+        console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+        console.error('  Nothing was checked. Failing rather than reporting a green guard.');
+        process.exit(1);
+    }
+    console.warn('⚠ could not reach the GitHub API — nothing was checked.');
     console.warn('  (set GH_TOKEN, or run `gh auth login`, for the full check.)');
     process.exit(0);
 }

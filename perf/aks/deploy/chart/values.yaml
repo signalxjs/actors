@@ -41,9 +41,10 @@ resources:
     memory: 1Gi
 
 probes:
-  # The recipe from https://sigx.dev/actors/docs/kubernetes/: startup covers a slow boot
+  # The recipe from the Kubernetes guide: startup covers a slow boot
   # (Redis join), liveness stays cheap, readiness 503s for the whole drain
   # window ('leaving', 'fenced', 'joining').
+  # https://sigx.dev/actors/docs/kubernetes/
   startup:
     failureThreshold: 30
     periodSeconds: 2
