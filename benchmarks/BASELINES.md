@@ -1140,8 +1140,49 @@ three shapes below, which is why they are quotable despite the spreads.
   (1.02×). Any real seam would need transferables (`ArrayBuffer` in a transfer
   list) to beat this, and would still be capped by whatever it cannot transfer.
 
-So the honest summary for #119: threads *do* pay for the Tier-3 workload shape
-(150 k iterations, small payload) at ~3×, and the "seven idle cores and 7%"
-figure is a property of the measuring node rather than a law. But the window is
-narrower than it looks — bounded below by ~10 k iterations of compute and above
-by payloads approaching a megabyte.
+### The case more hosts cannot fix
+
+The two tables above compare threads against `defineWorker`, and on that
+comparison **threads lose to simply running more hosts**. From the Tier-3
+section above: a pool's cluster total is 867 ops/s on 3 hosts and 1863 on 7 —
+linear in the fleet — where threads cap at 3.4× on one box. For stateless
+CPU-bound work spread over many keys, the scaling answer already exists, ships
+today, and beats this.
+
+The exception is the row directly under it: **a single activation is 289 ops/s
+on 3 hosts and 289 on 7.** Single-activation is a correctness guarantee, so a
+hot key is pinned to one host and one thread however large the fleet. Hardware
+buys it exactly nothing, and that is the one place a thread seam would not be
+duplicating something the cluster already does.
+
+`compute/single-activation-threads`, one `reentrant: 'always'` activation,
+64 B payload (7 rounds × 700 ms; two runs agreeing at 2.74× and 2.80×):
+
+| iterations | compute on the loop | on `worker_threads` | speedup |
+|---:|---:|---:|---:|
+| 10 000 | 28.2 k ops/s | 34.9 k ops/s | 1.32× *(inconclusive — ±40%)* |
+| 150 000 | 2.9 k ops/s | 8.3 k ops/s | **2.80×** |
+
+`reentrant: 'always'` is load-bearing, not incidental. A serial actor cannot
+benefit at all: its mailbox will not begin turn N+1 until turn N returns, so
+offloading only moves the same serialized wait. Interleaved turns park on an
+`await`, which is the only shape where a thread pool gives ONE activation real
+parallelism.
+
+### The honest summary for #119
+
+Threads *do* pay — the "seven idle cores and 7%" figure is a property of the
+measuring node, not a law — but the case for building a seam is narrower than
+the multipliers suggest, and it is not the case #119 frames:
+
+- **For stateless CPU work over many keys, use more hosts.** Linear, already
+  shipped, and better than the 3.4× ceiling threads can reach.
+- **The niche threads uniquely serve is a single hot activation**, where the
+  fleet is powerless (1.00×) and threads give 2.80×. That argues for offloading
+  *inside* an activation rather than for anything attached to `defineWorker`.
+- **And that niche is narrow**: it needs `reentrant: 'always'`, ≥ ~10 k
+  iterations (~200 µs) of compute per turn, and payloads well under a megabyte.
+
+A seam aimed at `defineWorker` would be solving the problem the cluster already
+solves. A seam aimed at the hot single activation would be solving one nothing
+else can — for actors that meet all three conditions above.

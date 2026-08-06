@@ -27,7 +27,13 @@
  * contended machine cannot distort much — and it is the number the decision
  * turns on.
  */
-import { CpuActor, CpuPool, makeThreadedWorker } from '../compute-actors.ts';
+import {
+    CpuActor,
+    CpuPool,
+    CpuSingleReentrant,
+    makeThreadedSingle,
+    makeThreadedWorker
+} from '../compute-actors.ts';
 import { createThreadPool, type ThreadPool } from '../thread-pool.ts';
 import { closedLoop } from '../loop.ts';
 import { benchCall, createBenchHost } from '../host-fixture.ts';
@@ -185,4 +191,68 @@ const threadPayload: Scenario = {
     }
 };
 
-export const computeScenarios: Scenario[] = [threadCrossover, threadPayload];
+/**
+ * The one case more hosts cannot fix — and therefore the only case that
+ * argues for a thread seam rather than for running more processes.
+ *
+ * Tier 3: a `defineWorker` pool's cluster total scales with the fleet (867
+ * ops/s on 3 hosts, 1863 on 7 — linear), while a single activation sits at
+ * **289 on both**. Single-activation is a correctness guarantee, so a hot key
+ * is pinned to one host and one thread however large the fleet. Adding
+ * hardware buys that actor nothing; threads are the only lever left.
+ *
+ * `reentrant: 'always'` on both arms, because a serial actor cannot benefit
+ * from offloading at all: its mailbox will not begin turn N+1 until turn N
+ * returns, so a thread only moves the same serialized wait. Interleaved turns
+ * park on an `await`, which is the shape a thread pool can actually exploit —
+ * and if it does not pay HERE, the case for building the seam is thin, since
+ * `defineWorker` plus hosts already covers the rest linearly.
+ */
+const singleActivationThreads: Scenario = {
+    name: 'compute/single-activation-threads',
+    description: 'one reentrant activation, compute on the loop vs on worker_threads',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        const payload = payloadOf(64);
+        const ladder = ctx.quick ? [10_000] : [10_000, 150_000];
+        for (const iterations of ladder) {
+            const inline = await armOpsPerSec(
+                CpuSingleReentrant,
+                payload,
+                iterations,
+                ctx.durationMs
+            );
+            const threaded = await withPool((p) =>
+                armOpsPerSec(makeThreadedSingle(p), payload, iterations, ctx.durationMs)
+            );
+            metrics.push(
+                {
+                    name: `iters=${iterations}/inline_ops_per_sec`,
+                    value: inline,
+                    unit: 'ops/s',
+                    direction: 'higher'
+                },
+                {
+                    name: `iters=${iterations}/threaded_ops_per_sec`,
+                    value: threaded,
+                    unit: 'ops/s',
+                    direction: 'higher'
+                },
+                {
+                    name: `iters=${iterations}/thread_speedup`,
+                    value: inline === 0 ? 0 : threaded / inline,
+                    unit: 'x',
+                    direction: 'higher',
+                    noiseFloor: 0.05
+                }
+            );
+        }
+        return metrics;
+    }
+};
+
+export const computeScenarios: Scenario[] = [
+    threadCrossover,
+    threadPayload,
+    singleActivationThreads
+];
