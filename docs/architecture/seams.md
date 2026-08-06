@@ -228,6 +228,31 @@ keeping in mind while editing: `decorateStorage` last-registered-outermost,
 order, `onStop` in reverse and *after* the drain, and a placement's own hooks
 bracket the plugins'.
 
+## `defineJob` hooks — `onReminder` and `onSettled`
+
+Not runtime seams: extension points on the job layer, for the two things a run
+body cannot observe from inside itself.
+
+```ts
+onReminder?(control: JobControl<Extra>, name: string): void | Promise<void>;
+onSettled?(control: JobControl<Extra>, info: JobInfo<Extra>): void | Promise<void>;
+```
+
+`onSettled` fires on **every** terminal transition because `finish()` in
+`src/job/define-job.ts` is the only one there is — `doCancel`, the `maxAttempts`
+give-up, completion and body failure all route through it. That single funnel is
+what makes the guarantee cheap to keep; a second terminal write elsewhere would
+break it silently, so don't add one.
+
+The two transitions that motivate it are precisely the ones with no body turn:
+the give-up **refuses** the restart, and a `cancel()` on a paused job finds no
+task to abort. An app projecting job status into its own store (a status row, a
+metric) and maintaining it only from inside `run()` therefore strands that
+projection at "running" forever. The hook runs inside the settling turn *after*
+the save, so a throwing handler cannot unwind a transition the runtime has
+already committed — it is caught and dev-warned. Same no-self-dispatch rule as
+`onReminder`.
+
 ## Mounts, and other runtimes
 
 `createFetchHandler(app)` from `@sigx/actors/server` is the portable entry —

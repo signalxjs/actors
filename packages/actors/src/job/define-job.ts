@@ -87,7 +87,13 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
     type S = JobState<Extra>;
     type Ctx = ActorContext<S>;
 
-    /** Terminal bookkeeping + optional retention, inside one turn. */
+    /**
+     * Terminal bookkeeping + optional retention + `onSettled`, inside one
+     * turn. THE single terminal transition — `doCancel`, the `maxAttempts`
+     * give-up, completion and body failure all land here — which is what
+     * lets `onSettled` promise "every terminal transition" without each
+     * caller remembering to fire it.
+     */
     async function finish(
         c: Ctx,
         status: Extract<JobStatus, 'completed' | 'failed' | 'cancelled'>,
@@ -100,6 +106,23 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         await c.save();
         if (options.retainMs !== undefined) {
             await c.reminders.set(RETAIN, { due: options.retainMs });
+        }
+        if (options.onSettled) {
+            // After the save, and never fatal: the transition is already
+            // durable, so a throwing handler must not be able to unwind it —
+            // that would leave a job the runtime believes is terminal and the
+            // caller believes is not.
+            try {
+                await options.onSettled(control(c), toInfo(c.snapshot() as S, c.key));
+            } catch (error) {
+                if (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production') {
+                    console.error(
+                        `[sigx actors] onSettled threw for job "${options.type}/${c.key}" ` +
+                            `(status "${status}") — the terminal transition stands:`,
+                        error
+                    );
+                }
+            }
         }
     }
 

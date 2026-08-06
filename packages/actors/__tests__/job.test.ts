@@ -469,3 +469,149 @@ describe('defineJob: extra state, retention, discard', () => {
         expect((await client.status()).status).toBe('pending'); // fresh state
     });
 });
+
+describe('defineJob: onSettled', () => {
+    it('fires once with the final state when the body completes', async () => {
+        const settled: JobInfo[] = [];
+        const Completing = defineJob({
+            type: 'SettledComplete',
+            allowAnonymous: true,
+            run: async () => 'result',
+            onSettled: (_control, info) => {
+                settled.push(info);
+            }
+        });
+        const host = createHost({ actors: [Completing], defaults: quiet });
+        running = host;
+        const client = host.actor(Completing, 'run-1');
+        await client.start(undefined as never);
+        await until(() => settled.length === 1);
+        expect(settled[0]!.key).toBe('run-1');
+        expect(settled[0]!.status).toBe('completed');
+        expect(settled[0]!.error).toBeNull();
+        // The save happens BEFORE the hook, so the state the hook observes is
+        // already the durable one — not a transition it could still lose.
+        expect((await client.status()).status).toBe('completed');
+        await new Promise((r) => setTimeout(r, 20)); // nothing fires a second time
+        expect(settled).toHaveLength(1);
+    });
+
+    it('fires with the error when the body throws', async () => {
+        const settled: JobInfo[] = [];
+        const Throwing = defineJob({
+            type: 'SettledThrow',
+            allowAnonymous: true,
+            run: async () => {
+                throw new Error('node exploded');
+            },
+            onSettled: (_control, info) => {
+                settled.push(info);
+            }
+        });
+        const host = createHost({ actors: [Throwing], defaults: quiet });
+        running = host;
+        await host.actor(Throwing, 'run-1').start(undefined as never);
+        await until(() => settled.length === 1);
+        expect(settled[0]!.status).toBe('failed');
+        expect(settled[0]!.error?.message).toBe('node exploded');
+    });
+
+    it('fires on a cancel that lands while the job is PAUSED — no body turn happens', async () => {
+        // The case the run body structurally cannot cover: a paused job holds
+        // no task, so `doCancel`'s `tasks.cancel()` is a no-op and nothing in
+        // the body ever observes the transition.
+        const settled: JobInfo[] = [];
+        const Parking = defineJob({
+            type: 'SettledCancelParked',
+            allowAnonymous: true,
+            run: async (job) => job.pause({ at: 'node-a' }),
+            onSettled: (_control, info) => {
+                settled.push(info);
+            }
+        });
+        const host = createHost({ actors: [Parking], defaults: quiet });
+        running = host;
+        const client = host.actor(Parking, 'run-1');
+        await client.start(undefined as never);
+        await until(async () => (await client.status()).status === 'paused');
+        expect(settled).toHaveLength(0); // a pause is not a settle
+        await client.cancel();
+        expect(settled).toHaveLength(1);
+        expect(settled[0]!.status).toBe('cancelled');
+    });
+
+    it('fires on the maxAttempts give-up, which the run body never sees', async () => {
+        // The motivating case (flow#1058): the runtime REFUSES the restart and
+        // finishes the job itself, so a projection maintained only from inside
+        // run() would assert "still running" forever.
+        const storage = memoryStorage();
+        const settled: JobInfo[] = [];
+        const Looping = defineJob({
+            type: 'SettledGiveUp',
+            allowAnonymous: true,
+            maxAttempts: 2,
+            run: async (job) => {
+                await aborted(job.signal); // parks forever, every attempt
+                return undefined as never;
+            },
+            onSettled: (_control, info) => {
+                settled.push(info);
+            }
+        });
+        let host = createHost({ actors: [Looping], storage, defaults: quiet });
+        await host.actor(Looping, 'run-1').start(undefined as never);
+        // Attempt 1 interrupted, attempt 2 interrupted, attempt 3 refused.
+        for (let i = 0; i < 2; i++) {
+            await within(host.stop({ timeoutMs: 5000 }), 2000);
+            host = createHost({ actors: [Looping], storage, defaults: quiet });
+            await host.actor(Looping, 'run-1').status(); // activate → resume
+        }
+        running = host;
+        const client = host.actor(Looping, 'run-1');
+        await until(async () => (await client.status()).status === 'failed');
+        await until(() => settled.length === 1);
+        expect(settled[0]!.status).toBe('failed');
+        expect(settled[0]!.error?.message).toMatch(/gave up after 2 attempts/);
+    });
+
+    it('a throwing handler is swallowed — the terminal transition stands', async () => {
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const Hostile = defineJob({
+            type: 'SettledThrowingHook',
+            allowAnonymous: true,
+            run: async () => 'result',
+            onSettled: () => {
+                throw new Error('projection database is down');
+            }
+        });
+        const host = createHost({ actors: [Hostile], defaults: quiet });
+        running = host;
+        const client = host.actor(Hostile, 'run-1');
+        await client.start(undefined as never);
+        await until(async () => (await client.status()).status === 'completed');
+        expect(await client.result()).toBe('result');
+        expect(errors).toHaveBeenCalledWith(
+            expect.stringContaining('onSettled threw for job "SettledThrowingHook/run-1"'),
+            expect.any(Error)
+        );
+    });
+
+    it('the supplied JobControl reads the settled job', async () => {
+        const seen: string[] = [];
+        const Controlled = defineJob({
+            type: 'SettledControl',
+            allowAnonymous: true,
+            state: () => ({ note: 'kept' }),
+            run: async () => 'result',
+            onSettled: (control) => {
+                const info = control.info();
+                seen.push(`${info.status}:${info.extra.note}`);
+            }
+        });
+        const host = createHost({ actors: [Controlled], defaults: quiet });
+        running = host;
+        await host.actor(Controlled, 'run-1').start(undefined as never);
+        await until(() => seen.length === 1);
+        expect(seen).toEqual(['completed:kept']);
+    });
+});
