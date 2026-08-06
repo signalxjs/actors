@@ -11,8 +11,9 @@
  * The parent hosts the cluster store (one `memoryClusterHub`) and answers
  * children's membership/directory RPCs. That is deliberate: this rig exists
  * to isolate the TRANSPORT, and a real Redis would inject its own latency,
- * sockets and file descriptors into every comparison — #87 already owns
- * that axis. The `ipc_ops_per_call` guard is what keeps the choice honest:
+ * sockets and file descriptors into every comparison — the Tier-3 rig
+ * already owns that axis. The `ipc_ops_per_call` guard keeps the choice
+ * honest:
  * if the route cache is not doing its job, the run measured the store and
  * says so rather than reporting a transport number.
  */

@@ -3,8 +3,8 @@
  *
  * This is the half of the rig that the in-process harness cannot be: every
  * cross-host call here crosses a real TCP connection through Node's HTTP
- * stack, which is exactly the behaviour #89 is about and which `pipeFetch`
- * makes invisible.
+ * stack, which is exactly the behaviour the socket-cost work is about and
+ * which `pipeFetch` makes invisible.
  *
  * Two things are load-bearing about the startup order below:
  *
@@ -302,8 +302,8 @@ async function main(): Promise<void> {
                     providers: { membership, directory },
                     advertise: `http://127.0.0.1:${port}`,
                     policy: selfPolicy,
-                    // The `fetch` seam is the escape hatch #89 names; the
-                    // `transport` option is the seam #92 added. Both are
+                    // The `fetch` seam is the pool escape hatch; the
+                    // `transport` option is the host-transport seam. Both are
                     // exercised here without any runtime change.
                     ...(transport ? { transport } : {}),
                     // Passed, not omitted — see cluster-harness.ts. The prod

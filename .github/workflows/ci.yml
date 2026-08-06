@@ -206,6 +206,24 @@ jobs:
       - name: Verify pack
         run: pnpm verify:pack
 
+  # The repo was promoted from a private tracker and the `#N` numbers came
+  # with it; some now land on real but unrelated public issues, which reads
+  # as plausible and is false. Its own job, not a matrix step: it calls the
+  # GitHub API, so running it three times per push buys nothing.
+  issue-refs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Check issue references
+        run: node scripts/check-issue-refs.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   coverage:
     runs-on: ubuntu-latest
     steps:

@@ -7,6 +7,7 @@
     "scripts": {
         "sync:core": "node scripts/sync-core.mjs",
         "verify:catalog": "node scripts/check-catalog.mjs",
+        "verify:refs": "node scripts/check-issue-refs.mjs",
         "wt": "node scripts/worktree.mjs",
         "branch-protection": "node scripts/apply-branch-protection.mjs",
         "build": "pnpm -r run build",

@@ -65,12 +65,12 @@ export interface ChildStats {
  *
  * `default` is what ships today: the global `fetch`, whose undici agent has
  * `connections: null` (unbounded) and `pipelining: 1`. `bounded` and `h2`
- * settle #89's candidates without shipping a dependency — `undici` is a
- * benchmarks-only devDependency for exactly that reason.
+ * settle the dispatcher candidates without shipping a dependency — `undici`
+ * is a benchmarks-only devDependency for exactly that reason.
  *
  * `tcp` and `ws` are not fetch variants at all: they replace the transport
  * outright with `@sigx/actors-tcp` / `@sigx/actors-ws`, which is what makes
- * the default decision in #105 a measurement rather than an argument.
+ * the default-transport decision a measurement rather than an argument.
  */
 export type DispatcherKind = 'default' | 'bounded' | 'h2' | 'tcp' | 'ws';
 

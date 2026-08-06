@@ -3,8 +3,8 @@
 Patterns deliberately left out of the `@sigx/actors/job` API — each is a
 few lines of composition over primitives that already exist, and baking
 any of them in would have picked one consumer's policy for everyone.
-Prerequisites: the `tasks:` section in the actors README and the
-`defineJob` docs (`@sigx/actors/job`).
+Prerequisites: [Tasks](https://sigx.dev/actors/docs/tasks/) and
+[Jobs](https://sigx.dev/actors/docs/jobs/).
 
 ## Cron on reminders — a scheduler that survives scale-out
 

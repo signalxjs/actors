@@ -9,7 +9,7 @@ when the absolute figures do not.
 Update it deliberately, when a change moves something here, and always record
 the machine.
 
-> **Renamed since these were recorded (#284):** `Mailbox` is now
+> **Renamed since these were recorded:** `Mailbox` is now
 > `Turns`, and the scenario `dispatch/mailbox-raw` is now
 > `dispatch/turns-raw`. Dated entries below are left exactly as they were
 > measured — they are records of runs, not documentation — so read
@@ -66,8 +66,8 @@ question from regression detection — for that, `testenv.mjs load` runs the
 generator directly with as many clients as you care to point at it.
 
 Figures here come from two different kinds of measurement, and confusing them
-is how a modelled number ends up cited as a fact (which is what #87 is fixing
-for the Redis figures). The scenario name says which tier it is:
+is how a modelled number ends up cited as a fact — which is exactly what the
+tier legend below exists to prevent. The scenario name says which tier it is:
 
 | Tier | Scenarios | What it is |
 |---|---|---|
@@ -118,7 +118,7 @@ Two findings stand out:
 - **The default call deadline costs ~38% of dispatch throughput.** Every
   dispatch with a non-zero `callTimeoutMs` allocates a promise and a
   `setTimeout` in `raceDeadline`. The default is 30 s, so essentially every
-  production call pays it. **Fixed since (#230):** far deadlines now share
+  production call pays it. **Fixed since:** far deadlines now share
   one coarse registry tick (`host/deadlines.ts`) — see item 1 below.
 - **A turn through the host costs ~4× a bare mailbox turn.** The mailbox itself
   (a promise chain, ~4 promises per turn) is not the dominant cost at this
@@ -318,7 +318,7 @@ this at all). Local fraction:
 | hash token × consistent-hash | 0.48 | 0.09 | 0.02 | 0.01 |
 | **hash token × prefer-local** | **1.00** | **1.00** | **1.00** | **1.00** |
 
-The edge hashes the routing token now in the request line (#132); the third
+The edge hashes the routing token now in the request line; the third
 row is the whole point — the load balancer *becomes* the placement, because
 whoever receives the first call activates the actor locally and the same key
 hashes back to that host forever. The two agree on nothing but stability.
@@ -427,15 +427,15 @@ Two hosts, one driving, every call crossing to the owner:
 | 8 | 16 | **2.00** | 531 |
 | 64 | 128 | **2.00** | 69 |
 
-Two things are true at once, and #89 called both:
+Two things are true at once:
 
 - **Keep-alive works.** 69–1 163 requests per connection; connections are
   reused heavily rather than opened per request.
-- **The pool still sizes to concurrency**, at *twice* the rate #89 projected.
-  It predicted one connection per in-flight request; the measurement is a
+- **The pool still sizes to concurrency**, at *twice* the projected rate. The
+  model predicted one connection per in-flight request; the measurement is a
   flat **2.00** at every concurrency tested.
 
-Extrapolated the way #89 does it — c=64 against 99 peers — that is **~12 600
+Extrapolated to c=64 against 99 peers — that is **~12 600
 sockets per host**, not 6 300. The extrapolation is still a model (this rig
 has 2 hosts, not 100), but the per-peer coefficient it rests on is now
 measured rather than assumed.
@@ -443,7 +443,8 @@ measured rather than assumed.
 *Why 2× and not 1× is not yet explained.* It reproduces exactly across
 concurrency and is confirmed independently by libuv's own TCP handle table on
 both ends, so it is a real property of the current client and not a counting
-artifact. Establishing the cause belongs with the `undici.Agent` work in #89.
+artifact. The cause is established below: it is the unbounded pool growing,
+and capping it removes the growth exactly.
 
 ### HMAC costs far less over a real socket than in-process [timed, contended]
 
@@ -460,7 +461,7 @@ instead of argued.
 
 The practical reading: **removing per-call HMAC is worth far less than the
 in-process figure suggests.** It remains worth doing — it is ~30 lines with
-session tokens (#90 step D) and 103 bytes/call on the wire — but it is not the
+session tokens and 103 bytes/call on the wire — but it is not the
 3× headline, and it is not on its own an argument for a new transport.
 
 ### Throughput plateaus at the wire, not at the runtime [timed, contended]
@@ -471,12 +472,16 @@ HTTP stack is.
 
 ### Bounding the pool fixes it; HTTP/2 does not [counted + contended]
 
-#89's three candidates, at concurrency 64 against one peer, all driven through
-the existing `fetch` seam so no runtime change was needed to test them:
+Three candidates — HTTP/2, a bounded pool, and documenting the escape hatch —
+at concurrency 64 against one peer, all driven through the existing `fetch`
+seam so no runtime change was needed to test them:
 
-Measured with **undici 7.29**, which is the major Node currently bundles for
-the global `fetch` (`process.versions.undici` = 7.16 here). That choice
-matters — see the version note below.
+Measured with the **undici 7.29** package against a Node whose bundled global
+`fetch` was undici 7.16 — i.e. Node 24. **That is not the major every
+supported Node bundles:** the package's `engines` range is
+`^20.19.0 || >=22.12.0`, and Node 22.22.0 ships undici **6.23.0**. The CI
+matrix includes Node 20, which is on undici 6 as well. That choice matters —
+see the version note below.
 
 | dispatcher | peak sockets | sockets / concurrency | ops/s | vs default |
 |---|---:|---:|---:|---:|
@@ -499,15 +504,17 @@ actual constraint. (`connections: 8` being slower than `connections: 1` is
 consistent across runs and unexplained; both are far off the pace, so it does
 not change the recommendation.)
 
-Extrapolated the way #89 does it — c=64 across 99 peers — matching the cap to
+Extrapolated the same way — c=64 across 99 peers — matching the cap to
 concurrency gives **~6 300 sockets per host instead of ~12 600**, at no cost.
 Getting below that is a deliberate throughput trade.
 
-> ⚠️ **These numbers are undici-major-specific.** An earlier pass of this
-> table was recorded against undici 8.x and showed `connections: 8` costing
-> only ~2% — a conclusion that does not hold on the major Node actually
-> ships, and which would have shipped a bad default had it not been re-run.
-> Re-measure before tuning against a different major.
+> ⚠️ **These numbers are undici-major-specific, and the supported Node range
+> spans majors.** An earlier pass of this table was recorded against undici
+> 8.x and showed `connections: 8` costing only ~2% — a conclusion that would
+> have shipped a bad default had it not been re-run. The table above is
+> undici 7; Node 20 and 22 bundle undici 6. Re-measure on your own target
+> before tuning, and do not quote these figures as if they held across the
+> whole range.
 
 **Candidate 1 is not reachable.** `allowH2: true` measures identical to plain
 keep-alive at every pool size (5 844 vs 5 862 at one connection; 13 254 vs
@@ -517,7 +524,9 @@ Multiplexing would require a `node:http2` server first — a much larger change
 that buys the same socket reduction the pool cap already gives.
 
 Candidate 3 — documenting the escape hatch — is therefore the whole shipped
-change, now with a measured recommendation attached. See the README.
+change, now with a measured recommendation attached. See
+[Host transports](https://sigx.dev/actors/docs/transports/). Shipping it as
+code rather than prose is #118.
 
 ### Session tokens: measured, and declined
 
@@ -531,10 +540,10 @@ rather than deferred. Revisit only if a profile shows signing dominating on a
 deployment where the network is not the cost — which is the opposite of what
 the numbers above show.
 
-### The transport decision [#105]
+### The transport decision
 
-All three on one rig, back to back, against the **tuned** HTTP baseline from
-#98 (pool bounded to the concurrency) rather than the shipped default —
+All three on one rig, back to back, against the **tuned** HTTP baseline
+(pool bounded to the concurrency) rather than the shipped default —
 comparing a new transport to an untuned incumbent would flatter it. Two hosts,
 concurrency 64.
 
@@ -544,7 +553,7 @@ concurrency 64.
 | **TCP** | **3** (2 listeners + 1 conn) | **69 768** | **1.58 ms** | not observable |
 | **WebSocket** | **2** (1 listener + 1 conn) | **63 495** | **1.58 ms** | **236** |
 
-Against the gate written down in #95 *before any of these transports existed*:
+Against the gate agreed *before any of these transports existed*:
 
 | criterion | threshold | TCP | WS |
 |---|---|---|---|
@@ -563,7 +572,8 @@ so it would clear it, but that is an inference and is labelled as one.
 #### The result contradicts what the transports' own READMEs claimed
 
 Both packages were written saying this was "not about latency, only socket
-count", on the strength of the HMAC measurement in #96. **That was wrong, and
+count", on the strength of the in-process HMAC measurement above. **That was
+wrong, and
 this rig is what caught it.** Per-call HMAC really is worth only 1.19× — but
 Node's HTTP *stack* is a separate and much larger cost, and a framed protocol
 on a persistent socket skips it entirely. Corrected in both READMEs.
@@ -583,8 +593,8 @@ versus 1 stays true at any RTT, and that is the property to choose on.
 
 The gate is cleared, and the default does not change — because the gate was
 missing a constraint that no measurement can express. **`@sigx/actors/cluster`
-must stay zero-dep and WinterCG-clean**, which is the whole reason RFC #20 put
-the host wire on HTTP: a default requiring `node:net` would break Cloudflare
+must stay zero-dep and WinterCG-clean**, which is the whole reason the host
+wire is HTTP: a default requiring `node:net` would break Cloudflare
 Workers outright, and HTTP is the only transport that runs everywhere.
 
 So the recommendation is stronger than "reach for TCP when file descriptors
@@ -594,7 +604,7 @@ hurt", which is what the packages currently say:
   proxy traversal or a WinterCG client matters). It clears every measured
   criterion, most of them by a wide margin.
 - **HTTP remains the default and the only portable option**, and with a bounded
-  pool (#98) it is a perfectly reasonable one.
+  pool it is a perfectly reasonable one.
 
 ### What this rig cannot honestly measure
 
@@ -757,7 +767,7 @@ these are known problems** — they are measurements looking for a decision.
    skipping the race when the deadline is far away, would recover most of it.
    (Profiled at 6.1% self in `local-host.ts:410` plus 0.9% in its inner closure
    at `:422`, across a run where only half the scenarios enable it.)~~
-   **Fixed (#230):** `CallDeadlines` (`host/deadlines.ts`) gives far
+   **Fixed:** `CallDeadlines` (`host/deadlines.ts`) gives far
    deadlines (≥ 10 s remaining — the production default) one shared unref'd
    1 s registry tick over ceil'd buckets; near deadlines keep the exact
    per-call timer. `dispatch/warm-turns-deadline` gates the path exactly:
@@ -801,7 +811,7 @@ these are known problems** — they are measurements looking for a decision.
    that part does not go away, and `rendezvous()` itself is untouched
    (reminder-shard winners are pinned storage identity, now guarded by a
    hard-coded expectation table in `placement-active-hosts.test.ts`).
-8. **FIXED (#218): every `JSON.parse` on the wire passed a reviver**
+8. **FIXED: every `JSON.parse` on the wire passed a reviver**
    (`wire-parse.ts`, used at `wire-shared.ts` `readNdjson`,
    `client/index.ts` ×2, `cluster/frames.ts` `decodeFrameBody`,
    `cluster/transport.ts` ×2). A reviver disables V8's fast parser. Measured
@@ -983,10 +993,18 @@ at `await` points, and a host is one Node process with one JS thread. On the
 kube-system daemonsets leaves ~1.1 usable cores, so one host already
 saturates a node.
 
-### Also observed
+### Also observed — since fixed
 
-A host whose event loop pauses past the 15 s membership TTL is evicted, has
-its directory claims released by `evictHost`, and **keeps serving with its
+A host whose event loop paused past the 15 s membership TTL was evicted, had
+its directory claims released by `evictHost`, and **kept serving with its
 activations live** — it never rejoined in 77 s, never fenced
-(`selfFences=0`), stayed `Ready`. Single activation is not preserved across
-that window. Measured, not inferred; see #263.
+(`selfFences=0`), stayed `Ready`. Single activation was not preserved across
+that window. Measured, not inferred.
+
+**This was #45, and it is closed.** A host now fences when it cannot prove its
+own membership — not only when a beat *fails* past the TTL, but when one
+merely *lands* past it, which is exactly what a stalled event loop does: the
+write succeeds, so nothing errors, while peers have already released the
+claims. Every membership provider implements the rule, and `k8sMembership`
+extends it to a renewal that returns 404 (#69). The measurement above is left
+as a record of the run that found it — do not quote it as current behaviour.

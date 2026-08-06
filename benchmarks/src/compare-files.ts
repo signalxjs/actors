@@ -79,7 +79,7 @@ function main(): void {
     if (outcome.fatalMismatch.length > 0) {
         // Refusing is not pedantry: the same three replicas differ by more
         // than 2x packed vs spread and every report looks identical, so a
-        // comparison across shapes is a confident wrong answer (#183).
+        // comparison across shapes is a confident wrong answer.
         console.error('refusing to compare — the deployments differ:');
         for (const m of outcome.fatalMismatch) console.error(`  ${m}`);
         process.exitCode = 1;
