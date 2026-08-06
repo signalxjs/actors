@@ -24,7 +24,7 @@ pnpm add @sigx/actors
 Backends, transports and tooling —
 Redis, Postgres, SurrealDB, Kubernetes, TCP, WebSocket, Cloudflare Durable
 Objects, the CLI and the OpenTelemetry exporters — are listed at
-https://sigx.dev/actors/packages/.
+[sigx.dev/actors/packages](https://sigx.dev/actors/packages/).
 
 Source, runnable examples and internal architecture notes:
 https://github.com/signalxjs/actors

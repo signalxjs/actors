@@ -220,8 +220,9 @@ from Leases while the directory stays store-backed. See
 
 ## `PluginRegistry`
 
-The hooks (`src/host/app.ts`) are documented in full at
-https://sigx.dev/actors/docs/the-app/. The composition rules are the part worth
+The hooks (`src/host/app.ts`) are documented in full in
+[the app guide](https://sigx.dev/actors/docs/the-app/). The composition rules
+are the part worth
 keeping in mind while editing: `decorateStorage` last-registered-outermost,
 `useDispatch` outside-in and **must forward `dispatchStream`**, `onStart` in
 order, `onStop` in reverse and *after* the drain, and a placement's own hooks
