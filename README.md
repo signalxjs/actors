@@ -24,11 +24,17 @@ export const CartActor = defineActor({
 await actor(CartActor, cartId).addItem(item);
 ```
 
+## Documentation
+
+**https://sigx.dev/actors** — guides, API reference, clustering and deployment.
+This repository holds the source, the runnable examples, and the internal
+architecture notes in [`docs/`](docs).
+
 ## Packages
 
 | Package | Description |
 |---|---|
-| [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (entries: `.`, `./host`, `./server`, `./node`, `./client`, `./cluster`, `./vite`) |
+| [`@sigx/actors`](packages/actors) | The actor runtime, wire layer, and Vite plugin (ten runtime entries — `.`, `./host`, `./server`, `./node`, `./client`, `./app`, `./job`, `./cluster`, `./cluster/frames`, `./vite` — plus types-only `./vite-client`) |
 | [`@sigx/actors-redis`](packages/actors-redis) | Redis providers — cluster membership, the actor directory, and etag-CAS actor storage |
 | [`@sigx/actors-pg`](packages/actors-pg) | Postgres providers — etag-CAS actor storage, cluster membership, and the actor directory |
 | [`@sigx/actors-surreal`](packages/actors-surreal) | SurrealDB 3 providers — etag-CAS actor storage, cluster membership, the actor directory, and durable reminders |
@@ -40,7 +46,6 @@ await actor(CartActor, cartId).addItem(item);
 | [`@sigx/actors-otel`](packages/actors-otel) | Observability exporters — Prometheus text exposition, OpenTelemetry traces and a metrics bridge |
 | [`benchmarks`](benchmarks) | Performance baselines — throughput, latency, heap footprint, leak detection. Run locally, and A/B'd on perf-sensitive PRs: timings inform, metrics marked `exact` gate (not published) |
 
-Full documentation lives in the [package README](packages/actors/README.md).
 Three runnable examples, in the order they are worth reading:
 
 [`examples/counter`](examples/counter) — the runtime with **no framework at
@@ -119,13 +124,15 @@ Contributors: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Status
 
-v0.1 — pre-1.0, and the public API may still move between minors.
+v0.3 — pre-1.0, and the public API may still move between minors.
 
 Clustering has landed: `@sigx/actors/cluster` plus membership, directory and
-storage providers for Redis, Postgres and Kubernetes, framed TCP and WebSocket
-transports, and Cloudflare Durable Objects as a whole-app backend. The
+storage providers for Redis, Postgres, SurrealDB and Kubernetes, framed TCP and
+WebSocket transports, and Cloudflare Durable Objects as a whole-app backend. The
 dispatch and placement seams that made those possible are the same ones a
-future backend slots into; see "Design notes" in the package README.
+future backend slots into — see
+[Design notes](https://sigx.dev/actors/docs/design-notes/), and
+[`docs/architecture`](docs/architecture) for how the seams fit together.
 
 Read [`SECURITY.md`](SECURITY.md) before the first production deploy — the
 trust boundaries and the limits you have to set yourself are stated there.
