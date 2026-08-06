@@ -213,7 +213,7 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 
 ## Packages
 
-- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Nine
+- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Ten
   runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`,
   `defineWorker` — stateless multi-activation pure-compute pools: always
   local, no directory claim, up to `maxLocal` concurrent members per
@@ -237,7 +237,9 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   umbrella — see below), `./cluster` (the
   `cluster()` plugin, clusterPlacement (incl. `locate()` and
   `publicAddress`), host-to-host endpoint, cluster provider seams,
-  memoryClusterHub), `./vite`
+  memoryClusterHub), `./cluster/frames` (the framed host-to-host wire —
+  published precisely so out-of-repo transports can build on it; both
+  `@sigx/actors-tcp` and `@sigx/actors-ws` re-export from it), `./vite`
   (`sigxActors()` plugin). Two further subpaths are **workspace-only** — wired
   by tsconfig/vitest aliases and deliberately absent from `package.json`
   exports: `./cluster/testing` (`transportConformance`) and `./testing`
@@ -487,9 +489,22 @@ surfaces, two rules:
 |---|---|
 | add / rename / remove a package | `AGENTS.md` "Packages" and the README package table — plus, **whichever of these the repo has**: `CONTRIBUTING.md` layout, the issue-template package dropdowns, `.size-limit.json`, and the `tsconfig` / `vitest` path aliases |
 | change a build / test / lint script | `AGENTS.md` "Build, Test, Lint", `CONTRIBUTING.md` "Common tasks", `package.json` |
-| change or add public API / behaviour | the package's own `README.md` and `CHANGELOG.md` under `[Unreleased]` |
+| change or add public API / behaviour | the package's `CHANGELOG.md` under `[Unreleased]` — **plus a docs-repo issue**, because the manual is the docs site (see "Package READMEs are pointers" below) |
+| change a seam, an invariant, or how the runtime fits together | the matching file in [`docs/architecture/`](docs/architecture) |
 | change the workflow / process itself | `AGENTS.md` here — and, since it is the shared standard, upstream the same change to [`signalxjs/repo-template`](https://github.com/signalxjs/repo-template) |
 | add or change an example | the example's own `README.md` — and hold it to the convention below |
+
+**Package READMEs are pointers, not manuals.** Every published package's
+`README.md` is ~30 lines: thesis, install, peer-dependency and minimum-version
+requirements, and links to https://sigx.dev/actors. Do not grow them back — the
+package README was 2,632 lines of second copy of the manual, and it had drifted
+into seven confirmed factual errors by the time it was cut (#113). Anything
+worth writing goes to the docs site (via a docs-repo issue) if a *user* needs
+it, or to [`docs/architecture/`](docs/architecture) if a *maintainer* does.
+
+All links in a published README must be **absolute URLs** — npm does not
+resolve relative paths, so `[…](../actors)` renders as a broken link on the
+package page.
 
 **Every `examples/*` has all four of these.** They exist because the examples
 drifted badly enough to need a cleanup once: one had no README at all, another

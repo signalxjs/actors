@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is now a pointer to https://sigx.dev/actors** rather than a
+  second copy of the manual (#113). It had grown to 2,632 lines duplicating
+  the docs site page for page, and had drifted: seven confirmed factual errors
+  against the source, including a claim that guards and stream bodies can
+  re-enter a turn via `ctx.turn()` (only task bodies can), a
+  `clusterPlacement({ definition })` option that does not exist, and an
+  entry-points table missing the published `./cluster/frames` subpath. Nothing
+  was lost: the user-facing material is on the docs site, and the seams,
+  invariants and rationale a maintainer needs now live in `docs/architecture/`.
+  No code or API change.
+
 ## [0.3.0] - 2026-08-05
 
 ### Added

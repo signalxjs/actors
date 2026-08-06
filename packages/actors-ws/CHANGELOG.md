@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- README trimmed to a pointer at https://sigx.dev/actors (#113): thesis,
+  install, peer-dependency and minimum-version requirements, and links. The
+  reference material is on the docs site; relative links (which npm does not
+  resolve) are gone. No code or API change.
+
 ## [0.3.0] - 2026-08-05
 
 ### Changed

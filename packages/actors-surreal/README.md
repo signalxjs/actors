@@ -1,166 +1,41 @@
 # @sigx/actors-surreal
 
-SurrealDB providers for [`@sigx/actors`](../actors), for the team whose one
-durable store is SurrealDB. Four providers, one connection:
+SurrealDB providers for [`@sigx/actors`](https://sigx.dev/actors) — for the team
+whose one durable store is SurrealDB. Four providers, one connection.
 
-- **`surrealStorage`** — the `ActorStorage` seam with etag CAS, so two hosts
-  can never both persist an activation's state.
-- **`surrealMembership`** — TTL heartbeats judged on the **database** clock, so
-  a skewed host cannot fake a death or a survival. A beat that *lands* past
-  the TTL self-fences just like one that fails: the UPSERT re-creates the
-  record, so a host whose loop stalled would otherwise look healthy again
-  while a survivor already held its actors (#45).
-- **`surrealDirectory`** — the single-activation claim: create-if-absent that
-  returns the *winner*, plus compare-and-delete release/evict.
-- **`surrealReminders`** — durable reminders on a due-time-indexed table, one
-  indexed query per tick instead of scanning the default shard records.
+- **`surrealStorage()`** — etag-CAS `ActorStorage`.
+- **`surrealMembership()`** — TTL heartbeats judged on the **database** clock,
+  with live-query push and a poll fallback.
+- **`surrealDirectory()`** — the single-activation claim directory.
+- **`surrealReminders()`** — durable reminders on a due-time-indexed table.
+- **`surrealCluster()`** bundles membership + directory;
+  **`surrealSchemaSql()`** / **`ensureSurrealSchema()`** provide the DDL.
 
-`surrealdb` (the JS SDK) ≥ 2.0.8 is a peer dependency; SurrealDB **≥ 3.0**,
-**3.2.4 or newer recommended**. Prefer a `ws://`/`wss://` endpoint: the HTTP
-engine re-authenticates on every request and cannot serve live queries.
+Two things to know before you wire it up:
 
-## Setup
-
-DDL is explicit — the providers never issue it, so a production role needs only
-DML grants. Unlike Postgres this is **not optional**: reading an undefined table
-is an error in SurrealDB 3 (it returned `[]` in 2.x).
-
-```ts
-import { Surreal } from 'surrealdb';
-import { ensureSurrealSchema, surrealRetryable } from '@sigx/actors-surreal';
-
-const db = new Surreal();
-await db.connect('ws://127.0.0.1:8000', {
-    namespace: 'app',
-    database: 'main',
-    authentication: { username: 'root', password: 'root' },
-    // REQUIRED — see "Retry is part of the contract" below.
-    retry: { enabled: true, attempts: 5, retryable: surrealRetryable }
-});
-await ensureSurrealSchema(db);
-```
-
-`ensureSurrealSchema()` is safe to call from **every replica at boot,
-concurrently**. `DEFINE … IF NOT EXISTS` is check-then-create, so simultaneous
-bootstraps collide on the commit-time write–write check (measured on 3.2.4:
-eight racing hosts, eight rejections) — and the boot that loses crashes. It
-therefore carries its own bounded, jittered retry, **independent of whatever
-retry the connection has**, and verifies the tables exist before it gives up.
-See "Retry is part of the contract" below for why it does not simply lean on
-`surrealRetryable`.
-
-Then wire a clustered host:
-
-```ts
-import { defineActorApp } from '@sigx/actors/host';
-import { cluster } from '@sigx/actors/cluster';
-import { surrealCluster, surrealReminders, surrealStorage } from '@sigx/actors-surreal';
-
-const app = defineActorApp({
-    actors,
-    storage: surrealStorage({ db }),
-    // Without this the runtime keeps the default sharded reminders (which
-    // also work over surrealStorage) — pass the provider to get the indexed
-    // table.
-    reminders: surrealReminders({ db })
-}).use(
-    cluster({
-        providers: surrealCluster({ db }),
-        advertise: process.env.ADVERTISE!,
-        secret: process.env.CLUSTER_SECRET!
-    })
-);
-```
-
-Every provider takes either `db` (a connected `Surreal`, shared with your app —
-one socket multiplexes everything) or `url` plus `namespace`/`database`/`auth`,
-in which case the package connects lazily and owns the socket. `prefix`
-(default `sigx_`) names the tables; `heartbeatMs` (5 s), `ttlMs` (15 s),
-`pollMs` (5 s), `push` (true) and `coalesceMs` (0 — trailing quiet window
-for coalescing live-query pushes; the subscriber is single-flight either
-way, so a burst of N changes costs one refresh plus at most one catch-up,
-not N) tune membership.
-
-## Retry is part of the contract
-
-**If you pass your own `db`, you must install `surrealRetryable` on it.**
-
-SurrealDB has no `SELECT … FOR UPDATE`, no `SKIP LOCKED` and no advisory lock.
-Snapshot isolation with a commit-time write–write conflict check is the only
-mutual exclusion available, so `claim()` and the create arm of `save()` are
-correct *because* two racers collide and the loser re-runs to observe the
-winner. Without a retry the loser raises a raw conflict error instead of
-returning the winning entry.
-
-The SDK ships retry **disabled by default**, and its own `isRetryableConflict`
-matches only the structured `TransactionConflict` detail (wire code `-32009`),
-which in practice never arrives — a conflicting statement surfaces
-`Transaction conflict: Write conflict, retry the transaction. This transaction
-can be retried` through the `NotExecuted` path instead. `surrealRetryable`
-matches that, as SurrealDB's own tests do.
-
-**The schema bootstrap does not rely on it, and the predicate is deliberately
-narrow.** `surrealRetryable` is a *connection-wide* predicate — on a shared
-`db` it governs your queries too — so widening it to cover every conflict
-wording would turn a genuine unique-index violation of yours from an instant,
-correct failure into a five-attempt backoff that fails anyway. And a bootstrap
-that leaned on it would still have crashed in the case that produced this
-behaviour (#76): that connection was caller-owned and carried the SDK default,
-i.e. no retry at all. So `ensureSurrealSchema()` retries in its own loop,
-blind to the error's shape — the DDL is idempotent, so a bounded retry can only
-delay a permanent failure, never mask one, and no future change of wording can
-reopen the hole. The bootstrap is the one place that rule is safe; everywhere
-else, the narrow predicate is the right one.
-
-## Semantics worth knowing
-
-- **Etags are opaque and client-minted** (`crypto.randomUUID()`); the runtime
-  only ever compares them.
-- **State is stored as a JSON string, deliberately.** Actor state is whatever
-  the codec produced: it may be a top-level array or scalar, may contain NUL,
-  and distinguishes `null` from absent. Round-tripping that through SurrealDB's
-  value model would risk `none`/`null` conflation, datetime and record-id
-  reinterpretation, and v3's collapsing of differently-typed numeric ids. The
-  cost is that state is opaque in Surrealist; the benefit is that it round
-  -trips exactly, in one `JSON.stringify` rather than a per-field CBOR walk.
-- **`UPDATE … WHERE`, never `UPSERT … WHERE`.** `UPSERT`'s create arm carries
-  no condition check, so a writer holding a stale etag whose record had since
-  been deleted would *resurrect* it.
-- **No NUL escaping layer.** An actor id is `type<NUL>key`, and SurrealDB
-  carries a NUL verbatim and injectively inside a record id. (Postgres `text`
-  cannot, which is the only reason `@sigx/actors-pg` has `pgText`.)
-- **Every hot-path record is addressed by its record id** — the primary index.
-  `{prefix}state:[type, key]` is a composite id, not a secondary index, so a
-  load or save never scans. The three secondary indexes serve only cold sweeps
-  (`evictHost`, the host-expiry prune, the due-reminder claim).
-- **Directory entries carry no TTL**: an entry is valid iff its host is live in
-  the membership view — one heartbeat per host, not per activation.
-- **Membership change detection compares host signatures, not just the version
-  counter**, because a silent expiry changes the view without bumping anything.
-- **Membership push is best-effort.** It is a live query on the version table
-  (record-scoped live queries fail to listen on 3.2.4; table-scoped work, and
-  that table holds one record). Live queries are documented single-node-only,
-  unordered and at-most-once, and a silent expiry produces no write to notify
-  on — so the **poll is the guarantee**. Set `push: false` to disable it.
-- **Reminders honour shard ownership**, the opposite of `pgReminders`, which
-  ignores it because `SKIP LOCKED` lets every host claim disjoint rows from one
-  scan. With no lock available, partitioning is what removes contention: each
-  row carries a shard, a host claims only shards it owns, and the compound
-  `(sh, d)` index serves the query. Transient divergence stays safe — the claim
-  is one transaction, so a loser aborts and re-selects an already-advanced set.
-- Reminder firing is **at-most-once**: the advance/delete commits before any
-  delivery, and a periodic reminder advances to `time::now() + period`, so
-  downtime costs one firing rather than replaying the gap.
-
-## Tests
-
-The suite is env-gated: without `SURREAL_URL` it skips, and CI runs it against
-a real SurrealDB 3 container on one Linux job.
+- **The DDL step is mandatory.** Reading an undefined table is an error in
+  SurrealDB 3 (2.x returned `[]`).
+- **Retry is part of the contract.** SurrealDB has no `SELECT … FOR UPDATE`,
+  no `SKIP LOCKED` and no advisory lock, so the commit-time write–write
+  conflict is the only mutual exclusion — and the SDK ships retry disabled. If
+  you pass your own `db`, install **`surrealRetryable`** on it.
 
 ```sh
-docker run -d --name surrealdb -p 8000:8000 surrealdb/surrealdb:v3.2.4 \
-  start --bind 0.0.0.0:8000 --username root --password root memory
-
-SURREAL_URL=ws://127.0.0.1:8000 SURREAL_USER=root SURREAL_PASS=root \
-  pnpm test actors-surreal
+pnpm add @sigx/actors-surreal surrealdb
 ```
+
+Requires **SurrealDB ≥ 3.0** (3.2.4 or newer recommended); prefer a
+`ws://`/`wss://` endpoint. [`surrealdb`](https://surrealdb.com/docs/sdk/javascript)
+(≥ 2.0.8) is a peer dependency, as is `@sigx/actors` itself.
+
+## Documentation
+
+**https://sigx.dev/actors/packages/actors-surreal/overview/**
+
+Clustering guide: https://sigx.dev/actors/docs/clustering/ ·
+Storage seam: https://sigx.dev/actors/docs/storage/
+
+Source, examples and architecture notes:
+https://github.com/signalxjs/actors
+
+MIT © Andreas Ekdahl
