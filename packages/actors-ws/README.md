@@ -21,8 +21,10 @@ pnpm add @sigx/actors-ws ws
 ```
 
 [`ws`](https://github.com/websockets/ws) (≥ 8) is a peer dependency for the Node
-server half, as is `@sigx/actors` itself. HTTP remains the cluster default,
-because `@sigx/actors/cluster` stays WinterCG-clean.
+server half, as is `@sigx/actors` itself. That half requires
+**Node ^20.19.0 || >=22.12.0**; the client half is the standard `WebSocket` and
+runs anywhere. HTTP remains the cluster default, because
+`@sigx/actors/cluster` stays WinterCG-clean.
 
 ## Documentation
 

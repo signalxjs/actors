@@ -18,7 +18,8 @@ stays store-backed, so compose this with (for example) `redisDirectory()`.
 pnpm add @sigx/actors-k8s
 ```
 
-Node-only (`node:https`, `node:fs`). `@sigx/actors` is a peer dependency. The
+Node-only (`node:https`, `node:fs`), requiring
+**Node ^20.19.0 || >=22.12.0**; `@sigx/actors` is a peer dependency. The
 ServiceAccount needs `get`/`list`/`watch`/`create`/`update`/`patch`/`delete` on
 `leases` in the host namespace, and nothing else.
 

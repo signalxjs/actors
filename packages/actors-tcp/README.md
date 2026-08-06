@@ -21,9 +21,10 @@ not change with RTT.
 pnpm add @sigx/actors-tcp
 ```
 
-Node-only (it imports `node:net`), zero runtime dependencies. `@sigx/actors` is
-a peer dependency. HTTP remains the cluster default, because
-`@sigx/actors/cluster` stays WinterCG-clean.
+Node-only (it imports `node:net`), zero runtime dependencies. Requires
+**Node ^20.19.0 || >=22.12.0**; `@sigx/actors` is a peer dependency. HTTP
+remains the cluster default, because `@sigx/actors/cluster` stays
+WinterCG-clean.
 
 ## Documentation
 

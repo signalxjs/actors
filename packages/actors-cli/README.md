@@ -23,7 +23,8 @@ The `sigx` binary discovers plugins from the dependencies of the project you run
 it in, so run it where the host lives — in a monorepo,
 `pnpm --filter my-app exec sigx actors top`.
 
-`@sigx/cli` (≥ 0.10) is a peer dependency; `@sigx/actors` is an optional one.
+Requires **Node ^20.19.0 || >=22.12.0**. `@sigx/cli` (≥ 0.10) is a peer
+dependency; `@sigx/actors` is an optional one.
 **`@sigx/actors-cli/source`** is the renderer-free data layer, for any other
 front end.
 
