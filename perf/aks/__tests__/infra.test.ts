@@ -95,15 +95,23 @@ async function actorCall(
     const { cookie = cookieFor('tester'), origin = URL_BASE, route = true } = options;
     const key = String(args[0] ?? '');
     const token = route ? (options.token ?? routeToken(type, key)) : null;
+    // Encoded into BOTH carriers, exactly as the client does
+    // (`encodeRouteToken` in `route.ts`, applied by `routePath` and again to
+    // the header). A `'hash'` token is base36 so this is a no-op for it —
+    // but `route: 'key'` and custom schemes emit tokens containing `/` and
+    // worse, and there the path segment must stay one segment and the two
+    // carriers must hash identical bytes. Spelled out rather than imported:
+    // this suite is deliberately pure HTTP and knows nothing of the package.
+    const wire = token === null ? null : encodeURIComponent(token);
     const symbol = `${type.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(method)}`;
-    const path = token ? `/_sigx/actor/r/${token}/${symbol}` : `/_sigx/actor/${symbol}`;
+    const path = wire ? `/_sigx/actor/r/${wire}/${symbol}` : `/_sigx/actor/${symbol}`;
     return fetch(`${URL_BASE}${path}`, {
         method: 'POST',
         headers: {
             'content-type': 'application/json',
             ...(origin ? { origin } : {}),
             ...(cookie ? { cookie } : {}),
-            ...(token ? { 'x-sigx-actor-route': token } : {})
+            ...(wire ? { 'x-sigx-actor-route': wire } : {})
         },
         body: JSON.stringify({ args })
     });
