@@ -7,8 +7,8 @@ settings:
 catalogs:
   default:
     '@sigx/reactivity':
-      specifier: ^0.15.0
-      version: 0.15.2
+      specifier: ^0.15.3
+      version: 0.15.3
     '@sigx/runtime-core':
       specifier: ^0.15.0
       version: 0.15.2
@@ -120,7 +120,7 @@ importers:
         version: link:../../packages/actors
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.2
+        version: 0.15.3
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.2
@@ -151,7 +151,7 @@ importers:
         version: link:../../packages/actors
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.2
+        version: 0.15.3
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.2
@@ -176,7 +176,7 @@ importers:
     devDependencies:
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.2
+        version: 0.15.3
       '@sigx/runtime-core':
         specifier: 'catalog:'
         version: 0.15.2
@@ -423,7 +423,7 @@ importers:
         version: link:../../packages/actors-redis
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.2
+        version: 0.15.3
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.2
@@ -454,7 +454,7 @@ importers:
         version: link:../../packages/actors-redis
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.2
+        version: 0.15.3
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.2
@@ -1357,8 +1357,8 @@ packages:
     resolution: {integrity: sha512-0sz7wuQfWum2agaxlnjW5Pnh2jumO6o5zBcCpcAJQtrSPpHh+vTsT29S7IYaOOzwSsFHfRGm6wC3Mj8dIgSQlQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
 
-  '@sigx/reactivity@0.15.2':
-    resolution: {integrity: sha512-4N2qGgVUxppUsKCafw9iRXrP6S6dIAF82c4yeBVx97Iszqeo7lqP64NDAOEkRPULSgetqyYNpoagRXPIyJa/sA==}
+  '@sigx/reactivity@0.15.3':
+    resolution: {integrity: sha512-OHCkOe+ALpbTMeEoBVlR0LkXDotlydtfck+qYt21bNGqsQBmnUrQsHpHI4l+zRx7UOxcm73f4JMXm4DIzLqQIQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
 
   '@sigx/runtime-core@0.14.0':
@@ -2739,7 +2739,7 @@ snapshots:
 
   '@sigx/reactivity@0.14.0': {}
 
-  '@sigx/reactivity@0.15.2': {}
+  '@sigx/reactivity@0.15.3': {}
 
   '@sigx/runtime-core@0.14.0':
     dependencies:
@@ -2748,12 +2748,12 @@ snapshots:
 
   '@sigx/runtime-core@0.15.2':
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/serialize': 0.15.2
 
   '@sigx/runtime-dom@0.15.2':
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/runtime-core': 0.15.2
 
   '@sigx/runtime-terminal@0.11.0':
@@ -2763,7 +2763,7 @@ snapshots:
 
   '@sigx/runtime-terminal@0.12.0':
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/runtime-core': 0.15.2
 
   '@sigx/serialize@0.14.0': {}
@@ -2785,11 +2785,11 @@ snapshots:
       '@sigx/runtime-core': 0.14.0
       '@sigx/terminal-zero': 0.11.0(@sigx/reactivity@0.14.0)(@sigx/runtime-core@0.14.0)
 
-  '@sigx/terminal-ui@0.12.0(@sigx/reactivity@0.15.2)(@sigx/runtime-core@0.15.2)':
+  '@sigx/terminal-ui@0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)':
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/runtime-core': 0.15.2
-      '@sigx/terminal-zero': 0.12.0(@sigx/reactivity@0.15.2)(@sigx/runtime-core@0.15.2)
+      '@sigx/terminal-zero': 0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)
 
   '@sigx/terminal-zero@0.11.0(@sigx/reactivity@0.14.0)(@sigx/runtime-core@0.14.0)':
     dependencies:
@@ -2797,9 +2797,9 @@ snapshots:
       '@sigx/runtime-core': 0.14.0
       '@sigx/runtime-terminal': 0.11.0
 
-  '@sigx/terminal-zero@0.12.0(@sigx/reactivity@0.15.2)(@sigx/runtime-core@0.15.2)':
+  '@sigx/terminal-zero@0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)':
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/runtime-core': 0.15.2
       '@sigx/runtime-terminal': 0.12.0
 
@@ -2813,11 +2813,11 @@ snapshots:
 
   '@sigx/terminal@0.12.0':
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/runtime-core': 0.15.2
       '@sigx/runtime-terminal': 0.12.0
-      '@sigx/terminal-ui': 0.12.0(@sigx/reactivity@0.15.2)(@sigx/runtime-core@0.15.2)
-      '@sigx/terminal-zero': 0.12.0(@sigx/reactivity@0.15.2)(@sigx/runtime-core@0.15.2)
+      '@sigx/terminal-ui': 0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)
+      '@sigx/terminal-zero': 0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)
 
   '@sigx/vite@0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))':
     dependencies:
@@ -3395,7 +3395,7 @@ snapshots:
 
   sigx@0.15.2:
     dependencies:
-      '@sigx/reactivity': 0.15.2
+      '@sigx/reactivity': 0.15.3
       '@sigx/runtime-core': 0.15.2
       '@sigx/runtime-dom': 0.15.2
 
