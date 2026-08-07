@@ -44,7 +44,12 @@
     "packages/*/__tests__/**/*.ts",
     "packages/*/src/**/*.tsx",
     "benchmarks/src/**/*.ts",
-    "benchmarks/__tests__/**/*.ts"
+    "benchmarks/__tests__/**/*.ts",
+    // The deployment suite. It gates a REAL environment and models the
+    // ops JSON by hand, so it is the last place drift should go unseen —
+    // and it did: `ClusterReport` was missing the per-host `counters` the
+    // suite reads, because nothing typechecked the file (#146).
+    "perf/aks/__tests__/**/*.ts"
   ],
   "exclude": [
     "node_modules",

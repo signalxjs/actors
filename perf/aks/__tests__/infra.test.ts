@@ -73,6 +73,16 @@ interface CallOptions {
     cookie?: string | null;
     origin?: string | null;
     route?: boolean;
+    /**
+     * Send THIS token instead of the one derived from the key.
+     *
+     * Legal traffic, not a trick: the token is routing metadata and the
+     * endpoint never validates it — the runtime resolves the owner from the
+     * key either way, paying at most an extra hop. Decoupling the two is
+     * what lets the pinning assertion below hold the edge's hash input
+     * still while varying the key.
+     */
+    token?: string;
 }
 
 /** One actor call, shaped exactly as a browser shapes it. */
@@ -84,7 +94,7 @@ async function actorCall(
 ): Promise<Response> {
     const { cookie = cookieFor('tester'), origin = URL_BASE, route = true } = options;
     const key = String(args[0] ?? '');
-    const token = route ? routeToken(type, key) : null;
+    const token = route ? (options.token ?? routeToken(type, key)) : null;
     const symbol = `${type.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(method)}`;
     const path = token ? `/_sigx/actor/r/${token}/${symbol}` : `/_sigx/actor/${symbol}`;
     return fetch(`${URL_BASE}${path}`, {
@@ -156,7 +166,14 @@ const OPS_URL = process.env.INFRA_OPS_URL ?? 'http://127.0.0.1:7399';
 /** Only the parts of `ClusterStatsReport` this suite reads. */
 interface ClusterReport {
     view: { size: number; active: number };
-    hosts: { hostId: string; status: string; stats: { activations: number } }[];
+    hosts: {
+        hostId: string;
+        status: string;
+        stats: { activations: number };
+        /** Per-host counters. NB these count routing DECISIONS, not
+         *  requests — see the pinning assertion for what that rules out. */
+        counters: { routedLocal: number; remoteDispatches: number };
+    }[];
     partial: boolean;
     totals: {
         hosts: number;
@@ -508,12 +525,32 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
     //    Service of its own.
     //
     // So the least a deployment can do is find out.
+    //
+    // ⚠ ONE SHARED TOKEN, N FRESH KEYS — and the two must not be tied
+    // together (#146). The counters below record ROUTING DECISIONS, not
+    // requests: once a key's actor is active on the host the edge picked,
+    // every later call for that key takes an in-process fast path and
+    // increments nothing. Measured on a 3-host deployment:
+    //
+    //     20 calls, ONE key      → +1 cluster-wide
+    //     20 calls, 20 fresh keys → +6 / +3 / +11 — every call counted
+    //
+    // So the obvious spelling — hammer one key, watch it pile up on one
+    // host — tops out at 1 and can only ever pass when the hash is BROKEN,
+    // because round-robin scatters the calls onto hosts that are NOT the
+    // owner and each of those does pay a routing decision. It failed at
+    // 0/0/0 against a provably-working hash before this shape replaced it.
+    //
+    // Varying the key while holding the token still keeps every call a
+    // first-call, so all N are counted, while the edge still has exactly
+    // one hash input. Measured with the hash working: 0/0/20.
     it('sends one routing token to one host', async () => {
         const hosts = (await clusterReport()).totals.hosts;
         // One host makes every request local by definition; nothing to pin.
         if (hosts < 2) return;
 
-        const key = `pin-${Date.now().toString(36)}`;
+        const stamp = Date.now().toString(36);
+        const token = routeToken('Room', `pin-anchor-${stamp}`);
         const received = async (): Promise<Map<string, number>> =>
             new Map(
                 (await clusterReport()).hosts.map((h) => [
@@ -524,11 +561,14 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
                 ])
             );
 
-        await actorCall('Room', 'recent', [key, 20]);
-        await sleep(1_000);
         const before = await received();
         const N = 20;
-        for (let i = 0; i < N; i++) await actorCall('Room', 'recent', [key, 20]);
+        for (let i = 0; i < N; i++) {
+            // Asserted, because a 5xx increments nothing either — an
+            // unchecked failure reads exactly like a perfect pin.
+            const res = await actorCall('Room', 'recent', [`pin-${stamp}-${i}`, 20], { token });
+            expect(res.status).toBe(200);
+        }
         await sleep(1_000);
         const after = await received();
 
