@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-ws",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "WebSocket transport for @sigx/actors \u2014 host-to-host frames over one port, proxy-friendly",
     "type": "module",
     "main": "./dist/index.js",
@@ -57,7 +57,7 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.4.0",
+        "@sigx/actors": "^0.5.0",
         "ws": ">=8"
     }
 }
