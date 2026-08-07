@@ -4,6 +4,7 @@
  * outside this file touches activation memory.
  */
 import { effect, effectScope, signal, toRaw } from '@sigx/reactivity';
+import { deepTrack } from '@sigx/reactivity/internals';
 import { createSharedWatch, watchKey, type SharedWatch } from './watch';
 import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
@@ -1075,9 +1076,24 @@ export class Activation {
      * `#dirty` synchronously (out-of-turn and `onActivate` mutations are
      * still caught at write time) and parks the re-run — the ONE deep walk
      * happens when `#consumeDirty()` folds at the next boundary, re-tracking
-     * whatever the turn added. The floor that remains is one walk per DIRTY
-     * boundary, not per mutation; removing the walk entirely needs an
-     * upstream write-hook primitive (see the issue).
+     * whatever the turn added. The floor is one walk per DIRTY boundary, not
+     * per mutation.
+     *
+     * What that walk COSTS is reactivity's problem, and since #124 it is
+     * reactivity's code. This used to call a private `trackDeep` copied from
+     * upstream `traverse`, carrying a warning that divergence here would be
+     * divergence in what counts as a change — and it diverged: upstream
+     * stopped enumerating the proxy (signalxjs/core#642) and then stopped
+     * reading keys back through it altogether (core#645, one any-write dep
+     * per object, −75.4% on a 200-row fixture), while the copy stayed on the
+     * original algorithm. It measured ~1.2 ms for ONE mutating turn over
+     * 200-row state, with no subscriber and no write involved.
+     *
+     * `deepTrack` is that same upstream traversal, exported for this caller
+     * (core#651) because `watch(deep)` is not usable here — `WatchOptions`
+     * has no `scheduler`, and the parked re-run above is the whole design.
+     * Calling core's walk rather than mirroring it is what keeps the two
+     * from disagreeing again.
      */
     #ensureChangeTracking(): void {
         if (this.#trackingInstalled) return;
@@ -1087,7 +1103,7 @@ export class Activation {
             // established (and every current node subscribed) right here.
             // `effect()` registers its own disposer with the active scope,
             // so `#scope.stop()` at deactivation is the teardown.
-            effect(() => trackDeep(this.#state), {
+            effect(() => deepTrack(this.#state), {
                 scheduler: (run) => {
                     this.#dirty = true;
                     this.#retrack = run;
@@ -1854,37 +1870,6 @@ export class Activation {
             this.#subs.delete(sub);
         }
         subs.clear();
-    }
-}
-
-/**
- * Deep traversal through the reactive proxy, mirroring reactivity's own
- * `watch({ deep })` walk (objects via their keys, arrays, Map entries, Set
- * values, a `seen` set for cycles) — it is not exported from there. Every
- * get lands in the proxy's track trap, so after one walk every reachable
- * node notifies the tracking effect on write. Keep the shape identical to
- * upstream `traverse`: divergence here is divergence in what counts as a
- * change.
- */
-function trackDeep(value: unknown, seen: Set<unknown> = new Set()): void {
-    if (value === null || typeof value !== 'object') return;
-    if (seen.has(value)) return;
-    seen.add(value);
-    if (Array.isArray(value)) {
-        for (let i = 0; i < value.length; i++) trackDeep(value[i], seen);
-    } else if (value instanceof Map) {
-        value.forEach((v, k) => {
-            trackDeep(k, seen);
-            trackDeep(v, seen);
-        });
-    } else if (value instanceof Set) {
-        value.forEach((v) => {
-            trackDeep(v, seen);
-        });
-    } else {
-        for (const key of Object.keys(value)) {
-            trackDeep((value as Record<string, unknown>)[key], seen);
-        }
     }
 }
 
