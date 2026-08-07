@@ -156,6 +156,9 @@ pnpm bench:run <filter>   # skip the build; filter by scenario name substring
 pnpm bench:baseline       # record this machine's reference (gitignored)
 pnpm bench:compare        # run again and diff against that reference
 pnpm bench:diff --before=a.json --after=b.json   # diff two saved result files
+pnpm bench:ab --base-dir=<checkout> --head-dir=<checkout> --out=rounds.json
+                          # interleaved counterbalanced A/B of two BUILT checkouts
+pnpm bench:ab:report --rounds-file=rounds.json   # verdict table from those rounds
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
 pnpm bench:threads        # compute/: worker_threads vs the event loop (opt-in, needs cores)
@@ -171,15 +174,23 @@ detects one.
 **In CI they run, and the split between what gates and what does not is the
 whole design.** The `Bench` workflow (`.github/workflows/bench.yml`) fires on a
 PR touching `packages/**`, `benchmarks/**` or the lockfile and measures the base
-ref and the head ref back to back *on the same runner*, posting the delta as one
-PR comment. That is the only comparison a shared vCPU can support: absolute
-numbers off it are meaningless, and `pnpm bench:compare`'s local baseline is
-per-machine and gitignored for exactly that reason.
+ref against the head ref in **interleaved, counterbalanced rounds** on the
+dedicated bench VM (#98, ported from core#639): even rounds base-first, odd
+rounds head-first, so machine drift cancels in the paired deltas instead of
+accruing to whichever side ran second — sequentially, that order was worth a
+measured ~+2% to the head. The PR comment is a *verdict* per row, not a bare
+delta. `pnpm bench:compare`'s local baseline stays per-machine and gitignored
+for the same reason it always was. To judge any two refs on the VM without
+opening a PR: `gh workflow run bench.yml -f base=<ref> -f head=<ref>
+-f rounds=7` (`-f enforce=true` makes a unanimous timing regression fail the
+run — the deliberate proof mode, never the PR path).
 
-- **Timings never gate.** Treat the comment as a pointer and reproduce anything
-  it flags locally on a quiet machine. CI compares them at **25%** rather than
-  the local 10%, and even that is not enough on its own — two identical commits
-  produced false regressions of 16%, 19% and 53%.
+- **Timings never gate on the PR path.** A row is only *called*
+  (`improved`/`regressed`) when every round agrees in sign AND the median delta
+  clears both a 3% floor and the row's own run-to-run spread; a side that
+  swings more than 10% reads `noisy` and claims nothing. Even a called
+  regression is advisory on a PR — reproduce it (more rounds via dispatch, or
+  locally on a quiet machine) before acting on it.
 - **`exact` metrics gate, at zero tolerance, and FAIL the check.** Invariants
   rather than measurements — `directory_ops` per activation, `microtask_turns`
   per dispatch, `notifications` per join, the `prefer-local` locality

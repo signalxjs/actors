@@ -29,17 +29,32 @@ name: Bench
 #
 # Two jobs, two shapes:
 #
-# - `bench-ab` (perf-sensitive PRs): the PR's base ref and its head ref
-#   measured back to back ON THE SAME RUNNER, posted as one PR comment.
-#   Absolute numbers from a shared vCPU mean nothing, but the delta between
-#   two runs a few minutes apart on the same box does — and that is the only
-#   comparison available here. `pnpm bench:compare` diffs against
+# - `bench-ab` (perf-sensitive PRs, and dispatches carrying a `base`): the
+#   two refs measured in INTERLEAVED, COUNTERBALANCED rounds on one runner
+#   (#98, ported from core#639) — even rounds base-first, odd rounds
+#   head-first, so drift carries equal and opposite bias in the two orders
+#   and cancels in the paired deltas instead of accruing to whichever side
+#   ran second (sequentially, that order was worth a measured ~+2% to the
+#   head). The report is a VERDICT per row: `improved`/`regressed` needs
+#   every round to agree in sign AND a median delta above both a 3% floor
+#   and the row's own run-to-run spread; a row that swings more than 10%
+#   reads `noisy` and claims nothing. The merge-queue leg stays sequential
+#   on the gate scenarios — `exact` metrics are invariants and rounds add
+#   nothing they can fail on. `pnpm bench:compare` diffs against
 #   `benchmarks/baselines/local.json`, which is per-machine and gitignored
 #   precisely because someone else's laptop is not evidence; CI has no such
 #   baseline and could not trust one if it did (the calibration probe would
 #   differ and every verdict would come back "no verdict").
-# - `bench-quick` (manual): one run of the current ref, uploaded as an
-#   artifact for a human to read.
+# - `bench-quick` (manual, no `base` input): one run of the current ref,
+#   uploaded as an artifact for a human to read.
+#
+# To judge a perf question between any two refs on the quiet VM — before a
+# PR exists, or re-litigating a flagged row with more rounds:
+#
+#   gh workflow run bench.yml -f base=<ref> -f head=<ref> -f rounds=7
+#
+# (`-f enforce=true` additionally fails the run on a unanimous timing
+# regression — the deliberate proof run; the PR path never gates timings.)
 #
 # An exact-metric regression FAILS this workflow, so the check goes red. It is
 # not yet a *required* check — this repo has no ruleset — so red is a stop sign
@@ -61,6 +76,26 @@ name: Bench
 # a quiet machine with spare cores.
 on:
   workflow_dispatch:
+    inputs:
+      base:
+        description: >-
+          Base ref for an interleaved A/B on the bench VM. Leave empty for a
+          plain full-suite measurement of the dispatched ref (bench-quick).
+        required: false
+        default: ''
+      head:
+        description: 'Head ref for the A/B (defaults to the dispatched ref)'
+        required: false
+        default: ''
+      rounds:
+        description: 'Interleaved A/B rounds (sign test at p = 2^-rounds)'
+        required: false
+        default: '5'
+      enforce:
+        description: 'Also FAIL the run on a unanimous timing regression'
+        required: false
+        default: false
+        type: boolean
   merge_group:
   pull_request:
     branches: [main]
@@ -195,7 +230,7 @@ jobs:
           }
 
   bench-quick:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.base == ''
     needs: wake
     # `workflow_dispatch` requires write access on a branch of this repo, so
     # there is no fork exposure here and this can take the dedicated runner
@@ -238,7 +273,9 @@ jobs:
           path: ${{ runner.temp }}/bench.json
 
   bench-ab:
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: >-
+      github.event_name == 'pull_request' || github.event_name == 'merge_group' ||
+      (github.event_name == 'workflow_dispatch' && inputs.base != '')
     needs: wake
     # WHERE THIS RUNS IS THE WHOLE POINT, and the three cases differ:
     #
@@ -266,11 +303,15 @@ jobs:
     #   token and no Actions secrets, so `wake` cannot start the machine — and a
     #   dependency bump does not need the quiet box anyway.
     #
+    # - `workflow_dispatch` with a `base` → the bench machine, like
+    #   `bench-quick`: dispatching requires write access on a branch of this
+    #   repo, so there is no fork exposure.
+    #
     # Kept on ONE line on purpose: in a YAML folded scalar (`>-`) a line indented
     # further than the first is preserved verbatim, newline and all, so the
     # pretty-wrapped version of this expression reaches Actions with literal
     # newlines inside it.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') && fromJSON('["self-hosted","linux","x64","bench"]') || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && fromJSON('["self-hosted","linux","x64","bench"]') || 'ubuntu-latest' }}
     # Two installs, two builds and two full suites. The ceiling is for a hang,
     # not for a slow run.
     timeout-minutes: 45
@@ -278,23 +319,21 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      # `merge_group` carries no pull_request payload, so each side falls back
-      # to the queue's own shas. Exactly one of the two is ever non-empty.
-      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-      # NOTE: `FILTERS` is deliberately NOT computed here. The `env` context is
-      # not available inside a job-level `env:` block, so a
-      # `${{ ... env.BENCH_GATE_SCENARIOS ... }}` expression would resolve to
-      # the empty string in silence — the queue would quietly measure the whole
-      # suite and nobody would notice. The steps derive it from
-      # `$GITHUB_EVENT_NAME`, which is always defined.
+      # Each event names its own sides: a PR/queue run compares its base and
+      # head shas; a dispatch compares the two refs it was given. At most one
+      # source is ever non-empty per event.
+      BASE_SHA: ${{ inputs.base || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ inputs.head || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      AB_ROUNDS: ${{ inputs.rounds || '5' }}
+      AB_ENFORCE: ${{ inputs.enforce || 'false' }}
     steps:
-      # fetch-depth 0: the job checks the base ref out in place, so both
-      # commits must be in the clone.
+      # fetch-depth 0: the base side is materialized from this clone (a
+      # worktree on the interleaved path, an in-place checkout on the queue
+      # path), so both commits must be in it.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          ref: ${{ inputs.head || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
       - uses: pnpm/action-setup@v6.0.9
 
@@ -303,35 +342,30 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      # Both halves invoke benchmarks/src/main.ts BY PATH, never through a pnpm
-      # script: the base ref is an arbitrary older commit and need not define a
-      # script name this PR introduces. For the same reason they pass only
-      # flags the base ref already understands — main.ts throws on an unknown
-      # one.
-      # On the queue, measure only what can fail; on a PR, measure everything.
-      # Unquoted on the command line so the words split into separate filters.
-      - name: Scenario filter
-        id: filter
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
-            echo "filters=$BENCH_GATE_SCENARIOS" >> "$GITHUB_OUTPUT"
-          else
-            echo "filters=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Bench the base ref
-        env:
-          FILTERS: ${{ steps.filter.outputs.filters }}
+      # ------------------------------------------------------------------
+      # The MERGE QUEUE path: sequential, gate scenarios only, unchanged.
+      # Deliberately NOT interleaved: the queue measures only `exact`
+      # metrics, which are invariants — identical on any machine, in any
+      # order, in one pass — so rounds would multiply its wall-clock for
+      # statistics nothing there can use.
+      #
+      # Both halves invoke benchmarks/src/main.ts BY PATH, never through a
+      # pnpm script: the base ref is an arbitrary older commit and need not
+      # define a script name this PR introduces. For the same reason they
+      # pass only flags the base ref already understands — main.ts throws on
+      # an unknown one. $BENCH_GATE_SCENARIOS is unquoted so the words split
+      # into separate filters.
+      - name: Bench the base ref (queue)
+        if: github.event_name == 'merge_group'
         run: |
           git checkout --detach "$BASE_SHA"
           pnpm install --frozen-lockfile
           pnpm build
           node --conditions=production --expose-gc benchmarks/src/main.ts \
-            $FILTERS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/base.json"
+            $BENCH_GATE_SCENARIOS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/base.json"
 
-      - name: Bench the head ref
-        env:
-          FILTERS: ${{ steps.filter.outputs.filters }}
+      - name: Bench the head ref (queue)
+        if: github.event_name == 'merge_group'
         run: |
           git checkout --detach "$HEAD_SHA"
           # A dist left over from the base build is not overwritten when the
@@ -341,7 +375,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           node --conditions=production --expose-gc benchmarks/src/main.ts \
-            $FILTERS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/head.json"
+            $BENCH_GATE_SCENARIOS --runs="$BENCH_RUNS" --json="$RUNNER_TEMP/head.json"
 
       # The HEAD checkout's comparer, so a PR that changes the comparison rules
       # is read by the version it ships.
@@ -350,7 +384,8 @@ jobs:
       # exact metric regressed, and if that ended the job here the comment
       # explaining WHY would never post. So the failure is captured, the
       # report goes out, and the last step re-raises it.
-      - name: Compare
+      - name: Compare (queue)
+        if: github.event_name == 'merge_group'
         id: compare
         continue-on-error: true
         run: |
@@ -360,6 +395,55 @@ jobs:
             --threshold="$BENCH_THRESHOLD" \
             --markdown="$RUNNER_TEMP/bench.md" \
             --title="base \`${BASE_SHA:0:7}\` (before) → head \`${HEAD_SHA:0:7}\` (after), both measured on this runner. The head half is always measured second; across all throughput metrics that order is worth about +2%."
+
+      # ------------------------------------------------------------------
+      # The PR and DISPATCH path: interleaved, counterbalanced rounds (#98).
+      # Both refs exist simultaneously — the head is this checkout, the base
+      # a worktree — so rounds can alternate without re-installing. Rounds
+      # replace in-process repetition (--runs stays at ab.ts's default of 1
+      # per side per round): the verdict's statistics come from BETWEEN-round
+      # spread and a sign test, which is what the sequential job's
+      # measured-and-documented "+2% because the head runs second" bias
+      # cannot contaminate.
+      - name: Prepare the base checkout
+        if: github.event_name != 'merge_group'
+        run: |
+          # The bench VM persists the workspace between runs, and the runner
+          # wipes RUNNER_TEMP — leaving a stale worktree REGISTRATION behind
+          # that would fail the add below.
+          git worktree prune
+          BASE_COMMIT=$(git rev-parse --verify --quiet "$BASE_SHA^{commit}" \
+            || git rev-parse "origin/$BASE_SHA^{commit}")
+          git worktree add "$RUNNER_TEMP/base" "$BASE_COMMIT"
+          cd "$RUNNER_TEMP/base"
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build the head
+        if: github.event_name != 'merge_group'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Interleaved rounds
+        if: github.event_name != 'merge_group'
+        run: |
+          node --conditions=production --expose-gc benchmarks/src/ab.ts \
+            --base-dir="$RUNNER_TEMP/base" --head-dir="$PWD" \
+            --rounds="$AB_ROUNDS" --out="$RUNNER_TEMP/rounds.json"
+
+      - name: Verdict
+        if: github.event_name != 'merge_group'
+        id: verdict
+        continue-on-error: true
+        run: |
+          ENFORCE=""
+          [ "$AB_ENFORCE" = "true" ] && ENFORCE="--enforce"
+          node --conditions=production benchmarks/src/ab-report.ts \
+            --rounds-file="$RUNNER_TEMP/rounds.json" \
+            --markdown="$RUNNER_TEMP/bench.md" \
+            $ENFORCE \
+            --title="base \`$(git -C "$RUNNER_TEMP/base" rev-parse --short HEAD)\` (before) → head \`$(git rev-parse --short HEAD)\` (after), $AB_ROUNDS interleaved rounds on this runner."
 
       - name: Job summary
         run: cat "$RUNNER_TEMP/bench.md" >> "$GITHUB_STEP_SUMMARY"
@@ -392,17 +476,20 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
 
-      # The gate, re-raised now that the comment and the summary are out. Only
-      # an exact-metric regression reaches here — a timing move, however
-      # large, left the comparer at exit 0.
-      - name: Fail on an exact-metric regression
-        if: steps.compare.outcome == 'failure'
+      # The gate, re-raised now that the comment and the summary are out.
+      # Only an exact-metric class reaches here off the PR path — regressed,
+      # or nondeterministic between rounds of the same code — plus, on a
+      # dispatch with `enforce`, a unanimous timing regression. A timing
+      # move on the PR path, however large, left its reporter at exit 0.
+      - name: Fail on a gated regression
+        if: steps.compare.outcome == 'failure' || steps.verdict.outcome == 'failure'
         run: |
-          echo "::error::An exact metric regressed — see the Benchmark A/B comment." \
-            " These are invariants (directory calls per activation, microtask turns per" \
-            " dispatch), not timings: the same code gives the same value on any machine," \
-            " so this is a behavioural change rather than runner noise. If it is" \
-            " intended, say so in the PR."
+          echo "::error::The A/B gate failed — see the Benchmark A/B report." \
+            " Exact metrics are invariants (directory calls per activation, microtask" \
+            " turns per dispatch): the same code gives the same value on any machine," \
+            " so a move there is a behavioural change rather than runner noise — and" \
+            " one that VARIES between rounds of the same code has broken the exact" \
+            " contract outright. If the change is intended, say so in the PR."
           exit 1
 
       - name: Upload results
@@ -413,5 +500,6 @@ jobs:
           path: |
             ${{ runner.temp }}/base.json
             ${{ runner.temp }}/head.json
+            ${{ runner.temp }}/rounds.json
             ${{ runner.temp }}/bench.md
           if-no-files-found: ignore
