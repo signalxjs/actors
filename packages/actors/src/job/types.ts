@@ -151,6 +151,27 @@ export interface JobOptions<In, Out, C, Extra extends object> {
     /** Durable-reminder passthrough — HITL timeouts, scheduled nudges.
      *  Reserved runtime names never reach it. */
     onReminder?(control: JobControl<Extra>, name: string): void | Promise<void>;
+    /**
+     * Every terminal transition, INCLUDING the ones the run body never sees:
+     * the runtime's `maxAttempts` give-up (it refuses the restart, so no body
+     * turn happens) and a `cancel()` that lands while the job is parked or
+     * between attempts. This is the seam for a projection kept OUTSIDE the
+     * job — a status row in your own database, a metric, a notification.
+     * Without it, a projection maintained only from inside `run()` silently
+     * asserts "still running" forever after either of those.
+     *
+     * Fires for `completed` too, not just the runtime-driven cases: a hook
+     * that covered only some terminal transitions would leave the handler
+     * needing to know which ones it must ALSO cover from the body, which is
+     * the bug this exists to remove. Make the handler idempotent instead.
+     *
+     * Runs inside the settling turn, AFTER the state save — `info` is the
+     * final state, and a throw cannot undo the transition (it is caught,
+     * dev-warned and swallowed). Same no-self-dispatch rule as `onReminder`:
+     * use the supplied `JobControl`, never a client call back into this
+     * actor. Note that awaiting slow I/O here holds the actor's turn.
+     */
+    onSettled?(control: JobControl<Extra>, info: JobInfo<Extra>): void | Promise<void>;
     idleAfterMs?: number;
     placement?: ActorPlacementStrategy;
 }
