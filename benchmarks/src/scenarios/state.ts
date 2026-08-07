@@ -15,7 +15,14 @@
  * `state/dirty-growth` do it for the change-tracking walk, which until #124
  * nothing measured at all.
  */
-import { Growing, Large, makeTrackedActor, Tiny, WriteBehind } from '../actors.ts';
+import {
+    Growing,
+    Large,
+    makeTrackedActor,
+    makeWatchableActor,
+    Tiny,
+    WriteBehind
+} from '../actors.ts';
 import { closedLoop, LATENCY_NOISE_FLOOR_MS, sweepConcurrency } from '../loop.ts';
 import { benchCall, createBenchHost, requireStreamDispatch } from '../host-fixture.ts';
 import type { ActorRef, Host } from '@sigx/actors/host';
@@ -401,10 +408,88 @@ const dirtyGrowth: Scenario = {
     }
 };
 
+const WATCHABLE = ROW_LADDER.map((rows) => ({ rows, def: makeWatchableActor(rows) }));
+
+/**
+ * What a `$live` watch costs, by state size (#129).
+ *
+ * This is the path `useActorState(…, { live: true })` and every wire watch
+ * take, and it is NOT `streams/changes-fanout`: a watch re-invokes a read
+ * method on change rather than consuming the state, so `createSharedWatch`'s
+ * pump reads `{ done }` off the feed and never touches the value.
+ *
+ * Which is the point of measuring it against `state/dirty-size`'s subs=1 arm:
+ * a subscriber that discards the snapshot should not pay for one. `throttleMs
+ * 0` so the number is the per-turn cost rather than the throttle's.
+ */
+const liveWatch: Scenario = {
+    name: 'streams/live-watch',
+    description: 'mutating turns under one $live watch (dispatchWatch), by state size',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        for (const { rows, def } of ctx.quick ? WATCHABLE.slice(0, 2) : WATCHABLE) {
+            const fixture = await createBenchHost({ actors: [def] });
+            const controller = new AbortController();
+            const watchRef = { type: def.type, key: 'watched' };
+            const call = benchCall();
+            const bump = (): Promise<unknown> =>
+                fixture.host.dispatch(watchRef, 'increment', [1], call);
+            let drain: Promise<void> | undefined;
+            try {
+                await bump();
+                const watch = fixture.host.dispatchWatch?.(
+                    watchRef,
+                    'total',
+                    [],
+                    benchCall({ abortSignal: controller.signal }),
+                    { throttleMs: 0 }
+                );
+                if (!watch) throw new Error('host.dispatchWatch is missing — no $live path to measure.');
+                drain = (async () => {
+                    try {
+                        for await (const _ of watch) {
+                            if (controller.signal.aborted) break;
+                        }
+                    } catch {
+                        // Aborted at teardown — expected.
+                    }
+                })();
+
+                const outcome = await closedLoop({
+                    call: bump,
+                    concurrency: 1,
+                    durationMs: ctx.durationMs,
+                    latency: false
+                });
+                metrics.push({
+                    name: `rows=${rows}/ops_per_sec`,
+                    value: outcome.opsPerSec,
+                    unit: 'ops/s',
+                    direction: 'higher'
+                });
+
+                controller.abort();
+                await bump();
+                if (!(await settledWithin([drain], TEARDOWN_TIMEOUT_MS))) {
+                    throw new Error(
+                        `the $live watch consumer did not unwind within ${TEARDOWN_TIMEOUT_MS}ms ` +
+                            `after abort + a wake-up mutation.`
+                    );
+                }
+            } finally {
+                controller.abort();
+                await fixture.stop();
+            }
+        }
+        return metrics;
+    }
+};
+
 export const stateScenarios: Scenario[] = [
     explicitSave,
     writeBehind,
     changesFanout,
     dirtySize,
-    dirtyGrowth
+    dirtyGrowth,
+    liveWatch
 ];

@@ -219,6 +219,58 @@ interface ChangeSub {
     queue: object[];
     wake: (() => void) | null;
     done: boolean;
+    /**
+     * This consumer never reads the value, so the boundary must not build
+     * one for it — see `CHANGE_TICK` (#129).
+     */
+    ticksOnly: boolean;
+    /** 0 for an unthrottled feed: emit on every boundary, as always. */
+    throttleMs: number;
+    /** A boundary landed inside the open window; the window owes an emit. */
+    pending: boolean;
+    /** Closes the open throttle window, or null when none is open. */
+    cancelWindow: (() => void) | null;
+}
+
+/**
+ * What a value-free subscriber receives instead of a snapshot (#129).
+ *
+ * `createSharedWatch`'s pump reads `const { done } = await iterator.next()`
+ * and re-invokes the actor's read method — it never touches `value`. So every
+ * `$live` subscription (and therefore every `useActorState(…, { live: true })`)
+ * was paying a full `encode` + `revive` of the whole state per mutating turn
+ * to produce an object nothing looked at.
+ *
+ * One frozen sentinel, shared by every such subscriber forever: the queue
+ * needs *something* to distinguish "a change is waiting" from empty, and its
+ * identity is never observed.
+ */
+const CHANGE_TICK: object = Object.freeze({});
+
+/**
+ * `ctx.changes()`'s options plus `ticksOnly`, which is NOT public: it is how
+ * `openWatch` says it wants the notification and not the state.
+ */
+interface ChangesOptions {
+    initial?: boolean;
+    throttleMs?: number;
+    ticksOnly?: boolean;
+}
+
+/**
+ * A bad `throttleMs` is refused rather than defaulted. It reaches here from
+ * actor code, so silently reading `throttleMs: '50'` as "unthrottled" would
+ * hide a real mistake behind a performance cliff nobody attributes correctly.
+ */
+function normalizeThrottleMs(value: number | undefined, ref: ActorRef): number {
+    if (value === undefined) return 0;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        throw new TypeError(
+            `[sigx actors] ${actorLabel(ref)}: ctx.changes({ throttleMs }) must be a ` +
+                `non-negative finite number, got ${String(value)}.`
+        );
+    }
+    return value;
 }
 
 /**
@@ -561,8 +613,13 @@ export class Activation {
                     // A NORMAL turn, not a privileged read: the
                     // watch gets exactly the isolation every other call has.
                     invoke: () => this.enqueue(method, args, call),
-                    changes: () =>
-                        (this.#ctx as ActorContext<object>).changes() as AsyncIterable<unknown>,
+                    // `ticksOnly`: the pump reads `{ done }` and re-invokes
+                    // the read method — it never looks at the value, so a
+                    // snapshot built for it is pure waste, once per mutating
+                    // turn per shared watch, over the whole state (#129).
+                    // Straight to `#openChanges` rather than through
+                    // `ctx.changes()` because this is not a public option.
+                    changes: () => this.#openChanges({ ticksOnly: true }),
                     keepAlive: () => {
                         this.#keepAlive++;
                         let released = false;
@@ -966,21 +1023,15 @@ export class Activation {
         if (this.#version > this.#notifiedVersion) {
             this.#notifiedVersion = this.#version;
             if (this.#subs.size > 0) {
-                const snap = this.#snapshot();
+                // The snapshot is built at most once per boundary AND only if
+                // someone actually wants one: a set of purely value-free or
+                // throttled-and-inside-their-window subscribers costs zero
+                // clones (#129). It is still shared by everyone who does get
+                // one, exactly as before.
+                let snap: object | undefined;
                 for (const sub of this.#subs) {
-                    sub.queue.push(snap);
-                    if (sub.queue.length > CHANGE_BUFFER) {
-                        sub.queue.shift();
-                        if (__DEV__ && !this.#warnedDroppedChanges) {
-                            this.#warnedDroppedChanges = true;
-                            console.warn(
-                                `[sigx actors] ${actorLabel(this.ref)} change feed dropped ` +
-                                    `snapshots — a stream consumer is slower than the actor's ` +
-                                    `mutation rate (buffer: ${CHANGE_BUFFER}).`
-                            );
-                        }
-                    }
-                    sub.wake?.();
+                    if (this.#deferToWindow(sub)) continue;
+                    this.#deliver(sub, sub.ticksOnly ? CHANGE_TICK : (snap ??= this.#snapshot()));
                 }
             }
             if (this.#isWriteBehind() && this.#version > this.#savedVersion) {
@@ -1784,7 +1835,7 @@ export class Activation {
             snapshot(): object {
                 return self.#snapshot();
             },
-            changes(options?: { initial?: boolean }): AsyncIterable<object> {
+            changes(options?: { initial?: boolean; throttleMs?: number }): AsyncIterable<object> {
                 return self.#openChanges(options);
             }
         };
@@ -1797,10 +1848,18 @@ export class Activation {
      * whose generator can no longer be resumed to close it itself.
      */
     #openChanges(
-        options: { initial?: boolean } | undefined,
+        options: ChangesOptions | undefined,
         feeds?: StreamFeeds
     ): AsyncIterable<object> {
-        const sub: ChangeSub = { queue: [], wake: null, done: false };
+        const sub: ChangeSub = {
+            queue: [],
+            wake: null,
+            done: false,
+            ticksOnly: options?.ticksOnly === true,
+            throttleMs: normalizeThrottleMs(options?.throttleMs, this.ref),
+            pending: false,
+            cancelWindow: null
+        };
         if (feeds?.closed) {
             // The consumer went away before the body got this far. Hand it a
             // spent feed — no seed, no registration — so the body unwinds on
@@ -1815,7 +1874,7 @@ export class Activation {
         // call: a `yield ctx.snapshot()` prologue would instead subscribe
         // only after the consumer resumes, losing every mutation in that
         // window.
-        if (options?.initial) sub.queue.push(this.#snapshot());
+        if (options?.initial) sub.queue.push(sub.ticksOnly ? CHANGE_TICK : this.#snapshot());
         this.#subs.add(sub);
         feeds?.subs.add(sub);
         return this.#changeFeed(sub, feeds);
@@ -1842,6 +1901,10 @@ export class Activation {
                     },
                     async return(): Promise<IteratorResult<object>> {
                         sub.done = true;
+                        // No trailing flush here, unlike `#closeSubs`: this
+                        // consumer is leaving, so a final snapshot would be
+                        // built for nobody.
+                        self.#closeWindow(sub);
                         self.#subs.delete(sub);
                         feeds?.subs.delete(sub);
                         // Wake a parked next(). Marking `done` is not
@@ -1858,6 +1921,74 @@ export class Activation {
         };
     }
 
+    /** Queue one value for a subscriber and wake it, dropping oldest at the bound. */
+    #deliver(sub: ChangeSub, value: object): void {
+        sub.queue.push(value);
+        if (sub.queue.length > CHANGE_BUFFER) {
+            sub.queue.shift();
+            if (__DEV__ && !this.#warnedDroppedChanges) {
+                this.#warnedDroppedChanges = true;
+                console.warn(
+                    `[sigx actors] ${actorLabel(this.ref)} change feed dropped ` +
+                        `updates — a stream consumer is slower than the actor's ` +
+                        `mutation rate (buffer: ${CHANGE_BUFFER}).`
+                );
+            }
+        }
+        sub.wake?.();
+    }
+
+    /**
+     * `true` if this boundary is absorbed by an open throttle window, so the
+     * caller must not emit (and must not build a snapshot).
+     *
+     * Leading edge plus trailing edge: the first boundary emits at once and
+     * opens the window, everything inside it collapses into the single emit
+     * the window makes on closing. That last emit takes a FRESH snapshot, so
+     * a throttled consumer is never handed a state older than the window it
+     * waited out.
+     */
+    #deferToWindow(sub: ChangeSub): boolean {
+        if (sub.throttleMs <= 0) return false;
+        if (sub.cancelWindow) {
+            sub.pending = true;
+            return true;
+        }
+        this.#openWindow(sub);
+        return false;
+    }
+
+    #openWindow(sub: ChangeSub): void {
+        sub.cancelWindow = this.#host.scheduler.after(sub.throttleMs, () => {
+            sub.cancelWindow = null;
+            if (!sub.pending || sub.done) return;
+            sub.pending = false;
+            // Out of turn, like the write-behind flush: on a serial actor
+            // this lands between turns, so the snapshot is a settled state.
+            // On `reentrant: 'always'` there is no between-turns state and
+            // it may be mid-logical-turn — the same documented trade the
+            // 'always' contract already makes for write-behind.
+            //
+            // `ticksOnly` is honoured here as everywhere else. No caller
+            // combines it with a throttle today — `openWatch` passes only
+            // `ticksOnly` — but a value-free subscriber that silently got a
+            // full snapshot from this one path would be a contradiction
+            // waiting for the first caller that does.
+            this.#deliver(sub, sub.ticksOnly ? CHANGE_TICK : this.#snapshot());
+            // A trailing emit starts its own window, so two bursts a
+            // microsecond apart cannot produce two emits. It closes empty
+            // and stops if nothing else lands.
+            this.#openWindow(sub);
+        });
+    }
+
+    /** Cancel a subscriber's throttle window, if one is open. */
+    #closeWindow(sub: ChangeSub): void {
+        sub.cancelWindow?.();
+        sub.cancelWindow = null;
+        sub.pending = false;
+    }
+
     /**
      * Close subscriptions from outside their consumer: mark done, wake a
      * parked `next()`, and drop them from the activation's set. Safe to pass
@@ -1865,6 +1996,20 @@ export class Activation {
      */
     #closeSubs(subs: Set<ChangeSub>): void {
         for (const sub of subs) {
+            // Flush a throttled subscriber's outstanding change before the
+            // feed ends, or a run that finishes inside its own window loses
+            // its final state — for a job's progress feed that is the one
+            // value that matters most. `next()` drains the queue ahead of
+            // `done`, so a value queued here is still delivered.
+            if (sub.pending && !sub.done) {
+                try {
+                    this.#deliver(sub, sub.ticksOnly ? CHANGE_TICK : this.#snapshot());
+                } catch {
+                    // Best-effort: a codec that throws here must not take
+                    // deactivation down with it.
+                }
+            }
+            this.#closeWindow(sub);
             sub.done = true;
             sub.wake?.();
             this.#subs.delete(sub);

@@ -18,6 +18,46 @@
   after the state save, so a throwing handler is caught and dev-warned rather
   than unwinding a transition the runtime has already committed.
 
+- **`ctx.changes({ throttleMs })`** (#129) — coalesce a burst of mutating
+  turns into at most one snapshot per window. Leading edge plus trailing edge,
+  and the trailing snapshot is taken fresh when the window closes, so a
+  throttled consumer is never handed a state older than the window it waited
+  out. A boundary that lands inside an open window builds **no snapshot at
+  all**, which is the saving: a snapshot is a full encode+revive of the whole
+  state.
+
+  For an actor whose state grows through a run — a job appending a step's
+  output per turn and reporting progress as it goes — this is the difference
+  between cloning everything accumulated so far on every step and cloning it
+  once per window.
+
+  The final state is never lost: a window still owing an emit when the actor
+  deactivates is flushed before the feed ends. A malformed `throttleMs` throws
+  rather than silently reading as "unthrottled". Omit it and behaviour is
+  exactly as before — a snapshot per mutating turn.
+
+### Fixed
+
+- **A `$live` watch no longer builds a snapshot it never reads** (#129).
+  `ctx.changes()` yields state, but a watch (`useActorState(…, { live: true })`
+  and every wire watch) re-invokes a read method instead — its pump reads only
+  the iterator's `done` flag. So the runtime was running a full encode+revive
+  of the entire actor state on every mutating turn and discarding the result.
+  Such a subscriber now receives a value-free tick, and a boundary whose
+  subscribers all want ticks builds nothing.
+
+  | `streams/live-watch` | before | after |
+  |---|---:|---:|
+  | 200-row state | 3.0 k ops/s | **9.7 k ops/s** (+224%) |
+  | 2 000-row state | 216 ops/s | **696 ops/s** (+222%) |
+
+  At 200 rows that is 9.7 k against 10.1 k for the same actor with **no
+  subscriber at all** — the marginal cost of a live subscriber is now
+  approximately nothing, where it was 3.3×.
+
+  No API change and nothing observable: the values a watch delivers are
+  unchanged, because they never came from the feed.
+
 ### Changed
 
 - **Change detection now calls reactivity's own deep traversal instead of a

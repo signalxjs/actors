@@ -161,6 +161,32 @@ export function makeTrackedActor(rows: number): AnyActorDefinition {
     });
 }
 
+/**
+ * `makeTrackedActor`'s twin with a READ method, for the `$live` path
+ * (`host.dispatchWatch`) rather than a raw `ctx.changes()` feed (#129).
+ *
+ * Separate rather than a method added to `makeTrackedActor`, because that
+ * fixture is one half of a recorded A/B and this file's own rule is that the
+ * definitions under comparison differ in nothing but the variable under test.
+ */
+export function makeWatchableActor(rows: number): AnyActorDefinition {
+    return defineActor({
+        type: `BenchWatchable${rows}`,
+        allowAnonymous: true,
+        state: (): LargeState => ({ count: 0, rows: makeRows(rows) }),
+        methods: (ctx) => ({
+            increment(by: number) {
+                ctx.state.count += by;
+                return ctx.state.count;
+            },
+            /** The watched read: derived, tiny, and independent of `rows`. */
+            total() {
+                return ctx.state.count;
+            }
+        })
+    });
+}
+
 export interface GrowingState {
     steps: { id: number; label: string; output: string; at: Date }[];
 }
