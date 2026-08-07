@@ -3,7 +3,7 @@
  * check-catalog.mjs — CI guard (`pnpm verify:catalog`). Fails if:
  *   1. any workspace package declares a CORE dep with an inline version instead
  *      of `"catalog:"` (drift — the whole point is one source of truth), or
- *   2. a `catalog:` core entry is NOT a single-minor caret `^X.Y.0`
+ *   2. a `catalog:` core entry is NOT a single-minor caret `^X.Y.Z`
  *      (a wider range like `>=0.11 <0.13` re-opens the two-copies hazard).
  *
  * Wire into ci.yml. Generalises lynx's check-versions.js to the catalog model.
@@ -13,7 +13,28 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CORE_PACKAGES, findInlineCoreDeps, formatInlineCoreDeps } from './lib/core-deps.mjs';
 
-const SINGLE_MINOR = /^\^\d+\.\d+\.0$/; // ^X.Y.0 — one minor
+/**
+ * `^X.Y.Z` — one MINOR, with a patch floor allowed.
+ *
+ * The hazard this guards is a range spanning MINORS, which no single version
+ * can satisfy, so pnpm hoists two copies and core's module-local singletons
+ * split. A patch floor does not do that: `^0.15.3` is NARROWER than
+ * `^0.15.0`, and a dependency declaring `^0.15.0` resolves to 0.15.3
+ * alongside it — one copy.
+ *
+ * Widened from `^X.Y.0` for #124: the host's change tracking needs
+ * `deepTrack`, added in @sigx/reactivity 0.15.3, and the catalog value
+ * becomes the PUBLISHED peer range. Pinning `^0.15.0` there would have
+ * stated a requirement the code does not have, letting a consumer install
+ * 0.15.2 cleanly and fail later on a missing export.
+ *
+ * One caveat learned the hard way, and it is a lockfile problem rather than
+ * a range problem: raising the floor does not re-resolve a transitive
+ * dependency already pinned to a satisfying-but-older version. That left
+ * `@sigx/terminal` on 0.15.2 beside actors on 0.15.3 and killed 27 tests
+ * with "signal is not a function". `pnpm dedupe` collapses it.
+ */
+const SINGLE_MINOR = /^\^\d+\.\d+\.\d+$/;
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
