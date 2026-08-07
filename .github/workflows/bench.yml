@@ -449,6 +449,11 @@ jobs:
       - name: Materialize the A/B driver
         if: github.event_name != 'merge_group'
         run: |
+          # fetch-depth 0 brings every branch head, which covers GITHUB_SHA
+          # on a dispatch (the dispatched ref's tip) — but only as long as
+          # that stays true of checkout's refspec, so fetch it explicitly,
+          # best-effort, before relying on it.
+          git fetch --quiet origin "$GITHUB_SHA" 2>/dev/null || true
           for f in ab.ts ab-verdict.ts ab-report.ts; do
             if [ ! -f "benchmarks/src/$f" ]; then
               git show "$GITHUB_SHA:benchmarks/src/$f" > "benchmarks/src/$f" 2>/dev/null \
