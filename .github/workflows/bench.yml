@@ -81,10 +81,14 @@ on:
         description: >-
           Base ref for an interleaved A/B on the bench VM. Leave empty for a
           plain full-suite measurement of the dispatched ref (bench-quick).
+          A branch, tag or FULL sha — actions/checkout rejects short shas
+          for `head`, so use full ones for both (#141).
         required: false
         default: ''
       head:
-        description: 'Head ref for the A/B (defaults to the dispatched ref)'
+        description: >-
+          Head ref for the A/B (defaults to the dispatched ref). Branch, tag
+          or FULL sha.
         required: false
         default: ''
       rounds:
@@ -431,6 +435,27 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+
+      # A dispatch may name a HEAD that predates the A/B tooling itself —
+      # the first real use did (#141): re-judging a flagged row from a
+      # pre-port PR. The measurement only needs each side's own main.ts;
+      # the driver and reporter come from the workflow's own ref when the
+      # checkout lacks them. Their `report.ts`/`types.ts` imports resolve
+      # on any ref this can sensibly target, and if a ref is old enough
+      # that they don't, the step that follows fails loudly rather than
+      # measuring the wrong thing. The origin/main fallback covers the PR
+      # event, where GITHUB_SHA is a merge commit this clone never fetched
+      # — reached only for a PR whose branch forked before the port.
+      - name: Materialize the A/B driver
+        if: github.event_name != 'merge_group'
+        run: |
+          for f in ab.ts ab-verdict.ts ab-report.ts; do
+            if [ ! -f "benchmarks/src/$f" ]; then
+              git show "$GITHUB_SHA:benchmarks/src/$f" > "benchmarks/src/$f" 2>/dev/null \
+                || git show "origin/main:benchmarks/src/$f" > "benchmarks/src/$f"
+              echo "materialized benchmarks/src/$f from the workflow ref"
+            fi
+          done
 
       - name: Interleaved rounds
         if: github.event_name != 'merge_group'
