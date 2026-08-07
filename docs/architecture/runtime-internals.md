@@ -113,8 +113,8 @@ Calling core's walk instead of mirroring it is the whole point.
 
 Two costs sit on this boundary, not one. The walk is the first; `#snapshot()`
 — `cloneState(toRaw(state))`, a full encode+revive — is the second. Both scale
-with total state size rather than with the size of the change, and since #124
-fixed the walk, the snapshot is the larger of the two.
+with total state size rather than with the size of the change, and since #128
+made the walk ~9× cheaper, the snapshot is the larger of the two.
 
 So the boundary builds a snapshot **lazily, and at most once**, and two kinds
 of subscriber avoid it entirely (#129):

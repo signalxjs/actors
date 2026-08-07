@@ -1930,7 +1930,7 @@ export class Activation {
                 this.#warnedDroppedChanges = true;
                 console.warn(
                     `[sigx actors] ${actorLabel(this.ref)} change feed dropped ` +
-                        `snapshots — a stream consumer is slower than the actor's ` +
+                        `updates — a stream consumer is slower than the actor's ` +
                         `mutation rate (buffer: ${CHANGE_BUFFER}).`
                 );
             }
@@ -1968,7 +1968,13 @@ export class Activation {
             // On `reentrant: 'always'` there is no between-turns state and
             // it may be mid-logical-turn — the same documented trade the
             // 'always' contract already makes for write-behind.
-            this.#deliver(sub, this.#snapshot());
+            //
+            // `ticksOnly` is honoured here as everywhere else. No caller
+            // combines it with a throttle today — `openWatch` passes only
+            // `ticksOnly` — but a value-free subscriber that silently got a
+            // full snapshot from this one path would be a contradiction
+            // waiting for the first caller that does.
+            this.#deliver(sub, sub.ticksOnly ? CHANGE_TICK : this.#snapshot());
             // A trailing emit starts its own window, so two bursts a
             // microsecond apart cannot produce two emits. It closes empty
             // and stops if nothing else lands.
