@@ -412,8 +412,15 @@ jobs:
           # wipes RUNNER_TEMP — leaving a stale worktree REGISTRATION behind
           # that would fail the add below.
           git worktree prune
+          # Resolve whatever kind of ref the dispatch named. checkout ran
+          # with fetch-depth 0 but fetch-tags off, so a sha or local ref
+          # resolves directly, a branch name via origin/ — and anything else
+          # a dispatch can name (a tag, refs/pull/N/head, a full refname) is
+          # fetched explicitly before giving up.
           BASE_COMMIT=$(git rev-parse --verify --quiet "$BASE_SHA^{commit}" \
-            || git rev-parse "origin/$BASE_SHA^{commit}")
+            || git rev-parse --verify --quiet "origin/$BASE_SHA^{commit}" \
+            || { git fetch --quiet origin "$BASE_SHA" \
+                 && git rev-parse --verify "FETCH_HEAD^{commit}"; })
           git worktree add "$RUNNER_TEMP/base" "$BASE_COMMIT"
           cd "$RUNNER_TEMP/base"
           pnpm install --frozen-lockfile
