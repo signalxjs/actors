@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-tcp",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Framed TCP transport for @sigx/actors \u2014 multiplexed host-to-host connections",
     "type": "module",
     "main": "./dist/index.js",
@@ -55,6 +55,6 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.3.0"
+        "@sigx/actors": "^0.4.0"
     }
 }

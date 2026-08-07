@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-07
+
 ### Changed
+
+- **Peers `@sigx/actors@^0.4.0`.** The family versions in lockstep, so the
+  range moves with the release. Nothing else to do: 0.4.0 only ADDS
+  `onSettled` to `defineJob` (#125), so unlike the 0.2.0 and 0.3.0 moves
+  there is no wire or API break and a 0.3.x host interoperates fine.
 
 - README trimmed to a pointer at https://sigx.dev/actors (#113): thesis,
   install, peer-dependency and minimum-version requirements, and links. The
