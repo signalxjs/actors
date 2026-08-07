@@ -59,11 +59,14 @@ kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
 kubectl -n ingress-nginx rollout restart deploy/ingress-nginx-controller
 kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller
 
-# Verify it took — the programmed backend for the actor Service must carry
-# the hash. Empty output means the annotation is still being dropped:
-kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- \
-  curl -s http://127.0.0.1:10246/configuration/backends \
-  | jq -r '.[] | select(.name | test("chat-host-actor")) | .upstreamHashByConfig'
+# Verify it took, against the controller's PROGRAMMED backends — the
+# Ingress object is not evidence, since the annotation survives on it
+# either way. `upstreamHashByConfig` must contain `upstream-hash-by`; a
+# bare `{"upstream-hash-by-subset-size":3}` means it is still being
+# dropped. (`/dbg` is the controller image's own debug binary — it needs
+# no curl in the container.)
+kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- /dbg backends all \
+  | jq '.[] | select(.name | test("host-actor")) | {name, upstreamHashByConfig, loadBalancing}'
 ```
 
 Because this is cluster-wide, it applies to every Ingress the controller
