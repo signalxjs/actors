@@ -1,0 +1,342 @@
+/**
+ * Turn the interleaved rounds `ab.ts` recorded into a verdict per metric.
+ * Ported from signalxjs/core#639 (#98); the row matching and per-round
+ * deltas come from this repo's own `compare()`, so the A/B judges rows by
+ * exactly the rules the local baseline flow uses.
+ *
+ * The sequential A/B reported one number per row from a single measurement
+ * of each side. That number cannot distinguish a real 5% change from the
+ * machine being 5% busier during the second half of the job. With R paired
+ * rounds there is something honest to say instead. For each row we have R
+ * base values and R head values, measured alternately, so:
+ *
+ *   d_i     = the per-round delta from `compare()` (positive = BETTER,
+ *             whichever direction the metric runs in)
+ *   spread  = max/min - 1 per side — how much that side moved run to run
+ *
+ * and a verdict follows from the two together:
+ *
+ * - `noisy`     — a side's own spread exceeds NOISY_SPREAD_PCT. The row
+ *                 could not hold still while measuring itself, so it cannot
+ *                 resolve anything about the change. Reported, never claimed.
+ * - `regressed` — every round agrees in sign AND the median delta clears
+ *   `improved`    both the minimum effect size and the observed spread.
+ *                 Unanimity across R independent rounds is a sign test at
+ *                 p = 2^-R (~3% at R=5); requiring the effect to exceed the
+ *                 spread stops a row from being called on a margin its own
+ *                 noise covers.
+ * - `no change` — otherwise.
+ *
+ * `exact` metrics skip all of it: an invariant has no variance, so its
+ * per-round `compare()` verdict is simply carried — but it must also BE
+ * invariant. A side whose exact value differs BETWEEN rounds is
+ * `nondeterministic`, which breaks the `Metric.exact` contract
+ * (types.ts) and matters more than whatever change it reported; it always
+ * fails. `informational` rows read `info` and never fail anything.
+ *
+ * The table reports the raw `[min d, max d]` rather than a bootstrap
+ * interval: at R=5 a bootstrap would be resampling five points and dressing
+ * the same information up as a confidence interval.
+ */
+import { compare, fmt, type Comparison } from './report.ts';
+import type { BenchResult } from './types.ts';
+
+/**
+ * A side that moves more than this run-to-run cannot resolve an effect
+ * smaller than its own wobble, whatever the median says.
+ */
+export const NOISY_SPREAD_PCT = 10;
+
+/**
+ * Floor on the claimed effect. Unanimity alone is not enough: five rounds
+ * can agree in sign on a 0.4% difference and mean nothing useful.
+ */
+export const MIN_EFFECT_PCT = 3;
+
+export type AbVerdict =
+    | 'improved'
+    | 'regressed'
+    | 'no change'
+    | 'noisy'
+    | 'info'
+    | 'unchanged'
+    | 'nondeterministic';
+
+export interface RoundRecord {
+    index: number;
+    order: string[];
+    base: unknown;
+    head: unknown;
+}
+
+interface SeriesRow {
+    scenario: string;
+    metric: string;
+    unit: string;
+    exact: boolean;
+    informational: boolean;
+    /** Per-round raw values — what the spread is computed from. */
+    base: number[];
+    head: number[];
+    /**
+     * Per-round deltas straight from `compare()` (positive = better).
+     * `null` when a round could not define one (baseline at or below zero,
+     * or inside the metric's own noiseFloor) — a round with nothing to say
+     * blocks the sign test rather than being invented.
+     */
+    deltas: (number | null)[];
+    /** Per-round verdicts — read only for `exact` rows, where they carry. */
+    verdicts: Comparison['verdict'][];
+}
+
+export interface AbRow {
+    scenario: string;
+    metric: string;
+    unit: string;
+    exact: boolean;
+    informational: boolean;
+    baseMedian: number;
+    headMedian: number;
+    /** Percentages; NaN when no round defined a delta. */
+    medianDeltaPct: number;
+    minDeltaPct: number;
+    maxDeltaPct: number;
+    baseSpreadPct: number;
+    headSpreadPct: number;
+    verdict: AbVerdict;
+}
+
+export interface AbReport {
+    rows: AbRow[];
+    /** Metrics that matched in some rounds only — listed, never judged. */
+    partial: string[];
+    /** Refusals from `compare()` (differing deployment shape). Fatal. */
+    fatalMismatch: string[];
+    roundCount: number;
+}
+
+/** Lower-middle median. */
+function median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor((sorted.length - 1) / 2)]!;
+}
+
+/** max/min - 1, as a percentage. Zero-safe: a zero-valued side has no spread. */
+function spreadPct(values: number[]): number {
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    if (min <= 0) return max === min ? 0 : Infinity;
+    return (max / min - 1) * 100;
+}
+
+function verdictFor(row: SeriesRow): AbVerdict {
+    if (row.exact && !row.informational) {
+        // An invariant must not vary within a side; if it does, that IS the
+        // finding, and it outranks whatever delta sits on top of it.
+        if (new Set(row.base).size > 1 || new Set(row.head).size > 1) {
+            return 'nondeterministic';
+        }
+        // Deterministic per side, so every round's verdict is the same one;
+        // `compare()` already judged it direction-aware with zero tolerance.
+        const verdict = row.verdicts[0]!;
+        return verdict === 'regressed' ? 'regressed' : verdict === 'improved' ? 'improved' : 'unchanged';
+    }
+    if (row.informational) return 'info';
+
+    const baseSpread = spreadPct(row.base);
+    const headSpread = spreadPct(row.head);
+    if (Math.max(baseSpread, headSpread) > NOISY_SPREAD_PCT) return 'noisy';
+
+    // A round that could not define a delta (noiseFloor, non-positive
+    // baseline) contributes no sign — and a sign test over fewer rounds than
+    // were measured would silently mean something weaker, so it blocks.
+    if (row.deltas.some((d) => d === null || d === 0)) return 'no change';
+    const deltas = row.deltas as number[];
+    const allSameSign = deltas.every((d) => d > 0) || deltas.every((d) => d < 0);
+    const medianDelta = median(deltas) * 100;
+    const floor = Math.max(MIN_EFFECT_PCT, baseSpread, headSpread);
+    if (!allSameSign || Math.abs(medianDelta) < floor) return 'no change';
+    // Positive = better, per compare()'s direction-aware delta.
+    return medianDelta > 0 ? 'improved' : 'regressed';
+}
+
+function isBenchResult(value: unknown): value is BenchResult {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        (value as { formatVersion?: unknown }).formatVersion === 1 &&
+        Array.isArray((value as { scenarios?: unknown }).scenarios)
+    );
+}
+
+/**
+ * Collect each metric's per-round pair. A metric is only given a verdict
+ * when it matched on both sides in EVERY round — a row measured in some
+ * rounds and not others would otherwise have "all rounds agree" mean
+ * something different per row, silently.
+ */
+export function buildReport(rounds: RoundRecord[]): AbReport {
+    const byKey = new Map<string, SeriesRow>();
+    const fatalMismatch: string[] = [];
+
+    rounds.forEach((round, i) => {
+        if (!isBenchResult(round.base) || !isBenchResult(round.head)) {
+            fatalMismatch.push(`round ${i + 1}: not a formatVersion-1 bench payload`);
+            return;
+        }
+        const outcome = compare(round.head, round.base);
+        fatalMismatch.push(...outcome.fatalMismatch);
+        for (const row of outcome.comparisons) {
+            if (row.verdict === 'new') continue; // one-sided; falls out as partial
+            // JSON keeps the pair injective whatever the names contain,
+            // and stays visible in a diff — a NUL separator was neither.
+            const key = JSON.stringify([row.scenario, row.metric]);
+            let entry = byKey.get(key);
+            if (!entry) {
+                entry = {
+                    scenario: row.scenario,
+                    metric: row.metric,
+                    unit: row.unit,
+                    exact: row.exact === true,
+                    informational: row.informational === true,
+                    base: [],
+                    head: [],
+                    deltas: [],
+                    verdicts: []
+                };
+                byKey.set(key, entry);
+            }
+            entry.base.push(row.baseline);
+            entry.head.push(row.current);
+            entry.deltas.push(row.delta);
+            entry.verdicts.push(row.verdict);
+        }
+    });
+
+    const rows: AbRow[] = [];
+    const partial: string[] = [];
+    for (const entry of byKey.values()) {
+        if (entry.base.length !== rounds.length) {
+            partial.push(
+                `${entry.scenario} ${entry.metric} (matched in ${entry.base.length}/${rounds.length} rounds)`
+            );
+            continue;
+        }
+        const defined = entry.deltas.filter((d): d is number => d !== null).map((d) => d * 100);
+        rows.push({
+            scenario: entry.scenario,
+            metric: entry.metric,
+            unit: entry.unit,
+            exact: entry.exact,
+            informational: entry.informational,
+            baseMedian: median(entry.base),
+            headMedian: median(entry.head),
+            medianDeltaPct: defined.length > 0 ? median(defined) : NaN,
+            minDeltaPct: defined.length > 0 ? Math.min(...defined) : NaN,
+            maxDeltaPct: defined.length > 0 ? Math.max(...defined) : NaN,
+            baseSpreadPct: spreadPct(entry.base),
+            headSpreadPct: spreadPct(entry.head),
+            verdict: verdictFor(entry)
+        });
+    }
+    rows.sort((a, b) =>
+        a.scenario === b.scenario
+            ? a.metric.localeCompare(b.metric)
+            : a.scenario.localeCompare(b.scenario)
+    );
+    return { rows, partial: partial.sort(), fatalMismatch, roundCount: rounds.length };
+}
+
+/**
+ * What fails the job. Deliberately narrower than "the verdict is not good":
+ * only the exact-metric classes fail unconditionally — the same gate the
+ * sequential A/B enforced — because those are invariants on any machine.
+ * With `enforce`, a unanimous timing regression fails too; that mode exists
+ * for the deliberate dispatch proof run, never the PR path.
+ */
+export function failures(report: AbReport, enforce: boolean): AbRow[] {
+    return report.rows.filter((row) => {
+        if (row.verdict === 'nondeterministic') return true;
+        if (row.exact && row.verdict === 'regressed') return true;
+        if (enforce && row.verdict === 'regressed') return true;
+        return false;
+    });
+}
+
+function pct(value: number): string {
+    if (!Number.isFinite(value)) return 'n/a';
+    return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+}
+
+/** The verdicts worth a reader's attention, before the collapsed full table. */
+function called(row: AbRow): boolean {
+    return (
+        row.verdict === 'improved' ||
+        row.verdict === 'regressed' ||
+        row.verdict === 'nondeterministic' ||
+        (row.exact && row.verdict !== 'unchanged')
+    );
+}
+
+function tableLines(rows: AbRow[], failing: ReadonlySet<AbRow>): string[] {
+    const lines = [
+        '| scenario | metric | before | after | delta (median) | round range | verdict |',
+        '| --- | --- | ---: | ---: | ---: | ---: | --- |'
+    ];
+    for (const row of rows) {
+        const range = row.exact ? '—' : `${pct(row.minDeltaPct)} … ${pct(row.maxDeltaPct)}`;
+        const mark = failing.has(row) ? '**' : '';
+        const icon =
+            row.verdict === 'regressed' ? '🔴 ' : row.verdict === 'improved' ? '🟢 ' : '';
+        lines.push(
+            `| \`${row.scenario}\` | \`${row.metric}\` | ${fmt(row.baseMedian, row.unit)} | ` +
+                `${fmt(row.headMedian, row.unit)} | ${pct(row.medianDeltaPct)} | ${range} | ` +
+                `${mark}${icon}${row.verdict}${mark} |`
+        );
+    }
+    return lines;
+}
+
+export function markdownReport(report: AbReport, enforce: boolean, title?: string): string {
+    const failing = new Set(failures(report, enforce));
+    const highlights = report.rows.filter((row) => called(row) || failing.has(row));
+    const lines: string[] = ['### Benchmark A/B (interleaved)'];
+    if (title) lines.push('', title);
+    lines.push('');
+
+    if (report.rows.length === 0) {
+        lines.push('_No metric matched on both sides in every round — nothing to compare._');
+    } else if (highlights.length === 0) {
+        lines.push(`**No verdicts called** across ${report.rows.length} metrics.`);
+    } else {
+        lines.push(...tableLines(highlights, failing));
+    }
+
+    if (report.partial.length > 0) {
+        lines.push(
+            '',
+            `**No verdict** — matched on both sides in some rounds only (${report.partial.length}):`
+        );
+        for (const name of report.partial) lines.push(`- \`${name}\``);
+    }
+
+    if (report.rows.length > highlights.length) {
+        lines.push('', '<details><summary>Every metric</summary>', '');
+        lines.push(...tableLines(report.rows, failing));
+        lines.push('', '</details>');
+    }
+
+    lines.push('');
+    lines.push(
+        `<sub>${report.roundCount} rounds, base and head alternated and counterbalanced. ` +
+            `A verdict of \`improved\`/\`regressed\` needs every round to agree in sign ` +
+            `(a sign test at p = 2^-${report.roundCount}) AND a median delta above both ` +
+            `${MIN_EFFECT_PCT}% and the row's own run-to-run spread; \`noisy\` means that ` +
+            `spread exceeded ${NOISY_SPREAD_PCT}% and the row cannot resolve the change. ` +
+            `Deltas are direction-aware: positive is always better. \`exact\` metrics are ` +
+            `invariants compared at zero tolerance; \`nondeterministic\` means one varied ` +
+            `between rounds of the SAME code, which breaks the exact contract and always ` +
+            `fails.</sub>`
+    );
+    return lines.join('\n') + '\n';
+}

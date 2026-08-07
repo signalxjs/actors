@@ -130,31 +130,46 @@ banner — a suite run on a contended machine is not evidence. On a quiet machin
 
 `.github/workflows/bench.yml` runs on any PR touching `packages/**`,
 `benchmarks/**` or the lockfile, and posts one comment (updated in place on
-each push) with a delta table.
+each push) with a verdict table.
 
-**It compares the PR's base ref against its head ref, both measured on the same
-runner** — not against `BASELINES.md` and not against a committed baseline.
-That is the only comparison a shared vCPU can support. An absolute number off
-one means nothing, and a stored baseline is worse than useless: the calibration
-probe would differ from whatever machine recorded it, and every run would come
-back "no verdict" (which is exactly what `pnpm bench:compare` correctly does if
-you hand it someone else's baseline). Two runs a few minutes apart on the *same*
-box do carry signal.
+**It compares the PR's base ref against its head ref in interleaved,
+counterbalanced rounds on one runner** (#98, ported from core#639) — not
+against `BASELINES.md` and not against a committed baseline. A stored baseline
+is worse than useless off-machine: the calibration probe would differ from
+whatever machine recorded it, and every run would come back "no verdict"
+(which is exactly what `pnpm bench:compare` correctly does if you hand it
+someone else's baseline).
 
-The rules are the local ones — same `compare()`, same noise gate, same
-`inconclusive` band, same machine-drift downgrade. **One number differs: the
-threshold is 25% in CI against 10% locally**, and it was measured, not guessed.
-See "What a shared runner actually does" below.
+Why rounds rather than two halves: the sequential job measured base then head,
+so drift, thermal state and cache warmth all accrued to the head — a measured
+~+2% systematic bias, which no threshold can remove because it is bias, not
+noise. `ab.ts` alternates the sides and counterbalances the order (even rounds
+base-first, odd rounds head-first), so a linear drift cancels in the paired
+deltas. `ab-report.ts` then says something honest per row: `improved` or
+`regressed` only when **every round agrees in sign** (a sign test at
+p = 2^-rounds) **and** the median delta clears both a 3% effect floor and the
+row's own run-to-run spread; a side that swings more than 10% reads `noisy`
+and claims nothing. Row matching and per-round deltas come from the same
+`compare()` as the local flow.
+
+The same machinery runs by hand between any two built checkouts
+(`pnpm bench:ab` / `pnpm bench:ab:report`), and on the bench VM against any
+two refs without opening a PR:
+
+    gh workflow run bench.yml -f base=<ref> -f head=<ref> -f rounds=7
+
+(`-f enforce=true` additionally fails the run on a unanimous timing
+regression — the deliberate proof mode. The PR path never gates timings.)
 
 ### Two kinds of number, gated completely differently
 
 This is the part worth internalising, and it is enforced in code
 (`Metric.exact`) rather than by this paragraph:
 
-- **Timings are informational.** Throughput, percentiles, heap bytes. A shared
-  runner cannot judge them — see the calibration below — so no timing move,
-  however large, fails anything. The comment is a pointer: reproduce it locally
-  on a quiet machine before acting on it.
+- **Timings are informational on the PR path.** Throughput, percentiles, heap
+  bytes. Even a `regressed` verdict — unanimous and above the floors — is a
+  pointer, not a gate: re-litigate it with more rounds via the dispatch, or
+  locally on a quiet machine, before acting on it.
 - **Exact metrics gate, at zero tolerance.** `directory_ops` per activation,
   `microtask_turns` per dispatch, `notifications` per join, and the locality
   guarantees of the `prefer-local` placement arms. These are algorithmic
@@ -195,15 +210,18 @@ The rest is only honesty about what the informational half is:
 
 - A scenario that *throws* fails the step regardless — a benchmark that cannot
   prove it did its work must not report a number.
-- **"No verdict" is a normal outcome.** Runners drift; when the probe moved
-  more than half the threshold between the two halves, everything is downgraded
-  to `inconclusive` and the comment says so. Re-run the job to draw a fresh
-  runner.
+- **`noisy` and `no change` are normal outcomes.** A row whose own spread
+  covers its delta has nothing to say, and the report says so instead of
+  printing a number that looks like a finding.
+- An `exact` metric that varies **between rounds of the same code** reads
+  `nondeterministic` and fails the check outright — that breaks the
+  `Metric.exact` contract, which matters more than any delta on top of it.
 - Tier 2 stays out — it wants spare cores.
 
-`workflow_dispatch` on the same workflow runs the suite once against the current
-ref and uploads the result JSON, for when you want a number off a Linux box
-without one to compare it to.
+`workflow_dispatch` with no `base` input runs the suite once against the
+current ref and uploads the result JSON, for when you want a number off a
+Linux box without one to compare it to; with `base` (and optionally `head`,
+`rounds`, `enforce`) it runs the interleaved A/B between those refs instead.
 
 ### What a shared runner actually does
 
