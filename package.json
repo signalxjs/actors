@@ -23,6 +23,7 @@
         "bench:run": "node --conditions=production --expose-gc benchmarks/src/main.ts",
         "bench:dev-dist": "node --expose-gc benchmarks/src/main.ts",
         "bench:tier2": "cross-env BENCH_TIER2=1 node --conditions=production --expose-gc benchmarks/src/main.ts cluster2/ --no-gc-profile",
+        "bench:threads": "cross-env BENCH_THREADS=1 node --conditions=production --expose-gc benchmarks/src/main.ts compute/ --no-gc-profile",
         "bench:baseline": "node --conditions=production --expose-gc benchmarks/src/main.ts --save-baseline",
         "bench:compare": "node --conditions=production --expose-gc benchmarks/src/main.ts --compare",
         "bench:infra": "cross-env BENCH_INFRA=1 node --conditions=production --expose-gc benchmarks/src/main.ts infra/",

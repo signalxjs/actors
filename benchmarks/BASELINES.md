@@ -72,6 +72,7 @@ tier legend below exists to prevent. The scenario name says which tier it is:
 | Tier | Scenarios | What it is |
 |---|---|---|
 | **Tier 1** | `dispatch/`, `state/`, `wire/`, `lifecycle/`, `memory/`, `cluster/` | One process, `pipeFetch`, **zero sockets**. Measures algorithmic shape and software cost. Anything about the network here is *modelled*, not measured. |
+| **Tier 1, opt-in** | `compute/` | One process, but **real OS threads**. Opt-in via `BENCH_THREADS=1`, because the effect cannot appear on a 2-core runner: a number recorded there would be wrong rather than noisy. Never gates. |
 | **Tier 2** | `cluster2/` | N hosts as **real OS processes over real loopback sockets**. Measures what the wire actually does. Opt-in: `pnpm bench:tier2`. |
 
 Within Tier 2 there is a second split, and it is enforced in code rather than
@@ -1085,3 +1086,103 @@ per turn — needs either a getter-marker fixture or a runtime counter that does
 not exist, and `Metric.exact` demands determinism *by construction*. A gate
 that cries wolf is worse than none, so these scenarios gate as timings only
 and stay out of `BENCH_GATE_SCENARIOS`.
+
+---
+
+## 2026-08-06 · Would `worker_threads` pay? (#119)
+
+| | |
+|---|---|
+| Machine | 12th Gen Intel i9-12900HK, **20 logical cores**, win32/x64 |
+| Node | v22.22.0 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Settings | 7 rounds × 700 ms, interleaved, `BENCH_THREADS=1` |
+| Conditions | **Contended** — probe varied 18%. Read `thread_speedup`, which is two arms measured back to back in one process; ignore the absolutes. |
+
+#119 asks for "a benchmark first, not an implementation", and specifically for
+one **on a multi-core box** — the Tier-3 arm reports 1.07× on a node with ~1.1
+usable cores, which cannot show thread parallelism whatever the runtime does.
+This is that measurement. It changes nothing in the runtime: the threaded arm
+drives a `worker_threads` pool from inside an ordinary actor method, which is
+enough to price the crossing.
+
+### Compute size, at a 64-byte payload
+
+| iterations | one activation | `defineWorker` pool (8) | `worker_threads` (8) | speedup vs pool |
+|---:|---:|---:|---:|---:|
+| 1 000 | 307.4 k ops/s | 293.2 k ops/s | 95.9 k ops/s | **0.33×** |
+| 10 000 | 43.5 k ops/s | 44.2 k ops/s | 78.3 k ops/s | 1.77× |
+| 150 000 | 3.3 k ops/s | 3.1 k ops/s | 8.2 k ops/s | **2.69×** |
+
+### Payload size, at 150 000 iterations
+
+| payload | `defineWorker` pool (8) | `worker_threads` (8) | speedup |
+|---:|---:|---:|---:|
+| 64 B | 2.3 k ops/s | 8.4 k ops/s | **3.46×** |
+| 16 KB | 2.3 k ops/s | 8.1 k ops/s | 3.36× |
+| 1 MB | 2.2 k ops/s | 2.4 k ops/s | **1.02×** |
+
+Three independent runs (1 × 1-round quick, 5 × 400 ms, 7 × 700 ms) agree on all
+three shapes below, which is why they are quotable despite the spreads.
+
+- **The crossover is between 1 000 and 10 000 hash iterations** — call it ~10 k,
+  or roughly 200 µs of compute. Below it, crossing costs more than the work:
+  at 1 k iterations threads are **3× SLOWER**. A seam that made this easy to
+  reach for would be a footgun at small sizes.
+- **`defineWorker` buys nothing over a single activation at any size** (293 k
+  vs 307 k, 44.2 k vs 43.5 k, 3.1 k vs 3.3 k). That is #119's premise
+  reproduced locally, and now on a box with 20 cores rather than 1.1 — so it is
+  the *mailboxes-are-not-threads* property, not the node size.
+- **The ceiling is ~3.4×, not 8×.** Eight threads, three and a half times the
+  throughput. Structured clone runs on the CALLING thread, so the main loop
+  still serialises every argument in and every result out; that is the
+  bottleneck, and it is also why **1 MB payloads erase the win entirely**
+  (1.02×). Any real seam would need transferables (`ArrayBuffer` in a transfer
+  list) to beat this, and would still be capped by whatever it cannot transfer.
+
+### The case more hosts cannot fix
+
+The two tables above compare threads against `defineWorker`, and on that
+comparison **threads lose to simply running more hosts**. From the Tier-3
+section above: a pool's cluster total is 867 ops/s on 3 hosts and 1863 on 7 —
+linear in the fleet — where threads cap at 3.4× on one box. For stateless
+CPU-bound work spread over many keys, the scaling answer already exists, ships
+today, and beats this.
+
+The exception is the row directly under it: **a single activation is 289 ops/s
+on 3 hosts and 289 on 7.** Single-activation is a correctness guarantee, so a
+hot key is pinned to one host and one thread however large the fleet. Hardware
+buys it exactly nothing, and that is the one place a thread seam would not be
+duplicating something the cluster already does.
+
+`compute/single-activation-threads`, one `reentrant: 'always'` activation,
+64 B payload (7 rounds × 700 ms; two runs agreeing at 2.74× and 2.80×):
+
+| iterations | compute on the loop | on `worker_threads` | speedup |
+|---:|---:|---:|---:|
+| 10 000 | 28.2 k ops/s | 34.9 k ops/s | 1.32× *(inconclusive — ±40%)* |
+| 150 000 | 2.9 k ops/s | 8.3 k ops/s | **2.80×** |
+
+`reentrant: 'always'` is load-bearing, not incidental. A serial actor cannot
+benefit at all: its mailbox will not begin turn N+1 until turn N returns, so
+offloading only moves the same serialized wait. Interleaved turns park on an
+`await`, which is the only shape where a thread pool gives ONE activation real
+parallelism.
+
+### The honest summary for #119
+
+Threads *do* pay — the "seven idle cores and 7%" figure is a property of the
+measuring node, not a law — but the case for building a seam is narrower than
+the multipliers suggest, and it is not the case #119 frames:
+
+- **For stateless CPU work over many keys, use more hosts.** Linear, already
+  shipped, and better than the 3.4× ceiling threads can reach.
+- **The niche threads uniquely serve is a single hot activation**, where the
+  fleet is powerless (1.00×) and threads give 2.80×. That argues for offloading
+  *inside* an activation rather than for anything attached to `defineWorker`.
+- **And that niche is narrow**: it needs `reentrant: 'always'`, ≥ ~10 k
+  iterations (~200 µs) of compute per turn, and payloads well under a megabyte.
+
+A seam aimed at `defineWorker` would be solving the problem the cluster already
+solves. A seam aimed at the hot single activation would be solving one nothing
+else can — for actors that meet all three conditions above.

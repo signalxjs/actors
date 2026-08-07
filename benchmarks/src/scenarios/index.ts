@@ -1,4 +1,5 @@
 import { clusterScenarios } from './cluster.ts';
+import { computeScenarios } from './compute.ts';
 import { tier2Scenarios } from './cluster2.ts';
 import { TIER3_ENABLED, tier3Hint as tier3Reason, tier3Scenarios } from './infra.ts';
 import { dispatchScenarios } from './dispatch.ts';
@@ -21,6 +22,15 @@ import type { Scenario } from '../types.ts';
 export const TIER2_ENABLED = process.env.BENCH_TIER2 === '1';
 
 /**
+ * The `compute/*` scenarios spawn 8 OS threads, and — the real reason they
+ * are gated — a thread-parallelism measurement on the ~2-core CI runner is
+ * not merely noisy but structurally incapable of showing the effect. A
+ * number that cannot be right on the machine recording it should not be
+ * recorded there (#119).
+ */
+export const THREADS_ENABLED = process.env.BENCH_THREADS === '1';
+
+/**
  * Order matters for reading the output: the dispatch ladder first, since
  * every later number is interpreted as a delta from it. Tier 2 comes last —
  * it is a different KIND of measurement (counts over real sockets, not
@@ -37,6 +47,7 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...statelessScenarios,
     ...topicScenarios,
     ...redisScenarios,
+    ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),
     // Tier 3 measures a DEPLOYMENT, not this process — a different kind of
     // number again, so it comes last and never reads as another rung.
@@ -44,6 +55,7 @@ export const ALL_SCENARIOS: Scenario[] = [
 ];
 
 const TIER2_NAMES = tier2Scenarios.map((s) => s.name);
+const COMPUTE_NAMES = computeScenarios.map((s) => s.name);
 
 export function selectScenarios(filters: readonly string[]): Scenario[] {
     if (filters.length === 0) return ALL_SCENARIOS;
@@ -77,6 +89,16 @@ export function tier2Hint(filters: readonly string[]): string | null {
  * .includes(f)` is true for any short prefix like `'i'`.)
  */
 const TIER3_NAMES = tier3Scenarios.map((s) => s.name);
+
+export function threadsHint(filters: readonly string[]): string | null {
+    if (THREADS_ENABLED || filters.length === 0) return null;
+    if (!filters.some((f) => COMPUTE_NAMES.some((name) => name.includes(f)))) return null;
+    return (
+        `compute/* scenarios are opt-in — they spawn OS threads, and the effect they ` +
+        `measure cannot appear on a 2-core runner. On a multi-core box:\n` +
+        `  BENCH_THREADS=1 pnpm bench:run ${filters.join(' ')}`
+    );
+}
 
 export function tier3Hint(filters: readonly string[]): string | null {
     if (TIER3_ENABLED || filters.length === 0) return null;
