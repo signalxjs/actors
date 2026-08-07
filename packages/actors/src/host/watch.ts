@@ -11,7 +11,11 @@
  *  - **One loop per `(method, args)`.** Fifty subscribers to the same read
  *    must cost one re-invocation per turn, not fifty. Without this a live
  *    feed turns a popular actor into a self-inflicted load problem — the
- *    turns are serialized, so those queue behind each other.
+ *    turns are serialized, so those queue behind each other. The one
+ *    refinement: a read OBSERVED consulting `ctx.principal` gets one loop
+ *    per encoded principal instead — identity is then an input to the read,
+ *    and sharing across it serves one subscriber another's view (#121). See
+ *    `qualifyWatchKey` and `Activation.openWatch`.
  *  - **Trailing throttle.** A burst of mutations coalesces into one read.
  *    Trailing rather than leading because the last value is the true one;
  *    emitting the first and dropping the rest would leave subscribers on
@@ -71,6 +75,24 @@ export function watchKey(method: string, throttleMs: number, encodedArgs: unknow
     writeCanonical(throttleMs, out);
     writeCanonical(encodedArgs, out);
     return out.join('');
+}
+
+/**
+ * Qualify a base watch key by an encoded principal.
+ *
+ * Used once a read is observed consulting `ctx.principal` (#121): identity
+ * is then an input to the read, so subscribers may only share a loop when
+ * they share it. Injective against plain `watchKey` output — a base key
+ * parses as exactly three self-delimiting canonical values with nothing
+ * left over, and `'P'` is not the lead byte of any canonical value — and
+ * two qualified keys are equal iff base AND principal are. The ENCODED
+ * principal, never the decoded one: equal encodings decode identically,
+ * which is the only equality the wire can guarantee.
+ */
+export function qualifyWatchKey(base: string, encodedPrincipal: string | undefined): string {
+    const out: string[] = [];
+    writeCanonical(encodedPrincipal, out);
+    return `${base}P${out.join('')}`;
 }
 
 function writeCanonical(value: unknown, out: string[]): void {

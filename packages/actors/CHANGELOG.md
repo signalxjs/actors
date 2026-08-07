@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A shared watch no longer serves every subscriber the FIRST subscriber's
+  `ctx.principal`** (#121). Watch loops are shared per `(method, args,
+  throttleMs)` and re-invoke under the first subscriber's call context, so a
+  live read that filtered by `ctx.principal` handed every later subscriber
+  the first subscriber's view — confidentiality between authorized users,
+  single-host and across the cluster alike.
+
+  The fix keeps the sharing property where it is sound: the runtime observes
+  whether a read actually consults `ctx.principal` and only then splits that
+  key's loop per encoded principal. A read that never touches identity still
+  costs one re-invocation per turn however many subscribers it has;
+  subscribers of an identity-dependent read each see their own view, and
+  same-principal subscribers still share. Discovery evicts a mismatched
+  subscriber *before* the discovering invocation's value is pushed — no
+  subscriber ever receives a value (or error) computed under someone else's
+  identity — and the evicted subscription transparently re-attaches under
+  its own key; callers observe nothing. No API change.
+
 ## [0.5.0] - 2026-08-07
 
 ### Added

@@ -5,7 +5,7 @@
  */
 import { effect, effectScope, signal, toRaw } from '@sigx/reactivity';
 import { deepTrack } from '@sigx/reactivity/internals';
-import { createSharedWatch, watchKey, type SharedWatch } from './watch';
+import { createSharedWatch, qualifyWatchKey, watchKey, type SharedWatch } from './watch';
 import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
 import { decodePrincipal } from '../guards';
@@ -60,6 +60,32 @@ const CHANGE_BUFFER = 16;
 
 /** Trailing-throttle window for a change-driven read (`openWatch`). */
 export const DEFAULT_WATCH_THROTTLE_MS = 50;
+
+/**
+ * Marks a shared watch's invoke context with the watch's UNQUALIFIED key,
+ * so the `ctx.principal` getter can record that the read consulted
+ * identity — the discovery that splits that key's loop per principal
+ * (#121). A symbol so no user code can collide with or observe it.
+ */
+const kWatchBase = Symbol('sigx.watch.base');
+
+interface WatchInvokeCall extends ActorCallContext {
+    [kWatchBase]?: string;
+}
+
+/** One shared watch loop plus the subscriber handles #121 polices. */
+interface WatchEntry {
+    shared: SharedWatch;
+    /** Live subscribers — a discovery sweep evicts the mismatched. */
+    handles: Set<WatchHandle>;
+}
+
+interface WatchHandle {
+    /** The encoded principal this subscriber presented. */
+    principal: string | undefined;
+    /** Detach from this entry and re-attach under the qualified key. */
+    evict(): void;
+}
 
 /** Keys a context extension may never set — they reach the prototype. */
 const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -358,8 +384,18 @@ export class Activation {
     #tasks = new Map<string, TaskRun>();
     /** Lazily bound — one instance per activation (one writer chain). */
     #ledgerApi: TaskLedgerApi | null = null;
-    /** Shared watch loops, keyed by `method` + encoded args — see `./watch`. */
-    #watches = new Map<string, SharedWatch>();
+    /** Shared watch loops, keyed by `method` + encoded args — and, once a
+     * read is observed consulting `ctx.principal`, by the encoded principal
+     * too. Entry keys are IMMUTABLE: an entry is never re-keyed, so
+     * `onEmpty`'s delete-by-key stays exact (see `#resolveWatch`, #121). */
+    #watches = new Map<string, WatchEntry>();
+    /**
+     * Base watch keys whose read has been OBSERVED consulting
+     * `ctx.principal`. Sticky for the activation's lifetime; a fresh
+     * activation rediscovers during its first invoke, before any value
+     * is pushed.
+     */
+    #watchPrincipalDependent = new Set<string>();
     lastActivityMs = Date.now();
     /**
      * When this activation was constructed, MONOTONIC — the age an operator
@@ -605,43 +641,190 @@ export class Activation {
         // reference, so two callers passing equal-but-distinct arrays still
         // share one loop — and `watchKey`'s length-prefixed grammar
         // guarantees the converse, that two DIFFERENT arg lists never can.
-        const id = watchKey(method, throttleMs, this.#host.encodeArgs(args ?? []));
-        let shared = this.#watches.get(id);
-        if (!shared) {
-            shared = createSharedWatch(
-                {
-                    // A NORMAL turn, not a privileged read: the
-                    // watch gets exactly the isolation every other call has.
-                    invoke: () => this.enqueue(method, args, call),
-                    // `ticksOnly`: the pump reads `{ done }` and re-invokes
-                    // the read method — it never looks at the value, so a
-                    // snapshot built for it is pure waste, once per mutating
-                    // turn per shared watch, over the whole state (#129).
-                    // Straight to `#openChanges` rather than through
-                    // `ctx.changes()` because this is not a public option.
-                    changes: () => this.#openChanges({ ticksOnly: true }),
-                    keepAlive: () => {
-                        this.#keepAlive++;
-                        let released = false;
-                        return () => {
-                            if (released) return;
-                            released = true;
-                            this.#keepAlive--;
-                            this.lastActivityMs = Date.now();
-                        };
-                    },
-                    scheduler: this.#host.scheduler,
-                    throttleMs
-                },
-                () => void this.#watches.delete(id)
-            );
-            this.#watches.set(id, shared);
+        const base = watchKey(method, throttleMs, this.#host.encodeArgs(args ?? []));
+
+        // One subscription's state, shared by every asyncIterator() call on
+        // the returned iterable — one subscriber per openWatch, as before.
+        let entry: WatchEntry | null = null;
+        let handle: WatchHandle | null = null;
+        let inner: AsyncIterator<unknown> | null = null;
+        let migrating = false;
+        let closed = false;
+
+        const detach = (): void => {
+            if (entry !== null && handle !== null) entry.handles.delete(handle);
+            entry = null;
+            handle = null;
+            inner = null;
+        };
+
+        const attach = (): void => {
+            migrating = false;
+            const joined = this.#resolveWatch(base, method, args, call, throttleMs);
+            handle = {
+                principal: call.principal,
+                evict: () => {
+                    // Discovery found this subscriber on a loop invoking
+                    // under someone ELSE's principal. Leave it; the next
+                    // pull re-attaches under the qualified key. `return()`
+                    // drops the inner subscriber SYNCHRONOUSLY, so the value
+                    // the discovering invocation is about to push skips it.
+                    migrating = true;
+                    const dropped = inner;
+                    detach();
+                    void dropped?.return?.(undefined);
+                }
+            };
+            joined.handles.add(handle);
+            entry = joined;
+            // The CALLER's signal, so an abandoned subscription releases
+            // even when nothing ever calls `return()` on it — which is the
+            // normal case across a host hop, where the serving generator is
+            // parked at an `await` and cannot act on a queued `return()`.
+            inner = joined.shared.subscribe(call.abortSignal)[Symbol.asyncIterator]();
+        };
+
+        // Attach NOW, not on the first pull: the shared loop (and with it
+        // the initial read) starts when the watch is opened, as it always
+        // has.
+        attach();
+
+        const iterator: AsyncIterator<unknown> = {
+            next: async (): Promise<IteratorResult<unknown>> => {
+                for (;;) {
+                    if (closed) return { value: undefined, done: true };
+                    if (inner === null) attach();
+                    const pulled = inner!;
+                    let result: IteratorResult<unknown>;
+                    try {
+                        result = await pulled.next();
+                    } catch (error) {
+                        detach();
+                        closed = true;
+                        throw error;
+                    }
+                    if (!result.done) return result;
+                    // An evicted subscriber ends with `done`; re-attach —
+                    // `#resolveWatch` now routes it to the qualified key —
+                    // rather than surfacing an end the caller never caused.
+                    // A real end (abort, deactivation) passes through.
+                    if (migrating) continue;
+                    detach();
+                    closed = true;
+                    return { value: undefined, done: true };
+                }
+            },
+            return: async (): Promise<IteratorResult<unknown>> => {
+                closed = true;
+                const dropped = inner;
+                detach();
+                await dropped?.return?.(undefined);
+                return { value: undefined, done: true };
+            }
+        };
+        return { [Symbol.asyncIterator]: () => iterator };
+    }
+
+    /**
+     * Join — or create — the shared entry a subscriber with this principal
+     * belongs on. Until a base key is known principal-dependent, everyone
+     * shares the entry at the base key; from the moment the read is
+     * observed consulting `ctx.principal`, joins go to the key qualified by
+     * the subscriber's encoded principal instead. An entry still sitting at
+     * the base key merely drains — it is never re-keyed and never joined
+     * again, so `onEmpty` deleting its own creation key can never evict a
+     * newer entry (the hazard watch.ts's idempotent drop exists for).
+     */
+    #resolveWatch(
+        base: string,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        throttleMs: number
+    ): WatchEntry {
+        const dependent = this.#watchPrincipalDependent.has(base);
+        const key = dependent ? qualifyWatchKey(base, call.principal) : base;
+        let entry = this.#watches.get(key);
+        if (entry === undefined) {
+            entry = this.#createWatchEntry(key, base, method, args, call, throttleMs, dependent);
+            this.#watches.set(key, entry);
         }
-        // The CALLER's signal, so an abandoned subscription releases even
-        // when nothing ever calls `return()` on it — which is the normal
-        // case across a host hop, where the serving generator is parked at
-        // an `await` and cannot act on a queued `return()` at all.
-        return shared.subscribe(call.abortSignal);
+        return entry;
+    }
+
+    #createWatchEntry(
+        key: string,
+        base: string,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        throttleMs: number,
+        qualified: boolean
+    ): WatchEntry {
+        const handles = new Set<WatchHandle>();
+        // The loop invokes under the CREATING subscriber's context — its
+        // bag and abortSignal included, a known quirk tracked separately
+        // from #121. The marker is how the `ctx.principal` getter reports
+        // that this read consulted identity.
+        const invokeCall: WatchInvokeCall = { ...call, [kWatchBase]: base };
+        const principal = call.principal;
+        // Once true, every subscriber on this entry presents `principal`:
+        // born true under a qualified key, made true for a base-key entry
+        // by the one discovery sweep — after which `#resolveWatch` routes
+        // every mismatched newcomer to a qualified key instead.
+        let settled = qualified;
+        const shared = createSharedWatch(
+            {
+                // A NORMAL turn, not a privileged read: the
+                // watch gets exactly the isolation every other call has.
+                invoke: async () => {
+                    try {
+                        return await this.enqueue(method, args, invokeCall);
+                    } finally {
+                        // Discovery sweep (#121): the read consulted the
+                        // principal, and this entry may hold subscribers who
+                        // presented a different one. Evict them BEFORE the
+                        // loop pushes or fails — this `finally` settles
+                        // before `push(await deps.invoke())` resumes — so no
+                        // subscriber ever receives a value or error computed
+                        // under someone else's identity. Values delivered
+                        // earlier were computed by invocations that never
+                        // touched the principal, or this sweep would have
+                        // run then.
+                        // Safe to iterate live: `evict` only DELETES from
+                        // this set (the re-attach lands on a different
+                        // entry, and only on the consumer's next pull).
+                        if (!settled && this.#watchPrincipalDependent.has(base)) {
+                            settled = true;
+                            for (const h of handles) {
+                                if (h.principal !== principal) h.evict();
+                            }
+                        }
+                    }
+                },
+                // `ticksOnly`: the pump reads `{ done }` and re-invokes
+                // the read method — it never looks at the value, so a
+                // snapshot built for it is pure waste, once per mutating
+                // turn per shared watch, over the whole state (#129).
+                // Straight to `#openChanges` rather than through
+                // `ctx.changes()` because this is not a public option.
+                changes: () => this.#openChanges({ ticksOnly: true }),
+                keepAlive: () => {
+                    this.#keepAlive++;
+                    let released = false;
+                    return () => {
+                        if (released) return;
+                        released = true;
+                        this.#keepAlive--;
+                        this.lastActivityMs = Date.now();
+                    };
+                },
+                scheduler: this.#host.scheduler,
+                throttleMs
+            },
+            () => void this.#watches.delete(key)
+        );
+        return { shared, handles };
     }
 
     /**
@@ -1650,7 +1833,16 @@ export class Activation {
                 // it in a loop pays once per distinct identity. Keying on
                 // the encoded value (not on the turn) is what makes the memo
                 // correct across the reused ctx object.
-                const encoded = self.#callContext()?.principal;
+                const current = self.#callContext();
+                // Discovery (#121): a shared watch's read consulting the
+                // principal means its loop cannot serve mixed identities.
+                // Record the key BEFORE the memo can short-circuit anything;
+                // `#resolveWatch` splits future joins and the invoke's sweep
+                // evicts current mismatches before the next push.
+                const base =
+                    current === null ? undefined : (current as WatchInvokeCall)[kWatchBase];
+                if (base !== undefined) self.#watchPrincipalDependent.add(base);
+                const encoded = current?.principal;
                 if (encoded === undefined) return null;
                 if (self.#principalMemo?.encoded !== encoded) {
                     self.#principalMemo = { encoded, value: decodePrincipal(encoded) };
