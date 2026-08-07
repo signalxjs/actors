@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-07
+
 ### Changed
 
 - README trimmed to a pointer at https://sigx.dev/actors (#113): thesis,

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-07
+
 ### Added
 
 - **`onSettled` on `defineJob`** (#125) — a hook for every terminal transition,
