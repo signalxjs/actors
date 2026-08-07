@@ -43,7 +43,38 @@ az aks nodepool add \
 # SKU fallback if D2ls_v6 is unavailable in your region: Standard_D2als_v6.
 
 kubectl create namespace $NS
+
+# The edge hash, half of the locality composition, needs ONE cluster-wide
+# controller setting that no chart can make. ingress-nginx >= 1.12 rates
+# `upstream-hash-by` as Critical risk (its value is an nginx variable) and
+# defaults the annotation risk level to `High`, so it silently strips the
+# value, logs nothing, and load-balances the actor path round-robin.
+#
+# It is a ConfigMap option, NOT a CLI flag: passing
+# `--annotations-risk-level=Critical` as a controller arg crash-loops
+# v1.15.1 with `unknown flag`. And a running controller does not re-read
+# the key, so the restart is part of the step, not a precaution.
+kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
+  -p '{"data":{"annotations-risk-level":"Critical"}}'
+kubectl -n ingress-nginx rollout restart deploy/ingress-nginx-controller
+kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller
+
+# Verify it took, against the controller's PROGRAMMED backends — the
+# Ingress object is not evidence, since the annotation survives on it
+# either way. `upstreamHashByConfig` must contain `upstream-hash-by`; a
+# bare `{"upstream-hash-by-subset-size":3}` means it is still being
+# dropped. (`/dbg` is the controller image's own debug binary — it needs
+# no curl in the container.)
+kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- /dbg backends all \
+  | jq '.[] | select(.name | test("host-actor")) | {name, upstreamHashByConfig, loadBalancing}'
 ```
+
+Because this is cluster-wide, it applies to every Ingress the controller
+serves — check that before flipping it on a shared cluster. The chart's
+side of the same fix (a dedicated Service so the actor Ingress gets its own
+backend) is in [`ingress.yaml`](../../app/deploy/chart/templates/ingress.yaml);
+`infra.test.ts` asserts the result, so a missed step here fails the suite
+rather than quietly reading as "locality does not help".
 
 ## 1. Build + deploy — one command
 

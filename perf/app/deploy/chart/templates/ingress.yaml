@@ -84,13 +84,15 @@ spec:
 # for round-robin. Neither half works alone. `$live` and other reserved
 # symbols carry no token and keep paying a hop by design.
 #
-# ⚠ THIS ANNOTATION IS DROPPED BY DEFAULT ON ingress-nginx >= 1.12.
+# ⚠ TWO SEPARATE THINGS SILENTLY DEFEAT THIS ANNOTATION. Both were observed
+# live on ingress-nginx v1.15.1, and either one alone gives you round-robin.
 #
-# Its value is an nginx variable, which rates `upstream-hash-by` as
-# Critical risk, and the controller has defaulted `--annotations-risk-level`
-# to `High` since 1.12 — so it strips the VALUE, leaves this object exactly
-# as written, logs nothing, and load-balances round-robin. Every actor call
-# then lands on a random host and pays a hop.
+# (1) THE CONTROLLER STRIPS THE VALUE ON >= 1.12. Its value is an nginx
+# variable, which rates `upstream-hash-by` as Critical risk, and the
+# annotation risk level has defaulted to `High` since 1.12 — so the
+# controller strips the VALUE, leaves this object exactly as written, logs
+# nothing, and load-balances round-robin. Every actor call then lands on a
+# random host and pays a hop.
 #
 # Measured on v1.15.1 over 7 hosts: 40 requests carrying ONE token spread
 # 6/6/6/5/6/0/6, the owning host received none of them from the edge, and
@@ -100,13 +102,31 @@ spec:
 #     upstreamHashByConfig: {"upstream-hash-by-subset-size":3}
 #     loadBalancing: round_robin
 #
-# The fix is a CONTROLLER flag, which a chart cannot set — and which is
-# cluster-wide, so it is not one to flip casually on a shared ingress:
+# The fix is cluster-wide, so it is not one to flip casually on a shared
+# ingress, and a chart cannot set it either way. It is a controller
+# ConfigMap option, **NOT** a CLI flag — `--annotations-risk-level=Critical`
+# as a Deployment arg crash-loops v1.15.1 with `unknown flag`:
 #
-#     --annotations-risk-level=Critical
+#     kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
+#       -p '{"data":{"annotations-risk-level":"Critical"}}'
+#     kubectl -n ingress-nginx rollout restart deploy/ingress-nginx-controller
+#
+# The restart is required: a running controller does not re-read that key.
+# See the RUNBOOK's one-time setup (`perf/aks/deploy/RUNBOOK.md` §0).
+#
+# (2) A SHARED BACKEND DROPS IT EVEN ONCE (1) IS FIXED. `upstream-hash-by`
+# is BACKEND-level configuration and ingress-nginx keys backends by
+# service+port — so while this hashed Ingress and the deliberately
+# un-hashed web Ingress above both pointed at `-host:public`, they were one
+# backend and the hash-less Ingress won the merge. Proven live: deleting
+# the web Ingress made `upstream-hash-by: $http_x_sigx_actor_route` appear
+# in the programmed backend immediately, and restoring it removed it again.
+# Hence the backend below is `-host-actor` — a second Service over the same
+# pods, existing only to own a backend of its own. It is defined in
+# `host-actor-service.yaml`, under the same `localityRouting` toggle.
 #
 # `infra.test.ts` now asserts the hash actually pins a token to one host,
-# so this fails loudly instead of quietly costing you the locality half.
+# so either failure is loud instead of quietly costing you the locality half.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -126,7 +146,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "chat.fullname" . }}-host
+                name: {{ include "chat.fullname" . }}-host-actor
                 port:
                   name: public
 {{- end }}
