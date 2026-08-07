@@ -1008,3 +1008,80 @@ write succeeds, so nothing errors, while peers have already released the
 claims. Every membership provider implements the rule, and `k8sMembership`
 extends it to a renewal that returns 404 (#69). The measurement above is left
 as a record of the run that found it — do not quote it as current behaviour.
+
+---
+
+## 2026-08-06 · What state SIZE costs the dirty-tracking walk (#124)
+
+| | |
+|---|---|
+| Machine | 12th Gen Intel i9-12900HK, win32/x64 |
+| Node | v22.22.0 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Commit | `c301533` |
+| Settings | 5 rounds × 400 ms, interleaved |
+| Conditions | **Contended** — the probe varied 29% across rounds, and the suite said so. Read the RATIOS, which span three orders of magnitude; do not quote an absolute. |
+
+Two scenarios added here, because nothing in the suite measured this:
+`state/write-behind` and `streams/changes-fanout` both pin state at
+`{ count: 0 }`, and `Large` was only ever exercised through `save()` and heap
+footprint — never through the tracking walk. The pathology was invisible.
+
+### `state/dirty-size` — mutating turns, by state size
+
+Both arms are the same write-behind actor whose debounce never fires, so the
+only difference between them is whether a change feed is open.
+
+| rows | subs=0 (walk only) | subs=1 (walk + snapshot) | what the subscriber adds |
+|---:|---:|---:|---:|
+| 0 | 165.9 k ops/s | 133.5 k ops/s | −20% |
+| 200 | **818 ops/s** | **736 ops/s** | −10% |
+| 2 000 | **71.7 ops/s** | 55.6 ops/s | −22% |
+
+- **The tracking walk costs 200× an empty-state turn at 200 rows, and 2 300×
+  at 2 000** — with no subscriber, no snapshot and no storage write anywhere
+  near it. A turn on 200-row state is ~1.2 ms, of which essentially all is the
+  walk. Cost is linear in the size of the state and independent of the size of
+  the change, which is #124's central claim, reproduced.
+- **Enumerating the Proxy is the dominant term.** The fixture proxies 201 plain
+  objects (the state root plus 200 rows — the `rows` and `tags` arrays take the
+  walker's `Array.isArray` index-loop branch, and reactivity refuses to proxy
+  the `Date`). At the ~2 µs per proxied `Object.keys()` core measured
+  (signalxjs/core#642: ~165× the raw cost, V8 validating the `ownKeys` trap
+  result against the target's own property descriptors) that is ~0.4 ms, with
+  ~1 600 per-key `get` reads on top of it. The right order of magnitude for a
+  1.2 ms turn, and precisely the two terms core#642 and core#645 removed
+  upstream — neither of which `trackDeep` inherits, because it is a private
+  copy of the pre-#642 walk.
+- **The snapshot is the smaller half — for now.** `#snapshot()`'s encode+revive
+  adds 10–22%, against a walk that is the other 100×. That ordering is the
+  reason to fix the walk first, and the reason to re-measure this table
+  afterwards rather than assume the snapshot stays negligible.
+
+### `state/dirty-growth` — a job actor accumulating a step per turn
+
+The shape #124 was reported against, and the one `defineJob` produces: explicit
+persistence, so nothing is tracked until a `job.watch()` subscriber attaches —
+and then every boundary walks and clones a graph that only ever grows.
+
+| Metric | Value |
+|---|---:|
+| `head/turn_us` (mean over the first 100 of 500 steps) | 350 µs |
+| `tail/turn_us` (mean over the last 100) | **3 001 µs** |
+| `growth_ratio` | **8.6×** |
+
+- **Per-turn cost grows linearly with the run.** The head window averages ~50
+  accumulated steps and the tail ~450 — 9× the state for 8.6× the cost. The
+  reporter measured ~13 ms → ~33 ms across 50 steps of a much larger per-step
+  payload; same curve.
+- `growth_ratio` is **informational**: a quotient of two measurements inherits
+  both their errors, and `head` carries most of it. The two absolute figures
+  are what gate.
+
+### Why no `exact` metric here
+
+Every invariant worth gating in this area — walks per dirty boundary, clones
+per turn — needs either a getter-marker fixture or a runtime counter that does
+not exist, and `Metric.exact` demands determinism *by construction*. A gate
+that cries wolf is worse than none, so these scenarios gate as timings only
+and stay out of `BENCH_GATE_SCENARIOS`.

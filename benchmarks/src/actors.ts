@@ -11,6 +11,7 @@
  * where the write-behind and change-feed costs actually show up.
  */
 import { defineActor } from '@sigx/actors';
+import type { AnyActorDefinition } from '@sigx/actors';
 import type { ServerPolicy } from '@sigx/server';
 
 export interface TinyState {
@@ -117,6 +118,78 @@ export const Large = defineActor({
             ctx.state.count += by;
             await ctx.save();
             return ctx.state.count;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            yield* ctx.changes({ initial: true });
+        }
+    })
+});
+
+/**
+ * `Large`'s parameterised family, for sweeping state SIZE against the
+ * change-tracking path (#124). Identical in every respect except the row
+ * count — the variable under test — per the warning below.
+ *
+ * Write-behind with an hour-long debounce, because write-behind is the one
+ * way to install change tracking with NO subscriber attached
+ * (`#ensureChangeTracking` runs for write-behind persistence or for an open
+ * change feed, and nothing else). The debounce arms once and, under
+ * `manualScheduler()`, never fires — so what a turn pays here is the
+ * tracking walk, not a storage write. Holding persistence identical across
+ * the subs=0 and subs=1 arms is what makes their delta the snapshot clone
+ * and nothing else.
+ */
+export function makeTrackedActor(rows: number): AnyActorDefinition {
+    return defineActor({
+        type: `BenchTracked${rows}`,
+        allowAnonymous: true,
+        persistence: { mode: 'write-behind', debounceMs: 3_600_000 },
+        state: (): LargeState => ({ count: 0, rows: makeRows(rows) }),
+        methods: (ctx) => ({
+            increment(by: number) {
+                ctx.state.count += by;
+                return ctx.state.count;
+            }
+        }),
+        streams: (ctx) => ({
+            async *watch() {
+                yield* ctx.changes({ initial: true });
+            }
+        })
+    });
+}
+
+export interface GrowingState {
+    steps: { id: number; label: string; output: string; at: Date }[];
+}
+
+/**
+ * The shape #124 was reported against: a job actor whose state accumulates
+ * one step's output per turn, so the graph grows monotonically through a
+ * run and every boundary re-walks (and re-clones) a larger tree. Explicit
+ * persistence, exactly like `defineJob` — so nothing is tracked until a
+ * `watch()` subscriber attaches, which is precisely how the reporter's
+ * `WorkflowRun` ends up paying for it.
+ *
+ * The date is derived from the step index rather than read from a clock:
+ * state a benchmark measures must not vary run to run.
+ */
+export const Growing = defineActor({
+    type: 'BenchGrowing',
+    allowAnonymous: true,
+    state: (): GrowingState => ({ steps: [] }),
+    methods: (ctx) => ({
+        appendStep() {
+            const id = ctx.state.steps.length;
+            ctx.state.steps.push({
+                id,
+                label: `step-${id}`,
+                output: `output of step ${id}`,
+                at: new Date(1_700_000_000_000 + id)
+            });
+            return id;
         }
     }),
     streams: (ctx) => ({
