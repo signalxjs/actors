@@ -32,6 +32,12 @@ import {
     type Host
 } from '../types';
 import { mintCallId } from '../call-id';
+import {
+    canonicalKey,
+    createFanOut,
+    DEFAULT_WATCH_THROTTLE_MS,
+    type FanOut
+} from '../watch-core';
 import { fnv1a, reminderShardKeys } from '../host/reminder-shards';
 import {
     createCounters,
@@ -64,6 +70,28 @@ import type {
     HostDescriptor,
     HostIdentity
 } from './types';
+
+/**
+ * One coalesced cross-host watch stream and everything needed to police it
+ * (#111): the abort that is the ONLY signal able to release a remote
+ * generator parked at an `await` (see `FanOut.subscribe`), plus the two
+ * indexes teardown sweeps match on.
+ */
+interface CoalescedWatch {
+    fanOut: FanOut;
+    /** Aborting this is what cancels the remote stream. */
+    controller: AbortController;
+    /** `actorId(ref)` — matched by `#noteFailure` route invalidation. */
+    id: string;
+    /** Target host at creation — matched by the membership prune. */
+    hostId: string;
+    /**
+     * True once a value arrived. Guards `#noteFailure` drops: the entry's
+     * OWN first-pull retry reports failures through `#noteFailure`, and
+     * dropping an un-established entry there would abort its own re-route.
+     */
+    established: boolean;
+}
 
 export interface ClusterPlacementOptions extends ClusterProviders {
     /** Peer-reachable origin of this host's HTTP listener. */
@@ -830,6 +858,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
         this.#attachedPolicies.clear();
         for (const unsub of this.#unsubscribe) unsub();
         this.#unsubscribe = [];
+        // Coalesced streams end cleanly BEFORE transports close, so the
+        // cancel can still reach the (former) owners.
+        for (const [key, entry] of this.#coalescedWatches) {
+            this.#settleEntry(key, entry, 'finish');
+        }
         this.#status = 'leaving';
         await this.#options.membership.leave();
         // Transports close LAST: peers keep calling in throughout the drain,
@@ -1092,8 +1125,190 @@ class ClusterPlacementImpl implements ClusterPlacement {
         dispatchStream: (ref, method, args, call) =>
             this.#routedStream(ref, method, args, call),
         dispatchWatch: (ref, method, args, call, options) =>
-            this.#routedStreamed(ref, method, args, call, 'watch', options)
+            this.#coalescedWatch(ref, method, args, call, options)
     };
+
+    /**
+     * Cross-host watches coalesce (#111): ONE remote stream per
+     * (actor, method, throttleMs, args, principal), fanned out locally.
+     *
+     * This is what makes live fan-out scale with hosts rather than
+     * subscribers: n local subscribers to a remote read cost the owner one
+     * serialized write per emission instead of n. The shared stream is
+     * pulled at the fastest consumer's rate; a subscriber slower than the
+     * feed drops oldest at the fan-out's bounded buffer — deliberate, since
+     * a live read's superseded values are worthless by definition, and one
+     * stalled consumer must not hold the stream (it DOES remove the
+     * per-subscriber transport backpressure the uncoalesced path had).
+     */
+    #coalescedWatches = new Map<string, CoalescedWatch>();
+
+    #coalescedWatch(
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        options?: { throttleMs?: number }
+    ): AsyncIterable<unknown> {
+        // Lazy first-pull open, like `Host.dispatchWatch`: placement errors
+        // must surface on the first `next()`, not at subscribe time.
+        const open = async (): Promise<AsyncIterator<unknown>> => {
+            const target = await this.#resolveTarget(ref);
+            if (target === 'local') {
+                // Locally-placed watches keep activation-level sharing; a
+                // second fan-out here would just double the buffering.
+                return this.#routedStreamed(ref, method, args, call, 'watch', options)[
+                    Symbol.asyncIterator
+                ]();
+            }
+            // Normalized as the owner will normalize it (absent == 50), so
+            // an absent and an explicit default coalesce. Args go through
+            // the WIRE codec: two arg lists this encoding cannot tell apart
+            // are indistinguishable to the owner too, so sharing them is
+            // sound by construction. The principal is in the key because
+            // the owner splits identity-dependent reads per principal
+            // (#121) and the relay cannot see that discovery — carrying it
+            // keeps coalescing sound at the cost of not sharing across
+            // DISTINCT principals (#138 tracks restoring that).
+            const throttleMs = options?.throttleMs ?? DEFAULT_WATCH_THROTTLE_MS;
+            const key = canonicalKey([
+                actorId(ref),
+                method,
+                throttleMs,
+                hostWireCodec.encode(args),
+                call.principal ?? null
+            ]);
+            // Synchronous check+set after the await, so concurrent first
+            // pulls race to one entry.
+            let entry = this.#coalescedWatches.get(key);
+            if (entry !== undefined) {
+                this.#counters.coalescedWatches++;
+            } else {
+                entry = this.#openCoalesced(key, ref, method, args, options, call.principal, {
+                    hostId: target.hostId
+                });
+            }
+            return entry.fanOut.subscribe(call.abortSignal)[Symbol.asyncIterator]();
+        };
+        let inner: Promise<AsyncIterator<unknown>> | null = null;
+        return {
+            [Symbol.asyncIterator]: () => ({
+                next: async () => {
+                    inner ??= open();
+                    return (await inner).next();
+                },
+                return: async () => {
+                    if (inner) {
+                        const it = await inner;
+                        if (it.return) await it.return(undefined);
+                    }
+                    return { value: undefined, done: true as const };
+                }
+            })
+        };
+    }
+
+    #openCoalesced(
+        key: string,
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        options: { throttleMs?: number } | undefined,
+        principal: string | undefined,
+        target: { hostId: string }
+    ): CoalescedWatch {
+        const entry: CoalescedWatch = {
+            controller: new AbortController(),
+            id: actorId(ref),
+            hostId: target.hostId,
+            established: false,
+            fanOut: createFanOut(() => {
+                // Last local subscriber left: the abort is what reaches a
+                // remote generator parked at an `await` and releases the
+                // owner's keep-alive; `return()` never would.
+                this.#settleEntry(key, entry, 'finish');
+            })
+        };
+        this.#coalescedWatches.set(key, entry);
+        void this.#pumpCoalesced(key, entry, ref, method, args, options, principal);
+        return entry;
+    }
+
+    async #pumpCoalesced(
+        key: string,
+        entry: CoalescedWatch,
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        options: { throttleMs?: number } | undefined,
+        principal: string | undefined
+    ): Promise<void> {
+        // Per-subscriber context (deadline, bag, traceparent) cannot ride a
+        // shared stream. Nothing sound is lost: the owner's shared watch
+        // loop already re-invokes under its FIRST subscriber's context only
+        // (`Activation.openWatch`), and the principal is in the coalescing
+        // key, so every subscriber on this stream shares it by construction.
+        const sharedCall: ActorCallContext = {
+            callChain: [],
+            callId: mintCallId(),
+            ...(principal !== undefined ? { principal } : {}),
+            abortSignal: entry.controller.signal
+        };
+        // Driving the EXISTING retry generator means first-pull wrong-host/
+        // unreachable re-routing now protects the shared stream for every
+        // subscriber at once, and `remoteWatches` increments where it
+        // always did — once per stream attempt.
+        const source = this.#routedStreamed(ref, method, args, sharedCall, 'watch', options)[
+            Symbol.asyncIterator
+        ]();
+        try {
+            for (;;) {
+                const next = await source.next();
+                if (next.done) return this.#settleEntry(key, entry, 'finish');
+                entry.established = true;
+                entry.fanOut.push(next.value);
+            }
+        } catch (error) {
+            // v1: a shared-stream failure fails EVERY subscriber and drops
+            // the entry — exact parity with the per-subscriber behavior
+            // this replaces (the retry loop only ever re-routed the FIRST
+            // pull). The `$live` channel's reconnect is the re-subscribe
+            // path. Shared re-establishment is future work, not v1.
+            this.#settleEntry(key, entry, 'fail', error);
+        }
+    }
+
+    /**
+     * The single coalesced-watch teardown. Identity-checked: a stale settle
+     * (the aborted pump's late catch, a duplicate sweep) must never evict a
+     * NEWER entry that has since taken the same key — the same hazard the
+     * fan-out's idempotent drop guards one layer down.
+     */
+    #settleEntry(
+        key: string,
+        entry: CoalescedWatch,
+        how: 'finish' | 'fail',
+        error?: unknown
+    ): void {
+        if (this.#coalescedWatches.get(key) === entry) this.#coalescedWatches.delete(key);
+        entry.controller.abort();
+        if (how === 'fail') entry.fanOut.fail(error);
+        else entry.fanOut.finish();
+    }
+
+    /**
+     * Fail every established coalesced stream to this actor NOW — its route
+     * just proved bad (wrong-host, unreachable, draining), and v1 does not
+     * re-establish. Failing promptly hands subscribers their re-subscribe
+     * signal instead of leaving them parked on a dead stream.
+     */
+    #dropCoalescedFor(id: string, error: unknown): void {
+        for (const [key, entry] of this.#coalescedWatches) {
+            if (entry.id === id && entry.established) {
+                this.#settleEntry(key, entry, 'fail', error);
+            }
+        }
+    }
 
     /**
      * The owner hint for a peer — the ONE place both the wrong-host throw
@@ -1132,6 +1347,20 @@ class ClusterPlacementImpl implements ClusterPlacement {
         const live = new Set(view.hosts.map((s) => s.hostId));
         for (const [id, hostId] of this.#routeCache) {
             if (!live.has(hostId)) this.#routeCache.delete(id);
+        }
+        // Coalesced watch streams to a departed host fail NOW rather than
+        // waiting out a transport timeout: subscribers get their
+        // re-subscribe signal (the `$live` channel reconnects on error),
+        // and a stale entry surviving here would serve nothing forever.
+        for (const [key, entry] of this.#coalescedWatches) {
+            if (!live.has(entry.hostId)) {
+                this.#settleEntry(
+                    key,
+                    entry,
+                    'fail',
+                    new ActorUnreachableError(`${entry.hostId} left the membership view mid-watch`)
+                );
+            }
         }
     }
 
@@ -1369,6 +1598,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         if (isActorError(error) && error.kind === 'wrong-host') {
             this.#counters.wrongHostRedirects++;
             this.#routeCache.delete(id);
+            this.#dropCoalescedFor(id, error);
             const owner = (error as ActorWrongHostError).owner;
             if (owner?.hostId && owner.hostId !== this.identity.hostId) {
                 this.#cacheRoute(id, owner.hostId);
@@ -1378,6 +1608,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         if (isActorError(error) && error.kind === 'unreachable') {
             this.#counters.unreachableRetries++;
             this.#routeCache.delete(id);
+            this.#dropCoalescedFor(id, error);
             this.#counters.directoryLookups++;
             const entry = await this.#options.directory.lookup(id);
             if (entry && !(await this.#options.membership.isAlive(entry.hostId))) {
@@ -1393,6 +1624,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             // drains — don't evict, just re-resolve after a backoff (the
             // refreshed view excludes the leaver from placement).
             this.#routeCache.delete(id);
+            this.#dropCoalescedFor(id, error);
             await this.#options.membership.refresh();
             return 'draining';
         }
