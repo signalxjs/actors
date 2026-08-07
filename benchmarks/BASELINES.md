@@ -47,7 +47,8 @@ get compared deliberately, with `bench:diff --before --after`, never by
 Three of the six scenarios exist for the features only a real deployment
 exercises: `worker-pool` (a `defineWorker` pool against the same body on
 one activation — and the only place the pool's DEFAULT size, the node's
-real `hardwareConcurrency`, is ever used), `cold-placement` (fresh keys, so
+real `hardwareConcurrency`, is ever used; it turns out to be **1** inside a
+container with a CPU limit, see #147), `cold-placement` (fresh keys, so
 every call pays an activation; read `ops_per_sec` and `ownership_spread`
 together, because a policy can buy latency by wrecking balance) and
 `topics-fanout` (whether a singleton subscriber caps cluster-wide write
@@ -912,13 +913,19 @@ the load driven from a VM in the same region.
 | Settings | 3 runs × 20 000 ms per rung |
 | Shapes | `replicas=3 nodes=3` and `replicas=7 nodes=7`, image `02dded3`, knobs identical (`PLACEMENT=prefer-local, MAX_ACTIVATIONS=0, SWEEP_INTERVAL_MS=60000, MIGRATE_PERSIST=lazy, DIGEST_ITERS=2000`) |
 
-> ⚠️ **The edge hash was OFF for every number here.** ingress-nginx ≥ 1.12
-> silently drops `upstream-hash-by` under its default
-> `--annotations-risk-level=High`, so the routing token bought nothing and
-> every actor call paid ~0.86 cross-host hops. **These figures are a floor,
-> not a ceiling** — locality was never engaged. See the `edge hash actually
+> ⚠️ **The edge hash was OFF for every number in this section.**
+> ingress-nginx ≥ 1.12 silently drops `upstream-hash-by` under its default
+> annotation risk level, so the routing token bought nothing and every actor
+> call paid ~0.86 cross-host hops. **These figures are a floor, not a
+> ceiling** — locality was never engaged. See the `edge hash actually
 > pins a token` assertion, which now fails loudly instead of leaving this to
 > be inferred from a `token_speedup` of ~1.0.
+>
+> **The hash has since been made to work** (#143 — it needed a controller
+> ConfigMap key *and* a dedicated Service, because `upstream-hash-by` is
+> backend-level and the un-hashed web Ingress was winning the backend
+> merge). "With the edge hash ON" below is the same shape re-measured, and
+> is the section to read for what locality actually buys.
 
 ### Throughput and latency, 3 hosts → 7 hosts
 
@@ -951,6 +958,10 @@ pinned to one host. Per host the pool did 289 and 266 ops/s against the
 single activation's 289 — flat: a host is one JS thread, and pool members
 buy await-interleaving, not CPU throughput.
 
+That spread is **conditional on the edge scattering the calls**, which was
+only true because the hash was off. With it on, `pool_spread` is 1.12 — see
+"With the edge hash ON" below, and #148.
+
 ### The single-activation ceiling
 
 | | 3 hosts | 7 hosts |
@@ -977,6 +988,76 @@ added** (−18% at c=32), while reads scale +61…+79%. More hosts means more of
 those deliveries are remote into the same subscriber. A singleton aggregator
 is a cluster-wide write ceiling that gets worse with fleet size — a property
 of the pattern, not of the runtime.
+
+### With the edge hash ON — the same shape, locality actually engaged
+
+Everything above was measured with `upstream-hash-by` silently stripped.
+This is `replicas=3 nodes=3` re-measured after #143 made the hash program,
+image `04e6598`, 3 runs, all other knobs identical
+(`PLACEMENT=prefer-local, MAX_ACTIVATIONS=0, SWEEP_INTERVAL_MS=60000,
+MIGRATE_PERSIST=lazy, DIGEST_ITERS=2000`). Confirmed engaged three ways
+before the run: the controller's programmed backend carries
+`upstream-hash-by: $http_x_sigx_actor_route`, nginx's access log put 12
+same-token requests on one pod, and `token_speedup` moved off 1.0.
+
+**The `c=32` rung is omitted from every comparison below.** It came back at
+±65%, ±85%, ±53% and ±35% across the four scenarios that have one — it is
+the warm-up rung, and nothing can be read from it.
+
+| scenario · rung | hash OFF | hash ON | Δ | variance |
+|---|---|---|---|---|
+| read-ladder c=64 | 2115 | 2880 | **+36%** | — |
+| read-ladder c=128 | 2105 | 3350 | **+59%** | ±15% |
+| read-ladder c=256 | 2144 | 3023 | **+41%** | ±11% |
+| cold-placement c=64 | 2434 | 2868 | **+18%** | ±10% |
+| cold-placement c=128 | 2362 | 3295 | **+39%** | — |
+| write-mix c=64 | 1382 | 980 | **−29%** | ±22% |
+| topics publish c=64 | 447 | 708 | **+58%** | ±24% |
+| topics publish c=128 | 411 | 835 | **+103%** | — |
+| topics read c=64 | 2028 | 2933 | **+45%** | — |
+| topics read c=128 | 2153 | 3240 | **+50%** | — |
+
+| ratio | hash OFF | hash ON |
+|---|---|---|
+| `token_speedup` | 1.011 | **1.478** (±19%) |
+| `ownership_spread` | 1.014 | 1.015 |
+| `pool_spread` | 3.028 | **1.12** (±20%) |
+
+Three things worth naming.
+
+**Locality pays, and `token_speedup` finally means what it says.** 1.48× —
+810 ops/s with the token against 570 without, p50 38.1 ms against 90.7 ms,
+zero errors either arm. The read ladder gains +36…+59% on the identical
+hardware; that is the hop the earlier figures were paying, recovered.
+
+**The singleton-subscriber ceiling is not what it looked like.** Publish was
+described above as *flat across a 4× concurrency range* (411 / 447 / 411).
+With the hash on it climbs: 708 at c=64, 835 at c=128, and c=128 is **+103%**
+over the same rung. The flatness was substantially the edge scattering each
+room's publishes away from the room's owner, not the aggregator saturating.
+A singleton subscriber is still a cluster-wide write ceiling — reads still
+outrun publishes ~4× — but the earlier section overstated how low it sits.
+
+**`pool_spread` collapsed, 3.03 → 1.12, and that is a regression the hash
+caused.** A `defineWorker` pool won 3.03× precisely *because* the edge
+scattered its calls: a worker is always placed locally, so round-robin gave
+it three hosts' worth of pool. Hashing the routing token pins every call for
+one worker key to one pod and hands that back. Filed as #148. Compounding
+it, `maxLocal` defaults to `navigator.hardwareConcurrency`, which is **1**
+inside a container with `limits.cpu: 1` — so the pool is also down to a
+single member (#147). Together they put `Digest` (300 ops/s) within 12% of
+the single-activation `DigestActor` (268 ops/s).
+
+`write-mix` at −29% is the one number here not to trust yet: ±22% on three
+runs, and it is the only scenario that regressed. Reproduce it before
+treating it as real.
+
+> **Tier 3 cannot see #139 at all.** The coalescing win is O(hosts) fan-out
+> per *live watcher*, and there is no live-watcher load mode here —
+> `topics-fanout` drives unary publishes and reads. A `$live`-subscriber
+> ladder (N held connections to `ActivityFeed` from the load VM, emissions/s
+> against N) is the missing scenario; nothing in this section is evidence
+> for or against #139.
 
 ### Mailboxes are not cores (ad-hoc, one host, 8-core node)
 
