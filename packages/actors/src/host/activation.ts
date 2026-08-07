@@ -73,7 +73,8 @@ interface WatchInvokeCall extends ActorCallContext {
     [kWatchBase]?: string;
 }
 
-/** One shared watch loop plus the subscriber handles #121 polices. */
+/** One shared watch loop plus its live subscriber handles — the set the
+ * discovery sweep walks to evict mismatched principals (#121). */
 interface WatchEntry {
     shared: SharedWatch;
     /** Live subscribers — a discovery sweep evicts the mismatched. */

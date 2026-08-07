@@ -89,7 +89,7 @@ function openWatch(iterable: AsyncIterable<unknown>): {
 }
 
 describe('a shared watch and ctx.principal', () => {
-    it('serves each subscriber its OWN view, not the first subscriber ', async () => {
+    it("serves each subscriber its OWN view, not the first subscriber's", async () => {
         // The codec is what makes `ctx.principal` decode inside the turn;
         // without it identity stops at the entry point and this would pass
         // vacuously with both sides reading null.
