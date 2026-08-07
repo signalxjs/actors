@@ -487,17 +487,27 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
     // reporting ~1.0x is a shrug, not a failure, so the second case can sit
     // there indefinitely looking like a finding.
     //
-    // It did. ingress-nginx has defaulted `--annotations-risk-level` to
-    // `High` since v1.12, and `upstream-hash-by` is rated Critical because
-    // its value takes an nginx variable — so the controller silently drops
-    // the value, keeps the Ingress object exactly as written, warns about
-    // nothing, and load-balances round-robin. Observed on v1.15.1: 40
-    // requests carrying ONE token spread 6/6/6/5/6/0/6 across seven hosts,
-    // and the owning host received none of them directly.
+    // It did, for two stacked reasons, and this assertion has now caught
+    // both (#143):
     //
-    // The fix is a controller flag (`--annotations-risk-level=Critical`),
-    // which a chart cannot set for a shared ingress — so the least a
-    // deployment can do is find out.
+    // 1. ingress-nginx has defaulted the annotation risk level to `High`
+    //    since v1.12, and `upstream-hash-by` is rated Critical because its
+    //    value takes an nginx variable — so the controller silently drops
+    //    the value, keeps the Ingress object exactly as written, warns
+    //    about nothing, and load-balances round-robin. Observed on v1.15.1:
+    //    40 requests carrying ONE token spread 6/6/6/5/6/0/6 across seven
+    //    hosts, and the owning host received none of them directly. The
+    //    fix is cluster-wide and a chart cannot make it: the ConfigMap key
+    //    `annotations-risk-level: Critical` plus a controller restart — NOT
+    //    the `--annotations-risk-level` flag, which crash-loops v1.15.1
+    //    with `unknown flag`. See `perf/aks/deploy/RUNBOOK.md` §0.
+    // 2. Even then, the hash is BACKEND-level and ingress-nginx keys
+    //    backends by service+port, so the un-hashed web Ingress won the
+    //    merge while both pointed at one Service. Observed: the token
+    //    spread 7/7/6 over three hosts. The chart's actor Ingress now has a
+    //    Service of its own.
+    //
+    // So the least a deployment can do is find out.
     it('sends one routing token to one host', async () => {
         const hosts = (await clusterReport()).totals.hosts;
         // One host makes every request local by definition; nothing to pin.
