@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-redis",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "Redis cluster providers for @sigx/actors \u2014 host membership and the distributed actor directory",
     "type": "module",
     "main": "./dist/index.js",
@@ -55,7 +55,7 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.4.0",
+        "@sigx/actors": "^0.5.0",
         "ioredis": ">=5"
     }
 }

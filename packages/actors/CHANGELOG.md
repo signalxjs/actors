@@ -2,21 +2,9 @@
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-07
+## [0.5.0] - 2026-08-07
 
 ### Added
-
-- **`onSettled` on `defineJob`** (#125) — a hook for every terminal transition,
-  including the two a run body structurally cannot observe: the runtime's
-  `maxAttempts` give-up (it refuses the restart, so no body turn happens) and a
-  `cancel()` that lands while the job is paused (no task to abort). An app
-  projecting job status outside the job — a status row in its own database, a
-  metric, a notification — previously had no way to learn about either, so the
-  projection asserted "still running" forever. Fires for `completed` too: a hook
-  covering only some terminal transitions would leave the handler needing to know
-  which ones it must also cover from the body. Runs inside the settling turn
-  after the state save, so a throwing handler is caught and dev-warned rather
-  than unwinding a transition the runtime has already committed.
 
 - **`ctx.changes({ throttleMs })`** (#129) — coalesce a burst of mutating
   turns into at most one snapshot per window. Leading edge plus trailing edge,
@@ -57,6 +45,22 @@
 
   No API change and nothing observable: the values a watch delivers are
   unchanged, because they never came from the feed.
+
+## [0.4.0] - 2026-08-07
+
+### Added
+
+- **`onSettled` on `defineJob`** (#125) — a hook for every terminal transition,
+  including the two a run body structurally cannot observe: the runtime's
+  `maxAttempts` give-up (it refuses the restart, so no body turn happens) and a
+  `cancel()` that lands while the job is paused (no task to abort). An app
+  projecting job status outside the job — a status row in its own database, a
+  metric, a notification — previously had no way to learn about either, so the
+  projection asserted "still running" forever. Fires for `completed` too: a hook
+  covering only some terminal transitions would leave the handler needing to know
+  which ones it must also cover from the body. Runs inside the settling turn
+  after the state save, so a throwing handler is caught and dev-warned rather
+  than unwinding a transition the runtime has already committed.
 
 ### Changed
 

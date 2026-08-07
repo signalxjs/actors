@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-surreal",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "SurrealDB 3 providers for @sigx/actors — etag-CAS actor storage, host membership, the distributed actor directory and durable reminders",
     "type": "module",
     "main": "./dist/index.js",
@@ -46,7 +46,7 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.4.0",
+        "@sigx/actors": "^0.5.0",
         "surrealdb": "^2.0.8"
     }
 }

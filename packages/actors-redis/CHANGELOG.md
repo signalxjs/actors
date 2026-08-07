@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-07
+
+### Changed
+
+- **Peers `@sigx/actors@^0.5.0`.** The family versions in lockstep, so the
+  range moves with the release. 0.5.0 only ADDS `ctx.changes({ throttleMs })`
+  and removes a snapshot a `$live` watch never read (#129) — no wire or API
+  break, so a 0.4.x host interoperates fine.
+
 ## [0.4.0] - 2026-08-07
 
 ### Changed
