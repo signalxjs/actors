@@ -127,9 +127,9 @@ const liveFanout: Scenario = {
                     }
                 );
 
-                // Emissions: mutate sequentially and drain subscriber #0.
-                // One process, both hosts sharing this CPU — contention, so
-                // it never gates.
+                // Emissions: mutate sequentially and drain the first
+                // subscriber. One process, both hosts sharing this CPU —
+                // contention, so it never gates.
                 const sliceMs = Math.max(200, Math.min(1000, ctx.durationMs / 8));
                 const until = performance.now() + sliceMs;
                 let emissions = 0;
