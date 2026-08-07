@@ -41,6 +41,21 @@ export function createThreadPool(size: number): ThreadPool {
     const pending = new Map<number, Pending>();
     let nextId = 0;
     let cursor = 0;
+    let closed = false;
+
+    /**
+     * Settle everything outstanding. The map is shared across workers, so one
+     * worker's death fails every in-flight call rather than only its own —
+     * coarse, but this is a benchmark harness, and the alternative is a
+     * scenario that parks forever and reports as a timed-out RUN instead of
+     * as the error that actually happened.
+     */
+    const failAll = (error: unknown): void => {
+        for (const [id, p] of pending) {
+            pending.delete(id);
+            p.reject(error);
+        }
+    };
 
     for (const worker of workers) {
         worker.on('message', (msg: { id: number; value: number }) => {
@@ -49,13 +64,13 @@ export function createThreadPool(size: number): ThreadPool {
             pending.delete(msg.id);
             p.resolve(msg.value);
         });
-        // A worker that dies takes every in-flight call with it; failing loudly
-        // beats a scenario that hangs and reports as a timed-out run.
-        worker.on('error', (error) => {
-            for (const [id, p] of pending) {
-                pending.delete(id);
-                p.reject(error);
-            }
+        worker.on('error', (error) => failAll(error));
+        // A worker can also go away WITHOUT an error — `exit` is the only
+        // event for that, and without it a call in flight when one stops
+        // never settles at all.
+        worker.on('exit', (code) => {
+            if (closed) return; // Expected: `close()` has already settled them.
+            failAll(new Error(`[bench] compute worker exited unexpectedly (code ${code})`));
         });
     }
     // Deliberately NOT `unref()`ed. An unref'd worker does not hold the event
@@ -70,10 +85,25 @@ export function createThreadPool(size: number): ThreadPool {
             const worker = workers[cursor++ % workers.length]!;
             return new Promise<number>((resolve, reject) => {
                 pending.set(id, { resolve, reject });
-                worker.postMessage({ id, payload, iterations });
+                try {
+                    worker.postMessage({ id, payload, iterations });
+                } catch (error) {
+                    // `postMessage` throws synchronously on a worker that has
+                    // already gone. The promise would reject on its own here,
+                    // but the map entry would survive as an id nothing can
+                    // ever settle.
+                    pending.delete(id);
+                    reject(error);
+                }
             });
         },
         async close() {
+            // Settle BEFORE terminating. A caller still awaiting a reply when
+            // the pool closes — an arm that threw mid-loop, say — would
+            // otherwise wait on a worker that no longer exists, and the
+            // scenario would hang rather than surface whatever went wrong.
+            closed = true;
+            failAll(new Error('[bench] compute thread pool closed with calls in flight'));
             await Promise.all(workers.map((w) => w.terminate()));
         }
     };
