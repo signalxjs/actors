@@ -9,6 +9,7 @@ import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
 import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
+import { liveFanoutScenarios } from './live-fanout.ts';
 import { topicScenarios } from './topics.ts';
 import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
@@ -46,6 +47,7 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...clusterScenarios,
     ...statelessScenarios,
     ...topicScenarios,
+    ...liveFanoutScenarios,
     ...redisScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),

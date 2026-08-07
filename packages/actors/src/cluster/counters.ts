@@ -27,12 +27,23 @@ export interface ClusterCounterTotals {
     remoteDispatches: number;
     remoteStreams: number;
     /**
-     * Watches opened ON a peer, per ATTEMPT. Counted apart from
+     * Watch STREAMS opened on a peer, per ATTEMPT. Counted apart from
      * `remoteStreams` because they cost differently: a stream ends, while a
-     * watch holds a keep-alive on the owner until the subscriber leaves —
-     * so this is the number worth reading next to a host's activation count.
+     * watch holds a keep-alive on the owner until the last subscriber
+     * leaves — so this is the number worth reading next to a host's
+     * activation count. Since #111 local subscribers coalesce onto one
+     * stream per (actor, method, throttle, args, principal), so this counts
+     * streams this host holds on peers, NOT subscriber attaches — those are
+     * `coalescedWatches` plus one per stream.
      */
     remoteWatches: number;
+    /**
+     * Subscriber attaches that JOINED an existing coalesced remote watch
+     * stream instead of opening their own (#111). The observable proof that
+     * sharing is happening: n subscribers to one remote read cost
+     * `remoteWatches += 1, coalescedWatches += n-1`.
+     */
+    coalescedWatches: number;
     /** Attempts beyond the first, whatever the cause. */
     retries: number;
     /** Calls that exhausted every attempt and threw `ActorActivationError`. */
@@ -124,6 +135,7 @@ export function createCounters(): ClusterCounterTotals {
         remoteDispatches: 0,
         remoteStreams: 0,
         remoteWatches: 0,
+        coalescedWatches: 0,
         retries: 0,
         routingFailures: 0,
         inboundDispatches: 0,

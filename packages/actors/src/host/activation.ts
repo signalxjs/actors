@@ -58,8 +58,11 @@ export const REMINDER_METHOD = '$sigx:reminder';
 /** Change-feed buffer bound — drop-oldest beyond this. */
 const CHANGE_BUFFER = 16;
 
-/** Trailing-throttle window for a change-driven read (`openWatch`). */
-export const DEFAULT_WATCH_THROTTLE_MS = 50;
+// Lives in watch-core so the cluster's watch coalescing can normalize
+// throttles identically without importing the activation (#111);
+// re-exported here because this is its historical home.
+import { DEFAULT_WATCH_THROTTLE_MS } from '../watch-core';
+export { DEFAULT_WATCH_THROTTLE_MS };
 
 /**
  * Marks a shared watch's invoke context with the watch's UNQUALIFIED key,

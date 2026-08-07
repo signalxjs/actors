@@ -276,6 +276,7 @@ describe('screens render', () => {
                         remoteDispatches: 7,
                         remoteStreams: 0,
                         remoteWatches: 0,
+                        coalescedWatches: 0,
                         inboundDispatches: 5,
                         inboundStreams: 0,
                         inboundWatches: 0,

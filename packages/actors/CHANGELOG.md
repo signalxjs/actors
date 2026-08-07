@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-host watches coalesce: live fan-out now scales with hosts, not
+  subscribers** (#111). n local subscribers to a remote actor's read share
+  ONE cross-host stream per `(actor, method, throttleMs, args, principal)`
+  and fan out locally, so the owning host does one serialized write per
+  emission instead of n — the singleton-subscriber write ceiling measured
+  on AKS moves with fleet size instead of against it. Two consequences,
+  both deliberate:
+  - The shared stream is pulled at the fastest consumer's rate; a
+    subscriber slower than the feed drops oldest values at a 16-value
+    buffer. A stalled tab can no longer backpressure the stream — nor
+    anyone else on it — and a live read's superseded values are worthless
+    by definition.
+  - A shared-stream failure fails every subscriber on it and drops the
+    entry — exact parity with the per-subscriber path it replaces, whose
+    retry only ever covered the first pull. The `$live` channel's
+    reconnect-and-reseed is the recovery path, unchanged. Shared
+    re-establishment is future work.
+
+  The key carries the encoded principal (the owner splits
+  identity-dependent reads per principal, #121, and the relay cannot see
+  that discovery), so distinct authenticated users do not yet share a
+  stream — #138 tracks restoring that for identity-independent reads.
+  `remoteWatches` now counts remote watch STREAMS (per attempt) rather
+  than subscriber attaches; the new `coalescedWatches` counter counts
+  attaches that joined an existing stream. The `@sigx/actors/cluster`
+  size budget rises 13.2 → 14.2 KB to carry the shared fan-out core
+  (see #73 for the budget process).
+
 ### Fixed
 
 - **A shared watch no longer serves every subscriber the FIRST subscriber's
