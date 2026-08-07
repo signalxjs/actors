@@ -222,6 +222,22 @@ function writeCanonical(value: unknown, out: string[]): void {
                 for (const item of value) writeCanonical(item, out);
                 return;
             }
+            // PLAIN records only. A class instance, `Date` or `Map` that
+            // reached this point escaped the codec (a missing type
+            // handler), and writing its enumerable keys would collapse it —
+            // a `Date` has none and becomes `o0:` — silently colliding
+            // with a distinct subscription. That is the exact failure this
+            // grammar exists to prevent, so it throws instead.
+            const proto: unknown = Object.getPrototypeOf(value);
+            if (proto !== Object.prototype && proto !== null) {
+                throw new Error(
+                    `[sigx actors] a watch argument of type ` +
+                        `"${(value as object).constructor?.name ?? 'object'}" survived the ` +
+                        `codec, so two subscriptions cannot be told apart and would share ` +
+                        `one loop. Register a type handler for it, or pass a value the ` +
+                        `wire can carry.`
+                );
+            }
             const record = value as Record<string, unknown>;
             const keys = Object.keys(record).sort();
             out.push(`o${keys.length}:`);

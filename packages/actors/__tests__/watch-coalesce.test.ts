@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor, type ActorCallContext } from '@sigx/actors';
 import { preferLocalPolicy } from '@sigx/actors/cluster';
+import { canonicalKey } from '../src/watch-core';
 import { createCluster, type ClusterHarness } from './harness';
 
 let invocations = 0;
@@ -297,6 +298,24 @@ describe('cross-host watch coalescing', () => {
 
         await it2.return?.();
         await it3.return?.();
+    });
+
+    it('the key grammar throws on a value that escaped the codec, never collapses it', () => {
+        // A `Date` has no enumerable own keys, so writing it as a record
+        // would emit `o0:` — silently colliding with `{}` and any other
+        // key-less instance, which is the exact wrong-answer failure the
+        // injective grammar exists to prevent.
+        expect(() => canonicalKey([new Date()])).toThrow(/survived the codec/);
+        expect(() => canonicalKey([new Map()])).toThrow(/survived the codec/);
+        class Opaque {}
+        expect(() => canonicalKey([{ nested: new Opaque() }])).toThrow(/survived the codec/);
+        // Plain records (and null-prototype ones, which some codecs emit)
+        // still write structurally.
+        expect(canonicalKey([{ a: 1 }])).toBe(canonicalKey([{ a: 1 }]));
+        expect(canonicalKey([Object.assign(Object.create(null), { a: 1 })])).toBe(
+            canonicalKey([{ a: 1 }])
+        );
+        expect(canonicalKey([{}])).not.toBe(canonicalKey([[]]));
     });
 
     it('locally-placed watches never touch the coalescing layer', async () => {
