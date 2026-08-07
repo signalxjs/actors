@@ -1,0 +1,32 @@
+# A SECOND Service over the same host pods, existing purely to give the
+# actor Ingress its own nginx BACKEND (#143).
+#
+# ingress-nginx keys backends by service+port, and `upstream-hash-by` is
+# backend-level configuration — so when the hashed actor Ingress and the
+# deliberately un-hashed web Ingress both point at `-host:public`, they
+# share one backend and the hash-less one wins the merge: the annotation
+# survives on the Ingress object, the controller logs nothing, and every
+# actor call round-robins. Proven live by deleting the web Ingress — the
+# programmed backend gained `upstream-hash-by` immediately, and lost it
+# again when the web Ingress came back.
+#
+# Same selector, same targetPort: the pods see no difference; only the
+# backend identity splits.
+{{- $locality := dig "localityRouting" true (.Values.ingress | default dict) }}
+{{- if $locality }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chat.fullname" . }}-host-actor
+  labels:
+    {{- include "chat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: host
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "chat.hostSelector" . | nindent 4 }}
+  ports:
+    - name: public
+      port: {{ .Values.ports.public }}
+      targetPort: public
+{{- end }}
