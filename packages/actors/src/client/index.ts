@@ -155,6 +155,14 @@ export interface ActorTransport {
      * layer — consumers fall back to re-reading.
      */
     live?(): ActorLiveChannel;
+    /**
+     * Release everything the transport holds (connections included). Must be
+     * IDEMPOTENT: both the plugin that installed the transport and a live
+     * channel that resolved `live()` release through this method, and either
+     * may run first (#102). Callers release fire-and-forget, so it should
+     * not throw and a returned promise should not reject — a failure here
+     * has no one left to report to.
+     */
     close?(): void | Promise<void>;
 }
 
