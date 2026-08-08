@@ -532,6 +532,33 @@ describe('a transport that brings its own channel (#102)', () => {
         expect(closes).toHaveLength(1);
     });
 
+    it("a misbehaving transport's close() cannot break the channel's own", () => {
+        const throwing: ActorTransport = {
+            name: 'fake-socket',
+            call: () => Promise.reject(new Error('not used')),
+            stream: () => {
+                throw new Error('not used');
+            },
+            live: () => ({ subscribe: () => () => {} }),
+            close: () => {
+                throw new Error('close exploded');
+            }
+        };
+        const channel = createLiveChannel(() => throwing, fast);
+        channel.subscribe(sub('a'), () => {});
+        expect(() => channel.close()).not.toThrow();
+
+        const rejecting: ActorTransport = {
+            ...throwing,
+            close: () => Promise.reject(new Error('async close exploded'))
+        };
+        const channel2 = createLiveChannel(() => rejecting, fast);
+        channel2.subscribe(sub('a'), () => {});
+        // A rejected close must not surface as an unhandled rejection —
+        // vitest fails the run on one, which is the assertion.
+        expect(() => channel2.close()).not.toThrow();
+    });
+
     it('close() without ever delegating closes nothing', () => {
         const { transport, closes } = delegatingTransport();
         const channel = createLiveChannel(() => transport, fast);

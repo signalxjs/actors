@@ -407,8 +407,16 @@ export function createLiveChannel(
             // delegate was actually resolved: a channel that never delegated
             // must not tear down a transport it never used. Safe against the
             // plugin path closing the transport again on dispose, because
-            // `ActorTransport.close()` is idempotent by contract.
-            if (delegate) void delegateFor?.close?.();
+            // `ActorTransport.close()` is idempotent by contract — and
+            // best-effort here regardless: a misbehaving transport's throw
+            // or rejection must not escape this cleanup.
+            if (delegate) {
+                try {
+                    void Promise.resolve(delegateFor?.close?.()).catch(() => {});
+                } catch {
+                    // Already closing; there is nobody left to tell.
+                }
+            }
             delegateFor = null;
             delegate = null;
         }
