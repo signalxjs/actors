@@ -18,12 +18,20 @@
  *   compare equal and a REAL update is suppressed).
  */
 import type { ActorLiveChannel, ActorSubscription } from '../client/index';
-import { wireFail } from '../wire-shared';
+import { canonicalKey } from '../watch-core';
+import { encodeWire, wireFail } from '../wire-shared';
 import type { LiveSubscription, SocketReply, SocketRequest } from '../socket-wire';
 
-/** Subscription identity: the tuple that decides who shares a watch. */
+/**
+ * Subscription identity: the tuple that decides who shares a watch — as an
+ * INJECTIVE string, via the same grammar the server-side watch identity
+ * uses (`canonicalKey`, whose doc carries the why: a collision here serves
+ * one subscriber the result of the OTHER's arguments, silently; and
+ * `JSON.stringify` throws outright on a `bigint` argument). Args go through
+ * the wire codec first so `bigint`/`Date`/`Map` are representable.
+ */
 export function canonical(sub: ActorSubscription): string {
-    return JSON.stringify([sub.type, sub.key, sub.method, sub.args ?? []]);
+    return canonicalKey([sub.type, sub.key, sub.method, encodeWire(sub.args ?? [])]);
 }
 
 /**

@@ -462,7 +462,14 @@ export async function createActorSocketSession(
         } catch (error) {
             if (tracked()) reply({ i: id, e: toFrameError(error) });
         } finally {
-            if (watches.get(id) === watch) watches.delete(id);
+            if (watches.get(id) === watch) {
+                watches.delete(id);
+                // Belt and braces on EVERY exit, the failure path included:
+                // an iterator the loop abandoned mid-error must still release
+                // the activation's keep-alive, and once the entry leaves the
+                // table `teardown()` can no longer reach it.
+                stopWatch(watch);
+            }
         }
     };
 
