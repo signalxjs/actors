@@ -61,13 +61,27 @@ export interface AttachActorSocketOptions
  * session's upgrade-time auth and origin check need.
  */
 export function toRequest(request: IncomingMessage): Request {
-    const host = request.headers.host ?? 'localhost';
+    // TLS upgrades read as `https:` so a same-origin check against a
+    // browser's `Origin: https://…` compares like with like.
+    const encrypted =
+        (request.socket as { encrypted?: boolean } | undefined)?.encrypted === true;
+    const scheme = encrypted ? 'https' : 'http';
     const headers = new Headers();
     for (const [name, value] of Object.entries(request.headers)) {
         if (typeof value === 'string') headers.set(name, value);
         else if (Array.isArray(value)) for (const one of value) headers.append(name, one);
     }
-    return new Request(`http://${host}${request.url ?? '/'}`, { headers });
+    // Host header and url are UNTRUSTED input, and this runs inside an
+    // upgrade callback where a throw would be an uncaught exception. A
+    // malformed pair falls back to a URL whose origin matches nothing, so a
+    // same-origin posture fails CLOSED rather than crashing the process.
+    let url: URL;
+    try {
+        url = new URL(request.url ?? '/', `${scheme}://${request.headers.host ?? 'localhost'}`);
+    } catch {
+        url = new URL(`${scheme}://localhost/`);
+    }
+    return new Request(url, { headers });
 }
 
 /**
@@ -110,7 +124,14 @@ export function attachActorSocket(
                     // upgrade completes, and a message emitted before the
                     // session resolves must buffer, not vanish.
                     let live: ActorSocketSession | null = null;
+                    let dead = false;
                     const buffered: string[] = [];
+                    // The session's own byte cap applies once it exists; the
+                    // pre-session buffer enforces the SAME bound so an
+                    // oversized first frame cannot buy a large allocation in
+                    // the window before construction resolves.
+                    const capBytes = session.maxMessageBytes ?? 1024 * 1024;
+                    let bufferedBytes = 0;
                     client.on('message', (data, isBinary) => {
                         if (isBinary) {
                             // Text JSON is the protocol; same 1003 posture as
@@ -119,10 +140,21 @@ export function attachActorSocket(
                             return;
                         }
                         const text = String(data);
-                        if (live) live.handle(text);
-                        else buffered.push(text);
+                        if (live) {
+                            live.handle(text);
+                            return;
+                        }
+                        bufferedBytes += text.length;
+                        if (capBytes > 0 && bufferedBytes > capBytes) {
+                            dead = true;
+                            buffered.length = 0;
+                            client.close(1009, 'message too large');
+                            return;
+                        }
+                        buffered.push(text);
                     });
                     client.on('close', () => {
+                        dead = true;
                         live?.close();
                         live = null;
                     });
@@ -133,6 +165,13 @@ export function attachActorSocket(
                         close: (code, reason) => client.close(code, reason)
                     }).then(
                         (created) => {
+                            // The socket may have closed while the session was
+                            // constructing; a late session must not keep its
+                            // pinned identity and prelude work alive.
+                            if (dead) {
+                                created.close();
+                                return;
+                            }
                             live = created;
                             for (const message of buffered.splice(0)) created.handle(message);
                         },
