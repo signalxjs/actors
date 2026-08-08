@@ -60,6 +60,12 @@
             "production": "./dist/cluster-frames.prod.js",
             "import": "./dist/cluster-frames.js"
         },
+        "./socket-wire": {
+            "types": "./dist/socket-wire.d.ts",
+            "development": "./dist/socket-wire.js",
+            "production": "./dist/socket-wire.prod.js",
+            "import": "./dist/socket-wire.js"
+        },
         "./vite": {
             "types": "./dist/vite/index.d.ts",
             "import": "./dist/vite.js"

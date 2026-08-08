@@ -69,8 +69,11 @@ function badRequest(message: string): never {
  * escape hatch; `-1`, `1.5` and `NaN` are misconfiguration, and under a plain
  * `max > 0` test every one of them silently turned the cap OFF — the failure
  * mode this option exists to prevent, reached by getting the option wrong.
+ *
+ * Exported (module-level, not on the `./server` barrel) for the socket
+ * session (#99), whose per-connection subscription cap is the same bound.
  */
-function resolveMaxSubscriptions(max: number): number {
+export function resolveMaxSubscriptions(max: number): number {
     if (!Number.isInteger(max) || max < 0) {
         throw new Error(
             `[sigx actors] maxLiveSubscriptions must be a non-negative integer — got ` +
@@ -106,8 +109,12 @@ function parseSubscriptions(raw: unknown, max: number): LiveSubscription[] {
  * `toClientError` an unknown method reached the client as a masked 500 here
  * while the very same call over the unary path answered 404. A subscription
  * and a poll of the same read must not disagree about whose fault it is.
+ *
+ * Exported (module-level, not on the `./server` barrel) for the socket
+ * session (#99) — the third caller of "classify, then mask", and the reason
+ * it must be one function rather than three copies.
  */
-function toFrameError(error: unknown): { message: string; status: number } {
+export function toFrameError(error: unknown): { message: string; status: number } {
     const classified = toClientError(error);
     const wire = classified as { __sigxServerFnError?: boolean; status?: number; message?: string };
     if (wire?.__sigxServerFnError === true && typeof wire.status === 'number') {

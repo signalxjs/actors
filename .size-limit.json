@@ -74,6 +74,14 @@
     "limit": "4.1 KB"
   },
   {
+    "name": "@sigx/actors/socket-wire",
+    "path": "packages/actors/dist/socket-wire.prod.js",
+    "limit": "1 KB",
+    "ignore": [
+      "@sigx/serialize"
+    ]
+  },
+  {
     "name": "@sigx/actors/server",
     "path": "packages/actors/dist/server.prod.js",
     "limit": "6 KB",
