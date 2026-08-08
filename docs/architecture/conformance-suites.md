@@ -11,15 +11,23 @@ Adding a provider or a transport means writing a *harness*, not a test matrix.
 |---|---|---|
 | `@sigx/actors/cluster/testing` | `transportConformance` | `HostTransport` implementations |
 | `@sigx/actors/testing` | `bootstrapConformance` | provider schema bootstrap (`ensure…Schema`) |
+| `@sigx/actors/testing` | `socketTransportConformance` | client `ActorTransport` implementations (#99) |
 
-Both are **workspace-only**: wired by the tsconfig and vitest path aliases, and
+All are **workspace-only**: wired by the tsconfig and vitest path aliases, and
 deliberately **absent from `package.json` exports**. They cannot be imported
 from outside this repo until someone decides to promote them, which is a
 deliberate one-way door — publishing a test suite means supporting its shape.
 
 Everything else in `packages/actors/package.json` `exports` is public API.
-These two are the exception, and `@sigx/actors/cluster/frames` is the mirror
-image: published *precisely* so out-of-repo transports can build on it.
+These are the exception, and `@sigx/actors/cluster/frames` and
+`@sigx/actors/socket-wire` are the mirror image: published *precisely* so
+out-of-repo transports can build on them.
+
+`socketTransportConformance` follows `transportConformance`'s incumbent rule
+one seam up: it runs against `fetchTransport()` — which shipped first, and
+whose behaviour *is* the client contract — as well as `socketTransport()`.
+The incumbent legitimately skips exactly the live case (it has no `live()`);
+a skip is a reported outcome, never a silent pass.
 
 ## The two rules
 

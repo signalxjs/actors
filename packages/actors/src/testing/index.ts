@@ -16,4 +16,9 @@ export {
     type BootstrapConformanceFactory,
     type BootstrapConformanceHarness
 } from './bootstrap';
+export {
+    socketTransportConformance,
+    type SocketTransportFactory,
+    type SocketTransportHarness
+} from './socket-transport';
 export type { ConformanceCase, ConformanceSkip } from './conformance';

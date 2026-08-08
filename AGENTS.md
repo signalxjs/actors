@@ -260,7 +260,9 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   (`sigxActors()` plugin). Two further subpaths are **workspace-only** — wired
   by tsconfig/vitest aliases and deliberately absent from `package.json`
   exports: `./cluster/testing` (`transportConformance`) and `./testing`
-  (`bootstrapConformance`, and the home of the `ActorStorage` suite of #65).
+  (`bootstrapConformance`, `socketTransportConformance` — the client
+  `ActorTransport` suite of #99, run by `fetchTransport` and
+  `@sigx/actors-ws` — and the home of the `ActorStorage` suite of #65).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
   `redisCluster` (membership and the actor directory) for
   `@sigx/actors/cluster`, and `redisStorage` (etag-CAS `ActorStorage` —
