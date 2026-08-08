@@ -23,12 +23,14 @@
  * - **Cancelling one call never closes the socket** — a cancel is a
  *   message (`{i,c:1}`), because everything is multiplexed.
  */
-import type { ActorCallInit, ActorTransport } from '@sigx/actors/client';
+import type { ActorCallInit, ActorLiveChannel, ActorTransport } from '@sigx/actors/client';
 import {
+    createSocketLiveChannel,
     encodeWire,
     parseWire,
     reviveWire,
     wireFail,
+    type SocketLiveChannel,
     type SocketReply,
     type SocketRequest,
     type WireError
@@ -123,6 +125,7 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
     let failures = 0;
     let nextId = 1;
     const inFlight = new Map<number, InFlight>();
+    let live: SocketLiveChannel | null = null;
     let warnedEndpoint = false;
     let warnedHeaders = false;
 
@@ -158,14 +161,35 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
             return;
         }
         if (typeof reply !== 'object' || reply === null || !('i' in reply)) return;
-        // Unknown ids are fine — a reply legitimately races its cancel.
-        inFlight.get(reply.i)?.frame(reply as SocketReply & { i: number });
+        const tagged = reply as SocketReply & { i: number };
+        const call = inFlight.get(tagged.i);
+        if (call) {
+            call.frame(tagged);
+            return;
+        }
+        // Not a call: a live frame — or an id whose call was cancelled,
+        // which the channel ignores just the same.
+        live?.handle(tagged);
     };
 
     const dropLink = (wasOpen: boolean): void => {
         link = null;
         opening = null;
         if (wasOpen) failAll(lostError());
+        // Calls fail and are never retried; SUBSCRIPTIONS re-establish —
+        // they are declarative, so re-seeding cannot double an effect.
+        if (wasOpen && live && live.size() > 0) void redialForLive();
+    };
+
+    /** Keep dialling (with `ready()`'s backoff) while subscriptions exist. */
+    const redialForLive = async (): Promise<void> => {
+        while (!closed && !link && live && live.size() > 0) {
+            try {
+                await ready();
+            } catch {
+                // ready() already spaced the attempts; go around again.
+            }
+        }
     };
 
     const openOnce = async (): Promise<void> => {
@@ -185,6 +209,10 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
                         link = attempt;
                         failures = 0;
                         opening = null;
+                        // Sockets drop; a fresh connection re-seeds every
+                        // subscription — `fingerprint()` suppresses the
+                        // values that did not change.
+                        if (live && live.size() > 0) live.reseed();
                         resolve();
                     },
                     onMessage: handleMessage,
@@ -352,6 +380,27 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
             return { [Symbol.asyncIterator]: () => run() };
         },
 
+        /**
+         * The incremental live channel: adding a subscription is one small
+         * `{i,sub}` message, removing one is `{i,uns}` — no reopen, no
+         * re-seed storm. Memoized: `delegateChannel()` calls this once per
+         * transport, and one connection carries the page's whole set.
+         */
+        live(): ActorLiveChannel {
+            live ??= createSocketLiveChannel({
+                allocateId: () => nextId++,
+                send: (request) => {
+                    if (closed) return;
+                    if (link) post(request);
+                    // No connection: dial in the background; `onOpen`
+                    // re-seeds the full set, this message included.
+                    else void ready().catch(() => {});
+                },
+                revive: reviveWire
+            });
+            return live.channel;
+        },
+
         /** Idempotent by `ActorTransport.close()` contract (#102). */
         close(): void {
             if (closed) return;
@@ -359,6 +408,8 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
             const current = link;
             link = null;
             opening = null;
+            live?.close();
+            live = null;
             failAll(closedError());
             current?.close();
         }

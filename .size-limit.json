@@ -42,7 +42,7 @@
   {
     "name": "@sigx/actors/app",
     "path": "packages/actors/dist/app.prod.js",
-    "limit": "6.1 KB",
+    "limit": "6.5 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
@@ -76,7 +76,7 @@
   {
     "name": "@sigx/actors/socket-wire",
     "path": "packages/actors/dist/socket-wire.prod.js",
-    "limit": "1 KB",
+    "limit": "2.5 KB",
     "ignore": [
       "@sigx/serialize"
     ]

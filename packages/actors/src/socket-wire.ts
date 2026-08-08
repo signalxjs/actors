@@ -44,6 +44,21 @@ export { parseWire } from './wire-parse';
 export { encodeWire, reviveWire, wireFail } from './wire-shared';
 export type { LiveSubscription, WireError };
 
+// The client live-channel machinery, shared with the `$live` channel so the
+// two cannot fork (`app/live-shared.ts` carries the why): identity
+// coalescing, late-subscriber replay, re-seed suppression, and the
+// `{i,sub}`/`{i,uns}` channel itself. Published here so an out-of-repo
+// transport gets live for the price of a `SocketLiveHost`.
+export {
+    createSocketLiveChannel,
+    createSubscriptionSet,
+    type LiveListener,
+    type SocketLiveChannel,
+    type SocketLiveHost,
+    type SubscriptionEntry,
+    type SubscriptionSet
+} from './app/live-shared';
+
 /**
  * Client → session. `i` is a client-chosen id, and it must be unique across
  * that client's in-flight calls AND its open subscriptions together: replies
