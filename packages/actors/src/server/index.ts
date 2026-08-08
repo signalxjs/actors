@@ -20,6 +20,11 @@ export {
     requireHost,
     type FetchHandlerOptions
 } from './fetch';
+export {
+    createActorSocketSession,
+    type ActorSocketSession,
+    type ActorSocketSessionOptions
+} from './socket-session';
 /** The routing token an inbound call carries. READ-ONLY — the endpoint does
  *  not consult it, and deliberately never validates it. */
 export {

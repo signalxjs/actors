@@ -4,6 +4,22 @@
 
 ### Added
 
+- **`createActorSocketSession()` on `@sigx/actors/server`** (#99): the server
+  half of the client-facing socket transport — one session per connection, a
+  `Request` in and two callbacks out, so `ws`, socket.io, uWS, Bun, Deno and
+  a Durable Object all drive the same core. Origin checked at upgrade
+  (`posture.origin ?? 'same-origin'` — a browser opens a cross-origin
+  WebSocket with cookies attached and no preflight), identity pinned once at
+  upgrade (cookies-only v1), the FULL prelude re-run per message (middleware
+  may be a rate limiter; authentication itself stays memoized on the
+  connection), unary + stream + cancel with per-call deadlines from
+  `posture.timeoutMs`, and the caps HTTP gave implicitly repaid explicitly:
+  `maxMessageBytes` (close 1009), parse-or-close-1003, `maxConcurrent` (429
+  per call — over one socket a page can hold thousands of in-flight calls,
+  each able to force an activation), `maxSubscriptions` validated at
+  construction. Live subscriptions answer 501 until the incremental-live PR
+  lands. Guards grew `enterActorRequest()`/`actorPosture()` so the session
+  reaches core's pipeline through the same single door as every transport.
 - **`@sigx/actors/socket-wire`** (#99): the published vocabulary of the
   incoming client-facing socket transport — `SocketRequest`/`SocketReply`
   (whose `{i,v}`/`{i,e}` reply shapes are the `$live` `LiveFrame` shapes by
