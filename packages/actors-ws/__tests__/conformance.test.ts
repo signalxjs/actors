@@ -1,8 +1,8 @@
 /**
  * `socketTransport()` under the shared client-transport conformance suite —
  * the same cases `fetchTransport` (the incumbent) passes, driven over an
- * in-memory link into the real `createActorSocketSession`. Until the live
- * layer ships, the live case reports a SKIP — visibly, never silently.
+ * in-memory link into the real `createActorSocketSession` — including the
+ * live case, which is the one the incumbent cannot run.
  */
 import { describe, expect, it } from 'vitest';
 import { createHost } from '@sigx/actors/host';
@@ -65,10 +65,9 @@ describe('socketTransportConformance × socketTransport', () => {
     for (const conformanceCase of socketTransportConformance) {
         it(`${conformanceCase.name} — ${conformanceCase.why}`, async () => {
             const outcome = await conformanceCase.run(create);
-            if (outcome && 'skipped' in outcome) {
-                // Live lands in a later #99 PR; until then only that case skips.
-                expect(conformanceCase.name).toMatch(/^live:/);
-            }
+            // Nothing skips here: this transport implements the whole
+            // contract, live included.
+            expect(outcome).toBeUndefined();
         });
     }
 });

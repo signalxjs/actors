@@ -63,6 +63,7 @@ import { relayStream } from '../stream-relay';
 import { parseWire } from '../wire-parse';
 import { encodeWire, reviveWire } from '../wire-shared';
 import type { SocketReply, SocketRequest } from '../socket-wire';
+import type { LiveSubscription } from '../wire-shared';
 import { toClientError } from './client-error';
 import {
     DEFAULT_LIVE_PING_MS,
@@ -108,9 +109,7 @@ export interface ActorSocketSessionOptions {
      * Most live subscriptions this CONNECTION may hold — the connection is
      * the thing that actually costs activations. Default 256, validated the
      * same way as the `$live` cap (a security bound must not be disabled by
-     * a typo). Subscriptions themselves land in a later PR; the option is
-     * validated now so a misconfiguration throws at construction, not at
-     * first use.
+     * a typo); a misconfiguration throws at construction, not at first use.
      */
     maxSubscriptions?: number;
     /** Outbound keepalive after this much send-silence. Default 30 s
@@ -173,9 +172,11 @@ export async function createActorSocketSession(
     const originPolicy = options.origin ?? posture.origin ?? 'same-origin';
     const maxMessageBytes = options.maxMessageBytes ?? posture.maxBodyBytes ?? 1024 * 1024;
     const maxConcurrent = options.maxConcurrent ?? 256;
-    // Validated now, consumed by the live half when it lands: a typo'd bound
-    // must throw at construction rather than silently disable itself later.
-    resolveMaxSubscriptions(options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS);
+    // Validated at construction: a typo'd bound must throw rather than
+    // silently disable itself.
+    const maxSubscriptions = resolveMaxSubscriptions(
+        options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS
+    );
     const pingMs = options.pingMs ?? DEFAULT_LIVE_PING_MS;
     const onError = options.onError ?? posture.onError;
 
@@ -202,6 +203,12 @@ export async function createActorSocketSession(
     let closed = false;
     /** In-flight calls by client id. Presence = frames may still be sent. */
     const inFlight = new Map<number, { ctrl: AbortController }>();
+    /** Open subscriptions by client id — the SAME id namespace as calls,
+     *  because replies carry only `i`. */
+    const watches = new Map<
+        number,
+        { ctrl: AbortController; iterator: AsyncIterator<unknown> | null }
+    >();
     let pingTimer: ReturnType<typeof setTimeout> | undefined;
 
     const armPing = (): void => {
@@ -242,6 +249,16 @@ export async function createActorSocketSession(
         pingTimer = undefined;
         for (const [, entry] of inFlight) entry.ctrl.abort();
         inFlight.clear();
+        for (const [, watch] of watches) stopWatch(watch);
+        watches.clear();
+    };
+
+    const stopWatch = (watch: { ctrl: AbortController; iterator: AsyncIterator<unknown> | null }): void => {
+        watch.ctrl.abort();
+        // `return()` forwarded inward too — the abort wakes a parked
+        // `next()`, the return releases the activation's keep-alive; the
+        // same belt-and-braces pairing the `$live` endpoint uses.
+        void watch.iterator?.return?.(undefined);
     };
 
     /**
@@ -401,6 +418,65 @@ export async function createActorSocketSession(
         }
     };
 
+    /**
+     * One live subscription — the same sequence the `$live` endpoint runs
+     * per entry, on a per-message context: definition → 404, the FULL
+     * prelude + authorization, bag from this message's middleware, the
+     * connection's pinned identity, then `dispatchWatch` until `{i,uns}`,
+     * a terminal error, or session teardown. Failure is PER SUBSCRIPTION —
+     * a guard rejecting one widget costs the page nothing else.
+     */
+    const dispatchWatchFor = async (id: number, sub: LiveSubscription): Promise<void> => {
+        const watch = { ctrl: new AbortController(), iterator: null as AsyncIterator<unknown> | null };
+        watches.set(id, watch);
+        const tracked = (): boolean => !closed && watches.get(id) === watch;
+        try {
+            if (!host.dispatchWatch) {
+                throw new ServerFnError(
+                    501,
+                    '[sigx actors] this host cannot watch (no dispatchWatch on its placement).'
+                );
+            }
+            const def = (await host.definition(sub.t)) as AnyActorDefinition | undefined;
+            if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
+            const rqCall = callContext(watch.ctrl.signal);
+            await authorizeActorCall(def, sub.m, sub.k, rqCall, 'wire');
+            const bag = takeCallBag(rqCall.locals);
+            const iterable = host.dispatchWatch({ type: sub.t, key: sub.k }, sub.m, sub.a ?? [], {
+                callChain: [],
+                callId: mintCallId(),
+                ...(bag !== undefined ? { bag } : {}),
+                ...(principal !== undefined ? { principal } : {}),
+                abortSignal: watch.ctrl.signal
+            });
+            const iterator = iterable[Symbol.asyncIterator]();
+            watch.iterator = iterator;
+            for (;;) {
+                const { value, done } = await iterator.next();
+                if (done || !tracked()) break;
+                // A pushed value is byte-identical to a `$live` frame.
+                reply({ i: id, v: encodeWire(value) });
+            }
+            // The watch ended server-side (the actor stopped): like `$live`,
+            // no terminal frame — a reconnect re-seeds it.
+        } catch (error) {
+            if (tracked()) reply({ i: id, e: toFrameError(error) });
+        } finally {
+            if (watches.get(id) === watch) watches.delete(id);
+        }
+    };
+
+    /** The single-subscription validator — the same rules `$live`'s
+     *  `parseSubscriptions` applies per entry. */
+    const validSub = (raw: unknown): LiveSubscription | null => {
+        const sub = raw as Partial<LiveSubscription> | null;
+        if (typeof sub?.t !== 'string' || !sub.t) return null;
+        if (typeof sub.k !== 'string' || !sub.k) return null;
+        if (typeof sub.m !== 'string' || !sub.m) return null;
+        if (sub.a !== undefined && !Array.isArray(sub.a)) return null;
+        return { t: sub.t, k: sub.k, m: sub.m, a: sub.a ?? [] };
+    };
+
     const handleParsed = (message: SocketRequest): void => {
         if ('p' in message && message.p === 1) {
             reply({ p: 1 });
@@ -420,27 +496,57 @@ export async function createActorSocketSession(
             }
             return;
         }
-        if ('sub' in message || 'uns' in message) {
-            // The vocabulary reserves them; the live half is a later PR of
-            // #99. A 501 error frame fails the subscription, never the
-            // connection.
-            reply({
-                i: message.i,
-                e: toFrameError(
-                    new ServerFnError(
-                        501,
-                        '[sigx actors] live subscriptions over the socket are not supported yet'
+        if ('uns' in message && message.uns === 1) {
+            // Closing is silent (no reply); unknown ids are ignored — an
+            // unsubscribe legitimately races the watch ending server-side.
+            const watch = watches.get(message.i);
+            if (watch) {
+                watches.delete(message.i);
+                stopWatch(watch);
+            }
+            return;
+        }
+        if ('sub' in message) {
+            if (inFlight.has(message.i) || watches.has(message.i)) {
+                fail(1003, 'duplicate id');
+                return;
+            }
+            const sub = validSub(message.sub);
+            if (!sub) {
+                reply({
+                    i: message.i,
+                    e: toFrameError(
+                        new ServerFnError(400, '[sigx actors] malformed subscription record')
                     )
-                )
-            });
+                });
+                return;
+            }
+            // The cap is on the CONNECTION — the thing that actually costs
+            // activations — with the same rationale as `$live`'s: each watch
+            // can force a distinct activation pinned for `idleAfterMs`.
+            if (maxSubscriptions > 0 && watches.size >= maxSubscriptions) {
+                reply({
+                    i: message.i,
+                    e: toFrameError(
+                        new ServerFnError(
+                            400,
+                            `[sigx actors] too many subscriptions on one socket — ` +
+                                `limit is ${maxSubscriptions}`
+                        )
+                    )
+                });
+                return;
+            }
+            void dispatchWatchFor(message.i, sub);
             return;
         }
         if ('s' in message && typeof message.s === 'string' && Array.isArray(message.a)) {
-            if (inFlight.has(message.i)) {
+            if (inFlight.has(message.i) || watches.has(message.i)) {
                 // A reused id would interleave two calls' frames under one
                 // tag — bookkeeping is corrupt, and that is a protocol
-                // breach, not a failed call.
-                fail(1003, 'duplicate call id');
+                // breach, not a failed call. Calls and subscriptions share
+                // the namespace, because replies carry only `i`.
+                fail(1003, 'duplicate id');
                 return;
             }
             if (maxConcurrent > 0 && inFlight.size >= maxConcurrent) {
@@ -490,7 +596,7 @@ export async function createActorSocketSession(
             teardown();
         },
         stats(): { inFlight: number; subscriptions: number } {
-            return { inFlight: inFlight.size, subscriptions: 0 };
+            return { inFlight: inFlight.size, subscriptions: watches.size };
         }
     };
 }

@@ -320,13 +320,23 @@ describe('protocol breaches close; failed calls do not', () => {
         expect(link.closes).toEqual([{ code: 1003, reason: 'unrecognized message' }]);
     });
 
-    it('a duplicate in-flight id closes 1003', async () => {
+    it('a duplicate id closes 1003 — across calls AND subscriptions', async () => {
         const s = await start();
         const { session, link } = await connect(s);
         session.handle(JSON.stringify({ i: 1, s: 'Cart#slow', a: ['k'] }));
         session.handle(JSON.stringify({ i: 1, s: 'Cart#total', a: ['k'] }));
         await until(() => link.closes.length === 1);
-        expect(link.closes[0]).toEqual({ code: 1003, reason: 'duplicate call id' });
+        expect(link.closes[0]).toEqual({ code: 1003, reason: 'duplicate id' });
+
+        // Replies carry only `i`, so the namespace is shared: a subscription
+        // reusing a call's id is the same breach.
+        const second = await connect(s);
+        second.session.handle(JSON.stringify({ i: 5, s: 'Cart#slow', a: ['k2'] }));
+        second.session.handle(
+            JSON.stringify({ i: 5, sub: { t: 'Cart', k: 'k2', m: 'total' } })
+        );
+        await until(() => second.link.closes.length === 1);
+        expect(second.link.closes[0]).toEqual({ code: 1003, reason: 'duplicate id' });
     });
 
     it('an oversized message closes 1009 before parsing', async () => {
@@ -354,13 +364,66 @@ describe('protocol breaches close; failed calls do not', () => {
         );
     });
 
-    it('subscriptions answer 501 until the live half lands', async () => {
+    it('a malformed subscription record fails THAT subscription with 400', async () => {
         const s = await start();
         const { session, link } = await connect(s);
-        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'k', m: 'total' } }));
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: '', m: 'total' } }));
         await until(() => framesFor(link, 1).length === 1);
-        expect((framesFor(link, 1)[0] as { e: { status: number } }).e.status).toBe(501);
+        expect((framesFor(link, 1)[0] as { e: { status: number } }).e.status).toBe(400);
         expect(link.closes).toEqual([]);
+    });
+
+    it('the per-connection subscription cap fails the subscription, not the socket', async () => {
+        const s = await start();
+        const { session, link } = await connect(s, { maxSubscriptions: 1 });
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'a', m: 'total' } }));
+        await until(() => framesFor(link, 1).length >= 1);
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'b', m: 'total' } }));
+        await until(() => framesFor(link, 2).length === 1);
+        const frame = framesFor(link, 2)[0] as { e: { status: number; message: string } };
+        expect(frame.e.status).toBe(400);
+        expect(link.closes).toEqual([]);
+    });
+});
+
+describe('live subscriptions', () => {
+    it('a subscription seeds with the current value and pushes every change', async () => {
+        const s = await start();
+        const { session, link } = await connect(s);
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 1).length >= 1);
+        expect(framesFor(link, 1)[0]).toEqual({ i: 1, v: 0 });
+        session.handle(JSON.stringify({ i: 2, s: 'Cart#add', a: ['w', 'x'] }));
+        await until(() => framesFor(link, 1).some((f) => 'v' in f && f.v === 1));
+        expect(session.stats().subscriptions).toBe(1);
+    });
+
+    it('{i,uns} closes the subscription silently and releases the watch', async () => {
+        const s = await start();
+        const { session, link } = await connect(s);
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 1).length >= 1);
+        session.handle(JSON.stringify({ i: 1, uns: 1 }));
+        await until(() => session.stats().subscriptions === 0);
+        const seen = framesFor(link, 1).length;
+        session.handle(JSON.stringify({ i: 2, s: 'Cart#add', a: ['w', 'x'] }));
+        await until(() => framesFor(link, 2).length === 2);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        // No frame after the unsubscribe — and no terminal reply either.
+        expect(framesFor(link, 1).length).toBe(seen);
+        // The watch released its keep-alive, so the actor can idle out.
+        await until(() => s.activations().every((a) => !a.keptAlive));
+    });
+
+    it('a guard rejecting one subscription costs the connection nothing', async () => {
+        const s = await start();
+        const { session, link } = await connect(s);
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Secret', k: 'k', m: 'peek' } }));
+        await until(() => framesFor(link, 1).length === 1);
+        expect(framesFor(link, 1)[0]).toEqual({ i: 1, e: { message: 'nope', status: 401 } });
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 2).length >= 1);
+        expect(framesFor(link, 2)[0]).toEqual({ i: 2, v: 0 });
     });
 });
 
