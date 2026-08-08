@@ -47,7 +47,7 @@
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
         "@types/node": "^25.9.1",
-        "ioredis": "^5.4.1",
+        "ioredis": "^6.0.0",
         "typescript": "^6.0.3",
         "vite": "^8.0.3"
     },
