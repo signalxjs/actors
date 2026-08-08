@@ -29,4 +29,4 @@ change, so in-flight calls fail (and are never retried) when it does.
 Host-to-host socket traffic is a different product with the opposite trust
 model: [`@sigx/actors-tcp`](https://www.npmjs.com/package/@sigx/actors-tcp).
 
-Requires `@sigx/actors` ≥ 0.6. Docs: <https://sigx.dev/actors>.
+Docs: <https://sigx.dev/actors>.
