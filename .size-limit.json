@@ -84,7 +84,7 @@
   {
     "name": "@sigx/actors/server",
     "path": "packages/actors/dist/server.prod.js",
-    "limit": "6 KB",
+    "limit": "8 KB",
     "ignore": [
       "@sigx/server",
       "@sigx/serialize"

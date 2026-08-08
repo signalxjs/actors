@@ -23,7 +23,12 @@
  * Everything here runs OUTSIDE any turn: a slow policy never occupies the
  * actor's turn.
  */
-import type { ServerFnContext, ServerFnInfo, ServerPolicy } from '@sigx/server';
+import type {
+    EndpointPosture,
+    ServerFnContext,
+    ServerFnInfo,
+    ServerPolicy
+} from '@sigx/server';
 // The RUNTIME half comes from `/server`, not the package root, and that is
 // load-bearing rather than stylistic: the root carries a `browser`
 // condition, and `wrangler` bundles Workers with that condition — so
@@ -153,6 +158,31 @@ export async function authorizeActorCall(
         allowAnonymous,
         resource: { kind: kindOf(def), type: def.type, key, method }
     });
+}
+
+/**
+ * Wire entry for a feature that owns a raw `Request` and no HTTP pipeline —
+ * the socket session (#99): build the request context, then run middleware →
+ * authenticate → the identity gate. A thin door onto core's
+ * `feature().enter`, HERE rather than at the call site so every access to
+ * the pipeline keeps going through this module — the whole point of which
+ * is that two transports' auth paths cannot drift.
+ */
+export async function enterActorRequest(
+    request: Request,
+    info: ServerFnInfo,
+    options?: { allowAnonymous?: boolean }
+): Promise<ServerFnContext> {
+    return feature().enter(request, info, options);
+}
+
+/**
+ * The app's merged endpoint posture (`{}` when no app is configured) — the
+ * origin policy, body caps, timeout and `onError` a non-HTTP entry point
+ * must repay by hand. Same door-discipline as `enterActorRequest`.
+ */
+export function actorPosture(): Readonly<EndpointPosture> {
+    return feature().posture;
 }
 
 /**
