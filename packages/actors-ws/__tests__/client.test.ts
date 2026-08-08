@@ -279,6 +279,90 @@ describe('the drop policy', () => {
     });
 });
 
+describe('incremental live', () => {
+    it('adding a subscription is a message, never a reopen — the point of #99', async () => {
+        const s = await start();
+        const { transport, dials } = pair(s);
+        const channel = transport.live!();
+        const a: unknown[] = [];
+        const b: unknown[] = [];
+        channel.subscribe({ type: 'Cart', key: 'w1', method: 'total' }, (v) => a.push(v));
+        await expect.poll(() => a.length).toBe(1);
+        // The twelve-widget dashboard case, in miniature: a LATE subscription
+        // rides the same connection instead of aborting and re-seeding it.
+        channel.subscribe({ type: 'Cart', key: 'w2', method: 'total' }, (v) => b.push(v));
+        await expect.poll(() => b.length).toBe(1);
+        expect(dials()).toBe(1);
+        // Updates flow per subscription.
+        await transport.call('Cart#add', ['w2', 'x']);
+        await expect.poll(() => b.includes(1)).toBe(true);
+        expect(a).toEqual([0]);
+    });
+
+    it('coalesces identical subscriptions and replays to a late subscriber', async () => {
+        const s = await start();
+        const { transport } = pair(s);
+        const channel = transport.live!();
+        const first: unknown[] = [];
+        channel.subscribe({ type: 'Cart', key: 'w', method: 'total' }, (v) => first.push(v));
+        await expect.poll(() => first.length).toBe(1);
+        expect(sessions.at(-1)!.stats().subscriptions).toBe(1);
+        const late: unknown[] = [];
+        channel.subscribe({ type: 'Cart', key: 'w', method: 'total' }, (v) => late.push(v));
+        await expect.poll(() => late.length).toBe(1);
+        // Still ONE wire subscription: N listeners share it.
+        expect(sessions.at(-1)!.stats().subscriptions).toBe(1);
+        expect(late).toEqual([0]);
+    });
+
+    it('unsubscribing the last listener releases the server side', async () => {
+        const s = await start();
+        const { transport } = pair(s);
+        const channel = transport.live!();
+        const off = channel.subscribe(
+            { type: 'Cart', key: 'w', method: 'total' },
+            () => {}
+        );
+        await expect.poll(() => sessions.at(-1)!.stats().subscriptions).toBe(1);
+        off();
+        await expect.poll(() => sessions.at(-1)!.stats().subscriptions).toBe(0);
+    });
+
+    it('subscriptions re-establish across a drop; unchanged values are suppressed', async () => {
+        const s = await start();
+        const { transport, drop, dials } = pair(s);
+        const channel = transport.live!();
+        const seen: unknown[] = [];
+        channel.subscribe({ type: 'Cart', key: 'w', method: 'total' }, (v) => seen.push(v));
+        await expect.poll(() => seen.length).toBe(1);
+        drop();
+        // The transport redials on its own — subscriptions are declarative,
+        // unlike calls, which failed and were not retried.
+        await expect.poll(() => dials()).toBe(2);
+        await expect.poll(() => sessions.at(-1)!.stats().subscriptions).toBe(1);
+        // The re-seed delivered the SAME value: suppressed, no extra render.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(seen).toEqual([0]);
+        // And the re-established subscription is genuinely live.
+        await transport.call('Cart#add', ['w', 'x']);
+        await expect.poll(() => seen.includes(1)).toBe(true);
+    });
+
+    it('a refused subscription reports through onError, branded', async () => {
+        const s = await start();
+        const { transport } = pair(s);
+        const channel = transport.live!();
+        const errors: unknown[] = [];
+        channel.subscribe(
+            { type: 'Secret', key: 'k', method: 'peek' },
+            () => {},
+            (error) => errors.push(error)
+        );
+        await expect.poll(() => errors.length).toBe(1);
+        expect(errors[0]).toMatchObject({ __sigxServerFnError: true, status: 401 });
+    });
+});
+
 describe('lifecycle', () => {
     it('close() is idempotent and fails everything in flight', async () => {
         const s = await start();

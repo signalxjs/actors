@@ -28,13 +28,12 @@
  * mounted component needed an initial value anyway; the existing subscribers
  * get one redundant identical frame, which structural equality suppresses.
  */
-import {
-    LIVE_SYMBOL,
-    wireFail,
-    type LiveFrame,
-    type LiveSubscription
-} from '../wire-shared';
-import type { ActorLiveChannel, ActorSubscription, ActorTransport } from '../client';
+import { LIVE_SYMBOL, wireFail, type LiveFrame } from '../wire-shared';
+import type { ActorLiveChannel, ActorTransport } from '../client';
+// The pieces BOTH live channels share — identity coalescing and re-seed
+// suppression live in ONE module so the socket channel cannot fork them
+// (#99; `live-shared.ts` carries the why).
+import { createSubscriptionSet, quietly, type SubscriptionEntry } from './live-shared';
 
 export interface LiveChannelOptions {
     /**
@@ -78,79 +77,9 @@ export interface LiveChannel extends ActorLiveChannel {
     close(): void;
 }
 
-interface Listener {
-    onValue: (value: unknown) => void;
-    onError?: (error: Error) => void;
-}
-
-interface Entry {
-    wire: LiveSubscription;
-    listeners: Set<Listener>;
-    /** Fingerprint of the last delivered value — the re-seed suppressor. */
-    print: string | null;
-    /** The last delivered value, replayed to a late subscriber. */
-    value: unknown;
-    seeded: boolean;
-}
-
 const DEFAULT_DEBOUNCE_MS = 20;
 const DEFAULT_RETRY_MS = 1_000;
 const DEFAULT_MAX_RETRY_MS = 30_000;
-
-/** Subscription identity: the tuple that decides who shares a watch. */
-function canonical(sub: ActorSubscription): string {
-    return JSON.stringify([sub.type, sub.key, sub.method, sub.args ?? []]);
-}
-
-/**
- * A comparable rendering of a pushed value, or `null` when there is none.
- *
- * Used ONLY to suppress the identical re-seed a reopen produces, so being
- * conservative is free: `null` (a circular structure, a bigint) means "cannot
- * compare", and an unsuppressed duplicate frame is a redundant render rather
- * than a wrong one. Map and Set are unfolded because `JSON.stringify` renders
- * every one of them as `{}`, which would make two different maps compare
- * equal — the one failure mode that could suppress a REAL update.
- */
-function fingerprint(value: unknown): string | null {
-    try {
-        return (
-            JSON.stringify(value, (_key, inner: unknown) =>
-                inner instanceof Map
-                    ? ['@map', [...inner]]
-                    : inner instanceof Set
-                      ? ['@set', [...inner]]
-                      : typeof inner === 'bigint'
-                        ? `@bigint:${inner}`
-                        : inner
-            ) ?? 'undefined'
-        );
-    } catch {
-        return null;
-    }
-}
-
-/** A listener that throws must not cost the connection its other subscribers. */
-function quietly(run: () => void): void {
-    try {
-        run();
-    } catch (error) {
-        if (__DEV__) console.error('[sigx actors] a live subscriber threw:', error);
-    }
-}
-
-/**
- * Hand a frame to every listener, over a SNAPSHOT of the set.
- *
- * A subscriber may unsubscribe itself — or a sibling — from inside its own
- * callback (a component unmounting on the value it just received is the
- * ordinary case), and mutating the set mid-iteration would let that decide by
- * accident who else hears this frame.
- */
-function notify(listeners: Set<Listener>, run: (listener: Listener) => void): void {
-    // eslint-disable-next-line unicorn/no-useless-spread
-    for (const listener of [...listeners]) quietly(() => run(listener));
-}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
@@ -180,7 +109,6 @@ export function createLiveChannel(
     const retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
     const maxRetryMs = options.maxRetryMs ?? DEFAULT_MAX_RETRY_MS;
 
-    const entries = new Map<string, Entry>();
     const stats: LiveChannelStats = {
         opens: 0,
         failures: 0,
@@ -188,6 +116,20 @@ export function createLiveChannel(
         errors: 0,
         subscriptions: 0
     };
+
+    // Coalescing and replay are the shared machinery; what is THIS channel's
+    // own is the reaction to a set change — the connection has to carry it,
+    // so it reopens (debounced).
+    const set = createSubscriptionSet({
+        added() {
+            stats.subscriptions = set.size();
+            schedule();
+        },
+        removed() {
+            stats.subscriptions = set.size();
+            schedule();
+        }
+    });
 
     /**
      * A transport that brings its own push channel, resolved once per
@@ -226,7 +168,7 @@ export function createLiveChannel(
         // reporting or retrying.
         connection?.abort();
         connection = null;
-        if (closed || entries.size === 0) return;
+        if (closed || set.size() === 0) return;
         const controller = new AbortController();
         connection = controller;
         void run(generation, controller);
@@ -252,29 +194,26 @@ export function createLiveChannel(
      * Safe because these are views of current state, not an event log: a
      * subscriber cannot need to know that the value it already holds was
      * recomputed. And a value that cannot be fingerprinted is never
-     * suppressed — see `fingerprint`.
+     * suppressed — see `fingerprint` in `live-shared.ts`, where the
+     * suppression itself now lives (`set.deliverValue`).
      */
-    const deliver = (frame: LiveFrame, order: readonly Entry[]): void => {
+    const deliver = (frame: LiveFrame, order: readonly SubscriptionEntry[]): void => {
         if ('p' in frame) return; // keepalive: moves bytes, carries nothing
         const entry = order[frame.i];
         if (!entry) return; // an index outside the set we sent
         if ('e' in frame) {
             stats.errors++;
-            const error = wireFail(
-                frame.e.status,
-                frame.e,
-                `[sigx actors] live subscription ${entry.wire.t}/${entry.wire.k}#${entry.wire.m} failed`
+            set.deliverError(
+                entry,
+                wireFail(
+                    frame.e.status,
+                    frame.e,
+                    `[sigx actors] live subscription ${entry.wire.t}/${entry.wire.k}#${entry.wire.m} failed`
+                )
             );
-            notify(entry.listeners, (listener) => listener.onError?.(error));
             return;
         }
-        const print = fingerprint(frame.v);
-        if (entry.seeded && print !== null && print === entry.print) return;
-        entry.print = print;
-        entry.value = frame.v;
-        entry.seeded = true;
-        stats.values++;
-        notify(entry.listeners, (listener) => listener.onValue(frame.v));
+        if (set.deliverValue(entry, frame.v)) stats.values++;
     };
 
     const run = async (mine: number, controller: AbortController): Promise<void> => {
@@ -282,7 +221,7 @@ export function createLiveChannel(
         while (!closed && mine === generation) {
             const transport = getTransport();
             if (!transport) return;
-            const order = [...entries.values()];
+            const order = set.entries();
             const subs = order.map((entry) => entry.wire);
             try {
                 stats.opens++;
@@ -346,47 +285,10 @@ export function createLiveChannel(
                 return () => {};
             }
 
-            const id = canonical(sub);
-            let entry = entries.get(id);
-            const listener: Listener = onError ? { onValue, onError } : { onValue };
-            if (!entry) {
-                entry = {
-                    wire: {
-                        t: sub.type,
-                        k: sub.key,
-                        m: sub.method,
-                        ...(sub.args && sub.args.length > 0 ? { a: sub.args } : {})
-                    },
-                    listeners: new Set(),
-                    print: null,
-                    value: undefined,
-                    seeded: false
-                };
-                entries.set(id, entry);
-                stats.subscriptions = entries.size;
-                // A NEW subscription changes the set, so the connection has
-                // to carry it: reopen. An additional listener on an existing
-                // subscription does not — it is served from the cache below.
-                schedule();
-            }
-            const mine = entry;
-            mine.listeners.add(listener);
-            if (mine.seeded) {
-                // Freshest known value for a late subscriber, without a
-                // reopen. Asynchronous so `subscribe()` never calls back
-                // before it has returned its disposer.
-                queueMicrotask(() => {
-                    if (mine.listeners.has(listener)) quietly(() => onValue(mine.value));
-                });
-            }
-
-            return () => {
-                if (!mine.listeners.delete(listener)) return;
-                if (mine.listeners.size > 0) return;
-                entries.delete(id);
-                stats.subscriptions = entries.size;
-                schedule();
-            };
+            // Coalescing, late-subscriber replay and the disposer are the
+            // shared machinery; the `added`/`removed` hooks above make a SET
+            // change (never a mere extra listener) reopen the connection.
+            return set.subscribe(sub, onValue, onError);
         },
 
         stats: () => ({ ...stats }),
@@ -398,7 +300,7 @@ export function createLiveChannel(
             generation++;
             connection?.abort();
             connection = null;
-            entries.clear();
+            set.clear();
             stats.subscriptions = 0;
             // The delegate is a real connection the transport built for this
             // channel (`live()` may open a socket), and `ActorLiveChannel`

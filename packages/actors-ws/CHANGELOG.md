@@ -14,3 +14,12 @@
   warning — every call re-dispatches through placement), and in-flight
   calls fail un-retried when the socket drops: re-sending a non-idempotent
   actor method is a correctness bug, not a retry.
+- **`live()`** (#99): the incremental live channel. Adding a subscription is
+  one ~40-byte `{i,sub}` message and removing one is `{i,uns}` — no
+  debounce, no restart, no generation counter, because nothing reopens.
+  Subscriptions are declarative, so unlike calls they DO re-establish across
+  a drop: the transport redials on its own and re-seeds the set, with the
+  shared `fingerprint()` suppressing values that did not change. Wired
+  through `delegateChannel()`, so `useActorState` and `actorsPlugin` need
+  zero changes: `actorsPlugin({ transport: socketTransport({ url }) })` is
+  the whole integration.

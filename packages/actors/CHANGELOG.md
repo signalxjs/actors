@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Incremental live over the socket** (#99): the session speaks
+  `{i,sub}`/`{i,uns}` — one small message per subscription-set change,
+  ending the reopen-and-reseed storm that `$live`'s held-open POST cannot
+  escape. Per subscription it runs the same sequence the `$live` endpoint
+  runs (definition → full prelude + authorization on a per-message context →
+  `dispatchWatch`), failure stays per subscription, the id namespace is
+  shared with calls (replies carry only `i`), and the per-connection
+  `maxSubscriptions` cap is live. The client machinery both channels share —
+  identity coalescing, late-subscriber replay, `fingerprint()` re-seed
+  suppression, and `createSocketLiveChannel` itself — moved to
+  `app/live-shared.ts` and is published through `@sigx/actors/socket-wire`,
+  so the two channels (and any out-of-repo transport) cannot fork it.
+  `useActorState` and the `$live` channel's behaviour are unchanged — the
+  existing live suites pin that.
 - **`createActorSocketSession()` on `@sigx/actors/server`** (#99): the server
   half of the client-facing socket transport — one session per connection, a
   `Request` in and two callbacks out, so `ws`, socket.io, uWS, Bun, Deno and
