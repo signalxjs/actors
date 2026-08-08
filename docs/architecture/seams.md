@@ -195,7 +195,7 @@ Cluster-side, in `@sigx/actors/cluster`. Full contract in
   too. It is called per dispatch, so cache per `target.hostId`.
 
 Implementers: `httpTransport()` (core, the default and the only one that runs
-everywhere), `tcpTransport()`, `wsTransport()`, and Cloudflare's stub-swapped
+everywhere), `tcpTransport()`, and Cloudflare's stub-swapped
 `httpTransport`.
 
 ## `ActorTransport` and `ActorRouter` — client side

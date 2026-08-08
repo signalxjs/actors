@@ -251,8 +251,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `cluster()` plugin, clusterPlacement (incl. `locate()` and
   `publicAddress`), host-to-host endpoint, cluster provider seams,
   memoryClusterHub), `./cluster/frames` (the framed host-to-host wire —
-  published precisely so out-of-repo transports can build on it; both
-  `@sigx/actors-tcp` and `@sigx/actors-ws` re-export from it), `./vite`
+  published precisely so out-of-repo transports can build on it;
+  `@sigx/actors-tcp` re-exports from it), `./vite`
   (`sigxActors()` plugin). Two further subpaths are **workspace-only** — wired
   by tsconfig/vitest aliases and deliberately absent from `package.json`
   exports: `./cluster/testing` (`transportConformance`) and `./testing`
@@ -326,10 +326,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   connection per peer instead of HTTP's one per in-flight request. Node-only
   (`node:net`), zero runtime deps. Justified by socket count, not latency —
   see `benchmarks/BASELINES.md`. Runs the shared transport conformance suite.
-- `packages/actors-ws` → `@sigx/actors-ws` — the same frames over WebSocket:
-  `wsTransport()` plus `attachHostUpgrade()`, riding the host's existing HTTP
-  port. `ws` as a peer dependency. Picked over `actors-tcp` when one port,
-  proxy traversal or a WinterCG client matters.
+  The one blessed socket transport for hosts: a host-to-host WebSocket
+  transport existed and was retired (#151) — an edge runtime should be a
+  *client* of the deployment (#99), not a cluster peer, and a WS host
+  transport can be rebuilt out-of-repo on `./cluster/frames` if one-port
+  L7-ingress traversal ever matters.
 - `packages/actors-cloudflare` → `@sigx/actors-cloudflare` — Durable
   Objects as the backend, one DO per actor. A whole app runs on Workers:
   `createHostDurableObject()` (the object) + `createWorkerHandler()` (the

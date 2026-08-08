@@ -179,7 +179,7 @@ is marked public; production does not.
 
 ## Transports
 
-`@sigx/actors-tcp` and `@sigx/actors-ws` carry host-to-host traffic on a
+`@sigx/actors-tcp` carries host-to-host traffic on a
 private network. `tcpTransport()` **binds all interfaces unless you set `host`,
 and speaks no TLS.** It bounds what an unauthenticated connection can cost
 (`handshakeTimeoutMs`, `maxPendingInbound`), but those are damage limits, not a

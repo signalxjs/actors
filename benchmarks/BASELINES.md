@@ -549,6 +549,13 @@ All three on one rig, back to back, against the **tuned** HTTP baseline
 comparing a new transport to an untuned incumbent would flatter it. Two hosts,
 concurrency 64.
 
+> The WebSocket rows below are **history**: the host-to-host WS transport was
+> retired in #151 (an edge runtime should be a *client* of the deployment —
+> #99 — not a cluster peer, and TCP is the one blessed socket transport for
+> hosts). The numbers stay because they were measured and because they
+> record what a `messageOriented` FrameLink costs relative to raw TCP; the
+> scenario now runs tuned HTTP vs TCP only.
+
 | | TCP handles | ops/s | p99 | bytes/call |
 |---|---:|---:|---:|---:|
 | tuned HTTP | 65 (1 listener + 64 conns) | 14 287 | 9.6 ms | 640 |
@@ -602,8 +609,7 @@ Workers outright, and HTTP is the only transport that runs everywhere.
 So the recommendation is stronger than "reach for TCP when file descriptors
 hurt", which is what the packages currently say:
 
-- **On Node, prefer `@sigx/actors-tcp`** (or `@sigx/actors-ws` when one port,
-  proxy traversal or a WinterCG client matters). It clears every measured
+- **On Node, prefer `@sigx/actors-tcp`.** It clears every measured
   criterion, most of them by a wide margin.
 - **HTTP remains the default and the only portable option**, and with a bounded
   pool it is a perfectly reasonable one.

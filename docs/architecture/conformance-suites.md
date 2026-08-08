@@ -36,7 +36,8 @@ The same rule is why `transportConformance` was written against
 `httpTransport()` *before* any connection-oriented transport existed — it
 describes the contract rather than one implementation's habits. Of its 18
 cases, two are link-hygiene cases HTTP skips because it holds no connections;
-`@sigx/actors-tcp` and `@sigx/actors-ws` pass all 18.
+`@sigx/actors-tcp` passes all 18. (The retired host-to-host WebSocket
+transport passed all 18 too — #151.)
 
 **2. A case that cannot fail is decoration.**
 

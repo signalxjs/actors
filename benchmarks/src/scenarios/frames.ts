@@ -1,7 +1,7 @@
 /**
  * The frame codec on its own — no socket, no host.
  *
- * The binary transports (`actors-tcp`, `actors-ws`) carry none of HTTP's
+ * The binary transport (`actors-tcp`) carries none of HTTP's
  * `Request`/`Response`/webstreams overhead, so JSON parse is a far larger
  * fraction of what they do per frame than it is of `wire/endpoint-roundtrip`
  * (~5.7% there — see BASELINES.md "Where the time goes"). This is the rung
