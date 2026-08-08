@@ -23,3 +23,12 @@
   through `delegateChannel()`, so `useActorState` and `actorsPlugin` need
   zero changes: `actorsPlugin({ transport: socketTransport({ url }) })` is
   the whole integration.
+- **`attachActorSocket()` + `toRequest()` on `./node`** (#99): the Node
+  server adapter — an exact-path upgrade listener (never a prefix match;
+  unmatched upgrades are destroyed only when no other listener exists) over
+  a lazily-imported `ws` (optional peer, needed only by this entry).
+  Messages that arrive before the session's async construction completes
+  are buffered, not lost. The manual form stays first-class: a server you
+  already run constructs `createActorSocketSession` in its own upgrade
+  handler, with `toRequest()` building the WinterCG `Request` a Node
+  upgrade doesn't have.

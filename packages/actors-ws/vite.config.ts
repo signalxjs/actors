@@ -6,7 +6,8 @@ import type { ConfigEnv, UserConfig } from 'vite';
 const base = defineLibConfig({
     entry: {
         index: 'src/index.ts',
-        client: 'src/client.ts'
+        client: 'src/client.ts',
+        node: 'src/node.ts'
     },
     external: [/@sigx\/.*/, /^node:/, 'ws'],
     root: import.meta.url
