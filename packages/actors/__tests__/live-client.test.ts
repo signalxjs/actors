@@ -484,3 +484,60 @@ describe('the live channel over the wire', () => {
         );
     });
 });
+
+describe('a transport that brings its own channel (#102)', () => {
+    /** A transport whose `live()` builds an observable "connection". */
+    function delegatingTransport(): {
+        transport: ActorTransport;
+        liveCalls: number[];
+        subscribed: unknown[];
+        closes: number[];
+    } {
+        const liveCalls: number[] = [];
+        const subscribed: unknown[] = [];
+        const closes: number[] = [];
+        const transport: ActorTransport = {
+            name: 'fake-socket',
+            call: () => Promise.reject(new Error('not used')),
+            stream: () => {
+                throw new Error('not used');
+            },
+            live: () => {
+                liveCalls.push(1);
+                return {
+                    subscribe(sub, onValue) {
+                        subscribed.push(sub);
+                        void onValue;
+                        return () => {};
+                    }
+                };
+            },
+            close: () => {
+                closes.push(1);
+            }
+        };
+        return { transport, liveCalls, subscribed, closes };
+    }
+
+    it('close() releases the delegate connection it resolved', async () => {
+        const { transport, liveCalls, subscribed, closes } = delegatingTransport();
+        // No plugin anywhere: the module-scope `configureActors(transport)`
+        // shape of #102, where nothing else owns the transport.
+        const channel = createLiveChannel(() => transport, fast);
+        channel.subscribe(sub('a'), () => {});
+        expect(liveCalls).toHaveLength(1);
+        expect(subscribed).toHaveLength(1);
+        channel.close();
+        // The channel resolved the delegate, so the channel releases it.
+        expect(closes).toHaveLength(1);
+    });
+
+    it('close() without ever delegating closes nothing', () => {
+        const { transport, closes } = delegatingTransport();
+        const channel = createLiveChannel(() => transport, fast);
+        // No subscription — `live()` was never called, no connection exists,
+        // and a transport this channel never used must not be torn down.
+        channel.close();
+        expect(closes).toHaveLength(0);
+    });
+});

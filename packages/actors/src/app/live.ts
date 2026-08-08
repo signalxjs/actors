@@ -400,6 +400,15 @@ export function createLiveChannel(
             connection = null;
             entries.clear();
             stats.subscriptions = 0;
+            // The delegate is a real connection the transport built for this
+            // channel (`live()` may open a socket), and `ActorLiveChannel`
+            // deliberately has no `close()` of its own — so the release goes
+            // through the transport that produced it (#102). Only when a
+            // delegate was actually resolved: a channel that never delegated
+            // must not tear down a transport it never used. Safe against the
+            // plugin path closing the transport again on dispose, because
+            // `ActorTransport.close()` is idempotent by contract.
+            if (delegate) void delegateFor?.close?.();
             delegateFor = null;
             delegate = null;
         }

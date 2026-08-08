@@ -34,6 +34,15 @@
 
 ### Fixed
 
+- **`LiveChannel.close()` now releases the delegate channel it resolved**
+  (#102). A transport that brings its own push channel (`transport.live()`)
+  may build a real connection; `close()` nulled the reference without
+  closing it, which becomes a leak the day a transport ships `live()` — the
+  bare `configureActors(socketTransport(...))` path, where no plugin owns
+  the transport. The release goes through the transport that produced the
+  delegate, only when one was actually resolved, and
+  `ActorTransport.close()` is now documented as idempotent by contract so
+  the plugin-owned path cannot double-free.
 - **A shared watch no longer serves every subscriber the FIRST subscriber's
   `ctx.principal`** (#121). Watch loops are shared per `(method, args,
   throttleMs)` and re-invoke under the first subscriber's call context, so a
