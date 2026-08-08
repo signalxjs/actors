@@ -228,7 +228,12 @@ export async function createActorSocketSession(
     const fail = (code: number, reason: string): void => {
         if (closed) return;
         closed = true;
-        options.close(code, reason);
+        try {
+            options.close(code, reason);
+        } catch {
+            // The adapter's socket may already be dying; `handle()` is
+            // documented never to throw, so a throwing close stays here.
+        }
         teardown();
     };
 
@@ -276,6 +281,9 @@ export async function createActorSocketSession(
             if (deadline !== undefined) clearTimeout(deadline);
             deadline = undefined;
         };
+        // Declared here so the failure path can hand `onError` the CALL'S
+        // context view (per-call abort + locals), not the upgrade context.
+        let rqCall: ServerFnContext | null = null;
         try {
             const hash = symbol.lastIndexOf('#');
             const type = hash > 0 ? symbol.slice(0, hash) : '';
@@ -311,7 +319,7 @@ export async function createActorSocketSession(
                     `actor call "${symbol}" needs a non-empty string key as its first argument`
                 );
             }
-            const rqCall = callContext(entry.ctrl.signal);
+            rqCall = callContext(entry.ctrl.signal);
             // The FULL prelude, per message, never memoized per connection —
             // middleware may be a rate limiter. Then the authorization
             // decision with the instance as the resource.
@@ -341,7 +349,14 @@ export async function createActorSocketSession(
 
             const ref = { type: def.type, key };
             if (def.streamNames.includes(method)) {
-                const relay = relayStream(host.dispatchStream!(ref, method, rest, call), {
+                // Optional on Host — a clear 501 beats a masked TypeError.
+                if (!host.dispatchStream) {
+                    throw new ServerFnError(
+                        501,
+                        '[sigx actors] this host cannot stream (no dispatchStream on its placement).'
+                    );
+                }
+                const relay = relayStream(host.dispatchStream(ref, method, rest, call), {
                     mapError: toClientError,
                     signal: entry.ctrl.signal
                 });
@@ -367,7 +382,14 @@ export async function createActorSocketSession(
             const classified = toClientError(error) as { __sigxServerFnError?: boolean };
             if (classified?.__sigxServerFnError !== true && onError) {
                 try {
-                    await onError(error, { symbol, name: symbol, transport: 'wire' }, rq);
+                    // The CALL's context view when the failure got that far —
+                    // so the hook sees the per-call abort and locals, and
+                    // cannot mutate the shared upgrade locals by accident.
+                    await onError(
+                        error,
+                        { symbol, name: symbol, transport: 'wire' },
+                        rqCall ?? callContext(entry.ctrl.signal)
+                    );
                 } catch {
                     // Its own throws are swallowed and never affect the reply.
                 }
