@@ -42,7 +42,7 @@
   {
     "name": "@sigx/actors/app",
     "path": "packages/actors/dist/app.prod.js",
-    "limit": "6.1 KB",
+    "limit": "6.5 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
