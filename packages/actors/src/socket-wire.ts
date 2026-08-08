@@ -45,9 +45,11 @@ export { encodeWire, reviveWire, wireFail } from './wire-shared';
 export type { LiveSubscription, WireError };
 
 /**
- * Client → session. `i` is a client-chosen id, unique among that client's
- * in-flight calls (and, separately, among its open subscriptions — the two
- * namespaces do not collide because a message's kind picks the table).
+ * Client → session. `i` is a client-chosen id, and it must be unique across
+ * that client's in-flight calls AND its open subscriptions together: replies
+ * are tagged only with `i`, so one shared namespace is the whole
+ * demultiplexing story — an id reused across the two kinds would make
+ * `{i,v}` ambiguous. A session may treat reuse as a protocol breach.
  */
 export type SocketRequest =
     /** Call `s` (`Type#method`) with `a`; `k: 1` = stream, `w: 1` = one-way. */
@@ -62,10 +64,12 @@ export type SocketRequest =
     | { p: 1 };
 
 /**
- * Session → client. For a unary call: one `{i,v}` then `{i,d}`. For a
- * stream: any number of `{i,v}` then `{i,d}` or `{i,e}`. For a
- * subscription: `{i,v}` per value until `{i,uns}` or a terminal `{i,e}`.
- * A one-way call (`w: 1`) is answered by nothing at all.
+ * Session → client. For a unary call: one `{i,v}` then `{i,d}` — or a
+ * single `{i,e}` on failure. For a stream: any number of `{i,v}`, then
+ * `{i,d}` on completion or `{i,e}` on failure. For a subscription: `{i,v}`
+ * per value until the client sends `{i,uns:1}` (closing is silent — no
+ * terminal reply) or a terminal `{i,e}` ends it server-side. A one-way call
+ * (`w: 1`) and a cancel are answered by nothing at all.
  */
 export type SocketReply =
     /** A unary result, a stream chunk, or a live value for `i`. */
