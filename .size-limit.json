@@ -91,6 +91,15 @@
     ]
   },
   {
+    "name": "@sigx/actors-ws/client",
+    "path": "packages/actors-ws/dist/client.prod.js",
+    "limit": "3.5 KB",
+    "ignore": [
+      "@sigx/actors",
+      "@sigx/serialize"
+    ]
+  },
+  {
     "name": "@sigx/actors-cloudflare",
     "path": "packages/actors-cloudflare/dist/index.prod.js",
     "limit": "4 KB",

@@ -335,6 +335,15 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   *client* of the deployment (#99), not a cluster peer, and a WS host
   transport can be rebuilt out-of-repo on `./cluster/frames` if one-port
   L7-ingress traversal ever matters.
+- `packages/actors-ws` → `@sigx/actors-ws` — the CLIENT-facing WebSocket
+  transport (#99): `socketTransport()` on `./client`, WinterCG-clean,
+  speaking `@sigx/actors/socket-wire` to `createActorSocketSession` on
+  `@sigx/actors/server`. The connection seam is a link, not a URL
+  (`connect(handlers): SocketLink`; `url` is `WebSocket` sugar), it is
+  host-affine (per-call `endpoint` ignored with a `__DEV__` warning —
+  every call re-dispatches through placement), and in-flight calls FAIL
+  un-retried when the socket drops. Zero runtime deps; tested against the
+  real session over an in-memory link.
 - `packages/actors-cloudflare` → `@sigx/actors-cloudflare` — Durable
   Objects as the backend, one DO per actor. A whole app runs on Workers:
   `createHostDurableObject()` (the object) + `createWorkerHandler()` (the

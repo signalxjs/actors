@@ -377,6 +377,24 @@ importers:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
 
+  packages/actors-ws:
+    devDependencies:
+      '@sigx/actors':
+        specifier: workspace:*
+        version: link:../actors
+      '@sigx/vite':
+        specifier: 'catalog:'
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.5
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.3
+        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+
   perf/aks:
     dependencies:
       '@sigx/actors':
