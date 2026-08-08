@@ -68,6 +68,7 @@ export default defineConfig({
             '@sigx/actors/vite': resolve(__dirname, 'packages/actors/src/vite/index.ts'),
             '@sigx/actors': resolve(__dirname, 'packages/actors/src/index.ts'),
             '@sigx/actors-ws/client': resolve(__dirname, 'packages/actors-ws/src/client.ts'),
+            '@sigx/actors-ws/node': resolve(__dirname, 'packages/actors-ws/src/node.ts'),
             '@sigx/actors-ws': resolve(__dirname, 'packages/actors-ws/src/index.ts'),
             '@sigx/actors-otel/prometheus': resolve(
                 __dirname,

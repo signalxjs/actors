@@ -17,6 +17,12 @@
             "development": "./dist/client.js",
             "production": "./dist/client.prod.js",
             "import": "./dist/client.js"
+        },
+        "./node": {
+            "types": "./dist/node.d.ts",
+            "development": "./dist/node.js",
+            "production": "./dist/node.prod.js",
+            "import": "./dist/node.js"
         }
     },
     "files": [
@@ -54,13 +60,21 @@
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
         "@types/node": "^25.9.1",
+        "@types/ws": "^8.18.1",
         "typescript": "^6.0.3",
-        "vite": "^8.0.3"
+        "vite": "^8.0.3",
+        "ws": "^8.21.1"
     },
     "publishConfig": {
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.5.0"
+        "@sigx/actors": "^0.5.0",
+        "ws": ">=8"
+    },
+    "peerDependenciesMeta": {
+        "ws": {
+            "optional": true
+        }
     }
 }

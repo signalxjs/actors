@@ -388,12 +388,18 @@ importers:
       '@types/node':
         specifier: ^25.9.1
         version: 25.9.5
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+      ws:
+        specifier: ^8.21.1
+        version: 8.21.1
 
   perf/aks:
     dependencies:

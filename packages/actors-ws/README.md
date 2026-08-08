@@ -19,7 +19,10 @@ configureActors(socketTransport({ url: 'wss://example.app/socket' }));
 The server half is `createActorSocketSession()` on `@sigx/actors/server` — a
 `Request` in, `send`/`close` callbacks out, so `ws`, socket.io, uWS, Bun, Deno
 and Cloudflare all drive the same core. The wire vocabulary is published at
-`@sigx/actors/socket-wire`.
+`@sigx/actors/socket-wire`. On Node, `attachActorSocket()` from
+`@sigx/actors-ws/node` hooks the session into an HTTP server's upgrade event
+(`ws` is an optional peer, needed only there); if you already run a WebSocket
+server, construct the session in your own upgrade handler instead.
 
 Reach for the socket on live-heavy pages and cross-origin apps; `fetchTransport()`
 stays the default and stays correct. Per-call latency on a warm same-origin

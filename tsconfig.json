@@ -28,6 +28,7 @@
       "@sigx/actors/testing": ["./packages/actors/src/testing/index.ts"],
       "@sigx/actors/vite": ["./packages/actors/src/vite/index.ts"],
       "@sigx/actors-ws/client": ["./packages/actors-ws/src/client.ts"],
+      "@sigx/actors-ws/node": ["./packages/actors-ws/src/node.ts"],
       "@sigx/actors-ws": ["./packages/actors-ws/src/index.ts"],
       "@sigx/actors-otel/prometheus": ["./packages/actors-otel/src/prometheus.ts"],
       "@sigx/actors-otel": ["./packages/actors-otel/src/index.ts"],
