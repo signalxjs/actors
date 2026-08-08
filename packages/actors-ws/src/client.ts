@@ -223,7 +223,13 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
     };
 
     const post = (request: SocketRequest): void => {
-        link?.send(JSON.stringify(request));
+        try {
+            link?.send(JSON.stringify(request));
+        } catch {
+            // Best-effort by contract: a closing WebSocket may throw from
+            // send(), and its own close event settles everything in flight —
+            // a cancel or call frame lost here changes nothing.
+        }
     };
 
     const checkInit = (init: ActorCallInit | undefined): void => {
