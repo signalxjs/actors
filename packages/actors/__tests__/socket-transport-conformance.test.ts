@@ -36,19 +36,25 @@ const create: SocketTransportFactory = async (actors) => {
                 origin: false
             });
             if (!signal) return responding;
-            return Promise.race([
-                responding,
-                new Promise<never>((_, reject) => {
-                    const fail = (): void =>
-                        reject(
-                            Object.assign(new Error('The operation was aborted.'), {
-                                name: 'AbortError'
-                            })
-                        );
-                    if (signal.aborted) fail();
-                    else signal.addEventListener('abort', fail, { once: true });
-                })
-            ]);
+            return new Promise<Response>((resolve, reject) => {
+                const fail = (): void =>
+                    reject(
+                        Object.assign(new Error('The operation was aborted.'), {
+                            name: 'AbortError'
+                        })
+                    );
+                if (signal.aborted) {
+                    fail();
+                    return;
+                }
+                signal.addEventListener('abort', fail, { once: true });
+                // The listener detaches when the response settles, so a LATE
+                // abort neither rejects a settled request (real fetch does
+                // not) nor leaves a dangling listener behind.
+                responding
+                    .then(resolve, reject)
+                    .finally(() => signal.removeEventListener('abort', fail));
+            });
         }
     });
     return {
