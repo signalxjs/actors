@@ -36,8 +36,8 @@ importers:
         specifier: ^11
         version: 11.2.0(size-limit@11.2.0)
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       '@typescript/native-preview':
         specifier: 7.0.0-dev.20260707.2
         version: 7.0.0-dev.20260707.2
@@ -61,10 +61,10 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
       vitest:
         specifier: ^4.1.5
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
 
   benchmarks:
     dependencies:
@@ -127,13 +127,13 @@ importers:
     devDependencies:
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   examples/counter:
     dependencies:
@@ -161,7 +161,7 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors:
     devDependencies:
@@ -182,10 +182,10 @@ importers:
         version: 0.15.2
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       sigx:
         specifier: 'catalog:'
         version: 0.15.2
@@ -194,7 +194,7 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-cli:
     dependencies:
@@ -213,16 +213,16 @@ importers:
         version: 0.10.0
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-cloudflare:
     devDependencies:
@@ -237,13 +237,13 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
       wrangler:
         specifier: ^4.115.0
         version: 4.115.0(@cloudflare/workers-types@5.20260729.1)
@@ -255,16 +255,16 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-otel:
     devDependencies:
@@ -282,16 +282,16 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-pg:
     devDependencies:
@@ -300,10 +300,10 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.3
@@ -315,7 +315,7 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-redis:
     devDependencies:
@@ -324,10 +324,10 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       ioredis:
         specifier: ^5.4.1
         version: 5.11.1
@@ -336,7 +336,7 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-surreal:
     devDependencies:
@@ -345,10 +345,10 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       surrealdb:
         specifier: ^2.0.8
         version: 2.0.8(tslib@2.8.1)(typescript@6.0.3)
@@ -357,7 +357,7 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-tcp:
     devDependencies:
@@ -366,16 +366,16 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   packages/actors-ws:
     devDependencies:
@@ -384,16 +384,16 @@ importers:
         version: link:../actors
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
+        specifier: ^26.1.2
+        version: 26.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   perf/aks:
     dependencies:
@@ -461,10 +461,10 @@ importers:
     devDependencies:
       '@sigx/vite':
         specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       vite:
         specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+        version: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
 packages:
 
@@ -1476,8 +1476,8 @@ packages:
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
-  '@types/node@25.9.5':
-    resolution: {integrity: sha512-OScDchr2fwuUmWdf4kZ9h7PcJiYDVInhJizG/biAq3cAvqwYktuy/TYGGdZNMtNTFUP7rnb0NU4TUdm82kt4Rg==}
+  '@types/node@26.1.2':
+    resolution: {integrity: sha512-Vu4a5UFA9rIIFJ7rB/Vaafh9lrCQszopTCx6KjFboXTGQbPNasehVR5TEiithSDGyd1DEiUByggTZsg8jukeIg==}
 
   '@types/pg@8.20.3':
     resolution: {integrity: sha512-4Tvg+HO6+oQaAkpT8GTYoSExzpGGZz532GXgbbCElWJQeQdMozBWxEKNBhJJpHFjWXsMxqPbyypvj/89FWNoSQ==}
@@ -2018,8 +2018,8 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  undici-types@7.24.6:
-    resolution: {integrity: sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg==}
+  undici-types@8.3.0:
+    resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
 
   undici@7.28.0:
     resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
@@ -2218,7 +2218,7 @@ snapshots:
       cjs-module-lexer: 1.2.3
       esbuild: 0.28.1
       miniflare: 4.20260722.1
-      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       wrangler: 4.115.0(@cloudflare/workers-types@5.20260729.1)
       zod: 3.25.76
     transitivePeerDependencies:
@@ -2804,10 +2804,10 @@ snapshots:
       '@sigx/terminal-ui': 0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)
       '@sigx/terminal-zero': 0.12.0(@sigx/reactivity@0.15.3)(@sigx/runtime-core@0.15.2)
 
-  '@sigx/vite@0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))':
+  '@sigx/vite@0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))':
     dependencies:
       sigx: 0.15.2
-      vite: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+      vite: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
     optionalDependencies:
       '@sigx/server': 0.15.2
       '@sigx/server-renderer': 0.15.2
@@ -2857,13 +2857,13 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
-  '@types/node@25.9.5':
+  '@types/node@26.1.2':
     dependencies:
-      undici-types: 7.24.6
+      undici-types: 8.3.0
 
   '@types/pg@8.20.3':
     dependencies:
-      '@types/node': 25.9.5
+      '@types/node': 26.1.2
       pg-protocol: 1.15.0
       pg-types: 2.2.0
 
@@ -2871,7 +2871,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 25.9.5
+      '@types/node': 26.1.2
 
   '@typescript/native-preview-darwin-arm64@7.0.0-dev.20260707.2':
     optional: true
@@ -2916,7 +2916,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
 
   '@vitest/expect@4.1.10':
     dependencies:
@@ -2927,13 +2927,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))':
+  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))':
     dependencies:
       '@vitest/spy': 4.1.10
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+      vite: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
 
   '@vitest/pretty-format@4.1.10':
     dependencies:
@@ -2971,7 +2971,7 @@ snapshots:
 
   buffer-image-size@0.6.4:
     dependencies:
-      '@types/node': 25.9.5
+      '@types/node': 26.1.2
 
   bytes-iec@3.1.1: {}
 
@@ -3087,7 +3087,7 @@ snapshots:
 
   happy-dom@20.11.1:
     dependencies:
-      '@types/node': 25.9.5
+      '@types/node': 26.1.2
       '@types/whatwg-mimetype': 3.0.2
       '@types/ws': 8.18.1
       buffer-image-size: 0.6.4
@@ -3431,7 +3431,7 @@ snapshots:
 
   typescript@6.0.3: {}
 
-  undici-types@7.24.6: {}
+  undici-types@8.3.0: {}
 
   undici@7.28.0: {}
 
@@ -3443,7 +3443,7 @@ snapshots:
 
   uuidv7@1.2.1: {}
 
-  vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0):
+  vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
@@ -3451,15 +3451,15 @@ snapshots:
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 25.9.5
+      '@types/node': 26.1.2
       esbuild: 0.28.1
       fsevents: 2.3.3
       jiti: 2.7.0
 
-  vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)):
+  vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)):
     dependencies:
       '@vitest/expect': 4.1.10
-      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
       '@vitest/pretty-format': 4.1.10
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
@@ -3476,11 +3476,11 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+      vite: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
-      '@types/node': 25.9.5
+      '@types/node': 26.1.2
       '@vitest/coverage-v8': 4.1.10(vitest@4.1.10)
       happy-dom: 20.11.1
     transitivePeerDependencies:
