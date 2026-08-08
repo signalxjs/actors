@@ -40,6 +40,7 @@ architecture notes in [`docs/`](docs).
 | [`@sigx/actors-surreal`](packages/actors-surreal) | SurrealDB 3 providers — etag-CAS actor storage, cluster membership, the actor directory, and durable reminders |
 | [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — host liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Framed TCP transport — one multiplexed connection per peer |
+| [`@sigx/actors-ws`](packages/actors-ws) | Client-facing WebSocket transport — browsers calling actors over one multiplexed socket |
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — run an actor app on Workers, one DO per actor |
 | [`@sigx/actors-cli`](packages/actors-cli) | `sigx` CLI plugin — observe hosts, actors and clusters from the terminal |
 | [`@sigx/actors-otel`](packages/actors-otel) | Observability exporters — Prometheus text exposition, OpenTelemetry traces and a metrics bridge |

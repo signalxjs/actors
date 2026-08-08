@@ -1,0 +1,66 @@
+{
+    "name": "@sigx/actors-ws",
+    "version": "0.5.0",
+    "description": "Client-facing WebSocket transport for @sigx/actors — browsers calling actors over one multiplexed socket",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "development": "./dist/index.js",
+            "production": "./dist/index.prod.js",
+            "import": "./dist/index.js"
+        },
+        "./client": {
+            "types": "./dist/client.d.ts",
+            "development": "./dist/client.js",
+            "production": "./dist/client.prod.js",
+            "import": "./dist/client.js"
+        }
+    },
+    "files": [
+        "dist",
+        "CHANGELOG.md"
+    ],
+    "sideEffects": false,
+    "scripts": {
+        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly",
+        "dev": "vite build --watch"
+    },
+    "keywords": [
+        "sigx",
+        "actors",
+        "virtual-actors",
+        "websocket",
+        "transport",
+        "client"
+    ],
+    "author": "Andreas Ekdahl",
+    "license": "MIT",
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/signalxjs/actors.git",
+        "directory": "packages/actors-ws"
+    },
+    "homepage": "https://sigx.dev/actors/",
+    "bugs": {
+        "url": "https://github.com/signalxjs/actors/issues"
+    },
+    "devDependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/vite": "catalog:",
+        "@types/node": "^25.9.1",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "peerDependencies": {
+        "@sigx/actors": "^0.5.0"
+    }
+}

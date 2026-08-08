@@ -47,6 +47,7 @@ const PACKAGES = [
     'packages/actors-redis',
     'packages/actors-surreal',
     'packages/actors-tcp',
+    'packages/actors-ws',
 ];
 
 const args = process.argv.slice(2);
