@@ -78,21 +78,12 @@ importers:
       '@sigx/actors-tcp':
         specifier: workspace:*
         version: link:../packages/actors-tcp
-      '@sigx/actors-ws':
-        specifier: workspace:*
-        version: link:../packages/actors-ws
-      '@types/ws':
-        specifier: ^8.18.1
-        version: 8.18.1
       ioredis:
         specifier: ^5
         version: 5.11.1
       undici:
         specifier: ^7.29.0
         version: 7.29.0
-      ws:
-        specifier: ^8.21.1
-        version: 8.21.1
 
   examples/cf-workers:
     dependencies:
@@ -385,30 +376,6 @@ importers:
       vite:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
-
-  packages/actors-ws:
-    devDependencies:
-      '@sigx/actors':
-        specifier: workspace:*
-        version: link:../actors
-      '@sigx/vite':
-        specifier: 'catalog:'
-        version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
-      '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.5
-      '@types/ws':
-        specifier: ^8.5.13
-        version: 8.18.1
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vite:
-        specifier: ^8.0.3
-        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
-      ws:
-        specifier: ^8.18.0
-        version: 8.21.1
 
   perf/aks:
     dependencies:

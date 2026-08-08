@@ -3,15 +3,16 @@
  * connection-oriented host transport: the frame codec below, plus the
  * `HostConnection` state machine re-exported at the bottom.
  *
- * It lives in the core package rather than in one transport because both
- * `@sigx/actors-tcp` and `@sigx/actors-ws` speak it, and `wire-shared.ts` is
- * internal — an out-of-repo package cannot reach it. One implementation
- * beats a copy per transport that drifts.
+ * It lives in the core package rather than in the transport because
+ * `wire-shared.ts` is internal — an out-of-repo package cannot reach it, and
+ * this subpath is published precisely so out-of-repo transports can build on
+ * it. One implementation beats a copy per transport that drifts.
  *
- * The two transports differ ONLY in their `FrameLink`: a `node:net` socket is
- * a byte stream and needs the length prefix, a WebSocket already delivers
- * whole messages and does not. Multiplexing, cancellation, credit and error
- * mapping are the same code for both.
+ * Transports differ ONLY in their `FrameLink`: a `node:net` socket
+ * (`@sigx/actors-tcp`) is a byte stream and needs the length prefix; a
+ * message-oriented link (`messageOriented: true`, e.g. a WebSocket) already
+ * delivers whole messages and does not. Multiplexing, cancellation, credit
+ * and error mapping are the same code for every link.
  *
  * ## The frame
  *

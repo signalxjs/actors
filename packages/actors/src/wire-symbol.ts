@@ -15,8 +15,8 @@
  *
  * Both spellings arrive here and BOTH are legitimate — this is not a
  * compatibility shim. A URL-shaped transport delivers the path form
- * (`Cart/addItem`), while the frame transports (`@sigx/actors-tcp`,
- * `@sigx/actors-ws`) and every in-process caller hand over the canonical form
+ * (`Cart/addItem`), while the frame transport (`@sigx/actors-tcp`) and
+ * every in-process caller hand over the canonical form
  * (`Cart#addItem`) with no URL involved at any point. One resolver serves
  * both, so one of them has to normalize.
  *

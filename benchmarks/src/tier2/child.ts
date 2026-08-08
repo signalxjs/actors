@@ -23,8 +23,6 @@ import { createAppHandler } from '@sigx/actors/node';
 import { cluster, httpTransport, type ClusterPlugin } from '@sigx/actors/cluster';
 import type { HostTransportFactory } from '@sigx/actors/cluster';
 import { tcpTransport } from '@sigx/actors-tcp';
-import { wsTransport, type MinimalWebSocket, type WebSocketServerLike } from '@sigx/actors-ws';
-import { WebSocketServer, WebSocket as NodeWebSocket } from 'ws';
 import type {
     ActorDirectory,
     ClusterMembership,
@@ -270,29 +268,11 @@ async function main(): Promise<void> {
                 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
                 const port = (server.address() as { port: number }).port;
 
-                // `tcp` and `ws` REPLACE the transport; the others tune the
-                // fetch behind the default one.
+                // `tcp` REPLACES the transport; the others tune the fetch
+                // behind the default one.
                 let transport: HostTransportFactory | undefined;
-                let attachWs: (() => Promise<unknown>) | undefined;
                 if (message.dispatcher === 'tcp') {
                     transport = tcpTransport({ host: '127.0.0.1', keepAliveMs: 0 });
-                } else if (message.dispatcher === 'ws') {
-                    const handle = wsTransport({
-                        keepAliveMs: 0,
-                        advertiseUrl: () => `ws://127.0.0.1:${port}/_sigx/host-ws`,
-                        // Cast to the CONTRACT rather than `never`: `ws`'s
-                        // addEventListener is contravariantly incompatible with
-                        // the minimal shape, but naming the target type means a
-                        // real drift in the contract still surfaces here.
-                        connect: (url) => new NodeWebSocket(url) as unknown as MinimalWebSocket
-                    });
-                    transport = handle;
-                    attachWs = () =>
-                        handle.attach(server, {
-                            wss: new WebSocketServer({
-                                noServer: true
-                            }) as unknown as WebSocketServerLike
-                        });
                 } else {
                     const tuned = await dispatcherFetch(message.dispatcher, message.connections);
                     if (tuned) transport = httpTransport({ fetch: tuned });
@@ -323,10 +303,6 @@ async function main(): Promise<void> {
                     }
                 }).use(plugin);
                 handler = createAppHandler(app) as unknown as typeof handler;
-                // The WebSocket upgrade cannot be a contributed route, so it
-                // is attached to the raw server — before `start()`, like the
-                // listener itself.
-                if (attachWs) await attachWs();
                 send({ t: 'ready', index: message.index, port });
                 return;
             }

@@ -8,7 +8,7 @@
  * The in-memory symbol is `` `${type}#${method}` `` and stays that way
  * everywhere — it is what the per-call HMAC signs (`cluster/envelope.ts`),
  * what `ServerFnInfo.symbol` reports to a policy, and what the frame
- * transports (`@sigx/actors-tcp`, `@sigx/actors-ws`) carry in a frame with no
+ * transport (`@sigx/actors-tcp`) carries in a frame with no
  * URL anywhere near it. Only the URL spelling changes: the separator becomes a
  * REAL path separator and encoding is PER SEGMENT, so a normal call spends no
  * `%` at all.

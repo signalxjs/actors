@@ -79,9 +79,9 @@ email is one dictionary lookup from plaintext.
 
 The wire shared by every connection-oriented host transport. **It is a
 published subpath on purpose** — `wire-shared.ts` is internal and an
-out-of-repo package cannot reach it, so both `@sigx/actors-tcp` and
-`@sigx/actors-ws` import the codec from here. One implementation beats a copy
-per transport that drifts.
+out-of-repo package cannot reach it, so `@sigx/actors-tcp` imports the codec
+from here, and an out-of-repo transport can too. One implementation beats a
+copy per transport that drifts.
 
 ```
 0  u32 length   bytes AFTER this field (>= 8)
@@ -93,10 +93,12 @@ per transport that drifts.
 ```
 
 Big-endian, because it reads correctly in a hexdump and `readUInt32BE` costs
-nothing extra. WebSocket reuses the layout **minus the u32 length**, since a WS
-message already carries its own. That `FrameLink` difference is the *only*
-difference between the two transports — multiplexing, cancellation, credit and
-error mapping are shared code.
+nothing extra. A message-oriented link (`messageOriented: true` on
+`FrameLink`, e.g. a WebSocket) reuses the layout **minus the u32 length**,
+since the message already carries its own. That `FrameLink` difference is the
+*only* per-transport difference — multiplexing, cancellation, credit and
+error mapping are shared code. (A host-to-host WebSocket transport built
+exactly this way existed and was retired — #151.)
 
 Two fields that look like incidental detail and are not:
 

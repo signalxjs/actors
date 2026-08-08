@@ -366,9 +366,11 @@ const dispatcherMatrix: Scenario = {
 /**
  * THE DECISION SCENARIO.
  *
- * All three transports on one rig, back to back, against the *tuned* HTTP
+ * Both transports on one rig, back to back, against the *tuned* HTTP
  * baseline (pool bounded to the concurrency) rather than the shipped default
  * — comparing a new transport to an untuned incumbent would flatter it.
+ * (A WebSocket arm existed until the host-to-host WS transport was retired
+ * — #151; its recorded numbers stay in BASELINES.md as history.)
  *
  * The gate below was agreed before any of these existed, which is the
  * only reason it means anything now. Replace HTTP as the default only if a
@@ -378,7 +380,7 @@ const dispatcherMatrix: Scenario = {
 const transportDecision: Scenario = {
     name: 'cluster2/transport-decision',
     description:
-        'TIER 2 (real sockets) — tuned HTTP vs TCP vs WebSocket. Sockets and bytes gate; timings informational',
+        'TIER 2 (real sockets) — tuned HTTP vs TCP. Sockets and bytes gate; timings informational',
     async run(ctx: RunContext): Promise<Metric[]> {
         const metrics: Metric[] = [];
         const concurrency = 64;
@@ -386,8 +388,7 @@ const transportDecision: Scenario = {
             // The BASELINE is tuned HTTP: pool bounded to the concurrency,
             // measured as both fewer sockets and slightly faster.
             ['http-tuned', 'bounded' as const, concurrency],
-            ['tcp', 'tcp' as const, 0],
-            ['ws', 'ws' as const, 0]
+            ['tcp', 'tcp' as const, 0]
         ] as const;
         for (const [label, kind, connections] of arms) {
             const rig = await startRig({
@@ -427,11 +428,10 @@ const transportDecision: Scenario = {
                         informational: true
                     },
                     // Bytes come from the HTTP listener's sockets, so they are
-                    // real for the HTTP and WebSocket arms (WS upgrades on that
-                    // same socket) and NOT OBSERVABLE for TCP, which owns a
-                    // separate listener. The metric is OMITTED for TCP rather
-                    // than reported as 0, which would read as a perfect score
-                    // for entirely the wrong reason.
+                    // real for the HTTP arm and NOT OBSERVABLE for TCP, which
+                    // owns a separate listener. The metric is OMITTED for TCP
+                    // rather than reported as 0, which would read as a perfect
+                    // score for entirely the wrong reason.
                     ...(kind === 'tcp'
                         ? []
                         : [

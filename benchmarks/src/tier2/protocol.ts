@@ -68,11 +68,11 @@ export interface ChildStats {
  * settle the dispatcher candidates without shipping a dependency — `undici`
  * is a benchmarks-only devDependency for exactly that reason.
  *
- * `tcp` and `ws` are not fetch variants at all: they replace the transport
- * outright with `@sigx/actors-tcp` / `@sigx/actors-ws`, which is what makes
- * the default-transport decision a measurement rather than an argument.
+ * `tcp` is not a fetch variant at all: it replaces the transport outright
+ * with `@sigx/actors-tcp`, which is what makes the default-transport
+ * decision a measurement rather than an argument.
  */
-export type DispatcherKind = 'default' | 'bounded' | 'h2' | 'tcp' | 'ws';
+export type DispatcherKind = 'default' | 'bounded' | 'h2' | 'tcp';
 
 export type ToChild =
     | {

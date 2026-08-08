@@ -102,8 +102,8 @@ describe('canonicalSymbol', () => {
 
 describe('the canonical spelling is not a compatibility shim', () => {
     it('resolves `Type%23method` too, and that is load-bearing', () => {
-        // Deleting this branch would break the FRAME transports, not old
-        // clients: `@sigx/actors-tcp` and `@sigx/actors-ws` hand the resolver
+        // Deleting this branch would break the FRAME transport, not old
+        // clients: `@sigx/actors-tcp` hands the resolver
         // `Cart#addItem` out of a frame with no URL anywhere in the picture,
         // and `resolveHostSymbol` is the same function the HTTP mounts use.
         // A cached old browser bundle keeping working is a side benefit, not

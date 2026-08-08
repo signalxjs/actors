@@ -43,7 +43,6 @@ const PACKAGES = [
     'packages/actors-redis',
     'packages/actors-surreal',
     'packages/actors-tcp',
-    'packages/actors-ws',
 ];
 
 // The entry each package is smoke-imported by. One deliberate exception:
