@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`@sigx/actors/socket-wire`** (#99): the published vocabulary of the
+  incoming client-facing socket transport — `SocketRequest`/`SocketReply`
+  (whose `{i,v}`/`{i,e}` reply shapes are the `$live` `LiveFrame` shapes by
+  construction), plus the codec (`encodeWire`/`reviveWire`), the
+  pollution-safe `parseWire` and branded `wireFail`, so an out-of-repo
+  adapter reaches the one true wire instead of copying it — the same
+  standing `./cluster/frames` has. Deliberately NOT the cluster frames: the
+  vocabulary has no field for a principal, no envelope and no inbound-call
+  direction, which is the browser trust model expressed as a shape.
+
 ### Changed
 
 - **Cross-host watches coalesce: live fan-out now scales with hosts, not

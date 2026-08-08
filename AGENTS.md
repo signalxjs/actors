@@ -226,7 +226,7 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 
 ## Packages
 
-- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Ten
+- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Eleven
   runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`,
   `defineWorker` — stateless multi-activation pure-compute pools: always
   local, no directory claim, up to `maxLocal` concurrent members per
@@ -252,7 +252,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `publicAddress`), host-to-host endpoint, cluster provider seams,
   memoryClusterHub), `./cluster/frames` (the framed host-to-host wire —
   published precisely so out-of-repo transports can build on it;
-  `@sigx/actors-tcp` re-exports from it), `./vite`
+  `@sigx/actors-tcp` re-exports from it),
+  `./socket-wire` (the CLIENT socket vocabulary of #99 —
+  `SocketRequest`/`SocketReply` plus the codec and pollution-safe parse;
+  published for out-of-repo adapters, and deliberately NOT the cluster
+  frames: no field for a principal, no envelope, no inbound calls), `./vite`
   (`sigxActors()` plugin). Two further subpaths are **workspace-only** — wired
   by tsconfig/vitest aliases and deliberately absent from `package.json`
   exports: `./cluster/testing` (`transportConformance`) and `./testing`
