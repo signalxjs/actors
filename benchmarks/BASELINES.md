@@ -26,6 +26,16 @@ comparable to Tier 1 or Tier 2 numbers** — a Tier 1 dispatch figure counts
 microseconds inside one process, a Tier 3 figure counts a request that
 crossed the internet, a proxy and possibly two hosts.
 
+**One Tier-3 section is not on that path at all.** The WebSocket
+connection-scale numbers (#172) are driven from Jobs INSIDE the cluster
+straight at the Service — no ingress, no TLS, no load VM — because the
+question there is what the runtime can hold and deliver, not what the edge
+can carry. They are not comparable with the HTTP sections either, and they
+are run with `testenv.mjs ws-load` rather than through `bench:infra`. The
+public socket path is deliberately unmeasured so far; when it is measured
+it gets its own section, because it will be ingress-limited rather than
+runtime-limited.
+
 Opt-in (`BENCH_INFRA=1` plus an `INFRA_URL`, a signed-cookie secret, and a
 load VM), and the load is driven FROM A VM IN THE CLUSTER'S REGION: the
 same ladder run from a laptop across an ocean varies 50-80% run to run and
@@ -1338,3 +1348,138 @@ the multipliers suggest, and it is not the case #119 frames:
 A seam aimed at `defineWorker` would be solving the problem the cluster already
 solves. A seam aimed at the hot single activation would be solving one nothing
 else can — for actors that meet all three conditions above.
+
+## 2026-08-09 · Tier 3 — WebSocket connection scale (#172)
+
+The first connection-count figures the repo has ever had. The socket stack
+shipped in v0.6.0 with nothing measuring it: no example or perf tree opened
+a WebSocket, no scenario in any tier touched one, and `socketStats()` was
+wired to nothing.
+
+**This is a different axis from every other Tier-3 number here.** The HTTP
+sections measure ops/s over the public HTTPS endpoint from a same-region
+VM. These measure CONNECTIONS HELD and MESSAGES DELIVERED, driven from
+inside the cluster straight at the Service — no ingress, no TLS, no load
+VM. That makes them a measurement of the runtime rather than of the edge,
+and it means **they are not comparable with the rows above**. The public
+path is deliberately not measured yet; when it is, it goes in its own
+section and is reported separately, because it will be ingress-limited
+rather than runtime-limited.
+
+| | |
+|---|---|
+| Cluster | AKS 1.34, `Standard_D2ls_v6` (2 vCPU, 1900m allocatable) |
+| Hosts | 3 pods, `limits.cpu 1000m`, `redisStorage` + `redisCluster` |
+| App | `perf/aks`, `Fanout` actor, `ENABLE_SOCKET=1`, socket caps at runtime defaults |
+| Driver | in-cluster `ws-loadgen.mjs` Jobs (`Indexed`, pod 0 publishes), image `6bcb35a` |
+| Path | `ws://sigx-host:7311/_sigx/socket`, `permessage-deflate` OFF both ends |
+
+### Connections are not the constraint
+
+| dialed | connected | connect failures | refusals | breaches | client RSS |
+|---|---|---|---|---|---|
+| 1 000 | 1 000 | 0 | 0 | 0 | 96 MB |
+| 5 000 | 5 000 | 0 | 0 | 0 | 122 MB |
+| 10 000 | 10 000 | 0 | 0 | 0 | 151 MB |
+| 20 000 | 20 000 | 0 | 0 | 0 | 206 MB |
+| **100 000** (4 pods × 25 000) | **100 000** | **0** | **0** | **0** | 418 MB/pod |
+
+100 001 connections opened and 100 001 closed, with subscriptions matching
+one-for-one. **`peakOpen` — the `open` gauge sampled off the hosts — read
+83 774.** Quote that as the concurrency figure, not the 100 000: the
+generator's pods are NOT barrier-synchronised, so a pod that finished
+dialling early began its hold window early, and the sum of per-pod peaks
+overstates how many were up at the same instant. The gauge is also sampled
+every ~5 s, so it under-reports in the other direction. The honest
+statement is **~84 000 concurrent subscribers observed on the hosts, with
+100 000 dialled and none refused.**
+
+A generator pod caps at ~28k: a 40 000 rung from one pod produced 28 232
+connected and 11 768 failures with **zero host-side refusals** — the pod's
+ephemeral port range, not a server limit. Add pods, keep each rung under
+~25 000.
+
+### Delivery throughput is the constraint, and it sets latency
+
+One actor, anonymous subscribers, 10 publishes/s, 60 s per rung:
+
+| subscribers | deliveries/s | p50 | p99 | publishes achieved (of 600) |
+|---|---|---|---|---|
+| 1 000 | 10 022 | 63 ms | 73 ms | 602 |
+| 5 000 | 41 584 | 117 ms | 181 ms | 514 |
+| 10 000 | 48 429 | 192 ms | 442 ms | 300 |
+| 20 000 | 43 229 | 370 ms | 926 ms | 131 |
+
+**~48 000 deliveries/s across 3 hosts — ~16k/host, ~62 µs per delivery on a
+1000m CPU limit.** Fan-out is O(1) actor reads and **O(N) serializations**:
+the read is shared across subscribers, but each has its own correlation id,
+so the frame is encoded and `JSON.stringify`d once per subscriber.
+
+At 84k subscribers with one publish every 4 s: p50 **1 343 ms**, p90 1 906 ms,
+p99 **2 235 ms**. 84 000 ÷ 48 000/s ≈ 1.75 s to walk the set, which is what
+those bracket — so
+
+> **worst-case delivery latency ≈ subscribers ÷ (16k/s × hosts)**
+
+The publisher pays out of the same budget: the achieved publish rate fell
+from 602 to 131 per minute across those rungs with zero failures, because
+the publishing turn queues behind fan-out on a single-threaded actor.
+**Write throughput to a hot actor degrades as its audience grows.** (#182)
+
+Two figures that did NOT move: `maxBufferedBytes` stayed 0 at every rung —
+the hosts never outran the clients — and `protocolBreaches` stayed 0
+throughout. The absence of send-path backpressure is therefore a
+*structural* gap here rather than an observed failure; demonstrating it
+needs a deliberately slow consumer, which the rig cannot do yet.
+
+### Identity is the cliff — and it is not a curve
+
+The same fan-out with one distinct principal per subscriber, on a read that
+consults `ctx.principal`:
+
+| identities | rate | connected | failures | deliveries/s | p50 | publishes |
+|---|---|---|---|---|---|---|
+| 100 | 10/s | 100 | 0 | 1 003 | 53 ms | 452 of 450 — healthy |
+| 250 | 10/s | 220 | **30** | 0.4 | — | **1** |
+| 1 000 | 10/s | 484 | **516** | 2.0 | — | **1** |
+| 250 | 1/s | 216 | **34** | 216 | **52 ms** | 46 of 45 |
+
+**Anonymous scales to 20 000 on one actor; signed-in falls over between 100
+and 250.** The last row separates the two costs: steady-state delivery to
+216 distinct identities is *fine* at 52 ms p50, and every failure happened
+while dialling. So the wall is **establishing** the per-principal watch
+loops, not serving them — each is a turn on a single-threaded actor, and
+seeding competes with fan-out for the same queue until new subscribers stop
+completing. Positive feedback, hence a cliff. (#180)
+
+The mechanism is #121: a read observed consulting `ctx.principal` gets one
+watch loop per encoded principal. Locally, 200 subscribers on one actor:
+**31 actor turns anonymous versus 6 200 per-user**, with the control (same
+principal-reading method, one identity) collapsing back to 62 — so the
+split is per principal, not per subscriber. Cross-host is worse and
+unconditional: `#coalescedWatch` keys on `call.principal` whether or not
+the read consults it (#138).
+
+**Anonymous and signed-in fan-out are different products. Neither number
+means anything without saying which one it is.**
+
+### Two limits that bound every figure above
+
+- **Client subscriptions cannot set `throttleMs`.** Neither the socket
+  session nor `$live` passes it to `dispatchWatch`, so every live
+  subscription runs at `DEFAULT_WATCH_THROTTLE_MS` (50 ms) — a hard ~20
+  pushes/s per subscriber. The 53–63 ms p50 floor in the small rungs IS
+  that trailing window.
+- **`deliveriesPerPublish` is a coalescing ratio, not a constant.** Above
+  ~20 publishes/s per key it falls below the subscriber count by design,
+  and reading it as loss is a misreading.
+
+### What this section cannot say
+
+Sockets are **host-affine**: the client is pinned to whichever pod the
+Service gave it, and every call inside re-dispatches through placement, so
+the edge hash buys nothing and cross-host rates read like `random`
+placement whatever `PLACEMENT` says. Nothing here measures the public
+ingress path, TLS cost, or behaviour across a rolling restart — and nothing
+here was run with a slow consumer, which is the one shape most likely to
+find the missing backpressure.
