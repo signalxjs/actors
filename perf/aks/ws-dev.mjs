@@ -37,9 +37,19 @@ import { Fanout } from './src/fanout.actor.ts';
 const PORT = Number(process.env.PORT ?? 7311);
 const OPS_SECRET = process.env.OPS_SECRET ?? 'dev-ops-secret';
 const SOCKET_ORIGIN = process.env.SOCKET_ORIGIN === 'same-origin' ? 'same-origin' : false;
+// Validated exactly as `server.mjs` validates it: an unset knob means "the
+// runtime's default", but a MISTYPED one must fail fast rather than reach
+// `attachActorSocket` as NaN — a cap silently disabled is the kind of thing
+// that gets discovered as a wrong number in a baseline.
 const socketNum = (name) => {
     const raw = process.env[name];
-    return raw === undefined || raw === '' ? undefined : Number(raw);
+    if (raw === undefined || raw === '') return undefined;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+        console.error(`[ws-dev] ${name} must be a non-negative integer, got '${raw}'`);
+        process.exit(1);
+    }
+    return value;
 };
 
 const sockets = socketStats();

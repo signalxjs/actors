@@ -211,6 +211,19 @@ async function runRung(n) {
     // pair a delivery with some other actor's publish.
     const publishedAt = new Map();
     const stamp = (key, seq) => `${key}#${seq}`;
+    // BOUNDED. A stamp is only ever read by a delivery that lands within a
+    // throttle window plus a round trip of its publish, so anything older
+    // is dead weight — and at a high rate over a long rung an unbounded map
+    // is a load-generator memory leak that would show up as a server-side
+    // ceiling. Map preserves insertion order, so the oldest entry is the
+    // first key.
+    const STAMP_CAP = Math.max(1000, keysFor(n).length * 4);
+    const rememberPublish = (key, seq, at) => {
+        publishedAt.set(stamp(key, seq), at);
+        while (publishedAt.size > STAMP_CAP) {
+            publishedAt.delete(publishedAt.keys().next().value);
+        }
+    };
     let probeDeliveries = 0;
 
     /** Bring one connection up and seed every subscription it holds. */
@@ -291,6 +304,13 @@ async function runRung(n) {
             connected++;
         } catch (error) {
             connectFailures++;
+            // Close NOW, not at teardown. The upgrade may well have
+            // succeeded and only the seeding timed out, and a socket left
+            // open by a connection that is not counted in `connected` is
+            // precisely what breaks the `ops.sockets.open` cross-check this
+            // run is validated by. `close()` is idempotent, so the teardown
+            // sweep below can still run over it.
+            client.transport.close();
             if (connectFailures <= 5) log(`connect failed (#${index}): ${error?.message ?? error}`);
         }
     };
@@ -365,7 +385,7 @@ async function runRung(n) {
             const expected = known === undefined ? null : known + 1;
             if (expected !== null) {
                 localSeq.set(key, expected);
-                publishedAt.set(stamp(key, expected), issuedAt);
+                rememberPublish(key, expected, issuedAt);
             }
             try {
                 const seq = await publisher.transport.call('Fanout#publish', [
@@ -377,8 +397,11 @@ async function runRung(n) {
                 if (expected === null) localSeq.set(key, seq);
                 else if (seq !== expected) {
                     seqMismatches++;
-                    // Re-anchor so ONE surprise does not poison every later
-                    // sample for this key.
+                    // Drop the stamp that was filed under the wrong seq —
+                    // it can only ever pair a delivery with the wrong
+                    // publish — then re-anchor so ONE surprise does not
+                    // poison every later sample for this key.
+                    publishedAt.delete(stamp(key, expected));
                     localSeq.set(key, seq);
                 }
             } catch (error) {

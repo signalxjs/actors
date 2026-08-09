@@ -607,7 +607,7 @@ function mergeRows(rows) {
             socketsExpected: 0,
             connectFailures: 0,
             deliveries: 0,
-            deliveriesPerSec: 0,
+            durationMs: 0,
             publishes: 0,
             publishFailures: 0,
             subscriptionErrors: 0,
@@ -620,10 +620,15 @@ function mergeRows(rows) {
         };
         merged.pods++;
         for (const key of ['connected', 'socketsExpected', 'connectFailures', 'deliveries',
-            'deliveriesPerSec', 'publishes', 'publishFailures', 'subscriptionErrors', 'drops',
-            'seqMismatches']) {
+            'publishes', 'publishFailures', 'subscriptionErrors', 'drops', 'seqMismatches']) {
             merged[key] += row[key] ?? 0;
         }
+        // Rates are NOT summed. Each pod already divided by its own window,
+        // and pods do not start or finish together — adding their rates
+        // overstates throughput by however much the windows differ. The
+        // merged rate is recomputed below from summed deliveries over the
+        // longest window, which is the one they all overlap within.
+        merged.durationMs = Math.max(merged.durationMs, row.durationMs ?? 0);
         merged.maxBufferedBytes = Math.max(merged.maxBufferedBytes, row.maxBufferedBytes ?? 0);
         merged.clientRssMb = Math.max(merged.clientRssMb, row.clientRssMb ?? 0);
         if (row.latencyMs) {
@@ -638,6 +643,9 @@ function mergeRows(rows) {
             ...row,
             // `n` is PER POD, so the number a reader wants is this one.
             totalConnections: row.connected,
+            deliveriesPerSec: row.durationMs > 0
+                ? Math.round((row.deliveries / (row.durationMs / 1000)) * 1000) / 1000
+                : 0,
             deliveriesPerPublish: row.publishes > 0
                 ? Math.round((row.deliveries / row.publishes) * 1000) / 1000
                 : 0

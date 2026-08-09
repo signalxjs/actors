@@ -17,10 +17,11 @@
  * the HTTP numbers in `BASELINES.md`.
  *
  * `ENABLE_SESSIONS` is the switch. Off (the default) authentication is a
- * constant `null` and the secret is never read, so an existing deployment
- * that sets no new env behaves exactly as before. On, the secret is
- * REQUIRED in production — a forgeable session would make the per-principal
- * arm measure nothing at all, which is worse than not running it.
+ * constant `null` no matter what any cookie says, and no secret is
+ * required — so an existing deployment that sets no new env behaves
+ * exactly as before. On, the secret becomes REQUIRED in production: a
+ * forgeable session would make the per-principal arm measure nothing at
+ * all, which is worse than not running it.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServerApp } from '@sigx/server/server';
