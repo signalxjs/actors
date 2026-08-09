@@ -73,6 +73,7 @@ import {
     toFrameError
 } from './live-endpoint';
 import type { ActorCallContext, AnyActorDefinition, Host } from '../types';
+import type { SocketSessionRecorder } from './socket-stats';
 
 /** The upgrade-time operation the prelude runs against. */
 const CONNECT_INFO: ServerFnInfo = {
@@ -141,6 +142,13 @@ export interface ActorSocketSessionOptions {
     maxConnectionMs?: number;
     /** Masked-failure observability — defaults to `posture.onError`. */
     onError?(error: unknown, info: ServerFnInfo, ctx: ServerFnContext): void | Promise<void>;
+    /**
+     * Counter observability (#166): a `socketStats()` recorder shared by
+     * every session on this host/listener. The session records at the event
+     * sites it owns; the APP publishes the stats object as an ops section
+     * (`registry.reportOps('sockets', () => stats.snapshot())`).
+     */
+    stats?: SocketSessionRecorder;
 }
 
 export interface ActorSocketSession {
@@ -232,8 +240,10 @@ export async function createActorSocketSession(
     }
     const pingMs = options.pingMs ?? DEFAULT_LIVE_PING_MS;
     const onError = options.onError ?? posture.onError;
+    const stats = options.stats;
 
     if (!originAllowed(request, originPolicy)) {
+        stats?.refused();
         options.close(1008, 'origin not allowed');
         throw new ServerFnError(403, '[sigx actors] socket upgrade refused: origin not allowed');
     }
@@ -247,6 +257,7 @@ export async function createActorSocketSession(
     try {
         rq = await enterActorRequest(request, CONNECT_INFO, { allowAnonymous: true });
     } catch (error) {
+        stats?.refused();
         options.close(1008, 'unauthorized');
         throw error;
     }
@@ -257,6 +268,10 @@ export async function createActorSocketSession(
     const hadPrincipal = (await actorPrincipal(rq)) != null;
 
     let closed = false;
+    const openedAt = performance.now();
+    /** Assigned before any message can arrive; `fail`/`close` only run
+     *  through `handle()`/the adapter, both of which need the object. */
+    let self: ActorSocketSession;
     /** In-flight calls by client id. Presence = frames may still be sent. */
     const inFlight = new Map<number, { ctrl: AbortController }>();
     /** Open subscriptions by client id — the SAME id namespace as calls,
@@ -293,6 +308,11 @@ export async function createActorSocketSession(
     const fail = (code: number, reason: string): void => {
         if (closed) return;
         closed = true;
+        // Every 1003/1009 through here is a vocabulary breach; every 1008 is
+        // a lifetime/revalidation close — the pre-session refusals (origin,
+        // auth) never reach `fail`, they count as `refused` above.
+        if (code === 1003 || code === 1009) stats?.protocolBreach();
+        else if (code === 1008) stats?.lifetimeClose();
         try {
             options.close(code, reason);
         } catch {
@@ -300,6 +320,7 @@ export async function createActorSocketSession(
             // documented never to throw, so a throwing close stays here.
         }
         teardown();
+        stats?.closed(self, openedAt);
     };
 
     const teardown = (): void => {
@@ -311,7 +332,10 @@ export async function createActorSocketSession(
         revalidateTimer = undefined;
         for (const [, entry] of inFlight) entry.ctrl.abort();
         inFlight.clear();
-        for (const [, watch] of watches) stopWatch(watch);
+        for (const [, watch] of watches) {
+            stopWatch(watch);
+            stats?.subscriptionClosed();
+        }
         watches.clear();
     };
 
@@ -401,6 +425,7 @@ export async function createActorSocketSession(
             if (deadline !== undefined) clearTimeout(deadline);
             deadline = undefined;
         };
+        stats?.callStarted();
         // Declared here so the failure path can hand `onError` the CALL'S
         // context view (per-call abort + locals), not the upgrade context.
         let rqCall: ServerFnContext | null = null;
@@ -496,6 +521,7 @@ export async function createActorSocketSession(
             }
         } catch (error) {
             disarmDeadline();
+            stats?.callFailed();
             // Same seam as core: masked failures — anything that is not a
             // client-visible branded error after classification — reach
             // `onError` in dev AND prod, before the frame goes out.
@@ -532,6 +558,7 @@ export async function createActorSocketSession(
     const dispatchWatchFor = async (id: number, sub: LiveSubscription): Promise<void> => {
         const watch = { ctrl: new AbortController(), iterator: null as AsyncIterator<unknown> | null };
         watches.set(id, watch);
+        stats?.subscriptionOpened();
         const tracked = (): boolean => !closed && watches.get(id) === watch;
         try {
             if (!host.dispatchWatch) {
@@ -567,6 +594,7 @@ export async function createActorSocketSession(
         } finally {
             if (watches.get(id) === watch) {
                 watches.delete(id);
+                stats?.subscriptionClosed();
                 // Belt and braces on EVERY exit, the failure path included:
                 // an iterator the loop abandoned mid-error must still release
                 // the activation's keep-alive, and once the entry leaves the
@@ -613,6 +641,7 @@ export async function createActorSocketSession(
             if (watch) {
                 watches.delete(message.i);
                 stopWatch(watch);
+                stats?.subscriptionClosed();
             }
             return;
         }
@@ -689,7 +718,7 @@ export async function createActorSocketSession(
         revalidateTimer = setInterval(() => void revalidate(), revalidateMs);
     }
 
-    return {
+    self = {
         handle(message: string): void {
             if (closed) return;
             if (!withinBytes(message, maxMessageBytes)) {
@@ -713,9 +742,12 @@ export async function createActorSocketSession(
             if (closed) return;
             closed = true;
             teardown();
+            stats?.closed(self, openedAt);
         },
         stats(): { inFlight: number; subscriptions: number } {
             return { inFlight: inFlight.size, subscriptions: watches.size };
         }
     };
+    stats?.opened(self);
+    return self;
 }

@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`socketStats()` on `@sigx/actors/server`** (#166): socket observability
+  as the repo's counter discipline prescribes — one flat totals object per
+  host/listener (connections opened/closed/refused, calls started/failed,
+  subscriptions opened/closed, protocol breaches, lifetime closes), live
+  gauges summed from open sessions (`open`, `inFlight`, `subscriptions`),
+  and a connection-lifetime histogram in the runtime's own log-linear
+  layout so digests merge like every other histogram. Sessions record into
+  it via the new `ActorSocketSessionOptions.stats`; the app publishes it as
+  an ops section (`registry.reportOps('sockets', () => stats.snapshot())`),
+  riding the ops endpoint's existing bearer posture with no endpoint
+  changes. Prometheus/OTel/CLI rendering is the follow-up half of #166.
 - **Socket sessions no longer outlive their credentials** (#159):
   `createActorSocketSession` gains `revalidateMs` — re-run authentication
   against the pinned upgrade request on a fresh context every interval, and
