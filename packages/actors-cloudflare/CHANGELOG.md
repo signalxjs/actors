@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-09
+
 ### Added
 
 - **The object-terminated socket — `createHostDurableObject({ socket })` +
