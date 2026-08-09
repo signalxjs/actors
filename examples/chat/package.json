@@ -11,11 +11,13 @@
     },
     "dependencies": {
         "@sigx/actors": "workspace:*",
+        "@sigx/actors-ws": "workspace:*",
         "@sigx/reactivity": "catalog:",
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "@sigx/server-renderer": "catalog:",
-        "sigx": "catalog:"
+        "sigx": "catalog:",
+        "ws": "^8.21.1"
     },
     "devDependencies": {
         "@sigx/vite": "catalog:",

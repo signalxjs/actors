@@ -20,8 +20,21 @@ const vite = await createViteServer({
 
 const document = await createDevRequestHandler(vite, { entry: '/src/entry-server.tsx' });
 
+// The client socket, in dev. Everything loads through the SSR module
+// runner ON PURPOSE: `sigxActors({ app })` started the app from
+// '/src/actors.app.ts' through that runner, and `ssrLoadModule` caches per
+// graph — so this `app` is the plugin's own instance (`app.start()` returns
+// the already-started host), and the socket adapter resolves the same
+// module family as the app's `authenticate`. Importing either from plain
+// node_modules instead would split the module graph and the upgrade would
+// authenticate against a feature nobody configured (the #304 bug class).
+const [{ attachActorSocket }, { app }] = await Promise.all([
+    vite.ssrLoadModule('@sigx/actors-ws/node'),
+    vite.ssrLoadModule('/src/actors.app.ts')
+]);
+
 const port = Number(process.env.PORT ?? 5273);
-createServer((req, res) => {
+const server = createServer((req, res) => {
     vite.middlewares(req, res, () => {
         document(req, res).catch((error) => {
             vite.ssrFixStacktrace(error);
@@ -30,7 +43,11 @@ createServer((req, res) => {
             res.end(String(error?.stack ?? error));
         });
     });
-}).listen(port, () => {
+});
+
+attachActorSocket(server, { host: await app.start() });
+
+server.listen(port, () => {
     console.log(`chat dev  http://localhost:${port}`);
     console.log('sign in from the page footer — the cookie is HttpOnly and signed');
 });
