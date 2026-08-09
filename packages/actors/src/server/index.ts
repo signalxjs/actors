@@ -25,6 +25,13 @@ export {
     type ActorSocketSession,
     type ActorSocketSessionOptions
 } from './socket-session';
+export {
+    socketStats,
+    type SocketSessionRecorder,
+    type SocketStats,
+    type SocketStatsSnapshot,
+    type SocketStatsTotals
+} from './socket-stats';
 /** The routing token an inbound call carries. READ-ONLY — the endpoint does
  *  not consult it, and deliberately never validates it. */
 export {
