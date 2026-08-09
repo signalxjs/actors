@@ -206,6 +206,22 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
                     onOpen: () => {
                         if (settled) return;
                         settled = true;
+                        // Closed while this dial was in flight (#175).
+                        // `close()` can only release the link it HOLDS, and
+                        // during the connect window there is none — so
+                        // adopting the socket here would strand it: nothing
+                        // bounds a client-side session by default
+                        // (`revalidateMs` and `maxConnectionMs` are both
+                        // off), and it would also resurrect a transport the
+                        // caller already closed. Reject rather than resolve,
+                        // so anyone parked on `ready()` fails with the
+                        // closed error instead of waiting forever.
+                        if (closed) {
+                            opening = null;
+                            attempt.close();
+                            reject(closedError());
+                            return;
+                        }
                         link = attempt;
                         failures = 0;
                         opening = null;

@@ -383,4 +383,62 @@ describe('lifecycle', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(dials()).toBe(0);
     });
+
+    /**
+     * #175. `close()` releases the link it HOLDS, but a dial in flight has
+     * not produced one yet — so a transport closed inside the connect
+     * window used to adopt the socket when the handshake finally landed and
+     * then never release it. Nothing bounded that socket: server-side it is
+     * a live session with a pinned identity, and `revalidateMs` /
+     * `maxConnectionMs` are both off by default.
+     *
+     * An ordinary browser reaches this: the plugin closes the transport on
+     * teardown, so navigating away mid-connect is the whole reproduction.
+     */
+    it('releases a socket that opens after close() was called', async () => {
+        let openNow: (() => void) | null = null;
+        let closes = 0;
+        const transport = socketTransport({
+            connect: (handlers) => {
+                openNow = () => handlers.onOpen();
+                return {
+                    send: () => {},
+                    close: () => {
+                        closes += 1;
+                    }
+                };
+            }
+        });
+        const pending = transport.call('Cart#total', ['k']).catch(() => 'failed');
+        // Let the lazy dial actually start before closing.
+        await expect.poll(() => openNow !== null).toBe(true);
+
+        transport.close?.();
+        // The handshake completes AFTER the close — the whole point.
+        openNow!();
+
+        await expect(pending).resolves.toBe('failed');
+        expect(closes).toBe(1);
+    });
+
+    it('does not adopt a late connection for later calls', async () => {
+        let openNow: (() => void) | null = null;
+        const transport = socketTransport({
+            connect: (handlers) => {
+                openNow = () => handlers.onOpen();
+                return { send: () => {}, close: () => {} };
+            }
+        });
+        const pending = transport.call('Cart#total', ['k']).catch(() => 'failed');
+        await expect.poll(() => openNow !== null).toBe(true);
+        transport.close?.();
+        openNow!();
+        await pending;
+
+        // A closed transport stays closed: the late socket must not become
+        // a usable link, or `close()` would be silently undone by timing.
+        await expect(transport.call('Cart#total', ['k'])).rejects.toMatchObject({
+            status: 0
+        });
+    });
 });

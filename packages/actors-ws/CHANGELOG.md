@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`socketTransport().close()` during the first dial no longer leaks the
+  socket** (#175). `close()` can only release the link it holds, and inside
+  the connect window there is none — so a handshake that completed after the
+  close was adopted anyway and never released. The socket stayed open until
+  TCP gave up, and server-side that is a live `createActorSocketSession`
+  holding its pinned identity and any subscriptions it went on to establish,
+  with nothing to bound it: `revalidateMs` and `maxConnectionMs` both
+  default to off. An ordinary browser reaches this — the plugin closes the
+  transport on teardown, so navigating away mid-connect was enough, and a
+  slow network is what made the window wide. A caller parked on that dial
+  also hung forever rather than failing; it now rejects with the usual
+  closed error (`status: 0`). Found by the connection-scale rig in #172,
+  which measured 300 such closes leaving all 300 sockets open on the host.
+
 ## [0.6.0] - 2026-08-09
 
 ### Added
