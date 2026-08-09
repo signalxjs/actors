@@ -27,12 +27,15 @@ export {
     durableObjectName,
     durableObjectPlacement,
     durableObjects,
-    type DurableObjectPlacementOptions
+    durableObjectStubResolver,
+    type DurableObjectPlacementOptions,
+    type DurableObjectStubResolver
 } from './placement';
 export {
     createHostDurableObject,
     type DurableAppOptions,
     type DurableObjectStateLike,
+    type DurableWebSocketLike,
     type HostDurableObjectInstance,
     type HostDurableObjectOptions
 } from './host';
@@ -44,8 +47,11 @@ export {
 } from './worker';
 export {
     DEFAULT_SOCKET_PATH,
+    objectSocketRoute,
+    parseSocketActorPath,
     workerSocket,
     type CloudflareWebSocketLike,
+    type ObjectSocketRouteOptions,
     type WorkerSocketOptions
 } from './socket';
 export type {

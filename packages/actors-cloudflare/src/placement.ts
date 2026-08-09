@@ -114,6 +114,74 @@ export function durableObjectName(ref: ActorRef): string {
     return `${ref.type}${SEP}${ref.key}`;
 }
 
+/** Ref → object name and stub, exactly as the placement derives them. */
+export interface DurableObjectStubResolver {
+    name(ref: ActorRef): string;
+    stub(ref: ActorRef): DurableObjectStubLike;
+}
+
+/**
+ * The ref → object derivation, extracted so every surface that needs a stub
+ * — the placement's dispatchers and the object-terminated socket's
+ * forwarding route — shares ONE implementation. Two copies of this logic is
+ * how a Worker and a route come to disagree about where an actor lives,
+ * which is precisely the failure `#guardIdentity` exists to catch late; this
+ * removes the way to cause it early.
+ *
+ * Stubs are derived fresh per call and never cached — a stub is an I/O
+ * object bound to the request context that created it.
+ */
+export function durableObjectStubResolver(
+    options: Pick<
+        DurableObjectPlacementOptions,
+        'namespace' | 'objectName' | 'locationHint' | 'jurisdiction'
+    >
+): DurableObjectStubResolver {
+    const objectName = options.objectName ?? durableObjectName;
+
+    const namespaceFor = (ref: ActorRef): DurableObjectNamespaceLike => {
+        const resolved =
+            typeof options.namespace === 'function'
+                ? options.namespace(ref)
+                : options.namespace;
+        if (!resolved) {
+            throw new Error(
+                `[sigx actors-cloudflare] no Durable Object namespace for actor type ` +
+                    `"${ref.type}" — the namespace resolver returned nothing. Check the ` +
+                    `binding names in wrangler.jsonc against the types you registered.`
+            );
+        }
+        const jurisdiction =
+            typeof options.jurisdiction === 'function'
+                ? options.jurisdiction(ref)
+                : options.jurisdiction;
+        if (jurisdiction === undefined) return resolved;
+        if (!resolved.jurisdiction) {
+            throw new Error(
+                `[sigx actors-cloudflare] a jurisdiction ("${jurisdiction}") was requested ` +
+                    `for ${ref.type}/${ref.key}, but this namespace binding does not support ` +
+                    `jurisdictions.`
+            );
+        }
+        return resolved.jurisdiction(jurisdiction);
+    };
+
+    return {
+        name: objectName,
+        stub(ref: ActorRef): DurableObjectStubLike {
+            const namespace = namespaceFor(ref);
+            const hint =
+                typeof options.locationHint === 'function'
+                    ? options.locationHint(ref)
+                    : options.locationHint;
+            const id = namespace.idFromName(objectName(ref));
+            return hint === undefined
+                ? namespace.get(id)
+                : namespace.get(id, { locationHint: hint });
+        }
+    };
+}
+
 export function durableObjectPlacement(
     options: DurableObjectPlacementOptions
 ): ActorPlacement {
@@ -128,7 +196,6 @@ export function durableObjectPlacement(
                 `— got ${JSON.stringify(base)}.`
         );
     }
-    const objectName = options.objectName ?? durableObjectName;
     const config: HostTransportConfig = {
         hostId: options.hostId ?? 'cf',
         epoch: 0,
@@ -184,47 +251,10 @@ export function durableObjectPlacement(
         return is;
     };
 
-    const namespaceFor = (ref: ActorRef): DurableObjectNamespaceLike => {
-        const resolved =
-            typeof options.namespace === 'function'
-                ? options.namespace(ref)
-                : options.namespace;
-        if (!resolved) {
-            throw new Error(
-                `[sigx actors-cloudflare] no Durable Object namespace for actor type ` +
-                    `"${ref.type}" — the namespace resolver returned nothing. Check the ` +
-                    `binding names in wrangler.jsonc against the types you registered.`
-            );
-        }
-        const jurisdiction =
-            typeof options.jurisdiction === 'function'
-                ? options.jurisdiction(ref)
-                : options.jurisdiction;
-        if (jurisdiction === undefined) return resolved;
-        if (!resolved.jurisdiction) {
-            throw new Error(
-                `[sigx actors-cloudflare] a jurisdiction ("${jurisdiction}") was requested ` +
-                    `for ${ref.type}/${ref.key}, but this namespace binding does not support ` +
-                    `jurisdictions.`
-            );
-        }
-        return resolved.jurisdiction(jurisdiction);
-    };
+    const resolver = durableObjectStubResolver(options);
 
-    const stubFor = (ref: ActorRef, name: string): DurableObjectStubLike => {
-        const namespace = namespaceFor(ref);
-        const hint =
-            typeof options.locationHint === 'function'
-                ? options.locationHint(ref)
-                : options.locationHint;
-        const id = namespace.idFromName(name);
-        return hint === undefined
-            ? namespace.get(id)
-            : namespace.get(id, { locationHint: hint });
-    };
-
-    const remoteFor = (ref: ActorRef, name: string): ActorDispatcher => {
-        const stub = stubFor(ref, name);
+    const remoteFor = (ref: ActorRef): ActorDispatcher => {
+        const stub = resolver.stub(ref);
         // One transport per target: building it is closure creation, and
         // capturing the stub directly beats smuggling the object name
         // through a synthetic address.
@@ -277,7 +307,7 @@ export function durableObjectPlacement(
             if (stateless === true) return requireLocal();
             if (stateless !== false) {
                 return Promise.resolve(stateless).then((is) =>
-                    is ? requireLocal() : remoteFor(ref, objectName(ref))
+                    is ? requireLocal() : remoteFor(ref)
                 );
             }
             // Built fresh every time, and NOT cached. A stub is an I/O
@@ -286,7 +316,7 @@ export function durableObjectPlacement(
             // cache that outlives a request turns every call after the first
             // into "unreachable". Rebuilding costs one `idFromName` hash and
             // a closure; a cache costs correctness.
-            return remoteFor(ref, objectName(ref));
+            return remoteFor(ref);
         }
     };
 }

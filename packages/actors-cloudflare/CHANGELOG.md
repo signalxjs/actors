@@ -4,6 +4,31 @@
 
 ### Added
 
+- **The object-terminated socket — `createHostDurableObject({ socket })` +
+  `createWorkerHandler({ socket: { terminate: 'object' } })`** (#158): the
+  upgrade at `/_sigx/socket/{type}/{key}` is forwarded — cookies, `Origin`
+  and all — to that actor's Durable Object, which accepts it with the
+  hibernation API (`state.acceptWebSocket`, tag `sigx:socket`). The session
+  lives where the actor lives, so a disconnect tears down INSIDE the object:
+  `iterator.return()` reaches the watch locally, `keptAlive` clears, and the
+  empty room is released — the four skipped acceptance tests from the old
+  tracker's #47 investigation are unskipped and green on real workerd.
+  Hibernation contract, deliberately minimal: keepalive is
+  `setWebSocketAutoResponse` (`{"p":1}` answered without waking the
+  object; `pingMs` is not accepted), `maxConnectionMs` survives eviction as
+  a per-message-checked deadline in the socket attachment (`{v, deadline?}`
+  — nothing else rides it), and the first message after a cold wake closes
+  `1012 'session evicted — reconnect'` — the client transport redials with
+  the browser's current cookies and re-seeds, the same contract as any
+  drop. One socket per actor/object ("the room pattern"); the fix covers
+  the object's OWN actor's watches — a session's watches on other actors
+  still cross the stub boundary, which with the remaining HTTP-stream shape
+  is why #47 stays open. Also exported: `objectSocketRoute`,
+  `parseSocketActorPath`, `durableObjectStubResolver` (the ref → stub
+  derivation, extracted so the placement and the forwarding route cannot
+  disagree about where an actor lives), `DurableWebSocketLike`, and the
+  optional hibernation members on `DurableObjectStateLike`.
+
 - **`workerSocket()` — the Worker-terminated route for the client socket**
   (#157): browsers speaking `@sigx/actors/socket-wire` over one WebSocket,
   upgraded in the Worker. On Workers a 101 upgrade IS a `Response`, so the

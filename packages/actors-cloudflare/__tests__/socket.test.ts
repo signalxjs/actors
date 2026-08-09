@@ -7,8 +7,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ActorRoute, PluginRegistry } from '@sigx/actors/host';
-import type { Host } from '@sigx/actors';
-import { DEFAULT_SOCKET_PATH, workerSocket } from '../src/socket';
+import { defineActor, defineWorker, type Host } from '@sigx/actors';
+import {
+    DEFAULT_SOCKET_PATH,
+    objectSocketRoute,
+    parseSocketActorPath,
+    workerSocket
+} from '../src/socket';
+import type { DurableObjectStubResolver } from '../src/placement';
 
 function routeOf(options?: Parameters<typeof workerSocket>[0]): ActorRoute {
     let captured: ActorRoute | undefined;
@@ -60,6 +66,109 @@ describe('workerSocket route matching', () => {
         expect(route.match(upgrade(`https://x.test${DEFAULT_SOCKET_PATH}`, 'WebSocket'))).toBe(
             true
         );
+    });
+});
+
+describe('parseSocketActorPath', () => {
+    it('parses exactly two non-empty URI-encoded segments after the prefix', () => {
+        expect(parseSocketActorPath('/_sigx/socket/Room/room-1')).toEqual({
+            type: 'Room',
+            key: 'room-1'
+        });
+        expect(parseSocketActorPath('/_sigx/socket/acme%2Fgreeter/k%2Fx')).toEqual({
+            type: 'acme/greeter',
+            key: 'k/x'
+        });
+    });
+
+    it('answers null for every other shape', () => {
+        // The bare path is the WORKER-terminated route's — arity is the
+        // disambiguator that lets both modes share the prefix.
+        expect(parseSocketActorPath('/_sigx/socket')).toBeNull();
+        expect(parseSocketActorPath('/_sigx/socket/')).toBeNull();
+        expect(parseSocketActorPath('/_sigx/socket/Room')).toBeNull();
+        expect(parseSocketActorPath('/_sigx/socket/Room/')).toBeNull();
+        expect(parseSocketActorPath('/_sigx/socket//k')).toBeNull();
+        expect(parseSocketActorPath('/_sigx/socket/Room/a/b')).toBeNull();
+        expect(parseSocketActorPath('/other/Room/k')).toBeNull();
+        // Malformed percent-encoding must not throw out of a route matcher.
+        expect(parseSocketActorPath('/_sigx/socket/%zz/k')).toBeNull();
+    });
+
+    it('honours a custom prefix', () => {
+        expect(parseSocketActorPath('/ws/Room/k', '/ws')).toEqual({ type: 'Room', key: 'k' });
+        expect(parseSocketActorPath('/_sigx/socket/Room/k', '/ws')).toBeNull();
+    });
+
+    it('normalizes a trailing slash on the configured prefix', () => {
+        // `/ws/` must mean the same mount as `/ws` — silently matching
+        // nothing is a footgun, not a feature.
+        expect(parseSocketActorPath('/ws/Room/k', '/ws/')).toEqual({ type: 'Room', key: 'k' });
+        expect(parseSocketActorPath('/ws/Room/k', '/ws//')).toEqual({ type: 'Room', key: 'k' });
+    });
+});
+
+describe('objectSocketRoute', () => {
+    const Stateful = defineActor({
+        type: 'Stateful',
+        allowAnonymous: true,
+        state: () => ({}),
+        methods: () => ({})
+    });
+    const Pool = defineWorker({
+        type: 'Pool',
+        methods: () => ({})
+    });
+
+    const fakeHost = {
+        definition: async (type: string) =>
+            type === 'Stateful' ? Stateful : type === 'Pool' ? Pool : undefined
+    } as unknown as Host;
+
+    function resolverTo(fetched: { url: string }[]): DurableObjectStubResolver {
+        return {
+            name: (ref) => `${ref.type}/${ref.key}`,
+            stub: () => ({
+                fetch: async (input: string | Request) => {
+                    fetched.push({ url: typeof input === 'string' ? input : input.url });
+                    return new Response(null, { status: 200 });
+                }
+            })
+        };
+    }
+
+    it('matches only an upgrade whose path parses as an actor', () => {
+        const route = objectSocketRoute({ resolver: resolverTo([]) });
+        expect(route.match(upgrade('https://x.test/_sigx/socket/Stateful/k'))).toBe(true);
+        expect(route.match(upgrade('https://x.test/_sigx/socket'))).toBe(false);
+        expect(route.match(new Request('https://x.test/_sigx/socket/Stateful/k'))).toBe(false);
+    });
+
+    it('forwards the ORIGINAL request to the resolved stub', async () => {
+        const fetched: { url: string }[] = [];
+        const route = objectSocketRoute({ resolver: resolverTo(fetched) });
+        const request = upgrade('https://x.test/_sigx/socket/Stateful/k');
+        await route.handle(request, fakeHost);
+        // Verbatim — cookies and Origin must ride through to the object.
+        expect(fetched).toEqual([{ url: 'https://x.test/_sigx/socket/Stateful/k' }]);
+    });
+
+    it('404s an unknown type without touching a stub', async () => {
+        const fetched: { url: string }[] = [];
+        const route = objectSocketRoute({ resolver: resolverTo(fetched) });
+        const res = await route.handle(upgrade('https://x.test/_sigx/socket/Nope/k'), fakeHost);
+        expect(res.status).toBe(404);
+        expect(fetched).toEqual([]);
+    });
+
+    it('400s a stateless worker pool with a named reason', async () => {
+        const fetched: { url: string }[] = [];
+        const route = objectSocketRoute({ resolver: resolverTo(fetched) });
+        const res = await route.handle(upgrade('https://x.test/_sigx/socket/Pool/k'), fakeHost);
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: { message: string } };
+        expect(body.error.message).toContain('stateless');
+        expect(fetched).toEqual([]);
     });
 });
 

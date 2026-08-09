@@ -74,6 +74,35 @@ and `verify.mjs` work, but the socket keeps the default `'same-origin'` — a
 socket upgrade arrives from a browser **with cookies attached and no
 preflight**, and only the page dials it.
 
+### The room pattern (object-terminated, #158)
+
+When the shape is one actor and many clients — a chat room, a game lobby, a
+shared document — terminate the socket **in the object** instead:
+
+```ts
+export class ActorHost extends createHostDurableObject<Env>({
+    actors,
+    namespace: (env) => env.ACTORS,
+    app: createApp,
+    socket: {}                              // session options live object-side
+}) {}
+
+export default createWorkerHandler<Env>({
+    actors,
+    namespace: (env) => env.ACTORS,
+    socket: { terminate: 'object' }         // forwards {path}/{type}/{key}
+});
+```
+
+The client dials one socket per actor
+(`wss://…/_sigx/socket/Room/room-1`) and the session lives where the actor
+lives — so a disconnect releases the room (see the #47 bite below, which
+this mode is the answer to), and an idle page hibernates for free. The two
+modes share a path prefix and differ by arity, so they compose on one
+deployment. What eviction costs: the first message after a cold wake closes
+`1012 'session evicted — reconnect'` and the client redials with current
+cookies and re-seeds — the same contract as any drop.
+
 ## Five things that will bite you
 
 **`new_sqlite_classes`, not `new_classes`.** The latter creates the legacy
@@ -98,14 +127,15 @@ browsers posting a form, and the public mount refuses a request with no
 `Origin` by default. A real app with a browser front-end passes its own
 origins here instead of switching the check off.
 
-**A departed socket subscriber does not release the actor
-([#47](https://github.com/signalxjs/actors/issues/47)).** The
-Worker-terminated socket changes where the *socket* ends, not where calls
-run: every subscription still crosses Worker→object over `stub.fetch`, whose
-abort signal is swallowed at the boundary — so the last tab leaving a room
-leaves the room's `keptAlive` set, resident and billable. When those
-economics matter, use the object-terminated socket
-([#158](https://github.com/signalxjs/actors/issues/158)) once it lands.
+**A departed subscriber releases the actor only on the object-terminated
+socket ([#47](https://github.com/signalxjs/actors/issues/47)).** The
+Worker-terminated socket and the NDJSON stream change where the *connection*
+ends, not where calls run: every subscription still crosses Worker→object
+over `stub.fetch`, whose abort signal is swallowed at the boundary — so the
+last tab leaving a room leaves the room's `keptAlive` set, resident and
+billable. When those economics matter, use the room pattern above
+([#158](https://github.com/signalxjs/actors/issues/158)): the session lives
+in the object, teardown is local, and the empty room is released.
 
 ## Eviction is not deactivation
 
