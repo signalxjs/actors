@@ -84,6 +84,8 @@ spec:
               value: {{ .Values.wsLoadgen.probes | quote }}
             - name: CONNECT_BATCH
               value: {{ .Values.wsLoadgen.connectBatch | quote }}
+            - name: CONNECT_TIMEOUT_S
+              value: {{ .Values.wsLoadgen.connectTimeoutS | quote }}
             - name: KEY_PREFIX
               value: {{ .Values.wsLoadgen.keyPrefix | quote }}
             {{- if .Values.socket.env.SOCKET_PATH }}

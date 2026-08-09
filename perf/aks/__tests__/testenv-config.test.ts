@@ -26,6 +26,7 @@ const NEEDS: Record<string, string[]> = {
     load: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
     'ws-up': ['RG', 'CLUSTER'],
     'ws-load': ['RG', 'CLUSTER', 'ACR'],
+    'ws-bench': ['RG', 'CLUSTER'],
     'migrate-check': ['RG', 'CLUSTER', 'ACR', 'CHAT_HOST'],
     down: ['RG', 'CLUSTER', 'CHAT_HOST', 'DNS_ZONE', 'DNS_RG', 'LOAD_RG'],
     'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM']

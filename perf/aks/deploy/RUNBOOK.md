@@ -584,6 +584,28 @@ Pass/fail, and what to record:
   streams, so check `remoteWatches` / `coalescedWatches` in
   `/_sigx/ops/cluster` for both arms.
 
+### Recording it instead of reading it (#184)
+
+Everything above is the hand-run: it prints JSON and you read it. To get a
+baseline file, a shape guard and a spread instead:
+
+```sh
+node perf/aks/deploy/testenv.mjs ws-bench --save-baseline   # record THIS shape
+node perf/aks/deploy/testenv.mjs ws-bench --compare         # against it
+```
+
+`ws-bench` reads the deployed image and the live socket caps off the
+release and exports them as `INFRA_SHAPE`, so a run under a different
+`SOCKET_MAX_SUBSCRIPTIONS` (or a different replica count, or a different
+image) is REFUSED rather than compared — the same protection `infra/*` has.
+It runs `--runs=1` deliberately: the harness discards a warmup before the
+measured runs, and each run here is a full ladder holding tens of thousands
+of sockets on a paid cluster.
+
+`sockets/principal-cliff` is the one to watch. It climbs distinct
+identities until dialling fails and records `max_healthy_identities` —
+the number #180 exists to move, sitting between 100 and 250 today.
+
 Sockets are HOST-AFFINE: the client is pinned to whichever pod the Service
 gave it, and every call inside re-dispatches through placement. The edge
 hash buys nothing here, so cross-host rates read like `random` placement

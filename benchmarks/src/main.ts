@@ -31,7 +31,8 @@ import {
     selectScenarios,
     threadsHint,
     tier2Hint,
-    tier3Hint
+    tier3Hint,
+    wsHint
 } from './scenarios/index.ts';
 import type { BenchResult } from './types.ts';
 
@@ -97,6 +98,7 @@ async function main(): Promise<void> {
         const hint =
             tier2Hint(options.filters) ??
             tier3Hint(options.filters) ??
+            wsHint(options.filters) ??
             threadsHint(options.filters);
         if (hint) {
             // Guidance, not a crash: a stack trace here buries the one line

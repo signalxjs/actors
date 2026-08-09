@@ -160,6 +160,9 @@ pnpm bench:ab --base-dir=<checkout> --head-dir=<checkout> --out=rounds.json
                           # interleaved counterbalanced A/B of two BUILT checkouts
 pnpm bench:ab:report --rounds-file=rounds.json   # verdict table from those rounds
 pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
+pnpm bench:ws             # sockets/*: connection scale on a live cluster (opt-in)
+pnpm bench:ws:baseline    # record this deployment SHAPE's socket baseline
+pnpm bench:ws:compare     # run again and diff against it
 pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
 pnpm bench:threads        # compute/: worker_threads vs the event loop (opt-in, needs cores)
 ```
@@ -439,12 +442,18 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   CAS persistence), an in-cluster closed-loop load generator, a Helm
   chart, and `deploy/testenv.mjs` — the whole Azure environment as one
   command per verb (up / status / test / baseline / bench / load /
-  ws-up / ws-load / migrate-check / down). The WebSocket half (#172) is
+  ws-up / ws-load / ws-bench / migrate-check / down). The WebSocket half (#172) is
   its own axis and measures different nouns: `ENABLE_SOCKET` mounts
   `attachActorSocket` plus a `socketStats()` ops section on the host,
   `Fanout` is the actor a subscriber watches, and `ws-loadgen.mjs`
   reports CONNECTIONS HELD and MESSAGES DELIVERED rather than ops/s
-  (`ws-dev.mjs` runs the same path single-host with no Redis).
+  (`ws-dev.mjs` runs the same path single-host with no Redis). `ws-load`
+  is the hand-run; `ws-bench` is the RECORDED one — it computes the
+  actors release's own `INFRA_SHAPE` (socket caps included, so a run under
+  a different `SOCKET_MAX_SUBSCRIPTIONS` is refused rather than compared)
+  and hands off to the `sockets/*` scenarios in
+  `benchmarks/src/scenarios/sockets.ts` (#184). The orchestration itself
+  lives in `deploy/ws-load.mjs` so both callers share it.
   Two facts bound every number it produces: client subscriptions cannot
   set `throttleMs`, so all of them run at the fixed 50 ms watch throttle;
   and a live read that consults `ctx.principal` gets one watch loop per
