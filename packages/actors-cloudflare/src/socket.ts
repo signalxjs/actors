@@ -30,11 +30,13 @@
  * a refused construction can answer with an honest HTTP status instead of
  * Node's accept-then-1008.
  */
+import type { AnyActorDefinition } from '@sigx/actors';
 import type { ActorPlugin, ActorRoute } from '@sigx/actors/host';
 import {
     createActorSocketSession,
     type ActorSocketSessionOptions
 } from '@sigx/actors/server';
+import type { DurableObjectStubResolver } from './placement';
 
 /**
  * The slice of a Cloudflare `WebSocket` this route drives — structural on
@@ -60,6 +62,27 @@ interface WebSocketPairLike {
 /** Same path as `@sigx/actors-ws/node`'s, defined locally on purpose — the
  *  packages must not depend on each other for a string. */
 export const DEFAULT_SOCKET_PATH = '/_sigx/socket';
+
+/**
+ * Parse the OBJECT-terminated upgrade path: `{path}/{type}/{key}`, both
+ * segments URI-encoded and non-empty. Anything else — the bare path (that is
+ * the Worker-terminated route's), a missing segment, an extra one — is `null`.
+ * The two shapes share a prefix and are disambiguated by arity, so both
+ * termination modes can coexist on one deployment.
+ */
+export function parseSocketActorPath(
+    pathname: string,
+    path = DEFAULT_SOCKET_PATH
+): { type: string; key: string } | null {
+    if (!pathname.startsWith(`${path}/`)) return null;
+    const segments = pathname.slice(path.length + 1).split('/');
+    if (segments.length !== 2 || segments[0] === '' || segments[1] === '') return null;
+    try {
+        return { type: decodeURIComponent(segments[0]), key: decodeURIComponent(segments[1]) };
+    } catch {
+        return null;
+    }
+}
 
 export interface WorkerSocketOptions
     extends Omit<ActorSocketSessionOptions, 'host' | 'request' | 'send' | 'close'> {
@@ -124,13 +147,7 @@ export function workerSocket(options: WorkerSocketOptions = {}): ActorPlugin {
                 // can fail with a status instead of a dead socket. A
                 // `ServerFnError` carries a client-safe status and message;
                 // anything else is the server's own fault and stays masked.
-                const status = statusOf(error);
-                return status
-                    ? errorResponse(status, messageOf(error))
-                    : errorResponse(
-                          500,
-                          '[sigx actors-cloudflare] socket session failed to construct'
-                      );
+                return refusalResponse(error);
             }
 
             server.addEventListener('message', (event) => {
@@ -160,6 +177,79 @@ export function workerSocket(options: WorkerSocketOptions = {}): ActorPlugin {
             registry.route(route);
         }
     };
+}
+
+export interface ObjectSocketRouteOptions {
+    /** The exact ref → stub derivation the placement uses — never a copy. */
+    resolver: DurableObjectStubResolver;
+    /** Upgrade path PREFIX; the actor rides as `{path}/{type}/{key}`.
+     *  Default `/_sigx/socket`. */
+    path?: string;
+}
+
+/**
+ * The Worker half of the OBJECT-terminated socket (#158): parse the actor
+ * out of the upgrade path and forward the request — verbatim, cookies and
+ * `Origin` and all — to that actor's Durable Object, whose
+ * `createHostDurableObject({ socket })` accepts it with the hibernation API.
+ * The 101 Response carrying the client end passes straight back through.
+ *
+ * Registered by `createWorkerHandler({ socket: { terminate: 'object' } })`
+ * rather than by users directly, because the resolver must be built from the
+ * SAME namespace binding and placement options the handler already holds —
+ * a hand-assembled route is one config drift away from the Worker and the
+ * object disagreeing about where an actor lives.
+ */
+export function objectSocketRoute(options: ObjectSocketRouteOptions): ActorRoute {
+    const { resolver, path = DEFAULT_SOCKET_PATH } = options;
+    return {
+        name: 'cloudflare:object-socket',
+        match(request: Request): boolean {
+            if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return false;
+            let pathname: string;
+            try {
+                pathname = new URL(request.url).pathname;
+            } catch {
+                return false;
+            }
+            return parseSocketActorPath(pathname, path) !== null;
+        },
+        async handle(request, host): Promise<Response> {
+            const parsed = parseSocketActorPath(new URL(request.url).pathname, path);
+            if (!parsed) return errorResponse(404, '[sigx actors-cloudflare] not found');
+            // The Worker is the 404 authority, exactly as on the HTTP mount:
+            // an unknown type must not mint a Durable Object.
+            const def = (await host.definition(parsed.type)) as AnyActorDefinition | undefined;
+            if (!def) {
+                return errorResponse(
+                    404,
+                    `[sigx actors-cloudflare] unknown actor type "${parsed.type}"`
+                );
+            }
+            if (def.__sigxActor.stateless !== undefined) {
+                // A stateless worker runs in whichever isolate dispatches it —
+                // there is no object to terminate a socket in.
+                return errorResponse(
+                    400,
+                    `[sigx actors-cloudflare] "${parsed.type}" is a stateless worker pool — ` +
+                        `it has no Durable Object to terminate a socket in. Use the ` +
+                        `worker-terminated socket for stateless calls.`
+                );
+            }
+            // Fresh stub per upgrade, never cached — an I/O object owned by
+            // this request.
+            return resolver.stub({ type: parsed.type, key: parsed.key }).fetch(request);
+        }
+    };
+}
+
+/** The HTTP answer for a session construction that rejected. Shared by the
+ *  Worker-terminated route and the object-terminated handler in `host.ts`. */
+export function refusalResponse(error: unknown): Response {
+    const status = statusOf(error);
+    return status
+        ? errorResponse(status, messageOf(error))
+        : errorResponse(500, '[sigx actors-cloudflare] socket session failed to construct');
 }
 
 /**

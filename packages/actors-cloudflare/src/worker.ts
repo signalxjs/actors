@@ -15,8 +15,12 @@ import {
     type ActorAppOptions
 } from '@sigx/actors/host';
 import { createFetchHandler, type FetchHandlerOptions } from '@sigx/actors/server';
-import { durableObjects, type DurableObjectPlacementOptions } from './placement';
-import { workerSocket, type WorkerSocketOptions } from './socket';
+import {
+    durableObjects,
+    durableObjectStubResolver,
+    type DurableObjectPlacementOptions
+} from './placement';
+import { objectSocketRoute, workerSocket, type WorkerSocketOptions } from './socket';
 import type { DurableObjectNamespaceLike } from './types';
 
 /**
@@ -58,13 +62,22 @@ export interface WorkerHandlerOptions<Env = unknown> {
     /** Forwarded to the public mount — `base`, `fallback`, guards, caps. */
     fetch?: FetchHandlerOptions;
     /**
-     * Client-facing WebSocket surface — sugar over
-     * `app.use(workerSocket(...))`. `terminate: 'worker'` (the default and,
-     * for now, the only mode) upgrades in the Worker itself: one multiplexed
-     * socket per client, every call re-dispatched through placement. It does
-     * NOT fix #47 — see `workerSocket`'s own doc for what that means.
+     * Client-facing WebSocket surface, in one of two termination modes:
+     *
+     * - `terminate: 'worker'` (default) — sugar over
+     *   `app.use(workerSocket(...))`: the WORKER upgrades at `{path}`, one
+     *   multiplexed socket per client, every call re-dispatched through
+     *   placement. It does NOT fix #47 — see `workerSocket`'s doc.
+     * - `terminate: 'object'` — the upgrade at `{path}/{type}/{key}` is
+     *   FORWARDED to that actor's Durable Object, which must be built with
+     *   `createHostDurableObject({ socket })`. One socket per actor, teardown
+     *   local to the object (the #47 answer), hibernation-ready. The session
+     *   options ride on the OBJECT side in that mode, not here.
+     *
+     * The two paths differ by arity, so mounting both — this option for one
+     * mode plus `app.use(workerSocket(...))` for the other — composes.
      */
-    socket?: WorkerSocketOptions & { terminate?: 'worker' };
+    socket?: WorkerSocketOptions & { terminate?: 'worker' | 'object' };
 }
 
 export interface WorkerHandler<Env> {
@@ -107,8 +120,40 @@ export function createWorkerHandler<Env = unknown>(
             })
         );
         if (options.socket) {
-            const { terminate: _terminate, ...socket } = options.socket;
-            app.use(workerSocket(socket));
+            const { terminate = 'worker', ...socket } = options.socket;
+            if (terminate === 'object') {
+                if (__DEV__) {
+                    const ignored = Object.keys(socket).filter((key) => key !== 'path');
+                    if (ignored.length > 0) {
+                        console.warn(
+                            `[sigx actors-cloudflare] socket: { terminate: 'object' } ignores ` +
+                                `${ignored.join(', ')} on the Worker — session options belong ` +
+                                `on createHostDurableObject({ socket }) in that mode, where ` +
+                                `the session actually runs.`
+                        );
+                    }
+                }
+                // Built HERE and not by the user, because only this handler
+                // holds both `env` (the namespace binding) and the placement
+                // options — the resolver must derive object names exactly as
+                // the placement does, or the upgrade lands in an object that
+                // refuses it.
+                const route = objectSocketRoute({
+                    resolver: durableObjectStubResolver({
+                        namespace: options.namespace(env),
+                        ...options.placement
+                    }),
+                    ...(socket.path !== undefined ? { path: socket.path } : {})
+                });
+                app.use({
+                    name: 'cloudflare:object-socket',
+                    setup(registry) {
+                        registry.route(route);
+                    }
+                });
+            } else {
+                app.use(workerSocket(socket));
+            }
         }
         const handler = createFetchHandler(app, options.fetch);
         await app.start();

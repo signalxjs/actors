@@ -15,6 +15,10 @@ whole actor app runs on Workers.
   [`@sigx/actors-ws`](https://sigx.dev/actors). It does **not** release
   `keptAlive` for departed live consumers (see
   [#47](https://github.com/signalxjs/actors/issues/47)).
+- **`createHostDurableObject({ socket })`** — the client WebSocket terminated
+  **in the object** (one socket per actor, hibernation-ready), which is the
+  mode that DOES release a departed consumer's `keptAlive`. Forwarded by
+  `createWorkerHandler({ socket: { terminate: 'object' } })`.
 
 The package is small because Cloudflare already guarantees a single global
 instance per object and serializes requests to it — that *is* the virtual-actor

@@ -131,12 +131,31 @@ per-runtime difference is only who answers the upgrade:
   Bun and Deno are the same shape with `server.upgrade` /
   `Deno.upgradeWebSocket` swapped in.
 
-One Cloudflare caveat that must not be papered over: the Worker-terminated
-socket changes **where the socket ends**, not where calls run — every call
-still crosses Worker→object over `stub.fetch`, whose abort signal is
-swallowed at the boundary (#47). A departed live consumer therefore still
-leaves `keptAlive` set in the objects it watched. Terminating the socket
-inside the object (#158) is the planned answer for that shape.
+On Cloudflare the socket terminates in one of two places, and the difference
+is the whole story:
+
+- **Worker-terminated** (`workerSocket()`, exact path `{path}`) — one
+  multiplexed socket per client, every call fanned out through placement.
+  It changes **where the socket ends**, not where calls run: every call
+  still crosses Worker→object over `stub.fetch`, whose abort signal is
+  swallowed at the boundary (#47), so a departed live consumer leaves
+  `keptAlive` set in the objects it watched.
+- **Object-terminated** (`createHostDurableObject({ socket })` behind a
+  forwarding route, path `{path}/{type}/{key}` — same prefix, disambiguated
+  by arity, so both modes coexist) — one socket per actor, accepted with the
+  hibernation API inside the object that owns it. Teardown is local, so a
+  disconnect actually releases the activation; an idle page is free rather
+  than resident-and-billable. The costs, stated plainly: a page watching N
+  actors holds N sockets, and an evicted isolate loses the session — the
+  first message after a cold wake closes `1012` and the client redials with
+  current cookies and re-seeds, the same contract as any drop.
+  `maxConnectionMs` survives eviction as a per-message-checked deadline in
+  the socket attachment; the object's single alarm stays with reminders.
+
+The object-terminated mode fixes #47 only for the object's **own** actor's
+watches — a session's watches on other actors go object→object over the
+same swallowed-signal stub boundary, and the HTTP-stream shape leaks as
+before, which is why #47 stays open.
 
 ### Behaviours a transport must preserve
 

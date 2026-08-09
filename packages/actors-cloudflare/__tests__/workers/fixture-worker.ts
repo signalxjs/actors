@@ -73,17 +73,27 @@ export const Counter = defineActor({
 
 export class TestHost extends createHostDurableObject<Env>({
     actors: [Counter],
-    namespace: (env) => env.ACTORS
+    namespace: (env) => env.ACTORS,
+    // The object-terminated socket (#158). Session options live HERE — the
+    // session runs inside the object; the Worker only forwards the upgrade.
+    socket: { origin: false }
 }) {}
 
 export default createWorkerHandler<Env>({
     actors: [Counter],
     namespace: (env) => env.ACTORS,
-    // A second socket mount that KEEPS the default 'same-origin' posture —
-    // the refusal test dials it with no Origin header and must get an HTTP
+    // Both termination modes on one deployment — the two paths differ by
+    // arity, so they compose. The Worker-terminated mounts ride the app
+    // factory (they need no env); the object-terminated forwarding needs
+    // the namespace binding, so it takes the `socket` sugar. The second
+    // worker-terminated mount KEEPS the default 'same-origin' posture — the
+    // refusal test dials it with no Origin header and must get an HTTP
     // status back, not a dead socket.
-    app: (base) => defineActorApp(base).use(workerSocket({ path: '/_sigx/socket-strict' })),
+    app: (base) =>
+        defineActorApp(base)
+            .use(workerSocket({ origin: false }))
+            .use(workerSocket({ path: '/_sigx/socket-strict' })),
     // A Worker's callers are not browsers posting a form.
     fetch: { origin: false },
-    socket: { origin: false }
+    socket: { terminate: 'object' }
 });
