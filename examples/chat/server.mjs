@@ -15,6 +15,7 @@ import { extname, join, sep } from 'node:path';
 import { createServerFnHandler } from '@sigx/server/node';
 import { createRequestHandler } from '@sigx/server-renderer/node';
 import { createActorHandler, attachSignalHandlers } from '@sigx/actors/node';
+import { attachActorSocket } from '@sigx/actors-ws/node';
 import { resolveStatic } from './src/static.ts';
 
 const here = import.meta.dirname;
@@ -100,6 +101,15 @@ const server = createServer((req, res) => {
         fns(req, res, () => void serveAsset(req, res, () => document(req, res)))
     );
 });
+
+// The client socket: the browser's whole actor surface — calls and the
+// page's three live reads — rides ONE WebSocket at /_sigx/socket. The
+// upgrade runs the same `authenticate` as every fetch (the HttpOnly cookie
+// rides it), and the same-origin posture stands by default. serverFns are
+// a different surface and stay on HTTP. Note the upgrade never passes
+// through the request chain above — RESERVED does not apply to it — so a
+// plain GET of /_sigx/socket still 404s while the upgrade succeeds.
+attachActorSocket(server, { host });
 
 // Pass the server AND onStopBegin: draining the actors is only half a
 // graceful shutdown, and `server` alone closes the listener at the end

@@ -26,7 +26,10 @@
             "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
             "@sigx/actors/node": ["../../packages/actors/src/node/index.ts"],
             "@sigx/actors/app": ["../../packages/actors/src/app/index.ts"],
-            "@sigx/actors/vite": ["../../packages/actors/src/vite/index.ts"]
+            "@sigx/actors/vite": ["../../packages/actors/src/vite/index.ts"],
+            "@sigx/actors/client": ["../../packages/actors/src/client/index.ts"],
+            "@sigx/actors/socket-wire": ["../../packages/actors/src/socket-wire.ts"],
+            "@sigx/actors-ws/client": ["../../packages/actors-ws/src/client.ts"]
         }
     },
     // Two ambient files from the runtime's own source, pulled in because

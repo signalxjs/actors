@@ -22,9 +22,10 @@ example is for.
 | | |
 |---|---|
 | **SSR that actually seeds** | `entry-server.tsx` renders `Room`, the actor reads dispatch **in-process**, and their results are serialized into the document. `entry-client.tsx` hydrates and finds them under the same canonical key, so the first paint costs no request. |
-| **`{ live: true }`** | The three reads in `Room.tsx` ride **one** held-open connection for the whole page, each re-running server-side after any turn that mutated what it reads — whoever caused it. Without it, a write only ever refreshes the tab that made it. |
+| **`{ live: true }` over the socket** | The three reads in `Room.tsx` ride **one WebSocket** for the whole page — each subscription is a single `{i,sub}` frame on it, each re-runs server-side after any turn that mutated what it reads, whoever caused it. Without `live`, a write only ever refreshes the tab that made it. |
+| **The transport is one line** | `entry-client.tsx`: `actorsPlugin({ transport: socketTransport({ url }) })` — that is the entire swap from fetch to WebSocket. `useActorState`, the actors, SSR, and the policy needed zero changes; the cookie that signed you in rides the upgrade, so the socket carries the same identity as every fetch. serverFns (`postMessage`, `me`) are a different surface and stay on HTTP. |
 | **Topics → projection** | `room.actor.ts` publishes to `room-activity`; ONE singleton `ActivityFeed` (`key: () => 'all'`) folds every room's events; the page observes that projection. Post in `/r/other` and the first tab's "across all rooms" panel moves, though that page never heard of the other room. |
-| **One policy, two transports** | See below — it is the lesson worth copying. |
+| **One policy, every transport** | The socket, the HTTP endpoint, and the in-process SSR dispatch all run the same `authenticate`/`authorize` — see below, it is the lesson worth copying. |
 | **`migrateState`** | `room.actor.ts` evolves a stored room between the storage read and activation, lazily, so a deploy adds no write amplification. |
 | **Three plugins, one build** | `vite.config.ts`: `sigx()` + `sigxServer()` + `sigxActors()` compose with no coordination. |
 
@@ -166,6 +167,21 @@ anything reading `rq.request` mid-render throws on a detached context.
 plus rename, and the HMR path loses that race — and chat state changing is
 not a source edit anyway.
 
+**A dropped socket fails its in-flight calls, and never retries them.**
+Re-sending a non-idempotent actor method is a correctness bug, not a retry —
+so a call racing a network change surfaces its error. Subscriptions are
+declarative and DO re-establish: the transport redials on its own and
+re-seeds the live set, which is why the page recovers by itself after a
+laptop suspend while a `post` in flight at that moment does not pretend it
+succeeded. (Chat's writes go through the `postMessage` serverFn over HTTP,
+so in practice this bites direct actor writes, not this page's send box.)
+
+**The dev socket must attach through the SSR module runner.** In
+`dev-server.mjs`, both `@sigx/actors-ws/node` and the app module load via
+`vite.ssrLoadModule` — the same graph `sigxActors({ app })` started the host
+in. Importing either from plain `node_modules` splits the module family, and
+the upgrade authenticates against a server app nobody configured.
+
 ## Production, locally
 
 ```sh
@@ -186,10 +202,10 @@ Port **5290**, not 3000 — that one is contended on every developer's machine.
 | `src/session.ts` | HMAC-signed HttpOnly cookies, timing-safe verify |
 | `src/Room.tsx` | the page: three live reads, two writes, one serverFn read |
 | `src/entry-server.tsx` | SSR entry; re-exports the actor app so both runtimes share one config |
-| `src/entry-client.tsx` | browser entry; `actor()` here is the build-swapped client ref |
+| `src/entry-client.tsx` | browser entry; `actor()` is the build-swapped client ref, dispatched over `socketTransport` |
 | `src/room-path.ts` | `/r/<name>` → room, shared by both entries |
 | `src/static.ts` | resolve a request target inside `dist/client`, or refuse |
-| `server.mjs` | the production chain: actors → serverFns → assets → document |
-| `dev-server.mjs` | Vite middleware mode; the plugins mount their own endpoints |
+| `server.mjs` | the production chain: actors → serverFns → assets → document, plus `attachActorSocket` on the upgrade |
+| `dev-server.mjs` | Vite middleware mode; the plugins mount their own endpoints; the socket attaches through the module runner |
 | `vite.config.ts` | the three-plugin composition |
 | `package.json` / `tsconfig.json` | JSX compiles to sigx's runtime, declared in both |
