@@ -24,6 +24,8 @@ const NEEDS: Record<string, string[]> = {
     baseline: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
     bench: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
     load: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
+    'ws-up': ['RG', 'CLUSTER'],
+    'ws-load': ['RG', 'CLUSTER', 'ACR'],
     'migrate-check': ['RG', 'CLUSTER', 'ACR', 'CHAT_HOST'],
     down: ['RG', 'CLUSTER', 'CHAT_HOST', 'DNS_ZONE', 'DNS_RG', 'LOAD_RG'],
     'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM']

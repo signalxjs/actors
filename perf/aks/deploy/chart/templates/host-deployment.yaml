@@ -110,6 +110,34 @@ spec:
                 secretKeyRef:
                   name: {{ include "chart.fullname" . }}-secrets
                   key: opsSecret
+            {{- if .Values.socket.enabled }}
+            - name: ENABLE_SOCKET
+              value: "1"
+            {{- end }}
+            {{- if .Values.socket.sessions }}
+            - name: ENABLE_SESSIONS
+              value: "1"
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-secrets
+                  key: sessionSecret
+            {{- end }}
+            {{- /*
+              An UNSET knob means "the runtime's own default", which is not
+              the same as 0 — `SOCKET_PING_MS=0` disables the keepalive
+              entirely. Rendering an empty value would be read as 0 by the
+              entry, so an empty string omits the variable instead. This is
+              the same discipline `perf/app`'s chart uses for its knobs, and
+              the reason INFRA_SHAPE can be trusted: an absent variable is
+              absent from the shape.
+            */}}
+            {{- range $name, $value := .Values.socket.env }}
+            {{- if ne (toString $value) "" }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:

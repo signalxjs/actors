@@ -30,11 +30,13 @@ on:
           - baseline
           - bench
           - load
+          - ws-up
+          - ws-load
           - migrate-check
           - vm-up
           - down
       args:
-        description: 'extra args for the verb (e.g. LADDER=64,128 for load, --runs=3 for bench, -t sealed for test)'
+        description: 'extra args for the verb (e.g. LADDER=64,128 for load, mode=hot ladder=1000,5000 for ws-load, --runs=3 for bench, -t sealed for test)'
         type: string
         default: ''
       confirm:

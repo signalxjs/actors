@@ -30,6 +30,32 @@ secrets:
   # into two mutually-401 halves.
   clusterSecret: ""
   opsSecret: ""
+  # Signs the session cookies the per-user socket arm presents.
+  sessionSecret: ""
+
+# The client-facing WebSocket endpoint (#172).
+socket:
+  # Mounts /_sigx/socket on the host. Off keeps the deployment byte-identical
+  # to the one the HTTP baselines were recorded against.
+  enabled: false
+  # Verify signed session cookies, so a subscriber can carry a principal.
+  # This is what the coalescing arm needs: cross-host live subscriptions
+  # share ONE remote stream per principal, so anonymous and per-user
+  # subscribers are different measurements (#138).
+  sessions: false
+  # Every socket cap is a scale variable, so every one is a knob. EMPTY =
+  # the runtime's own default, which is NOT the same as 0 — 0 disables
+  # pingMs, revalidateMs and maxConnectionMs deliberately. An empty value
+  # omits the variable entirely (see host-deployment.yaml).
+  env:
+    SOCKET_PATH: ""
+    SOCKET_ORIGIN: ""
+    SOCKET_MAX_CONCURRENT: ""
+    SOCKET_MAX_SUBSCRIPTIONS: ""
+    SOCKET_MAX_MESSAGE_BYTES: ""
+    SOCKET_PING_MS: ""
+    SOCKET_REVALIDATE_MS: ""
+    SOCKET_MAX_CONNECTION_MS: ""
 
 # D2ls_v6 nodes are 2 vCPU / 4 GiB; leave headroom for kubelet + system.
 resources:
@@ -141,3 +167,48 @@ loadgen:
     limits:
       cpu: 1000m
       memory: 256Mi
+
+# The WebSocket load generator (#172) — connections held and messages
+# delivered, rather than ops/s. Rendered per run exactly like `loadgen`.
+wsLoadgen:
+  enabled: false
+  # Jobs are immutable — a unique suffix per run.
+  nameSuffix: ""
+  # Pods. Indexed completion, so pod 0 is the publisher and the only one
+  # carrying latency probes; the rest are pure subscriber capacity. More
+  # than one pod is how you get past a single pod's ~28k ephemeral ports
+  # to one destination.
+  parallelism: 1
+  backoffLimit: 0
+  # idle | hot | spread | calls
+  mode: hot
+  # Connection rungs, e.g. "1000,5000,10000". Empty uses `connections`.
+  ladder: ""
+  connections: 1000
+  # Distinct Fanout keys in `hot` mode — the fan-out width.
+  actors: 1
+  subsPerConn: 1
+  # current (identity-blind, one shared watch loop) | mine (per principal)
+  read: current
+  # anon | per-user — requires socket.sessions=true on the host.
+  principal: anon
+  publishRate: 10
+  payloadBytes: 0
+  persist: "0"
+  durationS: 30
+  probes: 20
+  connectBatch: 250
+  keyPrefix: fan
+  # Default: the host service in-namespace.
+  targetUrl: ""
+  # A subscriber pod is mostly memory: ~80 KB of client heap per connection
+  # in local measurement, so 10k connections needs real headroom. Too small
+  # a limit produces an OOMKill that reads exactly like a server-side
+  # ceiling, which is the most expensive way to be wrong here.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 1800m
+      memory: 2Gi

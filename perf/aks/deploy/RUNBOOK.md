@@ -516,6 +516,68 @@ decides how many of them make progress. Leaving `digestMaxLocal` unset is
 the more interesting run — the pool then sizes itself from the node's real
 `hardwareConcurrency`, which no unit test has ever exercised.
 
+### (q) WebSocket connection scale — how many clients receive messages (#172)
+
+The one axis nothing else here touches: HTTP scenarios measure ops/s, this
+one measures CONNECTIONS HELD and MESSAGES DELIVERED to them. It runs
+entirely in-cluster against the actors Service — no ingress, no TLS, no
+load VM — so it measures the runtime rather than the edge.
+
+```sh
+# 1. mount the socket (a rollout — do it before, never between rungs)
+node perf/aks/deploy/testenv.mjs ws-up socket.sessions=true
+
+# 2. the idle baseline: what a held connection costs when nothing happens
+node perf/aks/deploy/testenv.mjs ws-load mode=idle ladder=1000,5000,10000
+
+# 3. the headline: N subscribers on ONE actor, 10 publishes/s
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000,5000,10000 \
+  actors=1 publishRate=10 durationS=60
+
+# 4. the same, spread 1:1 over N actors
+node perf/aks/deploy/testenv.mjs ws-load mode=spread ladder=1000,5000 publishRate=50
+
+# 5. THE ARM THAT CHANGES THE ANSWER — signed-in instead of anonymous
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000,5000 \
+  read=mine principal=per-user
+```
+
+Past a single pod's ~28k ephemeral ports to one destination, add pods:
+`parallelism=4` runs four subscriber pods (indexed, so pod 0 is the only
+publisher and the only one carrying latency probes). `n` in the output is
+PER POD; `totalConnections` is the number to quote.
+
+Pass/fail, and what to record:
+
+- **`connected` must equal the hosts' own `ops.sockets.open`** (plus one
+  for the publisher's connection — the merged row states the expected
+  total). The verb prints the summed `ops.sockets` delta after every run;
+  if the two disagree, one of them is wrong and the run is void.
+- **`protocolBreaches` must be 0.** The verb fails the run on any. A breach
+  means the client and the session disagree about the vocabulary.
+- **`maxBufferedBytes` climbing is the real ceiling.** The socket send path
+  is fire-and-forget — nothing in the runtime reads `bufferedAmount` — so
+  a slow client shows up as memory, not as backpressure. Record it.
+- **`deliveriesPerPublish` is a coalescing ratio, not a constant.** Client
+  subscriptions cannot set `throttleMs`, so every one runs at the runtime's
+  fixed 50 ms watch throttle: a subscriber receives at most ~20 pushes/s,
+  and above that rate the ratio falls below the subscriber count BY DESIGN.
+  Expect latency p50 to sit at ~50 ms plus fan-out for the same reason.
+- **Report the anonymous and per-user arms separately, never averaged.**
+  A live read that consults `ctx.principal` gets one watch loop per
+  identity (#121), and a cross-host watch coalesces per principal
+  unconditionally (#138) — so signed-in fan-out costs O(identities) actor
+  turns where anonymous costs O(1). Measured locally at 200 subscribers on
+  one actor: 31 turns anonymous vs 6200 per-user, with publish p50 moving
+  0.18 ms → 1.02 ms. On a cluster it also multiplies the cross-host
+  streams, so check `remoteWatches` / `coalescedWatches` in
+  `/_sigx/ops/cluster` for both arms.
+
+Sockets are HOST-AFFINE: the client is pinned to whichever pod the Service
+gave it, and every call inside re-dispatches through placement. The edge
+hash buys nothing here, so cross-host rates read like `random` placement
+whatever `PLACEMENT` says — expected, and not comparable to the HTTP rows.
+
 ### Optional: Lease-based membership (`@sigx/actors-k8s`)
 
 Re-run (a), (d)–(h) with membership on coordination Leases instead of

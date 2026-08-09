@@ -8,6 +8,8 @@
  *   node testenv.mjs baseline      # record the perf baseline for THIS shape
  *   node testenv.mjs bench [args]  # the raw Tier-3 run (args to the harness)
  *   node testenv.mjs load [args]   # run the edge ladder from a same-region VM
+ *   node testenv.mjs ws-up [vals]  # mount the socket endpoint on the hosts
+ *   node testenv.mjs ws-load [vals]# the WebSocket connection-scale Job
  *   node testenv.mjs migrate-check # the two-deploy migrateState assertion
  *   node testenv.mjs down          # delete everything this script created
  *
@@ -423,6 +425,225 @@ ${env}
     log(out);
 }
 
+// ---------------------------------------------------------------------------
+// The WebSocket scale test (#172)
+
+/** The actors release's host pods, oldest name first for stable output. */
+const hostPods = () =>
+    kube(['-n', cfg.actorsNs, 'get', 'pod', '-l', 'app.kubernetes.io/component=host',
+        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'], { quiet: true })
+        ?.split('\n').filter(Boolean).sort() ?? [];
+
+/**
+ * `ops.sockets` summed across every host, read from INSIDE the pods.
+ *
+ * `kubectl exec` rather than a port-forward because the counters are
+ * PER HOST and the Service would load-balance a single poll to whichever
+ * pod it liked — giving one host's numbers and calling them the fleet's.
+ * The bearer secret is already in each pod's environment, so it never has
+ * to leave the cluster or land in this process's argv.
+ */
+function socketTotals() {
+    const read = (pod) => {
+        const out = kube(['-n', cfg.actorsNs, 'exec', pod, '--', 'node', '-e',
+            "fetch('http://127.0.0.1:' + (process.env.PORT || 7311) + '/_sigx/ops', " +
+            "{ headers: { authorization: 'Bearer ' + process.env.OPS_SECRET } })" +
+            '.then((r) => r.text()).then((t) => console.log(t))'
+        ], { quiet: true, allowFail: true });
+        if (!out) return null;
+        try {
+            return JSON.parse(out)?.ops?.sockets ?? null;
+        } catch {
+            return null;
+        }
+    };
+    const totals = {};
+    let hosts = 0;
+    for (const pod of hostPods()) {
+        const section = read(pod);
+        // A section that is missing or is an `{ error }` from a throwing
+        // provider must not be silently added as zeros — that would read as
+        // "this host served nothing", which is a different claim.
+        if (!section || section.error) continue;
+        hosts++;
+        for (const [key, value] of Object.entries(section)) {
+            if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
+        }
+    }
+    return { hosts, totals };
+}
+
+/**
+ * Enable (and configure) the socket endpoint on the running actors release.
+ *
+ * Separate from `ws-load` on purpose: turning the socket on is a ROLLOUT,
+ * and a rollout in the middle of a load verb would silently re-measure a
+ * different deployment than the one the previous rung ran against. Extra
+ * args are chart values, e.g.
+ *   ws-up socket.env.SOCKET_MAX_SUBSCRIPTIONS=1024 socket.sessions=true
+ */
+async function wsUp(args) {
+    step('enabling the socket endpoint on the actors release');
+    const sets = ['socket.enabled=true', ...args].flatMap((kv) => ['--set', kv]);
+    helm(['upgrade', '--install', 'sigx', join(here, 'chart'), '-n', cfg.actorsNs,
+        '--reset-then-reuse-values', '--wait', '--timeout', '10m', ...sets]);
+    kube(['-n', cfg.actorsNs, 'rollout', 'status', 'deploy/sigx-host', '--timeout=420s']);
+    log(`  socket mounted on ${hostPods().length} host pod(s)`);
+}
+
+/**
+ * Run the WebSocket load Job and report the merged rows.
+ *
+ * Extra args are `wsLoadgen.*` chart values without the prefix, e.g.
+ *   ws-load mode=hot ladder=1000,5000,10000 parallelism=2 durationS=60
+ *
+ * Commas are escaped for `--set` here rather than by the caller: `helm
+ * --set` splits values on commas, so an unescaped ladder fails with
+ * `key "5000" has no value` — a confusing error a long way from its cause.
+ */
+async function wsLoad(args) {
+    const enabled = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host', '-o',
+        'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="ENABLE_SOCKET")].value}'],
+        { quiet: true, allowFail: true });
+    if (enabled !== '1') {
+        console.error('the host has no socket endpoint — run `testenv.mjs ws-up` first');
+        process.exit(1);
+    }
+
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const job = `sigx-wsloadgen-${suffix}`;
+    const sets = ['wsLoadgen.enabled=true', `wsLoadgen.nameSuffix=${suffix}`, ...args]
+        .flatMap((kv) => {
+            const [key, ...rest] = kv.split('=');
+            const value = rest.join('=');
+            const name = key.startsWith('wsLoadgen.') || key.startsWith('image.')
+                ? key
+                : `wsLoadgen.${key}`;
+            return ['--set-string', `${name}=${value.replaceAll(',', '\\,')}`];
+        });
+
+    step(`rendering ${job}`);
+    const manifest = helm(['template', 'sigx', join(here, 'chart'), '-n', cfg.actorsNs,
+        '-s', 'templates/wsloadgen-job.yaml',
+        '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-actors-test`,
+        '--set', `image.tag=${gitSha()}`,
+        '--set', `nodeSelector.workload=${cfg.workload}`,
+        ...sets], { quiet: true });
+
+    const dir = mkdtempSync(join(tmpdir(), 'sigx-wsload-'));
+    const file = join(dir, 'job.yaml');
+    try {
+        writeFileSync(file, manifest);
+        kube(['-n', cfg.actorsNs, 'apply', '-f', file]);
+    } finally {
+        discard(dir);
+    }
+
+    const before = socketTotals();
+    step(`waiting for ${job}`);
+    // The Job's own deadline is the source of truth; this only has to be
+    // longer than the ladder it was handed.
+    const waited = kube(['-n', cfg.actorsNs, 'wait', '--for=condition=complete',
+        `job/${job}`, '--timeout=3600s'], { allowFail: true });
+    if (waited === null) {
+        log(`  ✗ ${job} did not complete — logs follow`);
+    }
+    const after = socketTotals();
+
+    const logs = kube(['-n', cfg.actorsNs, 'logs', `job/${job}`, '--all-containers',
+        '--tail=-1', '--prefix'], { quiet: true, allowFail: true }) ?? '';
+    const rows = logs.split('\n')
+        .map((line) => line.slice(line.indexOf('{')))
+        .filter((line) => line.startsWith('{'))
+        .flatMap((line) => {
+            try {
+                return [JSON.parse(line)];
+            } catch {
+                return [];
+            }
+        });
+
+    if (rows.length === 0) {
+        log(logs.split('\n').slice(-40).join('\n'));
+        console.error(`${job} produced no result rows`);
+        process.exitCode = 1;
+        return;
+    }
+
+    step('merged rows');
+    for (const row of mergeRows(rows)) log(JSON.stringify(row));
+
+    step('ops.sockets, summed across hosts');
+    const delta = {};
+    for (const [key, value] of Object.entries(after.totals)) {
+        if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
+        delta[key] = value - (before.totals[key] ?? 0);
+    }
+    log(JSON.stringify({ hosts: after.hosts, delta }));
+    if ((delta.protocolBreaches ?? 0) > 0) {
+        log('  ✗ protocol breaches — the client and the session disagree; the run is not valid');
+        process.exitCode = 1;
+    }
+}
+
+/**
+ * One row per rung, summed across the Job's pods.
+ *
+ * COUNTS sum; PERCENTILES DO NOT. Merging p99s across pods produces a
+ * number that is the p99 of nothing, so latency is taken from the single
+ * publishing pod (the only one that carries probes) and labelled with the
+ * pod count it does NOT represent.
+ */
+function mergeRows(rows) {
+    const byRung = new Map();
+    for (const row of rows) {
+        const merged = byRung.get(row.n) ?? {
+            n: row.n,
+            pods: 0,
+            mode: row.mode,
+            read: row.read,
+            principal: row.principal,
+            connected: 0,
+            socketsExpected: 0,
+            connectFailures: 0,
+            deliveries: 0,
+            deliveriesPerSec: 0,
+            publishes: 0,
+            publishFailures: 0,
+            subscriptionErrors: 0,
+            drops: 0,
+            seqMismatches: 0,
+            maxBufferedBytes: 0,
+            clientRssMb: 0,
+            latencyMs: null,
+            latencyFromPods: 0
+        };
+        merged.pods++;
+        for (const key of ['connected', 'socketsExpected', 'connectFailures', 'deliveries',
+            'deliveriesPerSec', 'publishes', 'publishFailures', 'subscriptionErrors', 'drops',
+            'seqMismatches']) {
+            merged[key] += row[key] ?? 0;
+        }
+        merged.maxBufferedBytes = Math.max(merged.maxBufferedBytes, row.maxBufferedBytes ?? 0);
+        merged.clientRssMb = Math.max(merged.clientRssMb, row.clientRssMb ?? 0);
+        if (row.latencyMs) {
+            merged.latencyMs = row.latencyMs;
+            merged.latencyFromPods++;
+        }
+        byRung.set(row.n, merged);
+    }
+    return [...byRung.values()]
+        .sort((a, b) => a.n - b.n)
+        .map((row) => ({
+            ...row,
+            // `n` is PER POD, so the number a reader wants is this one.
+            totalConnections: row.connected,
+            deliveriesPerPublish: row.publishes > 0
+                ? Math.round((row.deliveries / row.publishes) * 1000) / 1000
+                : 0
+        }));
+}
+
 /**
  * The runtime knobs, read back off the LIVE Deployment.
  *
@@ -771,6 +992,8 @@ const verbs = {
     baseline,
     bench: () => bench(rest),
     load: () => load(rest),
+    'ws-up': () => wsUp(rest),
+    'ws-load': () => wsLoad(rest),
     'migrate-check': () => migrateCheck(rest),
     'vm-up': loadVmUp
 };
@@ -792,12 +1015,16 @@ const NEEDS = {
     baseline: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
     bench: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
     load: ['RG', 'CLUSTER', 'CHAT_HOST', 'LOCATION', 'LOAD_RG', 'LOAD_VM'],
+    // In-cluster only: the WebSocket Job talks to the actors Service, so
+    // it needs neither the public chat host nor the load VM.
+    'ws-up': ['RG', 'CLUSTER'],
+    'ws-load': ['RG', 'CLUSTER', 'ACR'],
     'migrate-check': ['RG', 'CLUSTER', 'ACR', 'CHAT_HOST'],
     down: ['RG', 'CLUSTER', 'CHAT_HOST', 'DNS_ZONE', 'DNS_RG', 'LOAD_RG'],
     'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM']
 };
 /** Verbs that reach kubectl/helm, and so need a kubeconfig first. */
-const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'migrate-check', 'down']);
+const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'migrate-check', 'down']);
 
 if (!verbs[verb]) {
     log(`usage: node testenv.mjs <${Object.keys(verbs).join('|')}>`);

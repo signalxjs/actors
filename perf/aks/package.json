@@ -12,11 +12,13 @@
         "@sigx/actors": "workspace:*",
         "@sigx/actors-k8s": "workspace:*",
         "@sigx/actors-redis": "workspace:*",
+        "@sigx/actors-ws": "workspace:*",
         "@sigx/reactivity": "catalog:",
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "ioredis": "^5.4.1",
-        "undici": "^7.16.0"
+        "undici": "^7.16.0",
+        "ws": "^8.18.0"
     },
     "devDependencies": {
         "@sigx/actors-cli": "workspace:*",
