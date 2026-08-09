@@ -162,11 +162,22 @@ export function workerSocket(options: WorkerSocketOptions = {}): ActorPlugin {
     };
 }
 
-/** A client-safe status, or 0 for "mask it" — structural so this package
- *  needs no dependency on `@sigx/server` for an `instanceof`. */
+/**
+ * A client-safe status, or 0 for "mask it". Keyed on `ServerFnError`'s own
+ * brand (`__sigxServerFnError`, the same field its `isServerFnError` checks)
+ * rather than the mere presence of a numeric `status` — an internal error
+ * that happens to carry one must stay masked. The brand is structural so
+ * this package needs no dependency on `@sigx/server` for an `instanceof`,
+ * and it survives minification and realm crossings the way a class name
+ * does not. Clamped to the HTTP error range as a belt on top.
+ */
 function statusOf(error: unknown): number {
-    const status = (error as { status?: unknown } | null)?.status;
-    return typeof status === 'number' && Number.isInteger(status) && status >= 400 ? status : 0;
+    const shaped = error as { __sigxServerFnError?: unknown; status?: unknown } | null;
+    if (shaped?.__sigxServerFnError !== true) return 0;
+    const status = shaped.status;
+    return typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599
+        ? status
+        : 0;
 }
 
 /** The message of a status-carrying error is client-safe by the same

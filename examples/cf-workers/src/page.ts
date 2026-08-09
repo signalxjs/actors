@@ -176,13 +176,20 @@ async function follow(type, key, onChunk, onStatus) {
 let ws = null;
 let nextId = 1;
 const subs = new Map(); // id -> onValue
+const pending = []; // callbacks queued while the socket is still CONNECTING
 
 function overSocket(onReady) {
-    if (ws && ws.readyState <= 1) return onReady();
+    if (ws && ws.readyState === WebSocket.OPEN) return onReady();
+    if (ws && ws.readyState === WebSocket.CONNECTING) { pending.push(onReady); return; }
     const badge = $('stream');
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://')
         + location.host + '/_sigx/socket');
-    ws.onopen = () => { badge.classList.add('on'); badge.textContent = 'socket live'; onReady(); };
+    pending.push(onReady);
+    ws.onopen = () => {
+        badge.classList.add('on');
+        badge.textContent = 'socket live';
+        for (const ready of pending.splice(0)) ready();
+    };
     ws.onmessage = (e) => {
         const frame = JSON.parse(e.data);
         if (frame.p) return; // keepalive ping
