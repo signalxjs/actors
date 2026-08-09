@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-09
+
 ### Added
 
 - **`socketStats()` on `@sigx/actors/server`** (#166): socket observability

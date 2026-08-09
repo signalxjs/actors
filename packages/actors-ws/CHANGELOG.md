@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-09
+
 ### Added
 
 - **`socketTransport()` on `./client`** (#99): browsers (and any WinterCG
