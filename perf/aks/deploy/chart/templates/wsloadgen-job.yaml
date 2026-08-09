@@ -1,0 +1,112 @@
+# The WebSocket load run (#172) — Jobs are immutable, so this is rendered
+# per run with a unique nameSuffix rather than managed through upgrade:
+#
+#   helm template <release> perf/aks/deploy/chart -n <ns> \
+#     -s templates/wsloadgen-job.yaml \
+#     --set image.tag=$TAG --set wsLoadgen.enabled=true \
+#     --set wsLoadgen.nameSuffix=$(date +%s)-$RANDOM \
+#     --set wsLoadgen.mode=hot \
+#     --set-string wsLoadgen.ladder='1000\,5000\,10000' \
+#     | kubectl apply -f -
+#
+# The escaped commas are not a typo: `helm --set` splits a value on commas,
+# so an unescaped ladder fails with `key "5000" has no value`.
+#
+#   kubectl -n <ns> logs job/<release>-wsloadgen-<suffix> | grep '^{' | jq -s
+#
+# `testenv.mjs ws-load` does all of that, aggregates across pods and prints
+# the merged rows — this file is what it renders.
+{{- if .Values.wsLoadgen.enabled }}
+{{- if not .Values.wsLoadgen.nameSuffix }}
+{{- fail "wsLoadgen.nameSuffix is required: Jobs are immutable, every run needs a unique name (e.g. --set wsLoadgen.nameSuffix=$(date +%s)-$RANDOM)" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "chart.fullname" . }}-wsloadgen-{{ .Values.wsLoadgen.nameSuffix }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wsloadgen
+spec:
+  parallelism: {{ .Values.wsLoadgen.parallelism }}
+  completions: {{ .Values.wsLoadgen.parallelism }}
+  # Indexed, so JOB_COMPLETION_INDEX exists and pod 0 can be THE publisher.
+  # Without it every pod would publish to the same actor, the sequence
+  # prediction that pairs a delivery with its publish would break, and every
+  # latency sample would be discarded as a mismatch.
+  completionMode: Indexed
+  backoffLimit: {{ .Values.wsLoadgen.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        app.kubernetes.io/component: wsloadgen
+    spec:
+      restartPolicy: Never
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: wsloadgen
+          image: "{{ .Values.image.repository }}:{{ required "image.tag is required" .Values.image.tag }}"
+          command: ["node", "--conditions=production", "ws-loadgen.mjs"]
+          env:
+            - name: TARGET_URL
+              value: {{ .Values.wsLoadgen.targetUrl | default (printf "http://%s-host:%v" (include "chart.fullname" .) .Values.port) | quote }}
+            - name: MODE
+              value: {{ .Values.wsLoadgen.mode | quote }}
+            - name: LADDER
+              value: {{ .Values.wsLoadgen.ladder | quote }}
+            - name: CONNECTIONS
+              value: {{ .Values.wsLoadgen.connections | quote }}
+            - name: ACTORS
+              value: {{ .Values.wsLoadgen.actors | quote }}
+            - name: SUBS_PER_CONN
+              value: {{ .Values.wsLoadgen.subsPerConn | quote }}
+            - name: READ
+              value: {{ .Values.wsLoadgen.read | quote }}
+            - name: PRINCIPAL
+              value: {{ .Values.wsLoadgen.principal | quote }}
+            - name: PUBLISH_RATE
+              value: {{ .Values.wsLoadgen.publishRate | quote }}
+            - name: PAYLOAD_BYTES
+              value: {{ .Values.wsLoadgen.payloadBytes | quote }}
+            - name: PERSIST
+              value: {{ .Values.wsLoadgen.persist | quote }}
+            - name: DURATION_S
+              value: {{ .Values.wsLoadgen.durationS | quote }}
+            - name: PROBES
+              value: {{ .Values.wsLoadgen.probes | quote }}
+            - name: CONNECT_BATCH
+              value: {{ .Values.wsLoadgen.connectBatch | quote }}
+            - name: KEY_PREFIX
+              value: {{ .Values.wsLoadgen.keyPrefix | quote }}
+            {{- if .Values.socket.env.SOCKET_PATH }}
+            - name: SOCKET_PATH
+              value: {{ .Values.socket.env.SOCKET_PATH | quote }}
+            {{- end }}
+            # Must be the host's own secret: the generator mints session
+            # cookies out of process, and a mismatch silently downgrades
+            # every per-user subscriber to anonymous — which is exactly the
+            # variable this arm exists to change.
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-secrets
+                  key: sessionSecret
+            - name: JOB_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+            - name: RUN_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            {{- toYaml .Values.wsLoadgen.resources | nindent 12 }}
+{{- end }}

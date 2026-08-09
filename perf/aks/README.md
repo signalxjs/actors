@@ -1,8 +1,9 @@
 # perf/aks — the AKS scale-out harness
 
 A production-shaped `@sigx/actors` deployment: N identical host pods on
-Kubernetes, cluster state in Redis, one container image that runs both the
-host (`server.mjs`) and the closed-loop load generator (`loadgen.mjs`).
+Kubernetes, cluster state in Redis, one container image that runs the host
+(`server.mjs`), the closed-loop HTTP load generator (`loadgen.mjs`) and the
+WebSocket connection-scale generator (`ws-loadgen.mjs`).
 This is the app half of the AKS scale-out/perf test; the Helm chart lives
 in [`deploy/chart/`](deploy/chart/) and the Azure setup plus the full
 scenario runbook in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
@@ -36,6 +37,38 @@ REDIS_URL=redis://localhost:6379 CLUSTER_SECRET=dev OPS_SECRET=dev \
 TARGET_URL=http://127.0.0.1:7311 DURATION_S=10 CONCURRENCY=8 \
   pnpm --filter sigx-perf-aks loadgen
 ```
+
+### WebSocket connection scale, with no Redis at all
+
+`server.mjs` is a cluster member and requires Redis. `ws-dev.mjs` is the
+single-host entry for the socket workload, so the whole delivery path can
+be checked on a laptop:
+
+```sh
+node perf/aks/ws-dev.mjs                # host + /_sigx/socket on :7311
+
+# second terminal — 5000 subscribers on one actor, 10 publishes/s
+TARGET_URL=http://127.0.0.1:7311 MODE=hot CONNECTIONS=5000 \
+  node perf/aks/ws-loadgen.mjs
+```
+
+One JSON line per rung. `connected` is the headline; `deliveries` is how
+many of those clients actually received a message; `deliveriesPerPublish`
+is a coalescing ratio rather than a constant, because every client
+subscription runs at the runtime's fixed 50 ms watch throttle. Cross-check
+`connected` against `ops.sockets.open`:
+
+```sh
+curl -s -H 'authorization: Bearer dev-ops-secret' \
+  http://127.0.0.1:7311/_sigx/ops | jq .ops.sockets
+```
+
+Measured on one laptop running BOTH ends: 10 000 connections dialed in
+987 ms with zero failures, 10 000 deliveries per publish, and
+`maxBufferedBytes` flat at 0. Set `READ=mine PRINCIPAL=per-user` for the
+arm that matters most — a read consulting `ctx.principal` gets one watch
+loop per identity, which at 200 subscribers is 6200 actor turns instead of
+31. See scenario (q) in the runbook.
 
 Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each

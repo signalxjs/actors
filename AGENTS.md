@@ -439,7 +439,18 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   CAS persistence), an in-cluster closed-loop load generator, a Helm
   chart, and `deploy/testenv.mjs` — the whole Azure environment as one
   command per verb (up / status / test / baseline / bench / load /
-  migrate-check / down). Identity (RG, cluster, ACR, region, DNS, load-VM
+  ws-up / ws-load / migrate-check / down). The WebSocket half (#172) is
+  its own axis and measures different nouns: `ENABLE_SOCKET` mounts
+  `attachActorSocket` plus a `socketStats()` ops section on the host,
+  `Fanout` is the actor a subscriber watches, and `ws-loadgen.mjs`
+  reports CONNECTIONS HELD and MESSAGES DELIVERED rather than ops/s
+  (`ws-dev.mjs` runs the same path single-host with no Redis).
+  Two facts bound every number it produces: client subscriptions cannot
+  set `throttleMs`, so all of them run at the fixed 50 ms watch throttle;
+  and a live read that consults `ctx.principal` gets one watch loop per
+  identity (#121) while a cross-host watch coalesces per principal
+  unconditionally (#138) — so anonymous and signed-in fan-out are
+  different measurements and are never averaged. Identity (RG, cluster, ACR, region, DNS, load-VM
   names) is REQUIRED env with no defaults — the code is public, the
   estate is not; in CI the values come from Actions secrets (see
   `deploy/RUNBOOK.md` §1c). `test` runs `__tests__/infra.test.ts`
