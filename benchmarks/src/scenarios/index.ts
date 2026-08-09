@@ -10,6 +10,7 @@ import { redisScenarios } from './redis.ts';
 import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
+import { WS_ENABLED, wsHint as wsReason, socketScenarios } from './sockets.ts';
 import { topicScenarios } from './topics.ts';
 import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
@@ -53,7 +54,11 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...(TIER2_ENABLED ? tier2Scenarios : []),
     // Tier 3 measures a DEPLOYMENT, not this process — a different kind of
     // number again, so it comes last and never reads as another rung.
-    ...(TIER3_ENABLED ? tier3Scenarios : [])
+    ...(TIER3_ENABLED ? tier3Scenarios : []),
+    // And `sockets/*` is a different axis again WITHIN Tier 3: connections
+    // held and messages delivered, driven from inside the cluster with no
+    // ingress in the path. Never read as another rung of `infra/*`.
+    ...(WS_ENABLED ? socketScenarios : [])
 ];
 
 const TIER2_NAMES = tier2Scenarios.map((s) => s.name);
@@ -91,6 +96,7 @@ export function tier2Hint(filters: readonly string[]): string | null {
  * .includes(f)` is true for any short prefix like `'i'`.)
  */
 const TIER3_NAMES = tier3Scenarios.map((s) => s.name);
+const WS_NAMES = socketScenarios.map((s) => s.name);
 
 export function threadsHint(filters: readonly string[]): string | null {
     if (THREADS_ENABLED || filters.length === 0) return null;
@@ -106,4 +112,17 @@ export function tier3Hint(filters: readonly string[]): string | null {
     if (TIER3_ENABLED || filters.length === 0) return null;
     if (!filters.some((f) => TIER3_NAMES.some((name) => name.includes(f)))) return null;
     return tier3Reason();
+}
+
+/**
+ * The same courtesy for `sockets/*`, which is gated on its own four
+ * variables and — unlike `infra/*` — needs an IMAGE TAG as well as a
+ * cluster: without one the Job renders against whatever `gitSha()` says,
+ * which after any merge is an image the registry does not have.
+ */
+export function wsHint(filters: readonly string[]): string | null {
+    if (WS_ENABLED || filters.length === 0) return null;
+    if (!filters.some((f) => WS_NAMES.some((name) => name.includes(f)))) return null;
+    const reason = wsReason();
+    return reason === null ? null : `sockets/* are opt-in — ${reason}`;
 }

@@ -1,0 +1,327 @@
+/**
+ * Running one WebSocket connection-scale Job, as a function (#184).
+ *
+ * This was inside `testenv.mjs`'s `ws-load` verb, which meant the only way
+ * to run a ladder was a human reading JSON off a terminal — no baseline, no
+ * shape guard, no spread, and no answer to "did that change help?".
+ * `benchmarks/src/scenarios/sockets.ts` needs the same orchestration, so it
+ * lives here and both callers import it. The precedent is `infra.ts`, which
+ * already reaches across trees for `edge-ladder.mjs` and `post-fn.mjs`.
+ *
+ * Deliberately standalone: it builds its own `kubectl`/`helm` invocations
+ * from `spawnable` rather than taking them from `testenv.mjs`, so importing
+ * it costs nothing but this file.
+ *
+ * ## The two numbers this has to get right
+ *
+ * **`open` is a GAUGE.** It exists only while the connections do, so it is
+ * sampled DURING the run and reported as `peakOpen`. Read afterwards it is
+ * zero, and the monotonic totals cannot substitute — they count every
+ * connection ever opened across every rung, not how many were up at once.
+ *
+ * **Rows are SUMMED across pods.** So a pod whose logs are missed does not
+ * merely lose its own line, it shrinks every total; and a pod that DIED
+ * does the same silently. Logs are therefore collected per pod off the
+ * `job-name` label (`kubectl logs job/<name>` picks exactly one pod), and a
+ * failed pod marks the whole result `partial`.
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnable } from '../../../benchmarks/src/spawn.mjs';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function sh(cmd, args, { allowFail = false } = {}) {
+    const run = spawnable(cmd, args);
+    try {
+        return execFileSync(run.command, run.args, {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            ...run.options
+        }).trim();
+    } catch (error) {
+        if (allowFail) return null;
+        throw error;
+    }
+}
+
+/** Best-effort temp cleanup — a leftover dir beats failing a finished run. */
+function discard(dir) {
+    try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+        // Windows holds the directory briefly after the process exits.
+    }
+}
+
+/**
+ * `ops.sockets` summed across every host, read from INSIDE the pods.
+ *
+ * `kubectl exec` rather than a port-forward because the counters are PER
+ * HOST and the Service would load-balance a single poll to whichever pod it
+ * liked — giving one host's numbers and calling them the fleet's. The
+ * bearer secret is already in each pod's environment, so it never has to
+ * leave the cluster or land in this process's argv.
+ */
+export function socketTotals(kube, namespace) {
+    const pods = kube(['-n', namespace, 'get', 'pod', '-l',
+        'app.kubernetes.io/component=host',
+        '-o', 'jsonpath={.items[*].metadata.name}'], { allowFail: true })
+        ?.split(/\s+/).filter(Boolean) ?? [];
+    const totals = {};
+    let hosts = 0;
+    for (const pod of pods) {
+        const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
+            "fetch('http://127.0.0.1:' + (process.env.PORT || 7311) + '/_sigx/ops', " +
+            "{ headers: { authorization: 'Bearer ' + process.env.OPS_SECRET } })" +
+            '.then((r) => r.text()).then((t) => console.log(t))'
+        ], { allowFail: true });
+        if (!out) continue;
+        let section;
+        try {
+            section = JSON.parse(out)?.ops?.sockets;
+        } catch {
+            continue;
+        }
+        // A missing section, or an `{ error }` from a throwing provider,
+        // must not be added as zeros — that reads as "this host served
+        // nothing", which is a different claim.
+        if (!section || section.error) continue;
+        hosts++;
+        for (const [key, value] of Object.entries(section)) {
+            if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
+        }
+    }
+    return { hosts, totals };
+}
+
+/**
+ * One row per rung, summed across the Job's pods.
+ *
+ * COUNTS sum; PERCENTILES DO NOT. Merging p99s across pods produces a
+ * number that is the p99 of nothing, so latency is taken from the single
+ * publishing pod (the only one carrying probes) and labelled with
+ * `latencyFromPods` so a reader can see it does not describe the rest.
+ *
+ * Rates are not summed either: each pod divided by its own window and the
+ * pods do not start together, so the merged rate is recomputed from summed
+ * deliveries over the longest window.
+ */
+export function mergeRows(rows, { partial = false } = {}) {
+    const byRung = new Map();
+    for (const row of rows) {
+        const merged = byRung.get(row.n) ?? {
+            n: row.n,
+            pods: 0,
+            mode: row.mode,
+            read: row.read,
+            principal: row.principal,
+            connected: 0,
+            socketsExpected: 0,
+            connectFailures: 0,
+            deliveries: 0,
+            durationMs: 0,
+            publishes: 0,
+            publishFailures: 0,
+            subscriptionErrors: 0,
+            drops: 0,
+            seqMismatches: 0,
+            maxBufferedBytes: 0,
+            clientRssMb: 0,
+            latencyMs: null,
+            latencyFromPods: 0
+        };
+        merged.pods++;
+        for (const key of ['connected', 'socketsExpected', 'connectFailures', 'deliveries',
+            'publishes', 'publishFailures', 'subscriptionErrors', 'drops', 'seqMismatches']) {
+            merged[key] += row[key] ?? 0;
+        }
+        merged.durationMs = Math.max(merged.durationMs, row.durationMs ?? 0);
+        merged.maxBufferedBytes = Math.max(merged.maxBufferedBytes, row.maxBufferedBytes ?? 0);
+        merged.clientRssMb = Math.max(merged.clientRssMb, row.clientRssMb ?? 0);
+        if (row.latencyMs) {
+            merged.latencyMs = row.latencyMs;
+            merged.latencyFromPods++;
+        }
+        byRung.set(row.n, merged);
+    }
+    return [...byRung.values()]
+        .sort((a, b) => a.n - b.n)
+        .map((row) => ({
+            ...row,
+            // `n` is PER POD, so the number a reader wants is this one.
+            totalConnections: row.connected,
+            deliveriesPerSec: row.durationMs > 0
+                ? Math.round((row.deliveries / (row.durationMs / 1000)) * 1000) / 1000
+                : 0,
+            deliveriesPerPublish: row.publishes > 0
+                ? Math.round((row.deliveries / row.publishes) * 1000) / 1000
+                : 0,
+            ...(partial ? { partial: true } : {})
+        }));
+}
+
+/** `helm --set` splits on commas, so a ladder must arrive escaped. */
+const escape = (value) => String(value).replaceAll(',', '\\,');
+
+/**
+ * Render, apply, wait (sampling the gauge), collect and merge one run.
+ *
+ * `values` are `wsLoadgen.*` chart values WITHOUT the prefix. The IMAGE is
+ * not among them: it arrives as `imageRepository`/`imageTag` and nowhere
+ * else, and an `image.*` key in `values` is refused rather than merged.
+ * Reusing the image an earlier `up` built is the normal case — the git SHA
+ * moves on every merge while the deployed image does not — so the caller
+ * pins the tag, but it pins it in one place.
+ */
+export async function runWsLoad(options) {
+    const {
+        context,
+        namespace,
+        chartDir,
+        release = 'sigx',
+        imageRepository,
+        imageTag,
+        workload,
+        values = {},
+        onLog = () => {},
+        sampleIntervalMs = 5000,
+        timeoutMs = 3_600_000
+    } = options;
+
+    // The image is chosen in EXACTLY ONE place. `values` is forwarded after
+    // the explicit `--set image.*`, so an `image.tag` smuggled in there
+    // would win — and the run would measure a different build than the one
+    // the caller (and the recorded shape) name. Refuse rather than pick a
+    // winner: silently measuring the wrong image is the failure mode this
+    // whole harness exists to prevent.
+    const smuggled = Object.keys(values).filter((key) => key.startsWith('image.'));
+    if (smuggled.length > 0) {
+        throw new Error(
+            `[ws-load] pass the image as imageRepository/imageTag, not through values ` +
+                `(${smuggled.join(', ')}) — two sources for one image is how a run ends up ` +
+                'measuring a build nobody named.'
+        );
+    }
+
+    const kube = (args, opts) => sh('kubectl', ['--context', context, ...args], opts);
+    const helm = (args, opts) => sh('helm', ['--kube-context', context, ...args], opts);
+
+    const enabled = kube(['-n', namespace, 'get', 'deploy', `${release}-host`, '-o',
+        'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="ENABLE_SOCKET")].value}'],
+        { allowFail: true });
+    if (enabled !== '1') {
+        throw new Error('the host has no socket endpoint — run `testenv.mjs ws-up` first');
+    }
+
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const job = `${release}-wsloadgen-${suffix}`;
+    const sets = [];
+    for (const [key, value] of Object.entries({
+        'wsLoadgen.enabled': true,
+        'wsLoadgen.nameSuffix': suffix,
+        ...Object.fromEntries(Object.entries(values).map(([k, v]) =>
+            [k.startsWith('wsLoadgen.') ? k : `wsLoadgen.${k}`, v]))
+    })) {
+        sets.push('--set-string', `${key}=${escape(value)}`);
+    }
+
+    onLog(`rendering ${job}`);
+    const manifest = helm(['template', release, chartDir, '-n', namespace,
+        '-s', 'templates/wsloadgen-job.yaml',
+        '--set', `image.repository=${imageRepository}`,
+        '--set', `image.tag=${imageTag}`,
+        '--set', `nodeSelector.workload=${workload}`,
+        ...sets]);
+
+    // BEFORE the apply. Taken after it, the first rung is already opening
+    // and the delta comes out with more closes than opens — which reads as
+    // lost connections rather than as a racing baseline.
+    const before = socketTotals(kube, namespace);
+
+    const dir = mkdtempSync(join(tmpdir(), 'sigx-wsload-'));
+    try {
+        const file = join(dir, 'job.yaml');
+        writeFileSync(file, manifest);
+        kube(['-n', namespace, 'apply', '-f', file]);
+    } finally {
+        discard(dir);
+    }
+
+    // Read the completion count back off the Job rather than trusting the
+    // values: `parallelism` may have come from a value, a caller, or the
+    // chart default, and the wait has to know when it is done.
+    const wanted = Number(kube(['-n', namespace, 'get', 'job', job, '-o',
+        'jsonpath={.spec.completions}'], { allowFail: true })) || 1;
+    onLog(`waiting for ${job} (${wanted} pod(s))`);
+
+    let peakOpen = 0;
+    let peakSubscriptions = 0;
+    let samples = 0;
+    let partial = false;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const live = socketTotals(kube, namespace);
+        if (live.hosts > 0) {
+            samples++;
+            peakOpen = Math.max(peakOpen, live.totals.open ?? 0);
+            peakSubscriptions = Math.max(peakSubscriptions, live.totals.subscriptions ?? 0);
+        }
+        const state = kube(['-n', namespace, 'get', 'job', job, '-o',
+            'jsonpath={.status.succeeded}|{.status.failed}'], { allowFail: true }) ?? '';
+        const [succeeded, failed] = state.split('|').map((v) => Number(v) || 0);
+        if (succeeded >= wanted || failed > 0) {
+            if (failed > 0) {
+                onLog(`✗ ${job}: ${failed} pod(s) failed — results are PARTIAL`);
+                partial = true;
+            }
+            break;
+        }
+        if (Date.now() > deadline) {
+            onLog(`✗ ${job} did not complete within the deadline — results are PARTIAL`);
+            partial = true;
+            break;
+        }
+        await sleep(sampleIntervalMs);
+    }
+    const after = socketTotals(kube, namespace);
+
+    const pods = kube(['-n', namespace, 'get', 'pod', '-l', `job-name=${job}`,
+        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'],
+        { allowFail: true })?.split('\n').filter(Boolean) ?? [];
+    onLog(`collecting logs from ${pods.length} pod(s)`);
+    const rows = [];
+    for (const pod of pods) {
+        const out = kube(['-n', namespace, 'logs', pod, '--tail=-1'], { allowFail: true }) ?? '';
+        for (const line of out.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('{')) continue;
+            try {
+                rows.push(JSON.parse(trimmed));
+            } catch {
+                // a progress line that merely begins with a brace
+            }
+        }
+    }
+
+    const delta = {};
+    for (const [key, value] of Object.entries(after.totals)) {
+        if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
+        delta[key] = value - (before.totals[key] ?? 0);
+    }
+
+    return {
+        job,
+        pods,
+        rows,
+        merged: mergeRows(rows, { partial }),
+        hosts: after.hosts,
+        peakOpen,
+        peakSubscriptions,
+        samples,
+        delta,
+        partial
+    };
+}

@@ -10,6 +10,7 @@
  *   node testenv.mjs load [args]   # run the edge ladder from a same-region VM
  *   node testenv.mjs ws-up [vals]  # mount the socket endpoint on the hosts
  *   node testenv.mjs ws-load [vals]# the WebSocket connection-scale Job
+ *   node testenv.mjs ws-bench [a]  # the RECORDED socket run (baseline/compare)
  *   node testenv.mjs migrate-check # the two-deploy migrateState assertion
  *   node testenv.mjs down          # delete everything this script created
  *
@@ -36,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { createHmac } from 'node:crypto';
 import { postMessageFnId } from '../../app/deploy/post-fn.mjs';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
+import { runWsLoad } from './ws-load.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -428,50 +430,6 @@ ${env}
 // ---------------------------------------------------------------------------
 // The WebSocket scale test (#172)
 
-/** The actors release's host pods, oldest name first for stable output. */
-const hostPods = () =>
-    kube(['-n', cfg.actorsNs, 'get', 'pod', '-l', 'app.kubernetes.io/component=host',
-        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'], { quiet: true })
-        ?.split('\n').filter(Boolean).sort() ?? [];
-
-/**
- * `ops.sockets` summed across every host, read from INSIDE the pods.
- *
- * `kubectl exec` rather than a port-forward because the counters are
- * PER HOST and the Service would load-balance a single poll to whichever
- * pod it liked — giving one host's numbers and calling them the fleet's.
- * The bearer secret is already in each pod's environment, so it never has
- * to leave the cluster or land in this process's argv.
- */
-function socketTotals() {
-    const read = (pod) => {
-        const out = kube(['-n', cfg.actorsNs, 'exec', pod, '--', 'node', '-e',
-            "fetch('http://127.0.0.1:' + (process.env.PORT || 7311) + '/_sigx/ops', " +
-            "{ headers: { authorization: 'Bearer ' + process.env.OPS_SECRET } })" +
-            '.then((r) => r.text()).then((t) => console.log(t))'
-        ], { quiet: true, allowFail: true });
-        if (!out) return null;
-        try {
-            return JSON.parse(out)?.ops?.sockets ?? null;
-        } catch {
-            return null;
-        }
-    };
-    const totals = {};
-    let hosts = 0;
-    for (const pod of hostPods()) {
-        const section = read(pod);
-        // A section that is missing or is an `{ error }` from a throwing
-        // provider must not be silently added as zeros — that would read as
-        // "this host served nothing", which is a different claim.
-        if (!section || section.error) continue;
-        hosts++;
-        for (const [key, value] of Object.entries(section)) {
-            if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
-        }
-    }
-    return { hosts, totals };
-}
 
 /**
  * Enable (and configure) the socket endpoint on the running actors release.
@@ -488,7 +446,11 @@ async function wsUp(args) {
     helm(['upgrade', '--install', 'sigx', join(here, 'chart'), '-n', cfg.actorsNs,
         '--reset-then-reuse-values', '--wait', '--timeout', '10m', ...sets]);
     kube(['-n', cfg.actorsNs, 'rollout', 'status', 'deploy/sigx-host', '--timeout=420s']);
-    log(`  socket mounted on ${hostPods().length} host pod(s)`);
+    const mounted = kube(['-n', cfg.actorsNs, 'get', 'pod', '-l',
+        'app.kubernetes.io/component=host', '-o',
+        'jsonpath={.items[*].metadata.name}'], { quiet: true, allowFail: true })
+        ?.split(/\s+/).filter(Boolean).length ?? 0;
+    log(`  socket mounted on ${mounted} host pod(s)`);
 }
 
 /**
@@ -502,234 +464,82 @@ async function wsUp(args) {
  * `key "5000" has no value` — a confusing error a long way from its cause.
  */
 async function wsLoad(args) {
-    const enabled = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host', '-o',
-        'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="ENABLE_SOCKET")].value}'],
-        { quiet: true, allowFail: true });
-    if (enabled !== '1') {
-        console.error('the host has no socket endpoint — run `testenv.mjs ws-up` first');
+    // Values arrive as `key=value`, unprefixed (`mode=hot`). A token
+    // without `=` would otherwise become `--set-string wsLoadgen.<token>=`
+    // and change the run in a way that surfaces much later, if at all.
+    const values = {};
+    for (const kv of args) {
+        const at = kv.indexOf('=');
+        if (at <= 0) {
+            console.error(`ws-load takes key=value arguments — got '${kv}'`);
+            console.error('e.g. ws-load mode=hot ladder=1000,5000 parallelism=2');
+            process.exit(1);
+        }
+        values[kv.slice(0, at)] = kv.slice(at + 1);
+    }
+
+    // The image is named ONCE. `image.tag=` is accepted here because
+    // reusing what an earlier `up` built is the normal case — the git SHA
+    // moves on every merge while the deployed image does not — but it is
+    // lifted OUT of the values so it cannot also arrive as a chart value
+    // and quietly win over the explicit one.
+    const imageTag = values['image.tag'] ?? gitSha();
+    const imageRepository = values['image.repository']
+        ?? `${cfg.acr}.azurecr.io/sigx-actors-test`;
+    delete values['image.tag'];
+    delete values['image.repository'];
+
+    let result;
+    try {
+        result = await runWsLoad({
+            context: cfg.cluster,
+            namespace: cfg.actorsNs,
+            chartDir: join(here, 'chart'),
+            imageRepository,
+            imageTag,
+            workload: cfg.workload,
+            values,
+            onLog: (message) => step(message)
+        });
+    } catch (error) {
+        console.error(error.message);
         process.exit(1);
     }
 
-    const suffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-    const job = `sigx-wsloadgen-${suffix}`;
-    const sets = ['wsLoadgen.enabled=true', `wsLoadgen.nameSuffix=${suffix}`, ...args]
-        .flatMap((kv) => {
-            const [key, ...rest] = kv.split('=');
-            const value = rest.join('=');
-            const name = key.startsWith('wsLoadgen.') || key.startsWith('image.')
-                ? key
-                : `wsLoadgen.${key}`;
-            return ['--set-string', `${name}=${value.replaceAll(',', '\\,')}`];
-        });
-
-    step(`rendering ${job}`);
-    const manifest = helm(['template', 'sigx', join(here, 'chart'), '-n', cfg.actorsNs,
-        '-s', 'templates/wsloadgen-job.yaml',
-        '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-actors-test`,
-        '--set', `image.tag=${gitSha()}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`,
-        ...sets], { quiet: true });
-
-    // BEFORE the apply. Taken after it, the first rung's connections are
-    // already opening, and the delta comes out with more closes than opens
-    // — which reads like lost connections rather than a racing baseline.
-    const before = socketTotals();
-
-    const dir = mkdtempSync(join(tmpdir(), 'sigx-wsload-'));
-    const file = join(dir, 'job.yaml');
-    try {
-        writeFileSync(file, manifest);
-        kube(['-n', cfg.actorsNs, 'apply', '-f', file]);
-    } finally {
-        discard(dir);
-    }
-
-    // Read the completion count back off the Job rather than trusting the
-    // args: `parallelism` may have come from values, from an arg, or from
-    // the chart default, and the wait below has to know when it is done.
-    const wanted = Number(kube(['-n', cfg.actorsNs, 'get', 'job', job, '-o',
-        'jsonpath={.spec.completions}'], { quiet: true, allowFail: true })) || 1;
-
-    step(`waiting for ${job} (${wanted} pod(s))`);
-    /**
-     * Poll rather than `kubectl wait`, because the wait has to do two jobs.
-     *
-     * The second one is the point: `open` is a GAUGE, so it only exists
-     * while the connections do. Reading it after the Job has finished
-     * reports zero, and the monotonic totals cannot substitute — they count
-     * every connection ever opened across every rung, not how many were up
-     * at once. The peak of this sample IS the "how many clients were
-     * connected at the same time" number, and it comes from the SERVERS
-     * rather than from the thing generating the load.
-     *
-     * It is a sample, so it under-reports by however much the true peak
-     * fell between polls; the generator's own per-pod `connected` stays the
-     * authority for what each pod achieved.
-     */
-    let peakOpen = 0;
-    let peakSubscriptions = 0;
-    let samples = 0;
-    let partial = false;
-    const deadline = Date.now() + 3600_000;
-    for (;;) {
-        const live = socketTotals();
-        if (live.hosts > 0) {
-            samples++;
-            peakOpen = Math.max(peakOpen, live.totals.open ?? 0);
-            peakSubscriptions = Math.max(peakSubscriptions, live.totals.subscriptions ?? 0);
-        }
-        const state = kube(['-n', cfg.actorsNs, 'get', 'job', job, '-o',
-            'jsonpath={.status.succeeded}|{.status.failed}'], { quiet: true, allowFail: true }) ?? '';
-        const [succeeded, failed] = state.split('|').map((v) => Number(v) || 0);
-        if (succeeded >= wanted || failed > 0) {
-            if (failed > 0) {
-                // A rung's rows are SUMMED across pods, so a pod that died
-                // does not merely lose its own line — it silently shrinks
-                // every total below it. Fail the verb: a partial run that
-                // exits 0 is a number nobody knows to distrust.
-                log(`  ✗ ${job}: ${failed} pod(s) failed — the merged rows below are PARTIAL`);
-                partial = true;
-                process.exitCode = 1;
-            }
-            break;
-        }
-        if (Date.now() > deadline) {
-            log(`  ✗ ${job} did not complete within the deadline — rows may be PARTIAL`);
-            partial = true;
-            process.exitCode = 1;
-            break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-    const after = socketTotals();
-
-    /**
-     * Logs PER POD, via the label — `kubectl logs job/<name>` picks ONE pod
-     * and says nothing about the rest, so a parallel run silently reported
-     * a single pod's numbers as the whole run's. The rows are summed, so
-     * that is not a display bug: it under-reports the measurement by the
-     * pod count.
-     */
-    const pods = kube(['-n', cfg.actorsNs, 'get', 'pod', '-l', `job-name=${job}`,
-        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'],
-        { quiet: true, allowFail: true })?.split('\n').filter(Boolean) ?? [];
-    log(`  collecting logs from ${pods.length} pod(s)`);
-    const rows = [];
-    for (const pod of pods) {
-        const out = kube(['-n', cfg.actorsNs, 'logs', pod, '--tail=-1'],
-            { quiet: true, allowFail: true }) ?? '';
-        for (const line of out.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('{')) continue;
-            try {
-                rows.push(JSON.parse(trimmed));
-            } catch {
-                // a progress line that merely begins with a brace
-            }
-        }
-    }
-
-    if (rows.length === 0) {
-        for (const pod of pods.slice(0, 2)) {
+    if (result.rows.length === 0) {
+        for (const pod of result.pods.slice(0, 2)) {
             log(`--- ${pod} ---`);
-            log((kube(['-n', cfg.actorsNs, 'logs', pod, '--tail=40'],
-                { quiet: true, allowFail: true }) ?? '(no logs)'));
+            log(kube(['-n', cfg.actorsNs, 'logs', pod, '--tail=40'],
+                { quiet: true, allowFail: true }) ?? '(no logs)');
         }
-        console.error(`${job} produced no result rows`);
+        console.error(`${result.job} produced no result rows`);
         process.exitCode = 1;
         return;
     }
 
-    step(partial ? 'merged rows (PARTIAL — see the failure above)' : 'merged rows');
-    for (const row of mergeRows(rows)) log(JSON.stringify({ ...row, ...(partial ? { partial: true } : {}) }));
+    step(result.partial ? 'merged rows (PARTIAL — see the failure above)' : 'merged rows');
+    for (const row of result.merged) log(JSON.stringify(row));
 
     step('peak concurrency, observed on the HOSTS');
     log(JSON.stringify({
-        hosts: after.hosts,
-        peakOpen,
-        peakSubscriptions,
-        samples,
+        hosts: result.hosts,
+        peakOpen: result.peakOpen,
+        peakSubscriptions: result.peakSubscriptions,
+        samples: result.samples,
         note: 'gauge sampled every ~5s while the job ran; a true peak between samples is missed'
     }));
 
     step('ops.sockets, summed across hosts');
-    const delta = {};
-    for (const [key, value] of Object.entries(after.totals)) {
-        if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
-        delta[key] = value - (before.totals[key] ?? 0);
-    }
-    log(JSON.stringify({ hosts: after.hosts, delta }));
-    if ((delta.protocolBreaches ?? 0) > 0) {
+    log(JSON.stringify({ hosts: result.hosts, delta: result.delta }));
+
+    // A partial run that exits 0 is a number nobody knows to distrust.
+    if (result.partial) process.exitCode = 1;
+    if ((result.delta.protocolBreaches ?? 0) > 0) {
         log('  ✗ protocol breaches — the client and the session disagree; the run is not valid');
         process.exitCode = 1;
     }
 }
 
-/**
- * One row per rung, summed across the Job's pods.
- *
- * COUNTS sum; PERCENTILES DO NOT. Merging p99s across pods produces a
- * number that is the p99 of nothing, so latency is taken from the single
- * publishing pod (the only one that carries probes) and labelled with the
- * pod count it does NOT represent.
- */
-function mergeRows(rows) {
-    const byRung = new Map();
-    for (const row of rows) {
-        const merged = byRung.get(row.n) ?? {
-            n: row.n,
-            pods: 0,
-            mode: row.mode,
-            read: row.read,
-            principal: row.principal,
-            connected: 0,
-            socketsExpected: 0,
-            connectFailures: 0,
-            deliveries: 0,
-            durationMs: 0,
-            publishes: 0,
-            publishFailures: 0,
-            subscriptionErrors: 0,
-            drops: 0,
-            seqMismatches: 0,
-            maxBufferedBytes: 0,
-            clientRssMb: 0,
-            latencyMs: null,
-            latencyFromPods: 0
-        };
-        merged.pods++;
-        for (const key of ['connected', 'socketsExpected', 'connectFailures', 'deliveries',
-            'publishes', 'publishFailures', 'subscriptionErrors', 'drops', 'seqMismatches']) {
-            merged[key] += row[key] ?? 0;
-        }
-        // Rates are NOT summed. Each pod already divided by its own window,
-        // and pods do not start or finish together — adding their rates
-        // overstates throughput by however much the windows differ. The
-        // merged rate is recomputed below from summed deliveries over the
-        // longest window, which is the one they all overlap within.
-        merged.durationMs = Math.max(merged.durationMs, row.durationMs ?? 0);
-        merged.maxBufferedBytes = Math.max(merged.maxBufferedBytes, row.maxBufferedBytes ?? 0);
-        merged.clientRssMb = Math.max(merged.clientRssMb, row.clientRssMb ?? 0);
-        if (row.latencyMs) {
-            merged.latencyMs = row.latencyMs;
-            merged.latencyFromPods++;
-        }
-        byRung.set(row.n, merged);
-    }
-    return [...byRung.values()]
-        .sort((a, b) => a.n - b.n)
-        .map((row) => ({
-            ...row,
-            // `n` is PER POD, so the number a reader wants is this one.
-            totalConnections: row.connected,
-            deliveriesPerSec: row.durationMs > 0
-                ? Math.round((row.deliveries / (row.durationMs / 1000)) * 1000) / 1000
-                : 0,
-            deliveriesPerPublish: row.publishes > 0
-                ? Math.round((row.deliveries / row.publishes) * 1000) / 1000
-                : 0
-        }));
-}
 
 /**
  * The runtime knobs, read back off the LIVE Deployment.
@@ -742,6 +552,94 @@ function mergeRows(rows) {
  * because a `helm --set` is exactly the case that would otherwise slip
  * through.
  */
+/**
+ * The socket-relevant env on the LIVE actors deployment.
+ *
+ * Separate from `liveKnobs()` because it reads a different release and a
+ * different set of names — and because every one of these caps changes what
+ * a connection-scale run can reach. A run under
+ * `SOCKET_MAX_SUBSCRIPTIONS=1024` is not comparable with one under the
+ * default 256, and without them in the shape the comparison is made anyway
+ * and reported as a code change.
+ */
+const SOCKET_KNOBS = [
+    'ENABLE_SOCKET',
+    'ENABLE_SESSIONS',
+    'SOCKET_PATH',
+    'SOCKET_ORIGIN',
+    'SOCKET_MAX_CONCURRENT',
+    'SOCKET_MAX_SUBSCRIPTIONS',
+    'SOCKET_MAX_MESSAGE_BYTES',
+    'SOCKET_PING_MS',
+    'SOCKET_REVALIDATE_MS',
+    'SOCKET_MAX_CONNECTION_MS'
+];
+
+function liveSocketKnobs() {
+    const raw = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host', '-o',
+        'jsonpath={range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\\n"}{end}'],
+        { quiet: true, allowFail: true }) ?? '';
+    const found = {};
+    for (const line of raw.split('\n')) {
+        const [name, ...rest] = line.split('=');
+        if (SOCKET_KNOBS.includes(name) && rest.length > 0) found[name] = rest.join('=');
+    }
+    return found;
+}
+
+/** `INFRA_SHAPE` for a socket run — the ACTORS release, not chat. */
+function actorsShape() {
+    const replicas = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host',
+        '-o', 'jsonpath={.spec.replicas}'], { quiet: true, allowFail: true }) ?? '?';
+    const nodes = kube(['-n', cfg.actorsNs, 'get', 'pods', '-l',
+        'app.kubernetes.io/component=host', '-o',
+        'jsonpath={range .items[*]}{.spec.nodeName}{"\\n"}{end}'],
+        { quiet: true, allowFail: true }) ?? '';
+    const distinct = new Set(nodes.split('\n').filter(Boolean)).size;
+    const image = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host',
+        '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
+    const knobs = Object.entries(liveSocketKnobs())
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([k, v]) => `${k}=${v}`)
+        .join(',');
+    return (
+        `ws replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}` +
+        (knobs ? ` knobs=${knobs}` : '')
+    );
+}
+
+/**
+ * The recorded socket run: assemble the env the `sockets/*` scenarios need
+ * and hand off to the harness, so the numbers land in a baseline file with
+ * a shape attached instead of on a terminal.
+ *
+ *   ws-bench                       # raw run
+ *   ws-bench --save-baseline       # record THIS shape
+ *   ws-bench --compare             # against the recorded one
+ */
+async function wsBench(args) {
+    const image = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host', '-o',
+        'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
+    const [repository, tag] = [image.slice(0, image.lastIndexOf(':')), image.split(':').pop()];
+    const shape = actorsShape();
+    step(`shape: ${shape}`);
+    // The image the CLUSTER is running, not `gitSha()`: the SHA moves on
+    // every merge while the deployed image does not, and a tag the registry
+    // has never seen is an ImagePullBackOff that looks like a cluster fault.
+    const env = {
+        ...process.env,
+        BENCH_WS: '1',
+        INFRA_WS_CONTEXT: cfg.cluster,
+        INFRA_WS_NS: cfg.actorsNs,
+        INFRA_WS_IMAGE: repository,
+        INFRA_WS_IMAGE_TAG: tag,
+        INFRA_WS_WORKLOAD: cfg.workload,
+        INFRA_SHAPE: shape
+    };
+    const code = spawnInherit('pnpm', ['bench:run', 'sockets/', '--runs=1', ...args], env);
+    process.exitCode = code;
+}
+
 const KNOBS = [
     'PLACEMENT',
     'PLACEMENT_REFRESH_MS',
@@ -1081,6 +979,7 @@ const verbs = {
     load: () => load(rest),
     'ws-up': () => wsUp(rest),
     'ws-load': () => wsLoad(rest),
+    'ws-bench': () => wsBench(rest),
     'migrate-check': () => migrateCheck(rest),
     'vm-up': loadVmUp
 };
@@ -1106,12 +1005,13 @@ const NEEDS = {
     // it needs neither the public chat host nor the load VM.
     'ws-up': ['RG', 'CLUSTER'],
     'ws-load': ['RG', 'CLUSTER', 'ACR'],
+    'ws-bench': ['RG', 'CLUSTER'],
     'migrate-check': ['RG', 'CLUSTER', 'ACR', 'CHAT_HOST'],
     down: ['RG', 'CLUSTER', 'CHAT_HOST', 'DNS_ZONE', 'DNS_RG', 'LOAD_RG'],
     'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM']
 };
 /** Verbs that reach kubectl/helm, and so need a kubeconfig first. */
-const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'migrate-check', 'down']);
+const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'ws-bench', 'migrate-check', 'down']);
 
 if (!verbs[verb]) {
     log(`usage: node testenv.mjs <${Object.keys(verbs).join('|')}>`);

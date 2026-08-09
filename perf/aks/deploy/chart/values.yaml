@@ -198,6 +198,10 @@ wsLoadgen:
   durationS: 30
   probes: 20
   connectBatch: 250
+  # Per-connection dial+seed deadline. Short values make a rung that cannot
+  # dial fail fast instead of hanging for its whole window — which is what
+  # the identity-cliff scenario wants, since the failure IS its measurement.
+  connectTimeoutS: 30
   keyPrefix: fan
   # Default: the host service in-namespace.
   targetUrl: ""

@@ -36,6 +36,14 @@ public socket path is deliberately unmeasured so far; when it is measured
 it gets its own section, because it will be ingress-limited rather than
 runtime-limited.
 
+Since #184 they are also RECORDED rather than hand-run:
+`testenv.mjs ws-bench [--save-baseline|--compare]` drives the `sockets/*`
+scenarios through the ordinary baseline machinery, with `INFRA_SHAPE`
+carrying the actors release's socket caps so a run under a different
+`SOCKET_MAX_SUBSCRIPTIONS` is refused rather than compared. The figures in
+the 2026-08-09 section below predate that and were read off a terminal;
+treat them as the first measurement, not as a baseline file.
+
 Opt-in (`BENCH_INFRA=1` plus an `INFRA_URL`, a signed-cookie secret, and a
 load VM), and the load is driven FROM A VM IN THE CLUSTER'S REGION: the
 same ladder run from a laptop across an ocean varies 50-80% run to run and
