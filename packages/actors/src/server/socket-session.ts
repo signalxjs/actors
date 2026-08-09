@@ -209,13 +209,28 @@ export async function createActorSocketSession(
     const maxMessageBytes = options.maxMessageBytes ?? posture.maxBodyBytes ?? 1024 * 1024;
     const maxConcurrent = options.maxConcurrent ?? 256;
     // Validated at construction: a typo'd bound must throw rather than
-    // silently disable itself.
-    const maxSubscriptions = resolveMaxSubscriptions(
-        options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS
-    );
+    // silently disable itself. A misconfiguration still closes the socket
+    // (1011 — this is the SERVER'S error, not the client's), because a
+    // rejected construction must never leave an accepted socket dangling
+    // with no session behind it.
+    let maxSubscriptions: number;
+    let revalidateMs: number;
+    let maxConnectionMs: number;
+    try {
+        maxSubscriptions = resolveMaxSubscriptions(
+            options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS
+        );
+        revalidateMs = nonNegativeMs('revalidateMs', options.revalidateMs ?? 0);
+        maxConnectionMs = nonNegativeMs('maxConnectionMs', options.maxConnectionMs ?? 0);
+    } catch (error) {
+        try {
+            options.close(1011, 'session misconfigured');
+        } catch {
+            // The socket may already be dying; the throw below is the signal.
+        }
+        throw error;
+    }
     const pingMs = options.pingMs ?? DEFAULT_LIVE_PING_MS;
-    const revalidateMs = nonNegativeMs('revalidateMs', options.revalidateMs ?? 0);
-    const maxConnectionMs = nonNegativeMs('maxConnectionMs', options.maxConnectionMs ?? 0);
     const onError = options.onError ?? posture.onError;
 
     if (!originAllowed(request, originPolicy)) {
@@ -312,8 +327,12 @@ export async function createActorSocketSession(
      * should be a reconnect, not a mutation. A success re-pins `rq` and
      * `principal`, so later calls carry the freshly-authenticated context.
      */
+    let revalidating = false;
     const revalidate = async (): Promise<void> => {
-        if (closed) return;
+        // At most one at a time: a slow auth store must not let interval
+        // ticks pile overlapping runs onto the pipeline.
+        if (closed || revalidating) return;
+        revalidating = true;
         try {
             const fresh = await enterActorRequest(request, CONNECT_INFO, {
                 allowAnonymous: true
@@ -332,6 +351,8 @@ export async function createActorSocketSession(
             principal = encoded;
         } catch {
             if (!closed) fail(1008, 'session expired');
+        } finally {
+            revalidating = false;
         }
     };
 

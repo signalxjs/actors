@@ -593,12 +593,44 @@ describe('teardown', () => {
 });
 
 describe('sessions must not outlive credentials (#159)', () => {
-    it('rejects a typo-disabled bound at construction', async () => {
+    it('rejects a typo-disabled bound at construction — and still closes the socket', async () => {
         const s = await start();
-        await expect(connect(s, { revalidateMs: -1 })).rejects.toThrow(/non-negative integer/);
+        const l = fakeLink();
+        await expect(
+            createActorSocketSession({
+                host: s,
+                request: new Request('http://actors.test/socket'),
+                send: l.send,
+                close: l.close,
+                origin: false,
+                revalidateMs: -1
+            })
+        ).rejects.toThrow(/non-negative integer/);
+        // The server's own error, and an accepted socket must not dangle.
+        expect(l.closes).toEqual([{ code: 1011, reason: 'session misconfigured' }]);
         await expect(connect(s, { maxConnectionMs: 1.5 })).rejects.toThrow(
             /non-negative integer/
         );
+    });
+
+    it('revalidations never overlap, however slow authenticate is', async () => {
+        let inFlight = 0;
+        let peak = 0;
+        restore = stubServerApp({
+            authenticate: async () => {
+                inFlight += 1;
+                peak = Math.max(peak, inFlight);
+                await new Promise((resolve) => setTimeout(resolve, 45));
+                inFlight -= 1;
+                return { id: 'u1' };
+            }
+        });
+        const s = await start();
+        const { link } = await connect(s, { revalidateMs: 10 });
+        // Several intervals fire while one revalidation is still running.
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(peak).toBe(1);
+        expect(link.closes).toEqual([]);
     });
 
     it('maxConnectionMs closes 1008 at the cap and tears the session down', async () => {
