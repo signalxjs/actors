@@ -63,7 +63,8 @@ export interface WsLoadOptions {
     imageRepository: string;
     imageTag: string;
     workload: string;
-    /** `wsLoadgen.*` chart values without the prefix; `image.*` passes through. */
+    /** `wsLoadgen.*` chart values without the prefix. An `image.*` key is
+     *  REFUSED — the image is named by imageRepository/imageTag alone. */
     values?: Record<string, unknown>;
     onLog?: (message: string) => void;
     sampleIntervalMs?: number;

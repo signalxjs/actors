@@ -464,14 +464,30 @@ async function wsUp(args) {
  * `key "5000" has no value` — a confusing error a long way from its cause.
  */
 async function wsLoad(args) {
-    // Values arrive as `key=value`, unprefixed (`mode=hot`), with
-    // `image.tag=` allowed through so a run can reuse the image an earlier
-    // `up` built — the git SHA moves on every merge while the image does not.
+    // Values arrive as `key=value`, unprefixed (`mode=hot`). A token
+    // without `=` would otherwise become `--set-string wsLoadgen.<token>=`
+    // and change the run in a way that surfaces much later, if at all.
     const values = {};
     for (const kv of args) {
-        const [key, ...rest] = kv.split('=');
-        values[key] = rest.join('=');
+        const at = kv.indexOf('=');
+        if (at <= 0) {
+            console.error(`ws-load takes key=value arguments — got '${kv}'`);
+            console.error('e.g. ws-load mode=hot ladder=1000,5000 parallelism=2');
+            process.exit(1);
+        }
+        values[kv.slice(0, at)] = kv.slice(at + 1);
     }
+
+    // The image is named ONCE. `image.tag=` is accepted here because
+    // reusing what an earlier `up` built is the normal case — the git SHA
+    // moves on every merge while the deployed image does not — but it is
+    // lifted OUT of the values so it cannot also arrive as a chart value
+    // and quietly win over the explicit one.
+    const imageTag = values['image.tag'] ?? gitSha();
+    const imageRepository = values['image.repository']
+        ?? `${cfg.acr}.azurecr.io/sigx-actors-test`;
+    delete values['image.tag'];
+    delete values['image.repository'];
 
     let result;
     try {
@@ -479,8 +495,8 @@ async function wsLoad(args) {
             context: cfg.cluster,
             namespace: cfg.actorsNs,
             chartDir: join(here, 'chart'),
-            imageRepository: `${cfg.acr}.azurecr.io/sigx-actors-test`,
-            imageTag: values['image.tag'] ?? gitSha(),
+            imageRepository,
+            imageTag,
             workload: cfg.workload,
             values,
             onLog: (message) => step(message)

@@ -169,10 +169,12 @@ const escape = (value) => String(value).replaceAll(',', '\\,');
 /**
  * Render, apply, wait (sampling the gauge), collect and merge one run.
  *
- * `values` are `wsLoadgen.*` chart values WITHOUT the prefix, plus
- * `image.tag` / `image.repository` if the caller wants to pin them —
- * reusing the image an earlier `up` built is the normal case, because the
- * git SHA moves on every merge while the image does not.
+ * `values` are `wsLoadgen.*` chart values WITHOUT the prefix. The IMAGE is
+ * not among them: it arrives as `imageRepository`/`imageTag` and nowhere
+ * else, and an `image.*` key in `values` is refused rather than merged.
+ * Reusing the image an earlier `up` built is the normal case — the git SHA
+ * moves on every merge while the deployed image does not — so the caller
+ * pins the tag, but it pins it in one place.
  */
 export async function runWsLoad(options) {
     const {
@@ -188,6 +190,21 @@ export async function runWsLoad(options) {
         sampleIntervalMs = 5000,
         timeoutMs = 3_600_000
     } = options;
+
+    // The image is chosen in EXACTLY ONE place. `values` is forwarded after
+    // the explicit `--set image.*`, so an `image.tag` smuggled in there
+    // would win — and the run would measure a different build than the one
+    // the caller (and the recorded shape) name. Refuse rather than pick a
+    // winner: silently measuring the wrong image is the failure mode this
+    // whole harness exists to prevent.
+    const smuggled = Object.keys(values).filter((key) => key.startsWith('image.'));
+    if (smuggled.length > 0) {
+        throw new Error(
+            `[ws-load] pass the image as imageRepository/imageTag, not through values ` +
+                `(${smuggled.join(', ')}) — two sources for one image is how a run ends up ` +
+                'measuring a build nobody named.'
+        );
+    }
 
     const kube = (args, opts) => sh('kubectl', ['--context', context, ...args], opts);
     const helm = (args, opts) => sh('helm', ['--kube-context', context, ...args], opts);
@@ -206,7 +223,7 @@ export async function runWsLoad(options) {
         'wsLoadgen.enabled': true,
         'wsLoadgen.nameSuffix': suffix,
         ...Object.fromEntries(Object.entries(values).map(([k, v]) =>
-            [k.startsWith('wsLoadgen.') || k.startsWith('image.') ? k : `wsLoadgen.${k}`, v]))
+            [k.startsWith('wsLoadgen.') ? k : `wsLoadgen.${k}`, v]))
     })) {
         sets.push('--set-string', `${key}=${escape(value)}`);
     }

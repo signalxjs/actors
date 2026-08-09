@@ -14,7 +14,7 @@
  *    were is the easiest possible mistake to make here.
  */
 import { describe, expect, it } from 'vitest';
-import { mergeRows } from '../../perf/aks/deploy/ws-load.mjs';
+import { mergeRows, runWsLoad } from '../../perf/aks/deploy/ws-load.mjs';
 
 /** One generator pod's line for a rung, with the fields merge touches. */
 const row = (over: Record<string, unknown> = {}) => ({
@@ -107,4 +107,32 @@ describe('mergeRows', () => {
         expect(merged!.connectFailures).toBe(30);
         expect(merged!.connected).toBe(1970);
     });
+});
+
+describe('runWsLoad option guards', () => {
+    /**
+     * The image is forwarded to `helm` AFTER the explicit `--set image.*`,
+     * so a tag smuggled through `values` would win — and the run would
+     * measure a build neither the caller nor the recorded `INFRA_SHAPE`
+     * names. Refusing is the only safe answer; picking a winner means one
+     * of the two callers is silently wrong.
+     *
+     * Reached before any `kubectl`, so this needs no cluster.
+     */
+    it.each(['image.tag', 'image.repository'])(
+        'refuses %s smuggled through values',
+        async (key) => {
+            await expect(
+                runWsLoad({
+                    context: 'ctx',
+                    namespace: 'ns',
+                    chartDir: '/nowhere',
+                    imageRepository: 'registry/img',
+                    imageTag: 'abc123',
+                    workload: 'w',
+                    values: { [key]: 'sneaky', mode: 'hot' }
+                })
+            ).rejects.toThrow(/imageRepository\/imageTag, not through values/);
+        }
+    );
 });
