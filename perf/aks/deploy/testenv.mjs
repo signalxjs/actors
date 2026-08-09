@@ -530,6 +530,11 @@ async function wsLoad(args) {
         '--set', `nodeSelector.workload=${cfg.workload}`,
         ...sets], { quiet: true });
 
+    // BEFORE the apply. Taken after it, the first rung's connections are
+    // already opening, and the delta comes out with more closes than opens
+    // — which reads like lost connections rather than a racing baseline.
+    const before = socketTotals();
+
     const dir = mkdtempSync(join(tmpdir(), 'sigx-wsload-'));
     const file = join(dir, 'job.yaml');
     try {
@@ -539,39 +544,113 @@ async function wsLoad(args) {
         discard(dir);
     }
 
-    const before = socketTotals();
-    step(`waiting for ${job}`);
-    // The Job's own deadline is the source of truth; this only has to be
-    // longer than the ladder it was handed.
-    const waited = kube(['-n', cfg.actorsNs, 'wait', '--for=condition=complete',
-        `job/${job}`, '--timeout=3600s'], { allowFail: true });
-    if (waited === null) {
-        log(`  ✗ ${job} did not complete — logs follow`);
+    // Read the completion count back off the Job rather than trusting the
+    // args: `parallelism` may have come from values, from an arg, or from
+    // the chart default, and the wait below has to know when it is done.
+    const wanted = Number(kube(['-n', cfg.actorsNs, 'get', 'job', job, '-o',
+        'jsonpath={.spec.completions}'], { quiet: true, allowFail: true })) || 1;
+
+    step(`waiting for ${job} (${wanted} pod(s))`);
+    /**
+     * Poll rather than `kubectl wait`, because the wait has to do two jobs.
+     *
+     * The second one is the point: `open` is a GAUGE, so it only exists
+     * while the connections do. Reading it after the Job has finished
+     * reports zero, and the monotonic totals cannot substitute — they count
+     * every connection ever opened across every rung, not how many were up
+     * at once. The peak of this sample IS the "how many clients were
+     * connected at the same time" number, and it comes from the SERVERS
+     * rather than from the thing generating the load.
+     *
+     * It is a sample, so it under-reports by however much the true peak
+     * fell between polls; the generator's own per-pod `connected` stays the
+     * authority for what each pod achieved.
+     */
+    let peakOpen = 0;
+    let peakSubscriptions = 0;
+    let samples = 0;
+    let partial = false;
+    const deadline = Date.now() + 3600_000;
+    for (;;) {
+        const live = socketTotals();
+        if (live.hosts > 0) {
+            samples++;
+            peakOpen = Math.max(peakOpen, live.totals.open ?? 0);
+            peakSubscriptions = Math.max(peakSubscriptions, live.totals.subscriptions ?? 0);
+        }
+        const state = kube(['-n', cfg.actorsNs, 'get', 'job', job, '-o',
+            'jsonpath={.status.succeeded}|{.status.failed}'], { quiet: true, allowFail: true }) ?? '';
+        const [succeeded, failed] = state.split('|').map((v) => Number(v) || 0);
+        if (succeeded >= wanted || failed > 0) {
+            if (failed > 0) {
+                // A rung's rows are SUMMED across pods, so a pod that died
+                // does not merely lose its own line — it silently shrinks
+                // every total below it. Fail the verb: a partial run that
+                // exits 0 is a number nobody knows to distrust.
+                log(`  ✗ ${job}: ${failed} pod(s) failed — the merged rows below are PARTIAL`);
+                partial = true;
+                process.exitCode = 1;
+            }
+            break;
+        }
+        if (Date.now() > deadline) {
+            log(`  ✗ ${job} did not complete within the deadline — rows may be PARTIAL`);
+            partial = true;
+            process.exitCode = 1;
+            break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5000));
     }
     const after = socketTotals();
 
-    const logs = kube(['-n', cfg.actorsNs, 'logs', `job/${job}`, '--all-containers',
-        '--tail=-1', '--prefix'], { quiet: true, allowFail: true }) ?? '';
-    const rows = logs.split('\n')
-        .map((line) => line.slice(line.indexOf('{')))
-        .filter((line) => line.startsWith('{'))
-        .flatMap((line) => {
+    /**
+     * Logs PER POD, via the label — `kubectl logs job/<name>` picks ONE pod
+     * and says nothing about the rest, so a parallel run silently reported
+     * a single pod's numbers as the whole run's. The rows are summed, so
+     * that is not a display bug: it under-reports the measurement by the
+     * pod count.
+     */
+    const pods = kube(['-n', cfg.actorsNs, 'get', 'pod', '-l', `job-name=${job}`,
+        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'],
+        { quiet: true, allowFail: true })?.split('\n').filter(Boolean) ?? [];
+    log(`  collecting logs from ${pods.length} pod(s)`);
+    const rows = [];
+    for (const pod of pods) {
+        const out = kube(['-n', cfg.actorsNs, 'logs', pod, '--tail=-1'],
+            { quiet: true, allowFail: true }) ?? '';
+        for (const line of out.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('{')) continue;
             try {
-                return [JSON.parse(line)];
+                rows.push(JSON.parse(trimmed));
             } catch {
-                return [];
+                // a progress line that merely begins with a brace
             }
-        });
+        }
+    }
 
     if (rows.length === 0) {
-        log(logs.split('\n').slice(-40).join('\n'));
+        for (const pod of pods.slice(0, 2)) {
+            log(`--- ${pod} ---`);
+            log((kube(['-n', cfg.actorsNs, 'logs', pod, '--tail=40'],
+                { quiet: true, allowFail: true }) ?? '(no logs)'));
+        }
         console.error(`${job} produced no result rows`);
         process.exitCode = 1;
         return;
     }
 
-    step('merged rows');
-    for (const row of mergeRows(rows)) log(JSON.stringify(row));
+    step(partial ? 'merged rows (PARTIAL — see the failure above)' : 'merged rows');
+    for (const row of mergeRows(rows)) log(JSON.stringify({ ...row, ...(partial ? { partial: true } : {}) }));
+
+    step('peak concurrency, observed on the HOSTS');
+    log(JSON.stringify({
+        hosts: after.hosts,
+        peakOpen,
+        peakSubscriptions,
+        samples,
+        note: 'gauge sampled every ~5s while the job ran; a true peak between samples is missed'
+    }));
 
     step('ops.sockets, summed across hosts');
     const delta = {};
