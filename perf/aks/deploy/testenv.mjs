@@ -569,6 +569,7 @@ async function wsLoad(args) {
     let peakOpen = 0;
     let peakSubscriptions = 0;
     let samples = 0;
+    let partial = false;
     const deadline = Date.now() + 3600_000;
     for (;;) {
         const live = socketTotals();
@@ -581,11 +582,21 @@ async function wsLoad(args) {
             'jsonpath={.status.succeeded}|{.status.failed}'], { quiet: true, allowFail: true }) ?? '';
         const [succeeded, failed] = state.split('|').map((v) => Number(v) || 0);
         if (succeeded >= wanted || failed > 0) {
-            if (failed > 0) log(`  ✗ ${job}: ${failed} pod(s) failed`);
+            if (failed > 0) {
+                // A rung's rows are SUMMED across pods, so a pod that died
+                // does not merely lose its own line — it silently shrinks
+                // every total below it. Fail the verb: a partial run that
+                // exits 0 is a number nobody knows to distrust.
+                log(`  ✗ ${job}: ${failed} pod(s) failed — the merged rows below are PARTIAL`);
+                partial = true;
+                process.exitCode = 1;
+            }
             break;
         }
         if (Date.now() > deadline) {
-            log(`  ✗ ${job} did not complete within the deadline`);
+            log(`  ✗ ${job} did not complete within the deadline — rows may be PARTIAL`);
+            partial = true;
+            process.exitCode = 1;
             break;
         }
         await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -629,8 +640,8 @@ async function wsLoad(args) {
         return;
     }
 
-    step('merged rows');
-    for (const row of mergeRows(rows)) log(JSON.stringify(row));
+    step(partial ? 'merged rows (PARTIAL — see the failure above)' : 'merged rows');
+    for (const row of mergeRows(rows)) log(JSON.stringify({ ...row, ...(partial ? { partial: true } : {}) }));
 
     step('peak concurrency, observed on the HOSTS');
     log(JSON.stringify({
