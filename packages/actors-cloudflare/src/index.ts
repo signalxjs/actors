@@ -42,6 +42,12 @@ export {
     type WorkerHandler,
     type WorkerHandlerOptions
 } from './worker';
+export {
+    DEFAULT_SOCKET_PATH,
+    workerSocket,
+    type CloudflareWebSocketLike,
+    type WorkerSocketOptions
+} from './socket';
 export type {
     DurableObjectIdLike,
     DurableObjectNamespaceLike,

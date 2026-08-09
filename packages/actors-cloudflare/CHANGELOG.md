@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`workerSocket()` — the Worker-terminated route for the client socket**
+  (#157): browsers speaking `@sigx/actors/socket-wire` over one WebSocket,
+  upgraded in the Worker. On Workers a 101 upgrade IS a `Response`, so the
+  route is an ordinary plugin contribution around
+  `createActorSocketSession` — every call and subscription re-dispatches
+  through placement to its actor's Durable Object, stub derived fresh per
+  dispatch. `createWorkerHandler` gains a `socket` option as sugar. A
+  refused construction (origin, auth) answers with an honest HTTP status
+  instead of an accepted-then-closed socket, and unlike the Node adapter
+  there is no pre-session buffer — the client end of a `WebSocketPair` only
+  exists inside the returned Response, so no frame can race construction.
+  **It does not fix #47**: a departed live consumer still leaves
+  `keptAlive` set in the objects it watched, because cancellation dies at
+  the `stub.fetch` boundary. When empty-room economics matter, wait for the
+  object-terminated socket (#158).
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

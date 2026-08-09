@@ -16,6 +16,7 @@ import {
 } from '@sigx/actors/host';
 import { createFetchHandler, type FetchHandlerOptions } from '@sigx/actors/server';
 import { durableObjects, type DurableObjectPlacementOptions } from './placement';
+import { workerSocket, type WorkerSocketOptions } from './socket';
 import type { DurableObjectNamespaceLike } from './types';
 
 /**
@@ -56,6 +57,14 @@ export interface WorkerHandlerOptions<Env = unknown> {
     >;
     /** Forwarded to the public mount — `base`, `fallback`, guards, caps. */
     fetch?: FetchHandlerOptions;
+    /**
+     * Client-facing WebSocket surface — sugar over
+     * `app.use(workerSocket(...))`. `terminate: 'worker'` (the default and,
+     * for now, the only mode) upgrades in the Worker itself: one multiplexed
+     * socket per client, every call re-dispatched through placement. It does
+     * NOT fix #47 — see `workerSocket`'s own doc for what that means.
+     */
+    socket?: WorkerSocketOptions & { terminate?: 'worker' };
 }
 
 export interface WorkerHandler<Env> {
@@ -97,6 +106,10 @@ export function createWorkerHandler<Env = unknown>(
                 ...options.placement
             })
         );
+        if (options.socket) {
+            const { terminate: _terminate, ...socket } = options.socket;
+            app.use(workerSocket(socket));
+        }
         const handler = createFetchHandler(app, options.fetch);
         await app.start();
         return handler;

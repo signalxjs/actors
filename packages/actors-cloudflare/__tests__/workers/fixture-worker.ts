@@ -5,7 +5,12 @@
  * `createWorkerHandler`, the placement, the host — running on real workerd.
  */
 import { defineActor } from '@sigx/actors';
-import { createHostDurableObject, createWorkerHandler } from '@sigx/actors-cloudflare';
+import { defineActorApp } from '@sigx/actors/host';
+import {
+    createHostDurableObject,
+    createWorkerHandler,
+    workerSocket
+} from '@sigx/actors-cloudflare';
 
 export interface Env {
     ACTORS: DurableObjectNamespace;
@@ -74,6 +79,11 @@ export class TestHost extends createHostDurableObject<Env>({
 export default createWorkerHandler<Env>({
     actors: [Counter],
     namespace: (env) => env.ACTORS,
+    // A second socket mount that KEEPS the default 'same-origin' posture —
+    // the refusal test dials it with no Origin header and must get an HTTP
+    // status back, not a dead socket.
+    app: (base) => defineActorApp(base).use(workerSocket({ path: '/_sigx/socket-strict' })),
     // A Worker's callers are not browsers posting a form.
-    fetch: { origin: false }
+    fetch: { origin: false },
+    socket: { origin: false }
 });

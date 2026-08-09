@@ -52,5 +52,15 @@ export default createWorkerHandler<Env>({
         // Anything that is not an actor call falls through here, so one
         // Worker serves the page and the actors.
         fallback: servePage
-    }
+    },
+    // The client socket (#157), terminated in the Worker: the page keeps its
+    // Counter current over ONE WebSocket instead of a held-open POST. Unlike
+    // the HTTP mount above this keeps the default 'same-origin' posture — a
+    // socket upgrade rides in from a browser WITH COOKIES and no preflight,
+    // and only the page dials it.
+    //
+    // What it does NOT change: a departed subscriber still leaves keptAlive
+    // set in the objects it watched, because every call still hops
+    // Worker→object over stub.fetch, which swallows cancellation (#47).
+    socket: {}
 });

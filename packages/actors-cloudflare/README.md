@@ -10,6 +10,11 @@ whole actor app runs on Workers.
 - **`durableObjectStorage()`** / **`durableObjectReminders()`** — the two seams
   the platform leaves to you, over DO storage and alarms.
 - **`durableObjectPlacement()`** / **`durableObjects()`** — ref → object id.
+- **`workerSocket()`** — the client WebSocket, terminated in the Worker; pairs
+  with `socketTransport()` from
+  [`@sigx/actors-ws`](https://sigx.dev/actors). It does **not** release
+  `keptAlive` for departed live consumers (see
+  [#47](https://github.com/signalxjs/actors/issues/47)).
 
 The package is small because Cloudflare already guarantees a single global
 instance per object and serializes requests to it — that *is* the virtual-actor

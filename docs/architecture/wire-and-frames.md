@@ -111,6 +111,33 @@ Two fields that look like incidental detail and are not:
   serialization format buys very little while forking the vocabulary
   `wire-shared.ts` pins — including its prototype-pollution reviver.
 
+## The client socket upgrade surface
+
+`@sigx/actors/socket-wire` is the third wire — a browser's WebSocket into
+`createActorSocketSession` — and deliberately **not** `cluster/frames`: text
+JSON, no principal field, no envelope, no inbound-call direction. The session
+core is WinterCG-clean (`Request` in, `send`/`close` callbacks out), so the
+per-runtime difference is only who answers the upgrade:
+
+- **Node** cannot answer an upgrade with a `Response`, which is why
+  `attachActorSocket()` (`@sigx/actors-ws/node`) exists: it owns the
+  `'upgrade'` event, buffers pre-session frames, and builds the WinterCG
+  `Request` by hand.
+- **Workers** answer an upgrade WITH a `Response` (`status: 101, webSocket`),
+  so `workerSocket()` in `@sigx/actors-cloudflare` is an ordinary
+  plugin-contributed route — no new seam, no pre-session buffer (the client
+  end only exists inside the returned Response, so no frame can race
+  construction), and a refused session answers with an honest HTTP status.
+  Bun and Deno are the same shape with `server.upgrade` /
+  `Deno.upgradeWebSocket` swapped in.
+
+One Cloudflare caveat that must not be papered over: the Worker-terminated
+socket changes **where the socket ends**, not where calls run — every call
+still crosses Worker→object over `stub.fetch`, whose abort signal is
+swallowed at the boundary (#47). A departed live consumer therefore still
+leaves `keptAlive` set in the objects it watched. Terminating the socket
+inside the object (#158) is the planned answer for that shape.
+
 ### Behaviours a transport must preserve
 
 These are asserted by [`transportConformance`](conformance-suites.md), which
