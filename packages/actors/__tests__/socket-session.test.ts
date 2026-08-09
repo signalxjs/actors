@@ -591,3 +591,104 @@ describe('teardown', () => {
         expect(session.stats().inFlight).toBe(0);
     });
 });
+
+describe('sessions must not outlive credentials (#159)', () => {
+    it('rejects a typo-disabled bound at construction', async () => {
+        const s = await start();
+        await expect(connect(s, { revalidateMs: -1 })).rejects.toThrow(/non-negative integer/);
+        await expect(connect(s, { maxConnectionMs: 1.5 })).rejects.toThrow(
+            /non-negative integer/
+        );
+    });
+
+    it('maxConnectionMs closes 1008 at the cap and tears the session down', async () => {
+        const s = await start();
+        const { session, link } = await connect(s, { maxConnectionMs: 40 });
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 1).length >= 1);
+        await until(() => link.closes.length === 1);
+        expect(link.closes[0]).toEqual({ code: 1008, reason: 'connection lifetime exceeded' });
+        expect(session.stats()).toEqual({ inFlight: 0, subscriptions: 0 });
+        // The watch released its keep-alive with the session.
+        await until(() => s.activations().every((a) => !a.keptAlive));
+    });
+
+    it('revalidation closes 1008 when the session is revoked server-side', async () => {
+        let revoked = false;
+        restore = stubServerApp({
+            authenticate: () => (revoked ? null : { id: 'u1' }),
+            codec: {
+                encode: (p) => (p as { id: string }).id,
+                decode: (encoded) => ({ id: encoded })
+            }
+        });
+        const s = await start();
+        const { session, link } = await connect(s, { revalidateMs: 15 });
+        // Live across several revalidations while the credentials stand.
+        session.handle(JSON.stringify({ i: 1, s: 'Cart#total', a: ['k'] }));
+        await until(() => framesFor(link, 1).length === 2);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect(link.closes).toEqual([]);
+        revoked = true;
+        await until(() => link.closes.length === 1);
+        expect(link.closes[0]).toEqual({ code: 1008, reason: 'session expired' });
+    });
+
+    it('revalidation closes 1008 when the identity CHANGES', async () => {
+        let current = 'u1';
+        restore = stubServerApp({
+            authenticate: () => ({ id: current }),
+            codec: {
+                encode: (p) => (p as { id: string }).id,
+                decode: (encoded) => ({ id: encoded })
+            }
+        });
+        const s = await start();
+        const { link } = await connect(s, { revalidateMs: 15 });
+        current = 'u2';
+        await until(() => link.closes.length === 1);
+        expect(link.closes[0]).toEqual({ code: 1008, reason: 'identity changed' });
+    });
+
+    it('an anonymous connection staying anonymous revalidates forever', async () => {
+        restore = stubServerApp({ authenticate: () => null });
+        const s = await start();
+        const { session, link } = await connect(s, { revalidateMs: 10 });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(link.closes).toEqual([]);
+        session.handle(JSON.stringify({ i: 1, s: 'Cart#total', a: ['k'] }));
+        await until(() => framesFor(link, 1).length === 2);
+    });
+
+    it('catches a sign-out even with NO principal codec configured', async () => {
+        let revoked = false;
+        // No codec: the encoded principal is undefined either way, so only
+        // the PRESENCE comparison can see the sign-out.
+        restore = stubServerApp({ authenticate: () => (revoked ? null : { id: 'u1' }) });
+        const s = await start();
+        const { link } = await connect(s, { revalidateMs: 15 });
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        expect(link.closes).toEqual([]);
+        revoked = true;
+        await until(() => link.closes.length === 1);
+        expect(link.closes[0]).toEqual({ code: 1008, reason: 'session expired' });
+    });
+
+    it('close() disarms both timers', async () => {
+        let authenticated = 0;
+        restore = stubServerApp({
+            authenticate: () => {
+                authenticated += 1;
+                return { id: 'u1' };
+            }
+        });
+        const s = await start();
+        const { session, link } = await connect(s, { revalidateMs: 10, maxConnectionMs: 30 });
+        const after = authenticated;
+        session.close();
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        // No revalidation ran after close, and the lifetime cap never fired.
+        expect(authenticated).toBe(after);
+        expect(link.closes).toEqual([]);
+    });
+});

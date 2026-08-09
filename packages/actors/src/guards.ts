@@ -186,6 +186,16 @@ export function actorPosture(): Readonly<EndpointPosture> {
 }
 
 /**
+ * The request's resolved principal (`null`/`undefined` = anonymous) — the
+ * presence check a session's credential revalidation needs even when no
+ * principal codec is configured (#159). Same door-discipline as above:
+ * every access to core's pipeline goes through this module.
+ */
+export async function actorPrincipal(rq: ServerFnContext): Promise<unknown> {
+    return principal(rq);
+}
+
+/**
  * Encode the request's principal for the call envelope, so identity
  * survives `ctx.actor` hops and host-to-host forwarding.
  *

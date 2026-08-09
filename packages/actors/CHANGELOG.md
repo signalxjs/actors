@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Socket sessions no longer outlive their credentials** (#159):
+  `createActorSocketSession` gains `revalidateMs` — re-run authentication
+  against the pinned upgrade request on a fresh context every interval, and
+  close 1008 when it no longer stands (authenticate throws, an
+  authenticated connection comes back anonymous, or the identity changes;
+  presence is compared even with no principal codec configured) — and
+  `maxConnectionMs`, a hard lifetime cap that doubles as the
+  credential-refresh mechanism: the reconnect is a fresh upgrade carrying
+  the browser's CURRENT cookies, subscriptions re-establish, in-flight
+  calls fail un-retried as on any drop. Both default 0 = off and are
+  validated at construction. Guards grew `actorPrincipal()` (the presence
+  check, through the same single door as the rest of the pipeline).
+
 - **Incremental live over the socket** (#99): the session speaks
   `{i,sub}`/`{i,uns}` — one small message per subscription-set change,
   ending the reopen-and-reseed storm that `$live`'s held-open POST cannot

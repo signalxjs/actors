@@ -55,6 +55,7 @@ import { takeCallBag } from '../call-context-bag';
 import { ActorMethodNotFoundError } from '../errors';
 import {
     actorPosture,
+    actorPrincipal,
     authorizeActorCall,
     encodePrincipal,
     enterActorRequest
@@ -115,6 +116,29 @@ export interface ActorSocketSessionOptions {
     /** Outbound keepalive after this much send-silence. Default 30 s
      *  (`DEFAULT_LIVE_PING_MS`); `0` disables. */
     pingMs?: number;
+    /**
+     * Re-run authentication against the PINNED upgrade request every this
+     * many milliseconds, and close 1008 when it no longer stands: the
+     * authenticate hook throws, a previously-authenticated connection comes
+     * back anonymous (sign-out, server-side revocation, an expiring signed
+     * cookie), or the identity CHANGES — a swap mid-connection is a
+     * reconnect, not a mutation. Default `0` = off.
+     *
+     * The honest contract: this answers "are the credentials presented at
+     * upgrade still valid", never "what would the browser send now" — a
+     * rotated cookie is invisible until the next connection. Pair with
+     * {@link maxConnectionMs} when rotation matters: a reconnect is a fresh
+     * upgrade, and the browser attaches its CURRENT cookies to it.
+     */
+    revalidateMs?: number;
+    /**
+     * Hard cap on one connection's lifetime; close 1008 at the cap.
+     * Default `0` = off. This is also the credential-refresh mechanism —
+     * see {@link revalidateMs}: subscriptions re-establish over the
+     * reconnect under whatever the browser now holds, and in-flight calls
+     * fail un-retried as on any drop.
+     */
+    maxConnectionMs?: number;
     /** Masked-failure observability — defaults to `posture.onError`. */
     onError?(error: unknown, info: ServerFnInfo, ctx: ServerFnContext): void | Promise<void>;
 }
@@ -144,6 +168,18 @@ function originAllowed(request: Request, policy: ActorSocketSessionOptions['orig
     const self = new URL(request.url);
     self.protocol = self.protocol === 'ws:' ? 'http:' : self.protocol === 'wss:' ? 'https:' : self.protocol;
     return origin === self.origin;
+}
+
+/** A lifetime bound must not be disabled by a typo — the same contract as
+ *  `resolveMaxSubscriptions`. `0` is the documented off switch. */
+function nonNegativeMs(name: string, value: number): number {
+    if (!Number.isInteger(value) || value < 0) {
+        throw new Error(
+            `[sigx actors] ${name} must be a non-negative integer of milliseconds — got ` +
+                `${String(value)}. Use 0 to disable it deliberately.`
+        );
+    }
+    return value;
 }
 
 /** The socket carries text JSON; a message must byte-fit the cap. Counting
@@ -178,6 +214,8 @@ export async function createActorSocketSession(
         options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS
     );
     const pingMs = options.pingMs ?? DEFAULT_LIVE_PING_MS;
+    const revalidateMs = nonNegativeMs('revalidateMs', options.revalidateMs ?? 0);
+    const maxConnectionMs = nonNegativeMs('maxConnectionMs', options.maxConnectionMs ?? 0);
     const onError = options.onError ?? posture.onError;
 
     if (!originAllowed(request, originPolicy)) {
@@ -197,8 +235,11 @@ export async function createActorSocketSession(
         options.close(1008, 'unauthorized');
         throw error;
     }
-    // Identity pinned once for the connection's life (Decision 3 of #99).
-    const principal = await encodePrincipal(rq);
+    // Identity pinned at upgrade (Decision 3 of #99) — and re-pinned by a
+    // successful revalidation, which swaps `rq` so later per-call views
+    // chain off the freshly-authenticated context.
+    let principal = await encodePrincipal(rq);
+    const hadPrincipal = (await actorPrincipal(rq)) != null;
 
     let closed = false;
     /** In-flight calls by client id. Presence = frames may still be sent. */
@@ -210,6 +251,8 @@ export async function createActorSocketSession(
         { ctrl: AbortController; iterator: AsyncIterator<unknown> | null }
     >();
     let pingTimer: ReturnType<typeof setTimeout> | undefined;
+    let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
+    let revalidateTimer: ReturnType<typeof setInterval> | undefined;
 
     const armPing = (): void => {
         if (pingTimer !== undefined) clearTimeout(pingTimer);
@@ -247,10 +290,49 @@ export async function createActorSocketSession(
     const teardown = (): void => {
         if (pingTimer !== undefined) clearTimeout(pingTimer);
         pingTimer = undefined;
+        if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
+        lifetimeTimer = undefined;
+        if (revalidateTimer !== undefined) clearInterval(revalidateTimer);
+        revalidateTimer = undefined;
         for (const [, entry] of inFlight) entry.ctrl.abort();
         inFlight.clear();
         for (const [, watch] of watches) stopWatch(watch);
         watches.clear();
+    };
+
+    /**
+     * Do the credentials presented at upgrade still stand? A FRESH context
+     * per check, deliberately: core memoizes authenticate on `rq.locals`,
+     * and a fresh `enter` is the one way to make it actually re-decide.
+     *
+     * Close 1008 on any of: authenticate throws; an authenticated
+     * connection comes back anonymous (presence compared even with no
+     * principal codec configured); the ENCODED identity changes — either
+     * direction, because a connection that changes who it is mid-flight
+     * should be a reconnect, not a mutation. A success re-pins `rq` and
+     * `principal`, so later calls carry the freshly-authenticated context.
+     */
+    const revalidate = async (): Promise<void> => {
+        if (closed) return;
+        try {
+            const fresh = await enterActorRequest(request, CONNECT_INFO, {
+                allowAnonymous: true
+            });
+            const encoded = await encodePrincipal(fresh);
+            const hasPrincipal = (await actorPrincipal(fresh)) != null;
+            if (closed) return;
+            if (hasPrincipal !== hadPrincipal || encoded !== principal) {
+                fail(
+                    1008,
+                    hadPrincipal && !hasPrincipal ? 'session expired' : 'identity changed'
+                );
+                return;
+            }
+            rq = fresh;
+            principal = encoded;
+        } catch {
+            if (!closed) fail(1008, 'session expired');
+        }
     };
 
     const stopWatch = (watch: { ctrl: AbortController; iterator: AsyncIterator<unknown> | null }): void => {
@@ -576,6 +658,15 @@ export async function createActorSocketSession(
     };
 
     armPing();
+    if (maxConnectionMs > 0) {
+        lifetimeTimer = setTimeout(() => {
+            lifetimeTimer = undefined;
+            fail(1008, 'connection lifetime exceeded');
+        }, maxConnectionMs);
+    }
+    if (revalidateMs > 0) {
+        revalidateTimer = setInterval(() => void revalidate(), revalidateMs);
+    }
 
     return {
         handle(message: string): void {
