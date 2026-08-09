@@ -115,7 +115,10 @@ describe('socketStats', () => {
         const stats = socketStats();
         const a = await connect(s, stats);
         const b = await connect(s, stats);
-        expect(stats.snapshot()).toMatchObject({ connectionsOpened: 2, open: 2 });
+        const early = stats.snapshot();
+        expect(early).toMatchObject({ connectionsOpened: 2, open: 2 });
+        // Nullability means "no data": nothing has completed yet.
+        expect(early.lifetimeMs).toBeNull();
 
         a.session.handle(JSON.stringify({ i: 1, s: 'Cart#add', a: ['k', 'x'] }));
         a.session.handle(JSON.stringify({ i: 2, s: 'Refused#peek', a: ['k'] }));

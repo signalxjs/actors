@@ -138,16 +138,24 @@ export function socketStats(): SocketStats {
                 inFlight += s.inFlight;
                 subscriptions += s.subscriptions;
             }
+            // `null` when nothing completed yet — nullability MEANS "no
+            // data", so the runtime must not hand out an all-zeros shape a
+            // renderer would read as a measurement.
+            const lifetimeMs = totals.connectionsClosed > 0 ? lifetime.snapshot() : null;
             return {
                 ...totals,
                 open: open.size,
                 inFlight,
                 subscriptions,
-                lifetimeMs: lifetime.snapshot()
+                lifetimeMs
             };
         },
         digest() {
-            return { ...totals, layout: HISTOGRAM_LAYOUT, lifetime: lifetime.digest() };
+            return {
+                ...totals,
+                layout: HISTOGRAM_LAYOUT,
+                lifetime: totals.connectionsClosed > 0 ? lifetime.digest() : null
+            };
         }
     };
 }
