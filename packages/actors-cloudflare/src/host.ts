@@ -448,10 +448,13 @@ export function createHostDurableObject<Env = unknown>(
                 ).WebSocketRequestResponsePair;
                 if (AutoPair) {
                     // A client `{"p":1}` ping is answered by the RUNTIME,
-                    // without waking a hibernated object.
+                    // without waking a hibernated object. Marked armed only
+                    // on success, so a failure here retries on the next
+                    // accept instead of silently disabling keepalive for
+                    // the isolate's life.
                     state.setWebSocketAutoResponse(new AutoPair('{"p":1}', '{"p":1}'));
+                    this.#autoResponseArmed = true;
                 }
-                this.#autoResponseArmed = true;
             }
 
             this.#sessions.set(server, live);

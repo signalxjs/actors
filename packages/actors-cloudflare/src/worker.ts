@@ -76,8 +76,15 @@ export interface WorkerHandlerOptions<Env = unknown> {
      *
      * The two paths differ by arity, so mounting both — this option for one
      * mode plus `app.use(workerSocket(...))` for the other — composes.
+     *
+     * A discriminated union on purpose: in `'object'` mode only `path` is
+     * meaningful on the Worker, and the type refusing the session options
+     * here is what stops them being configured on the side that never runs
+     * the session.
      */
-    socket?: WorkerSocketOptions & { terminate?: 'worker' | 'object' };
+    socket?:
+        | (WorkerSocketOptions & { terminate?: 'worker' })
+        | { terminate: 'object'; path?: string };
 }
 
 export interface WorkerHandler<Env> {
@@ -120,16 +127,22 @@ export function createWorkerHandler<Env = unknown>(
             })
         );
         if (options.socket) {
-            const { terminate = 'worker', ...socket } = options.socket;
-            if (terminate === 'object') {
+            const config = options.socket;
+            if (config.terminate === 'object') {
                 if (__DEV__) {
-                    const ignored = Object.keys(socket).filter((key) => key !== 'path');
+                    // The union already refuses these in TS; the warning is
+                    // for JS callers, whose session options would otherwise
+                    // vanish silently — they belong on
+                    // createHostDurableObject({ socket }), where the session
+                    // actually runs.
+                    const ignored = Object.keys(config).filter(
+                        (key) => key !== 'path' && key !== 'terminate'
+                    );
                     if (ignored.length > 0) {
                         console.warn(
                             `[sigx actors-cloudflare] socket: { terminate: 'object' } ignores ` +
                                 `${ignored.join(', ')} on the Worker — session options belong ` +
-                                `on createHostDurableObject({ socket }) in that mode, where ` +
-                                `the session actually runs.`
+                                `on createHostDurableObject({ socket }) in that mode.`
                         );
                     }
                 }
@@ -143,7 +156,7 @@ export function createWorkerHandler<Env = unknown>(
                         namespace: options.namespace(env),
                         ...options.placement
                     }),
-                    ...(socket.path !== undefined ? { path: socket.path } : {})
+                    ...(config.path !== undefined ? { path: config.path } : {})
                 });
                 app.use({
                     name: 'cloudflare:object-socket',
@@ -152,6 +165,7 @@ export function createWorkerHandler<Env = unknown>(
                     }
                 });
             } else {
+                const { terminate: _terminate, ...socket } = config;
                 app.use(workerSocket(socket));
             }
         }

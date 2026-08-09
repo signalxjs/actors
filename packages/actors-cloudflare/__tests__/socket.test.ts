@@ -99,6 +99,13 @@ describe('parseSocketActorPath', () => {
         expect(parseSocketActorPath('/ws/Room/k', '/ws')).toEqual({ type: 'Room', key: 'k' });
         expect(parseSocketActorPath('/_sigx/socket/Room/k', '/ws')).toBeNull();
     });
+
+    it('normalizes a trailing slash on the configured prefix', () => {
+        // `/ws/` must mean the same mount as `/ws` — silently matching
+        // nothing is a footgun, not a feature.
+        expect(parseSocketActorPath('/ws/Room/k', '/ws/')).toEqual({ type: 'Room', key: 'k' });
+        expect(parseSocketActorPath('/ws/Room/k', '/ws//')).toEqual({ type: 'Room', key: 'k' });
+    });
 });
 
 describe('objectSocketRoute', () => {

@@ -74,6 +74,9 @@ export function parseSocketActorPath(
     pathname: string,
     path = DEFAULT_SOCKET_PATH
 ): { type: string; key: string } | null {
+    // A configured prefix with a trailing slash must mean the same mount —
+    // `/ws/` silently matching nothing is a footgun, not a feature.
+    while (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
     if (!pathname.startsWith(`${path}/`)) return null;
     const segments = pathname.slice(path.length + 1).split('/');
     if (segments.length !== 2 || segments[0] === '' || segments[1] === '') return null;
