@@ -8,8 +8,12 @@
  *
  *  - a key is an actor, and a different key is a different actor with its own
  *    Durable Object and its own state;
- *  - a `watch` stream updates the number as it changes, rather than being
- *    inferred from a curl;
+ *  - the counter stays current over the client SOCKET (#157): one WebSocket,
+ *    one `{i,sub}` frame per subscription, values pushed as `{i,v}` — the
+ *    wire is hand-written here precisely so it stays visible (the packaged
+ *    client is `socketTransport()` from `@sigx/actors-ws`);
+ *  - the ticker keeps the NDJSON `watch` stream, so both transports share
+ *    the page;
  *  - a reminder fires with nothing driving it, which is the one capability a
  *    request cannot stand in for.
  *
@@ -76,11 +80,13 @@ const HTML = String.raw`<!doctype html>
   <div class="row">
     <button id="inc">+1</button>
     <button id="inc10">+10</button>
-    <span id="stream" class="live">stream idle</span>
+    <span id="stream" class="live">socket idle</span>
   </div>
   <p class="note">Change the key and press Load — a different key is a
-     different actor. The number updates from a <code>watch</code> stream, not
-     from the button, so incrementing in another tab moves it here too.</p>
+     different actor. The number arrives over the <em>WebSocket</em>: one
+     <code>{i,sub}</code> frame per subscription on one shared connection, so
+     incrementing in another tab moves it here too. The reminder below rides
+     the older NDJSON stream — same actors, two transports.</p>
 </section>
 
 <section>
@@ -124,10 +130,9 @@ function stopStreams() {
  * in-band error. Handling only chunks would leave the badge claiming
  * "streaming" forever after the stream ended or failed.
  */
-async function follow(type, key, onChunk) {
+async function follow(type, key, onChunk, onStatus) {
     const ac = new AbortController();
     streams.push(ac);
-    const badge = $('stream');
     try {
         const res = await fetch('/_sigx/actor/' + type + '/watch', {
             method: 'POST',
@@ -136,8 +141,6 @@ async function follow(type, key, onChunk) {
             signal: ac.signal
         });
         if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
-        badge.classList.add('on');
-        badge.textContent = 'streaming ' + key;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -156,25 +159,78 @@ async function follow(type, key, onChunk) {
                 if ('chunk' in frame) onChunk(frame.chunk);
             }
         }
-        badge.classList.remove('on');
-        badge.textContent = 'stream ended';
+        onStatus?.('stream ended');
     } catch (error) {
         if (ac.signal.aborted) return;
-        badge.classList.remove('on');
-        badge.textContent = 'stream: ' + error.message;
+        onStatus?.('stream: ' + error.message);
     }
+}
+
+/**
+ * The Counter rides the client socket (#157): one WebSocket for the page,
+ * one ~40-byte {i,sub} frame per subscription, values pushed as {i,v}. This
+ * is the raw wire on purpose — no client bundle on this page — and it is
+ * three frame shapes; the packaged client is socketTransport() from
+ * @sigx/actors-ws.
+ */
+let ws = null;
+let nextId = 1;
+const subs = new Map(); // id -> onValue
+const pending = []; // callbacks queued while the socket is still CONNECTING
+
+function overSocket(onReady) {
+    if (ws && ws.readyState === WebSocket.OPEN) return onReady();
+    if (ws && ws.readyState === WebSocket.CONNECTING) { pending.push(onReady); return; }
+    const badge = $('stream');
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://')
+        + location.host + '/_sigx/socket');
+    pending.push(onReady);
+    ws.onopen = () => {
+        badge.classList.add('on');
+        badge.textContent = 'socket live';
+        for (const ready of pending.splice(0)) ready();
+    };
+    ws.onmessage = (e) => {
+        const frame = JSON.parse(e.data);
+        if (frame.p) return; // keepalive ping
+        const handle = subs.get(frame.i);
+        if (handle && 'v' in frame) handle(frame.v);
+        if (frame.e) { badge.textContent = 'socket: ' + frame.e.message; }
+    };
+    ws.onclose = () => { badge.classList.remove('on'); badge.textContent = 'socket closed'; };
+}
+
+function subscribe(type, key, method, onValue) {
+    overSocket(() => {
+        const i = nextId++;
+        subs.set(i, onValue);
+        ws.send(JSON.stringify({ i, sub: { t: type, k: key, m: method } }));
+    });
+}
+
+function unsubscribeAll() {
+    if (!ws || ws.readyState > 1) { subs.clear(); return; }
+    for (const i of subs.keys()) ws.send(JSON.stringify({ i, uns: 1 }));
+    subs.clear();
 }
 
 const keyOf = () => $('key').value.trim() || 'demo';
 
 function load() {
     stopStreams();
+    unsubscribeAll();
     const key = keyOf();
-    // Both numbers arrive on streams. Nothing on this page polls — including
-    // the reminder count, because a reminder delivery is a turn that mutates
-    // state, so it notifies watchers like any other turn.
-    void follow('Counter', key, (s) => ($('count').textContent = s.count));
-    void follow('Ticker', key, (s) => ($('ticks').textContent = 'ticks: ' + s.ticks));
+    // Both numbers arrive pushed — nothing on this page polls, including the
+    // reminder count, because a reminder delivery is a turn that mutates
+    // state, so it notifies watchers like any other turn. The counter comes
+    // over the socket; the ticker keeps the NDJSON stream so both transports
+    // stay visible on one page.
+    subscribe('Counter', key, 'read', (count) => ($('count').textContent = count));
+    void follow(
+        'Ticker', key,
+        (s) => ($('ticks').textContent = 'ticks: ' + s.ticks),
+        (status) => ($('ticks').textContent = status)
+    );
 }
 
 const bump = (by) => async () => {

@@ -59,7 +59,22 @@ Both exports need the actor registry: the Worker to run guards, tell a stream
 method from a unary one and be the 404 authority; the object to activate. On
 Cloudflare they are the **same bundle**, so it is a plain import.
 
-## Four things that will bite you
+## The client socket
+
+`socket: {}` on `createWorkerHandler` mounts the Worker-terminated WebSocket
+(`workerSocket()`, #157) at `/_sigx/socket`: one connection per page, one
+`{i,sub}` frame per live subscription, every call fanned out through
+placement to its actor's object. The page's counter rides it — the wire is
+hand-written in `src/page.ts` on purpose, so all three frame shapes stay
+visible; a real app uses `socketTransport()` from `@sigx/actors-ws` and
+writes none of that.
+
+Note the posture split: the HTTP mount here runs `origin: false` so `curl`
+and `verify.mjs` work, but the socket keeps the default `'same-origin'` — a
+socket upgrade arrives from a browser **with cookies attached and no
+preflight**, and only the page dials it.
+
+## Five things that will bite you
 
 **`new_sqlite_classes`, not `new_classes`.** The latter creates the legacy
 key-value backed storage, which **cannot be migrated to SQLite in place** and
@@ -82,6 +97,15 @@ implicitly, so this only shows up on a real deployment.
 browsers posting a form, and the public mount refuses a request with no
 `Origin` by default. A real app with a browser front-end passes its own
 origins here instead of switching the check off.
+
+**A departed socket subscriber does not release the actor
+([#47](https://github.com/signalxjs/actors/issues/47)).** The
+Worker-terminated socket changes where the *socket* ends, not where calls
+run: every subscription still crosses Worker→object over `stub.fetch`, whose
+abort signal is swallowed at the boundary — so the last tab leaving a room
+leaves the room's `keptAlive` set, resident and billable. When those
+economics matter, use the object-terminated socket
+([#158](https://github.com/signalxjs/actors/issues/158)) once it lands.
 
 ## Eviction is not deactivation
 
