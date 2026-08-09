@@ -542,10 +542,21 @@ node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000,5000 \
   read=mine principal=per-user
 ```
 
-Past a single pod's ~28k ephemeral ports to one destination, add pods:
+**A generator pod caps at ~28k connections — measured, not predicted.** A
+rung of 40 000 from one pod produced 28 232 connected and 11 768 failures,
+with the hosts refusing NONE of them: that is the pod's ephemeral port
+range, not a server limit. Add pods rather than raising the rung:
 `parallelism=4` runs four subscriber pods (indexed, so pod 0 is the only
-publisher and the only one carrying latency probes). `n` in the output is
-PER POD; `totalConnections` is the number to quote.
+publisher and the only one carrying latency probes). Keep each pod's rung
+under ~25 000 or the failures are the generator's own.
+
+`n` in the output is PER POD; `totalConnections` sums the pods. The number
+to quote for concurrency is `peakOpen` from the "peak concurrency" section —
+it is the `open` GAUGE sampled off the hosts while the job ran, so it is
+the servers' own count rather than the generator's claim. It is a sample
+(~5 s), so a peak between samples is missed; the monotonic totals cannot
+substitute, because they count every connection ever opened across every
+rung rather than how many were up at once.
 
 Pass/fail, and what to record:
 
