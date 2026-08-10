@@ -28,7 +28,7 @@
  * cluster's cross-host watch coalescing (#111).
  */
 import type { ActorScheduler } from '../types';
-import { canonicalKey, createFanOut } from '../watch-core';
+import { canonicalKey, createFanOut, type WatchDeclarationOptions } from '../watch-core';
 
 export interface WatchDeps {
     /** Invoke the read as a normal turn. */
@@ -67,6 +67,59 @@ export function watchKey(method: string, throttleMs: number, encodedArgs: unknow
  */
 export function qualifyWatchKey(base: string, encodedPrincipal: string | undefined): string {
     return `${base}P${canonicalKey([encodedPrincipal])}`;
+}
+
+/**
+ * Check the `watches:` declarations (#138). Runs at ACTIVATION rather than
+ * definition time, for the same two reasons `validateReentrancy` does: the
+ * root entry's size gate, and the fact that a map key cannot be checked
+ * against real method names until the `methods` factory has run against a
+ * live ctx. The first activation of the type still fails loudly, in every
+ * build, before any turn.
+ *
+ * A malformed entry must not wait for the first cross-host subscriber to
+ * surface — it is a SHARING commitment, and the failure it would otherwise
+ * produce (identities merged onto one stream) is invisible from the actor.
+ */
+export function validateWatchDeclarations(
+    type: string,
+    opts: WatchDeclarationOptions,
+    streamNames: readonly string[],
+    methodNames: readonly string[]
+): void {
+    const at = `[sigx actors] actor "${type}"`;
+    const map = opts.watches as unknown;
+    if (map === undefined) return;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+        throw new Error(
+            `${at} \`watches\` must be an object mapping method names to ` +
+                `{ principalIndependent: true }.`
+        );
+    }
+    for (const method of Object.keys(map)) {
+        const where = `${at} watches "${method}"`;
+        const value = (map as Record<string, unknown>)[method];
+        if (
+            typeof value !== 'object' ||
+            value === null ||
+            (value as { principalIndependent?: unknown }).principalIndependent !== true
+        ) {
+            throw new Error(`${where} must map to \`{ principalIndependent: true }\`.`);
+        }
+        if (streamNames.includes(method)) {
+            // A stream is per-subscriber by construction — `dispatchStream`
+            // never coalesces — so there is no shared loop to widen.
+            throw new Error(`${where} is a \`streams:\` method — a stream is never shared.`);
+        }
+        if (method.startsWith('$')) {
+            // The runtime's own deliveries ($sigx:reminder, $sigx:topic) are
+            // not reads and are never watched.
+            throw new Error(`${where} is a reserved name — map \`methods:\` entries only.`);
+        }
+        if (__DEV__ && !methodNames.includes(method)) {
+            console.warn(`${where} names no method of this actor — the declaration does nothing.`);
+        }
+    }
 }
 
 export interface SharedWatch {

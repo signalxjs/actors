@@ -254,3 +254,35 @@ function writeCanonical(value: unknown, out: string[]): void {
             `handler for it, or pass a value the wire can carry.`
     );
 }
+
+/**
+ * The structural subset of `ActorOptions` the watch-sharing declaration
+ * needs — the `ReentrancyOptions` shape, so neither the cluster bundle nor
+ * this module depends on the full definition type.
+ */
+export interface WatchDeclarationOptions {
+    readonly watches?: Readonly<Record<string, { principalIndependent?: true } | undefined>>;
+}
+
+/**
+ * Did this method declare its watched read principal-independent (#138)?
+ *
+ * Read INDEPENDENTLY by both sides — the relay, to drop the principal from
+ * its coalescing key, and the owner, to police the promise. That is what
+ * makes enforcement relay-independent: the owner fails a lying read whether
+ * or not anything coalesced.
+ *
+ * Own keys only, the `methodAuthorize` / `methodReentrancy` rule — an actor
+ * must not inherit a sharing promise from `Object.prototype`.
+ */
+export function declaresPrincipalIndependent(
+    opts: WatchDeclarationOptions,
+    method: string
+): boolean {
+    const map = opts.watches;
+    return (
+        map !== undefined &&
+        Object.hasOwn(map, method) &&
+        map[method]?.principalIndependent === true
+    );
+}

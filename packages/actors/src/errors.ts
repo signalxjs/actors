@@ -17,7 +17,8 @@ export type ActorErrorKind =
     | 'host-shutdown'
     | 'call-timeout'
     | 'wrong-host'
-    | 'unreachable';
+    | 'unreachable'
+    | 'watch-declaration';
 
 export interface ActorErrorShape extends Error {
     readonly __sigxActorError: true;
@@ -97,6 +98,36 @@ export class ActorStateConflictError extends ActorError {
                 `this activation. The activation is discarded; retry the call.`
         );
         this.name = 'ActorStateConflictError';
+    }
+}
+
+/**
+ * A method declared `watches: { m: { principalIndependent: true } }` was
+ * observed consulting `ctx.principal` inside its watch read (#138).
+ *
+ * Thrown in EVERY build, not just dev. By the time it fires the relay may
+ * already have merged distinct identities onto one coalesced stream, and the
+ * owner — which sees a single subscriber per stream — cannot repair that. The
+ * defect it prevents is serving one user's view to another, which is the
+ * exact bug the per-principal split (#121) exists to stop.
+ *
+ * It does NOT heal: the same read fails the same way on re-subscribe and on a
+ * fresh activation after failover, because the declaration is source code
+ * while the discovery it contradicts is per activation. Remove the flag or
+ * the `ctx.principal` read.
+ */
+export class ActorWatchDeclarationError extends ActorError {
+    constructor(type: string, method: string) {
+        super(
+            'watch-declaration',
+            `[sigx actors] "${type}.${method}" declares \`watches: { ${method}: ` +
+                `{ principalIndependent: true } }\` but consulted \`ctx.principal\` while ` +
+                `serving a watch. Identity is an input to this read, so its subscribers ` +
+                `cannot share one loop. Remove the declaration — or, if the touch was ` +
+                `only to AUTHORIZE, move it to \`authorize\`/\`methodAuthorize\`, which ` +
+                `run per subscriber at the entry point, outside any turn.`
+        );
+        this.name = 'ActorWatchDeclarationError';
     }
 }
 

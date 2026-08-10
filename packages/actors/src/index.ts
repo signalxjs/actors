@@ -68,6 +68,7 @@ export type {
     ActorResult,
     ActorStorage,
     ActorStorageRecord,
+    ActorWatchDeclaration,
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,

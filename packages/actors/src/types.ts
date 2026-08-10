@@ -1013,6 +1013,24 @@ export interface ActorOptions<
      */
     reads?: { [K in keyof M & string]?: ActorReadCache };
     /**
+     * How watched reads of this actor may be SHARED across callers (#138).
+     *
+     * ```ts
+     * watches: { feed: { principalIndependent: true } }
+     * ```
+     *
+     * Static map beside `reads` / `methodAuthorize` / `methodReentrancy`, own
+     * keys only, for the same reason they are: the method table is built per
+     * ACTIVATION and cannot carry wire metadata, but the relay deciding how
+     * to coalesce has only the definition.
+     *
+     * See {@link ActorWatchDeclaration} for what the promise covers, what
+     * polices it, and the two channels it deliberately says nothing about.
+     * Validated at the type's first activation (as `methodReentrancy` is,
+     * and for the same reason — the `methods` factory needs a live ctx).
+     */
+    watches?: { [K in keyof M & string]?: ActorWatchDeclaration };
+    /**
      * Stream-method factory. Each entry runs its body as ONE turn
      * and must return an async iterable that does NOT touch live state —
      * use `ctx.snapshot()` / `ctx.changes()`. Unlike `methods`, this
@@ -1159,6 +1177,46 @@ export type AnyActorDefinition = ActorDefinition<any, any, any>;
  * serverFns, and the endpoint composing the header is literally core's.
  */
 export type ActorReadCache = ServerFnReadCache;
+
+/**
+ * What one watched method promises about how it is shared (#138).
+ *
+ * The only member today is {@link ActorWatchDeclaration.principalIndependent};
+ * the wrapping object exists so a later property (a forced per-principal
+ * split, say) does not need a second `ActorOptions` key.
+ */
+export interface ActorWatchDeclaration {
+    /**
+     * This read's result does NOT depend on `ctx.principal`.
+     *
+     * The cluster relay keys its coalesced cross-host stream on the caller's
+     * principal **unconditionally**, because it cannot observe the owner's
+     * per-principal discovery (#121): 10 000 signed-in subscribers across 3
+     * hosts therefore cost 10 000 cross-host streams even on a read that
+     * never consults identity, and each one pins a pooled host-to-host
+     * connection for the life of the subscription. Declaring this drops the
+     * principal from that key, so they cost one.
+     *
+     * Unlike `reads:` — whose promise the runtime cannot check — **this one
+     * is policed**: a declared read observed consulting `ctx.principal`
+     * fails the watch with `ActorWatchDeclarationError`, in every build, on
+     * the owner, whether or not any relay coalesced. It fails closed and
+     * does not heal on re-subscribe or failover; remove the flag or the
+     * read.
+     *
+     * Two limits to know. Enforcement covers exactly the channel #121's
+     * discovery covers — identity reached through `ctx.actor()` into
+     * ANOTHER actor, or smuggled through a closure, is invisible to it. And
+     * this is a promise about *identity only*: `ctx.bag` is already
+     * first-subscriber-only on any coalesced stream (#137), declared or not.
+     *
+     * Touching `ctx.principal` merely to authorize trips this too — #121
+     * marks one touch anywhere, even a discarded one. Authorization belongs
+     * in `authorize` / `methodAuthorize`, which run per subscriber at the
+     * entry point, outside any turn.
+     */
+    principalIndependent: true;
+}
 
 /** Per-call options for `actor(...).with()`, mirroring `fn.with()`. */
 export interface ActorCallOptions {

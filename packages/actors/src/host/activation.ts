@@ -5,7 +5,13 @@
  */
 import { effect, effectScope, signal, toRaw } from '@sigx/reactivity';
 import { deepTrack } from '@sigx/reactivity/internals';
-import { createSharedWatch, qualifyWatchKey, watchKey, type SharedWatch } from './watch';
+import {
+    createSharedWatch,
+    qualifyWatchKey,
+    validateWatchDeclarations,
+    watchKey,
+    type SharedWatch
+} from './watch';
 import { createWatchReadPump, type WatchReadPump } from './watch-pump';
 import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
@@ -16,6 +22,7 @@ import {
     ActorActivationError,
     ActorMethodNotFoundError,
     ActorStateConflictError,
+    ActorWatchDeclarationError,
     HostShutdownError,
     isStorageConflict
 } from '../errors';
@@ -65,7 +72,7 @@ const PRINCIPAL_MEMO_CAP = 256;
 // Lives in watch-core so the cluster's watch coalescing can normalize
 // throttles identically without importing the activation (#111);
 // re-exported here because this is its historical home.
-import { DEFAULT_WATCH_THROTTLE_MS } from '../watch-core';
+import { DEFAULT_WATCH_THROTTLE_MS, declaresPrincipalIndependent } from '../watch-core';
 export { DEFAULT_WATCH_THROTTLE_MS };
 
 /**
@@ -76,8 +83,19 @@ export { DEFAULT_WATCH_THROTTLE_MS };
  */
 const kWatchBase = Symbol('sigx.watch.base');
 
+/**
+ * Present when the watched method DECLARED `principalIndependent` (#138).
+ *
+ * The getter records the violation here and throws; the invoke wrapper
+ * rethrows it after the await. Both are needed — a read body with a broad
+ * `try/catch` around its `ctx.principal` access would otherwise swallow the
+ * throw and return a value to a population the relay has already merged.
+ */
+const kWatchDeclared = Symbol('sigx.watch.declared');
+
 interface WatchInvokeCall extends ActorCallContext {
     [kWatchBase]?: string;
+    [kWatchDeclared]?: { method: string; violated: Error | null };
 }
 
 /** One shared watch loop plus its live subscriber handles — the set the
@@ -495,6 +513,17 @@ export class Activation {
                     }
                 }
             }
+            // After the methods table, unlike `validateReentrancy` above:
+            // the unknown-key warning needs real method names, and a sharing
+            // declaration has no dispatch consequence before the first watch
+            // — so nothing is lost by checking it a few lines later, and the
+            // first activation of the type still fails before any turn.
+            validateWatchDeclarations(
+                ref.type,
+                opts,
+                def.streamNames,
+                __DEV__ ? Object.keys(a.#methods) : []
+            );
             // The `streams:` table is built per SUBSCRIPTION, not here — see
             // `#streamTable`. Its bodies get a derived context of their own:
             // bracketing the dispatch call sites cannot work, because an async
@@ -798,7 +827,19 @@ export class Activation {
         // bag and abortSignal included, a known quirk tracked separately
         // from #121. The marker is how the `ctx.principal` getter reports
         // that this read consulted identity.
-        const invokeCall: WatchInvokeCall = { ...call, [kWatchBase]: base };
+        // Declared principal-independent (#138)? Then the getter must FAIL
+        // the read rather than record discovery — by the time it fires, a
+        // relay may already have merged distinct identities onto one
+        // coalesced stream, and this host (which sees one subscriber per
+        // stream) cannot repair that. Fail closed instead of splitting.
+        const declared = declaresPrincipalIndependent(this.def.__sigxActor, method)
+            ? { method, violated: null as Error | null }
+            : undefined;
+        const invokeCall: WatchInvokeCall = {
+            ...call,
+            [kWatchBase]: base,
+            ...(declared ? { [kWatchDeclared]: declared } : {})
+        };
         const principal = call.principal;
         // Once true, every subscriber on this entry presents `principal`:
         // born true under a qualified key, made true for a base-key entry
@@ -825,27 +866,39 @@ export class Activation {
                     const seed = !seeded;
                     seeded = true;
                     try {
-                        if (interleave) return await this.enqueue(method, args, invokeCall);
-                        // Uncontended fast path: zero depth means no turn is
-                        // queued OR running — so no drain turn either, and a
-                        // drain turn is the only thing that can hold pump
-                        // jobs, so the pump is empty too. A direct enqueue
-                        // is then semantically identical (there is nothing
-                        // to be fair TO) and skips the pump's per-job
-                        // bookkeeping — the single-watch hot path
-                        // (`streams/live-watch`) measurably cares.
-                        if (this.turns.depth === 0) {
-                            return await this.enqueue(method, args, invokeCall);
+                        let value: unknown;
+                        if (interleave) {
+                            value = await this.enqueue(method, args, invokeCall);
+                        } else if (this.turns.depth === 0) {
+                            // Uncontended fast path: zero depth means no turn
+                            // is queued OR running — so no drain turn either,
+                            // and a drain turn is the only thing that can hold
+                            // pump jobs, so the pump is empty too. A direct
+                            // enqueue is then semantically identical (there is
+                            // nothing to be fair TO) and skips the pump's
+                            // per-job bookkeeping — the single-watch hot path
+                            // (`streams/live-watch`) measurably cares.
+                            value = await this.enqueue(method, args, invokeCall);
+                        } else {
+                            this.#watchPump ??= createWatchReadPump({
+                                enqueueTurn: (body) => this.turns.run(body),
+                                closed: () => this.turns.closed
+                            });
+                            const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
+                            value = await this.#watchPump.schedule(
+                                () => this.#turn(method, args, invokeCall, enqueuedAt),
+                                seed
+                            );
                         }
-                        this.#watchPump ??= createWatchReadPump({
-                            enqueueTurn: (body) => this.turns.run(body),
-                            closed: () => this.turns.closed
-                        });
-                        const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
-                        return await this.#watchPump.schedule(
-                            () => this.#turn(method, args, invokeCall, enqueuedAt),
-                            seed
-                        );
+                        // Rethrown HERE and not left to the getter alone
+                        // (#138): a read body that wraps its `ctx.principal`
+                        // access in a broad `try/catch` would otherwise
+                        // swallow the throw and hand a value to a population
+                        // the relay already merged. Never heals — `violated`
+                        // outlives the invoke, so a later read of the same
+                        // entry fails the same way.
+                        if (declared?.violated) throw declared.violated;
+                        return value;
                     } finally {
                         // Discovery sweep (#121): the read consulted the
                         // principal, and this entry may hold subscribers who
@@ -1905,9 +1958,31 @@ export class Activation {
                 // Record the key BEFORE the memo can short-circuit anything;
                 // `#resolveWatch` splits future joins and the invoke's sweep
                 // evicts current mismatches before the next push.
-                const base =
-                    current === null ? undefined : (current as WatchInvokeCall)[kWatchBase];
-                if (base !== undefined) self.#watchPrincipalDependent.add(base);
+                const watch = current === null ? undefined : (current as WatchInvokeCall);
+                const base = watch?.[kWatchBase];
+                if (base !== undefined) {
+                    const declared = watch![kWatchDeclared];
+                    if (declared !== undefined) {
+                        // The method PROMISED this read ignores identity
+                        // (#138). Fail it rather than record discovery: a
+                        // relay may already be serving distinct identities
+                        // from one merged stream, which the split cannot
+                        // undo. Recorded on the marker so the invoke wrapper
+                        // rethrows even if the read body catches this.
+                        declared.violated ??= new ActorWatchDeclarationError(
+                            self.ref.type,
+                            declared.method
+                        );
+                        if (__DEV__) {
+                            // The error surfaces at the SUBSCRIBER, possibly
+                            // several hops from the actor whose declaration
+                            // is wrong; this names the actor at the source.
+                            console.error(declared.violated.message);
+                        }
+                        throw declared.violated;
+                    }
+                    self.#watchPrincipalDependent.add(base);
+                }
                 const encoded = current?.principal;
                 if (encoded === undefined) return null;
                 self.#principalMemo ??= new Map();

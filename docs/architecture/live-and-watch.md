@@ -80,8 +80,13 @@ under. That was a real defect (#121), and the fix is the split:
 
 This is a correctness rule, not an optimisation miss. Any change that
 re-merges loops across identities must prove the read cannot observe the
-principal — which is exactly the declared-read design #138 records for the
-cross-host half.
+principal. `watches: { m: { principalIndependent: true } }` (#138, below)
+discharges that obligation for the cross-host half — not by trusting the
+author, but by making the observation FATAL: a declared read that consults
+`ctx.principal` never returns a value to a merged population, because the
+getter throws before the read completes and the invoke wrapper rethrows if
+the body catches it. The owner-side machinery here is unchanged; a declared
+method simply can never enter `#watchPrincipalDependent`.
 
 ## The throttle is fixed at 50 ms for clients
 
@@ -145,7 +150,8 @@ not the turn queue: the pump image alone left `max_healthy_identities` at
 100, and sizing the pool on the same image took 1 000 identities to zero
 failures at the throttle-floor latency. The remaining per-identity costs —
 the reads themselves, P change subs, P settle timers, P socket frames, and
-above all **one held connection per identity per host hop** until #138 —
+above all **one held connection per identity per host hop** unless the read
+is declared `principalIndependent` (#138) —
 are the steady-state model.
 
 Local control measurement (200 subscribers, #172): 31 actor turns anonymous vs
@@ -156,17 +162,68 @@ subscriber.
 Never average the two arms. A read only has to touch `ctx.principal` once for
 the split — and this entire section — to apply to it.
 
-## Cross-host is worse, and unconditional (#138)
+## Cross-host sharing is opt-in (#138)
 
 The cluster's relay coalesces cross-host watches per
-`(actor, method, throttleMs, args, principal)` —
-`#coalescedWatch` in `cluster/placement.ts` includes `call.principal` in the
-key **whether or not the read consults it**, because the relay cannot observe
-the owner's discovery. So 10 000 anonymous subscribers across 3 hosts cost 2
-cross-host streams; 10 000 signed-in subscribers cost 10 000, even on an
-identity-blind read. Restoring cross-principal sharing for declared
-identity-independent reads is #138. The exact-count invariants for what
-coalescing does guarantee are gated by the `cluster/live-fanout` benchmark.
+`(actor, method, throttleMs, args, principal)` — `#coalescedWatch` in
+`cluster/placement.ts` includes `call.principal` **by default whether or not
+the read consults it**, because the relay cannot observe the owner's
+discovery. So 10 000 anonymous subscribers across 3 hosts cost 2 cross-host
+streams, and 10 000 signed-in ones cost 10 000 — each pinning a pooled
+host-to-host connection for the life of its subscription, which is what made
+the pool arithmetic the real identity ceiling (#194).
+
+**Unless the method says otherwise:**
+
+```ts
+defineActor({
+    type: 'ActivityFeed',
+    watches: { all: { principalIndependent: true } },
+    methods: (ctx) => ({ all: () => [...ctx.state.entries] })
+})
+```
+
+The relay then drops the principal from that method's key, and the whole
+signed-in population shares one stream again — 2 rather than 10 000.
+
+**Why a declaration is safe here when it would not be on `reads:`.** The
+promise is policed where the read RUNS, not where it is believed. The
+`ctx.principal` getter already knows it is inside a watch invoke (#121's
+`kWatchBase` marker); on a declared method it raises
+`ActorWatchDeclarationError` instead of recording discovery, and the invoke
+wrapper rethrows it so a read body that catches the throw still cannot return
+a value. It fails **in every build**, on the owner, whether or not any relay
+coalesced — and it does not heal, because the declaration is source code
+while the discovery it contradicts is per activation. So failing over does
+not clear it; removing the flag or the read does.
+
+Three things the declaration deliberately does not cover, all worth knowing
+before using it:
+
+- **`ctx.bag`** is already first-subscriber-only on any coalesced stream,
+  declared or not (#137). This is a promise about *identity*, nothing else —
+  which is why it is not spelled "caller-independent".
+- **Identity reached through `ctx.actor()` into another actor** is invisible
+  to the marker, exactly as it is to #121's discovery.
+- **A touch that only authorizes** trips it too — #121 marks one touch
+  anywhere, even a discarded one. That is deliberate: authorization belongs
+  in `authorize`/`methodAuthorize`, which run per subscriber at the entry
+  point, outside any turn. Coalescing shares a *read*, never a decision (the
+  internal host-to-host mount never re-runs policies — see
+  [`wire-and-frames.md`](wire-and-frames.md)).
+
+Two operational notes. A relay that cannot resolve the definition — a
+routing-only host, a lazily-registered type, a failed module load — keys
+per principal, the conservative direction. And during a rolling deploy a
+NEW relay may share a stream that an OLD owner does not yet police; the
+shared stream carries no principal at all, so the worst case is everyone
+seeing the anonymous view rather than one user seeing another's. Deploy the
+declaration before relying on it.
+
+The exact-count invariants are gated by the `cluster/live-fanout` benchmark:
+`declared=P/*` (one stream for P identities) beside `undeclared=P/*` (P
+streams), both `exact`, so a change that starts sharing an *undeclared* read
+fails the check.
 
 ## Sizing guidance, and the guardrails that pin it
 
@@ -176,12 +233,20 @@ sized to the identity population and the #193 pump in place, **1 000
 distinct identities on one actor measured clean** (zero failures, p50 at
 the 50 ms throttle floor; the recorded `max_healthy_identities: 500` was
 the ceiling of the ladder as it stood that day — the default ladder now
-reaches 1000). The durable sizing rule: per-principal cross-host
-streams each hold a pooled connection until #138 lands, so size the
-host-to-host pool for the signed-in watcher population, or use
-`@sigx/actors-tcp` (one multiplexed connection per peer). Concretely:
+reaches 1000). The durable sizing rule, cheapest option first:
 
-- Keep `mine()`-shaped reads — anything consulting `ctx.principal` — off hot
+1. **Declare the read** `principalIndependent` if it really is identity-blind
+   (#138) — the per-identity stream, and the connection it pins, stop
+   existing rather than being budgeted for.
+2. Otherwise size the host-to-host pool for the signed-in watcher population:
+   per-principal cross-host streams each hold a pooled connection for the
+   life of the subscription.
+3. Or use `@sigx/actors-tcp` (one multiplexed connection per peer), which
+   makes the pool arithmetic moot whatever the reads do.
+
+Concretely:
+
+- Keep genuinely `mine()`-shaped reads — anything consulting `ctx.principal` — off hot
   shared actors. Shard them: a per-user or per-cohort actor holds the
   identity-dependent projection, and the shared actor publishes to it (the
   `examples/chat` ActivityFeed shape), or the read takes the identity as an
@@ -193,7 +258,9 @@ host-to-host pool for the signed-in watcher population, or use
   many subscribers per loop is healthy sharing; a loop count tracking the
   subscriber count on a hot actor is this cliff building.
 - What pins the numbers: `live/principal-fanout` (Tier 1, `exact` — the
-  loop/seed/read counts, gated on every PR), `sockets/principal-cliff`
+  loop/seed/read counts, gated on every PR), `cluster/live-fanout`'s
+  `declared=P/*` and `undeclared=P/*` rows (Tier 1, `exact` — the #138
+  split), `sockets/principal-cliff`
   (Tier 3, recorded — `max_healthy_identities` is the figure #180 exists to
   move) and the measured tables in `benchmarks/BASELINES.md`. Changes to
   the watch machinery must show those moving, not just unit tests passing.

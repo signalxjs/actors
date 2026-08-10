@@ -10,6 +10,14 @@
  * opened per-subscriber streams again fails the check on a shared runner
  * where no timing could.
  *
+ * A second arm pins the #138 contract on top: the relay carries the caller's
+ * principal in that key unless the method declares `principalIndependent`,
+ * so P DISTINCT identities cost ONE stream on a declared read
+ * (`declared=P/*`) and P on an undeclared one (`undeclared=P/*`). Both are
+ * exact — the undeclared row pins the conservative default, so a change that
+ * starts sharing an undeclared read fails here rather than serving one
+ * identity's view to another.
+ *
  * Emission throughput is reported too, but informational only — one
  * process hosts every "host", so it describes contention, not capacity.
  */
@@ -46,8 +54,37 @@ const WatchedCounter = defineActor({
     })
 });
 
+/**
+ * The #138 arm. `shared` promises its result ignores `ctx.principal`, so the
+ * relay may drop the principal from its coalescing key; `perUser` is the
+ * same read UNDECLARED, so the pair differ in exactly one thing.
+ */
+const SharedFeed = defineActor({
+    type: 'SharedFeed',
+    allowAnonymous: true,
+    watches: { shared: { principalIndependent: true } },
+    state: () => ({ count: 0 }),
+    methods: (ctx) => ({
+        shared() {
+            return ctx.state.count;
+        },
+        perUser() {
+            return ctx.state.count;
+        },
+        async increment() {
+            ctx.state.count += 1;
+            await ctx.save();
+            return ctx.state.count;
+        }
+    })
+});
+
 const SIZES = [1, 4, 16] as const;
 const QUICK_SIZES = [1, 4] as const;
+
+/** Distinct identities on the declared arm — the population #138 collapses. */
+const PRINCIPALS = 16;
+const QUICK_PRINCIPALS = 4;
 
 const liveFanout: Scenario = {
     name: 'cluster/live-fanout',
@@ -151,8 +188,97 @@ const liveFanout: Scenario = {
                 await harness.stop();
             }
         }
+        metrics.push(...(await principalArms(ctx)));
         return metrics;
     }
 };
+
+/**
+ * P DISTINCT principals, on a declared read and on an undeclared one.
+ *
+ * The relay keys its coalesced stream on the caller's principal unless the
+ * method declared `principalIndependent` (#138) — so the declared arm costs
+ * ONE cross-host stream for the whole identity population and the undeclared
+ * arm costs P. Both are `exact`: the key is a pure function of (actor,
+ * method, throttle, encoded args) plus that declaration, with the placement
+ * pinned by `peerPolicy` — no RNG, no clock, no per-run host ids.
+ *
+ * The undeclared row is not decoration: it pins the CONSERVATIVE default, so
+ * a change that starts sharing an undeclared read fails the gate rather than
+ * quietly serving one identity's view to another.
+ */
+async function principalArms(ctx: RunContext): Promise<Metric[]> {
+    const metrics: Metric[] = [];
+    const p = ctx.quick ? QUICK_PRINCIPALS : PRINCIPALS;
+    for (const method of ['shared', 'perUser'] as const) {
+        const label = method === 'shared' ? 'declared' : 'undeclared';
+        const harness = await createCluster(2, {
+            actors: [SharedFeed],
+            policy: peerPolicy
+        });
+        try {
+            const caller = harness.hosts[0]!;
+            const ref = { type: 'SharedFeed', key: 'live' } as const;
+            await caller.actor(SharedFeed, 'live').increment();
+
+            const before = {
+                remote: harness.placements[0]!.counters().remoteWatches,
+                joined: harness.placements[0]!.counters().coalescedWatches,
+                inbound: harness.placements[1]!.counters().inboundWatches
+            };
+
+            const aborts: AbortController[] = [];
+            for (let i = 0; i < p; i++) {
+                const abort = new AbortController();
+                aborts.push(abort);
+                const iterator = caller
+                    .dispatchWatch!(
+                        ref,
+                        method,
+                        [],
+                        {
+                            callChain: [],
+                            callId: `bench-${label}-${i}`,
+                            // One distinct encoded identity per subscriber.
+                            principal: `user-${i}`,
+                            abortSignal: abort.signal
+                        },
+                        { throttleMs: 0 }
+                    )
+                    [Symbol.asyncIterator]();
+                await iterator.next();
+            }
+
+            metrics.push(
+                {
+                    name: `${label}=${p}/remote_watch_streams`,
+                    value: harness.placements[0]!.counters().remoteWatches - before.remote,
+                    unit: 'count',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: `${label}=${p}/inbound_watch_streams`,
+                    value: harness.placements[1]!.counters().inboundWatches - before.inbound,
+                    unit: 'count',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: `${label}=${p}/coalesced_joins`,
+                    value: harness.placements[0]!.counters().coalescedWatches - before.joined,
+                    unit: 'count',
+                    direction: 'higher',
+                    exact: true
+                }
+            );
+
+            for (const abort of aborts) abort.abort();
+        } finally {
+            await harness.stop();
+        }
+    }
+    return metrics;
+}
 
 export const liveFanoutScenarios: Scenario[] = [liveFanout];
