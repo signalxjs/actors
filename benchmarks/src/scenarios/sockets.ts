@@ -78,6 +78,10 @@ interface Row {
     publishes: number;
     publishFailures: number;
     subscriptionErrors: number;
+    /** Connections closed under us — see `sockets/slow-consumer` (#182). */
+    drops?: number;
+    /** Subscribers deliberately made to stop reading (#182). */
+    slowConnections?: number;
     maxBufferedBytes: number;
     latencyMs: { p50: number; p90: number; p99: number; max: number } | null;
     partial?: boolean;
@@ -451,9 +455,102 @@ const declaredFanout: Scenario = {
     }
 };
 
+/**
+ * The slow-consumer arm (#182): what happens to a host when subscribers stop
+ * keeping up.
+ *
+ * The socket send path is fire-and-forget — nothing in the runtime reads
+ * `bufferedAmount` — so #182 says a slow client shows up as MEMORY rather
+ * than as backpressure. Every run so far has recorded `maxBufferedBytes: 0`,
+ * which means that claim is *structural* and has never actually been
+ * observed: the rig had no way to produce a slow consumer.
+ *
+ * `SLOW_FRACTION` produces one, by pausing the TCP socket underneath a
+ * fraction of subscribers (see `stall()` in `ws-loadgen.mjs` for why it must
+ * be the socket and not the message handler). Nothing evicts them: the
+ * session's `{ p: 1 }` is an application frame with no pong requirement, and
+ * `@sigx/actors-ws` installs no WebSocket keepalive and no idle timeout.
+ *
+ * What to expect, and what each outcome MEANS — this scenario is a question,
+ * not a regression gate, so every metric here is informational:
+ *
+ * - `max_buffered_bytes` climbing with `drops` flat is #182 confirmed: the
+ *   host holds unbounded per-connection memory for a client that never
+ *   reads, and nothing pushes back.
+ * - `drops` climbing instead is a FINDING, not a broken rig — something did
+ *   react (the kernel, the proxy, `ws`), and where is then worth knowing.
+ * - the healthy subscribers' `deliveries_per_sec` falling is the one that
+ *   would change the sizing rule: it would mean a slow client degrades
+ *   service for everyone on the same host, not just for itself.
+ */
+const slowConsumer: Scenario = {
+    name: 'sockets/slow-consumer',
+    description: 'a fraction of subscribers stop reading — is there any send-path backpressure? (#182)',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const rungs = ladder('INFRA_WS_SLOW_LADDER', ctx.quick ? '500' : '1000,5000');
+        const fraction = Number(process.env.INFRA_WS_SLOW_FRACTION ?? '0.1');
+        const result = await drive({
+            mode: 'hot',
+            actors: 1,
+            read: 'current',
+            ladder: rungs.join(','),
+            parallelism: 1,
+            publishRate: process.env.INFRA_WS_PUBLISH_RATE ?? 10,
+            // Payload matters here in a way it does not elsewhere: buffered
+            // BYTES is the observable, so a zero-length payload would show
+            // the effect only in frame overhead.
+            payloadBytes: process.env.INFRA_WS_SLOW_PAYLOAD ?? 4096,
+            durationS: Math.max(60, Math.round(ctx.durationMs / 1000)),
+            probes: 20,
+            connectBatch: 250,
+            slowFraction: fraction,
+            slowAfterS: 5
+        });
+        refusePartial(result, 'sockets/slow-consumer');
+
+        const top = result.merged[result.merged.length - 1];
+        return [
+            {
+                name: 'slow_fraction',
+                value: fraction,
+                unit: 'ratio',
+                direction: 'higher',
+                informational: true
+            },
+            {
+                name: 'slow_connections',
+                value: top?.slowConnections ?? 0,
+                unit: 'count',
+                direction: 'higher',
+                informational: true
+            },
+            // Direction is 'higher' ONLY because the harness needs one: a
+            // bigger number here is the DEFECT, not an improvement. It is
+            // informational so nothing reads a verdict off it either way.
+            {
+                name: 'max_buffered_bytes',
+                value: top?.maxBufferedBytes ?? 0,
+                unit: 'bytes',
+                direction: 'higher',
+                informational: true
+            },
+            {
+                name: 'drops',
+                value: top?.drops ?? 0,
+                unit: 'count',
+                direction: 'lower',
+                informational: true
+            },
+            ...(top ? rowMetrics(top, 'top/') : []),
+            ...runMetrics(result)
+        ];
+    }
+};
+
 export const socketScenarios: Scenario[] = [
     idleCapacity,
     hotFanout,
     principalCliff,
-    declaredFanout
+    declaredFanout,
+    slowConsumer
 ];

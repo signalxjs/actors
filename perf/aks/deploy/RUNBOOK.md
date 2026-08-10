@@ -577,6 +577,9 @@ Pass/fail, and what to record:
 - **`maxBufferedBytes` climbing is the real ceiling.** The socket send path
   is fire-and-forget — nothing in the runtime reads `bufferedAmount` — so
   a slow client shows up as memory, not as backpressure. Record it.
+  Until #182 this was a STRUCTURAL claim and never an observed one: every
+  run recorded 0, because the rig had no way to produce a slow consumer.
+  `slowFraction` now does (scenario (r) below).
 - **`deliveriesPerPublish` is a coalescing ratio, not a constant.** Client
   subscriptions cannot set `throttleMs`, so every one runs at the runtime's
   fixed 50 ms watch throttle: a subscriber receives at most ~20 pushes/s,
@@ -620,6 +623,52 @@ Pass/fail, and what to record:
   for it would measure #194's mitigation a second time and prove nothing:
   run the pair at the default, and only then, if you want, repeat with a
   sized pool to confirm the two answers converge.
+
+### (r) The slow consumer — is there any send-path backpressure? (#182)
+
+Every socket run so far reports `maxBufferedBytes: 0`, so "a slow client
+becomes memory rather than backpressure" has been an argument from the code,
+not a measurement. `slowFraction` makes a slow client:
+
+```sh
+# 10% of subscribers stop reading 5s after the rung seeds. Payload matters
+# here — buffered BYTES is the observable, so 0 would show only frame
+# overhead.
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000,5000 \
+  slowFraction=0.1 payloadBytes=4096 durationS=120
+
+# a merely SLOW client rather than a dead one: pause/resume duty cycle
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000 \
+  slowFraction=0.1 slowResumeMs=250 payloadBytes=4096
+```
+
+**It pauses the TCP socket, not the message handler.** `ws` delivers frames
+as events whether or not the application uses them, so a slow handler still
+drains the kernel buffer and the server never notices — you would measure the
+generator's event loop and report it as backpressure. Pausing the socket
+closes the receive window, and the server's send buffer is where the
+unconsumed data actually piles up.
+
+**Nothing evicts these connections, and that is the finding, not a bug in the
+rig.** The session's `{ p: 1 }` is an APPLICATION frame with no pong
+requirement; `@sigx/actors-ws` installs no WebSocket keepalive and no idle
+timeout. So a stalled subscriber is not disconnected — it is unbounded memory
+on the host.
+
+What each outcome means:
+
+- **`maxBufferedBytes` climbing, `drops` flat** — #182 confirmed. The host
+  holds per-connection memory for a client that never reads, without bound
+  and without pushing back.
+- **`drops` climbing instead** — something DID react (the kernel, the
+  ingress, `ws` itself). Worth knowing where, and it changes the answer.
+- **healthy subscribers' delivery rate falling** — the one that would change
+  the sizing rule: it means a slow client degrades service for everyone on
+  its host, not only for itself.
+
+Probes are never stalled (they carry the latency samples), and the selection
+is deterministic rather than random so two runs of a rung stall the same
+connections.
 
 ### Recording it instead of reading it (#184)
 

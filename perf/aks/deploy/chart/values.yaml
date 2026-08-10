@@ -189,9 +189,19 @@ wsLoadgen:
   actors: 1
   subsPerConn: 1
   # current (identity-blind, one shared watch loop) | mine (per principal)
+  # current (identity-blind, undeclared) | shared (the same read, declared
+  # principalIndependent — #138) | mine (per principal)
   read: current
   # anon | per-user — requires socket.sessions=true on the host.
   principal: anon
+  # The slow-consumer arm (#182). `slowFraction` of subscribers STOP READING
+  # their socket `slowAfterS` seconds after the rung seeds, which is what
+  # makes the host's send buffer grow — nothing in the runtime reads
+  # `bufferedAmount`. 0 disables it, which is every other scenario.
+  # `slowResumeMs` > 0 duty-cycles instead of stalling outright.
+  slowFraction: 0
+  slowAfterS: 5
+  slowResumeMs: 0
   publishRate: 10
   payloadBytes: 0
   persist: "0"

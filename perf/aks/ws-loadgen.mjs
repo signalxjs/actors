@@ -25,6 +25,11 @@
  *   PERSIST           1 = ctx.save() per publish             default 0
  *   DURATION_S        measured window per rung               default 30
  *   PROBES            latency-sampling connections           default 20
+ *   SLOW_FRACTION     0..1 of subscribers that STOP READING     default 0
+ *   SLOW_AFTER_S      seconds after the rung seeds before they
+ *                     stall                                     default 5
+ *   SLOW_RESUME_MS    >0 duty-cycles (pause/resume) instead of
+ *                     stalling outright                         default 0
  *   CONNECT_BATCH     dials issued concurrently              default 250
  *   CONNECT_TIMEOUT_S per-connection dial+seed deadline      default 30
  *   KEY_PREFIX        actor key prefix                       default fan
@@ -99,6 +104,11 @@ const PAYLOAD_BYTES = num('PAYLOAD_BYTES', 0);
 const PERSIST = process.env.PERSIST === '1';
 const DURATION_S = num('DURATION_S', 30);
 const PROBES = num('PROBES', 20);
+// The #182 arm: a deliberately slow consumer. See `stall()` for why this
+// pauses the TCP socket rather than delaying the message handler.
+const SLOW_FRACTION = num('SLOW_FRACTION', 0);
+const SLOW_AFTER_S = num('SLOW_AFTER_S', 5);
+const SLOW_RESUME_MS = num('SLOW_RESUME_MS', 0);
 const CONNECT_BATCH = Math.max(1, num('CONNECT_BATCH', 250));
 const CONNECT_TIMEOUT_S = num('CONNECT_TIMEOUT_S', 30);
 const KEY_PREFIX = process.env.KEY_PREFIX ?? 'fan';
@@ -137,6 +147,11 @@ if (!READS.has(READ)) {
     console.error(`[ws-loadgen] READ must be ${[...READS].join('|')}, got '${READ}'`);
     process.exit(1);
 }
+if (!(SLOW_FRACTION >= 0 && SLOW_FRACTION <= 1)) {
+    console.error(`[ws-loadgen] SLOW_FRACTION must be between 0 and 1, got '${SLOW_FRACTION}'`);
+    process.exit(1);
+}
+
 const PRINCIPALS = new Set(['anon', 'per-user']);
 if (!PRINCIPALS.has(PRINCIPAL)) {
     console.error(`[ws-loadgen] PRINCIPAL must be ${[...PRINCIPALS].join('|')}, got '${PRINCIPAL}'`);
@@ -201,6 +216,61 @@ function createClient(index) {
     return { transport, state };
 }
 
+/**
+ * Make one connection a SLOW CONSUMER, by pausing the TCP socket underneath
+ * it (#182).
+ *
+ * It has to be the socket, not the message handler. `ws` delivers frames as
+ * events whether or not the application does anything with them, so a
+ * delayed or empty `onMessage` still drains the kernel buffer and the server
+ * never notices — you would measure the generator's own event loop and
+ * report it as backpressure. Pausing the `net.Socket` stops reading, the
+ * receive window closes, and the server's send buffer is where the
+ * unconsumed data actually piles up. That is the thing `maxBufferedBytes`
+ * counts, and the thing #182 says nothing in the runtime reacts to.
+ *
+ * Nothing evicts these connections, which is the point: the socket session's
+ * `{ p: 1 }` is an APPLICATION frame with no pong requirement, and
+ * `@sigx/actors-ws` installs no WebSocket-level keepalive and no idle
+ * timeout. So a stalled subscriber is not disconnected — it is unbounded
+ * memory on the host, and the run should show `maxBufferedBytes` climbing
+ * with `drops` staying flat. A rung where drops climb instead is a finding,
+ * not a broken rig: something DID react.
+ *
+ * `SLOW_RESUME_MS > 0` duty-cycles instead — a merely slow client rather
+ * than a dead one, which is the shape a real bad network produces.
+ */
+function stall(state) {
+    // `ws` exposes the underlying socket once the upgrade completes; before
+    // that there is nothing to pause and the connection is not yet holding
+    // any deliveries anyway.
+    const socket = state.socket?._socket;
+    if (!socket || typeof socket.pause !== 'function') return () => {};
+    let stopped = false;
+    socket.pause();
+    if (SLOW_RESUME_MS <= 0) {
+        // Stall outright: never read again for the life of the rung.
+        return () => {
+            if (!stopped) socket.resume();
+            stopped = true;
+        };
+    }
+    // Duty cycle: drain briefly, then close the window again.
+    const timer = setInterval(() => {
+        if (stopped) return;
+        socket.resume();
+        setTimeout(() => {
+            if (!stopped) socket.pause();
+        }, SLOW_RESUME_MS).unref();
+    }, SLOW_RESUME_MS * 4);
+    timer.unref();
+    return () => {
+        stopped = true;
+        clearInterval(timer);
+        socket.resume();
+    };
+}
+
 /** The keys this rung publishes to and subscribes over. */
 const keysFor = (rung) => {
     const count = MODE === 'spread' ? rung * SUBS_PER_CONN : ACTORS;
@@ -218,6 +288,9 @@ async function runRung(n) {
     const connectSamples = new Samples();
     const latency = new Samples();
 
+    /** Connections chosen to stop reading — see `stall()` and #182. */
+    const slowClients = [];
+    let resumeSlow = () => {};
     let connected = 0;
     let connectFailures = 0;
     let deliveries = 0;
@@ -324,6 +397,14 @@ async function runRung(n) {
             );
             connectSamples.record(performance.now() - started);
             connected++;
+            // DETERMINISTIC selection, never `Math.random()`: two runs of the
+            // same rung must stall the same connections or the arm is not
+            // reproducible. Probes are excluded — they carry the latency
+            // samples, and a paused socket would report the stall as
+            // delivery latency for the whole run.
+            if (SLOW_FRACTION > 0 && !isProbe && index % 1000 < Math.round(SLOW_FRACTION * 1000)) {
+                slowClients.push(client);
+            }
         } catch (error) {
             connectFailures++;
             // Close NOW, not at teardown. The upgrade may well have
@@ -360,6 +441,23 @@ async function runRung(n) {
 
     const measureStarted = performance.now();
     const deadline = measureStarted + DURATION_S * 1000;
+
+    // Stall AFTER seeding, not before: a connection that never reads cannot
+    // complete its subscription handshake, so stalling at dial time would
+    // measure failed establishment (which #180 already covers) instead of an
+    // established subscriber that stops keeping up.
+    if (slowClients.length > 0) {
+        const stops = [];
+        const armed = setTimeout(() => {
+            for (const c of slowClients) stops.push(stall(c.state));
+            log(`  ${stops.length} connection(s) stopped reading (#182)`);
+        }, SLOW_AFTER_S * 1000);
+        armed.unref();
+        resumeSlow = () => {
+            clearTimeout(armed);
+            for (const stop of stops) stop();
+        };
+    }
 
     const sampler = setInterval(() => {
         for (const c of clients) {
@@ -441,6 +539,10 @@ async function runRung(n) {
     const elapsedMs = performance.now() - measureStarted;
     clearInterval(sampler);
     clearInterval(progress);
+    // Resume before teardown: a paused socket cannot complete a close
+    // handshake, and the leftovers would be counted as drops by the next
+    // rung rather than as this arm's doing.
+    resumeSlow();
 
     // Let the last throttle window flush before counting: the watch throttle
     // is trailing, so a delivery for the final publish can still be up to
@@ -468,6 +570,10 @@ async function runRung(n) {
         subsPerConn: MODE === 'idle' || MODE === 'calls' ? 0 : SUBS_PER_CONN,
         read: READ,
         principal: PRINCIPAL,
+        // Reported even when zero: a reader comparing two rungs must be able
+        // to see that one of them had stalled subscribers and the other did
+        // not, without going back to the invocation.
+        slowConnections: slowClients.length,
         publishes,
         publishFailures,
         deliveries: delivered,
