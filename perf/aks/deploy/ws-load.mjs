@@ -106,6 +106,8 @@ export function socketTotals(kube, namespace) {
     const watches = {};
     /** Pods that answered with a cluster section — all of them, or it is short. */
     let clusterHosts = 0;
+    /** Pods reporting `tcp` in their transport chain — see the note below. */
+    let tcpHosts = 0;
     let hosts = 0;
     for (const pod of pods) {
         const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
@@ -125,6 +127,16 @@ export function socketTotals(kube, namespace) {
         // absent or throwing still has watch counters worth having, and
         // skipping it via the `continue` below would silently cost the run
         // its mechanism numbers.
+        // Which transports this host is CONFIGURED with, in chain order.
+        // Recorded because a `TRANSPORT=tcp` run that silently measured HTTP
+        // is the failure this axis is most exposed to: `tcpTransport` routes
+        // to null for a peer advertising no tcp address and the chain falls
+        // through to HTTP per link, so a half-rolled-out fleet produces a
+        // clean HTTP measurement wearing the tcp label. A host that failed to
+        // BIND cannot start at all, so a pod that answers has a listener —
+        // the mixed fleet is the case worth catching.
+        const transports = ops?.cluster?.transports;
+        if (Array.isArray(transports) && transports.includes('tcp')) tcpHosts++;
         const counters = ops?.cluster?.counters;
         if (counters && !ops.cluster.error) {
             clusterHosts++;
@@ -151,7 +163,7 @@ export function socketTotals(kube, namespace) {
     // Complete means EVERY pod answered — anything less and the sum is
     // short by however much the silent hosts were holding.
     const watchesComplete = pods.length > 0 && clusterHosts === pods.length;
-    return { hosts, totals: { ...totals, ...watches }, watchesComplete };
+    return { hosts, totals: { ...totals, ...watches }, watchesComplete, tcpHosts };
 }
 
 /**
@@ -409,6 +421,10 @@ export async function runWsLoad(options) {
         // False means a cluster-stats fan-out missed a host at one end or
         // the other, so no `cluster/*` key is present in `delta` at all.
         watchesTrustworthy,
+        // Hosts configured with the tcp transport at the END of the run. A
+        // `TRANSPORT=tcp` run where this is not every host measured a fleet
+        // that was still partly on HTTP.
+        tcpHosts: after.tcpHosts,
         partial
     };
 }

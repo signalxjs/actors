@@ -711,6 +711,15 @@ against an HTTP one rather than being quietly diffed against it. That is the
 whole point: over TCP there is no pool to size, so the two are not two
 measurements of one deployment.
 
+**Check `hosts_with_tcp_transport` before believing any of it.** Every socket
+run now records how many hosts reported `tcp` in their transport chain. The
+chain falls through to HTTP per LINK for any peer advertising no tcp address,
+so a fleet still mid-rollout produces a perfectly clean HTTP measurement
+wearing the tcp label — and `INFRA_SHAPE` would then compare it as tcp. If
+that number is short of the host count, the run is void. (A host whose
+listener failed to bind cannot start at all, so a pod that answers has one;
+the mixed fleet is the case worth catching.)
+
 Three numbers make the comparison, against scenario (q)5 on the same ladder:
 
 - `max_healthy_identities` — the ceiling, if there still is one.
