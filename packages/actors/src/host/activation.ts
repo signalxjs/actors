@@ -6,6 +6,7 @@
 import { effect, effectScope, signal, toRaw } from '@sigx/reactivity';
 import { deepTrack } from '@sigx/reactivity/internals';
 import { createSharedWatch, qualifyWatchKey, watchKey, type SharedWatch } from './watch';
+import { createWatchReadPump, type WatchReadPump } from './watch-pump';
 import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
 import { decodePrincipal } from '../guards';
@@ -57,6 +58,9 @@ export const REMINDER_METHOD = '$sigx:reminder';
 
 /** Change-feed buffer bound — drop-oldest beyond this. */
 const CHANGE_BUFFER = 16;
+
+/** Decoded-principal memo bound — insertion-order eviction beyond this. */
+const PRINCIPAL_MEMO_CAP = 256;
 
 // Lives in watch-core so the cluster's watch coalescing can normalize
 // throttles identically without importing the activation (#111);
@@ -400,6 +404,9 @@ export class Activation {
      * is pushed.
      */
     #watchPrincipalDependent = new Set<string>();
+    /** The batched lane for serial watch reads (#180) — lazy: an actor
+     *  nobody watches never allocates it. */
+    #watchPump: WatchReadPump | null = null;
     lastActivityMs = Date.now();
     /**
      * When this activation was constructed, MONOTONIC — the age an operator
@@ -561,9 +568,14 @@ export class Activation {
     /**
      * Lazy `ctx.principal` decode, keyed on the ENCODED string so the memo
      * stays correct across the reused ctx object and across turns carrying
-     * different identities.
+     * different identities. A bounded MAP, not a single slot: P watch
+     * loops for P distinct identities (#121) interleave their read turns,
+     * and a one-slot memo thrashed into one decode per read turn — O(P)
+     * decodes per publish, pure waste (#180). Insertion-order eviction at
+     * the cap; identities churning past 256 on one activation pay a decode
+     * per eviction, which is the pre-map cost, not a new one.
      */
-    #principalMemo: { encoded: string; value: unknown } | null = null;
+    #principalMemo = new Map<string, unknown>();
 
     /**
      * The call context of the turn asking — the ONE reader `ctx.actor()`
@@ -790,13 +802,36 @@ export class Activation {
         // by the one discovery sweep — after which `#resolveWatch` routes
         // every mismatched newcomer to a qualified key instead.
         let settled = qualified;
+        // Serial-lane reads go through the watch read pump: the whole watch
+        // population holds ONE queue slot, seeds drain first, and an
+        // external call waits for at most one slice instead of O(loops)
+        // read turns (#180). Interleaved methods keep the direct path —
+        // they never contend on the serial lane, and folding them into the
+        // batch would ADD the serialization they opted out of.
+        const interleave =
+            this.#interleaveAll ||
+            (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
+        let seeded = false;
         const shared = createSharedWatch(
             {
                 // A NORMAL turn, not a privileged read: the
-                // watch gets exactly the isolation every other call has.
+                // watch gets exactly the isolation every other call has —
+                // the pump runs `#turn` per read, so call context, the
+                // observer and the change boundary stay per-read.
                 invoke: async () => {
+                    const seed = !seeded;
+                    seeded = true;
                     try {
-                        return await this.enqueue(method, args, invokeCall);
+                        if (interleave) return await this.enqueue(method, args, invokeCall);
+                        this.#watchPump ??= createWatchReadPump({
+                            enqueueTurn: (body) => this.turns.run(body),
+                            closed: () => this.turns.closed
+                        });
+                        const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
+                        return await this.#watchPump.schedule(
+                            () => this.#turn(method, args, invokeCall, enqueuedAt),
+                            seed
+                        );
                     } finally {
                         // Discovery sweep (#121): the read consulted the
                         // principal, and this entry may hold subscribers who
@@ -1861,10 +1896,18 @@ export class Activation {
                 if (base !== undefined) self.#watchPrincipalDependent.add(base);
                 const encoded = current?.principal;
                 if (encoded === undefined) return null;
-                if (self.#principalMemo?.encoded !== encoded) {
-                    self.#principalMemo = { encoded, value: decodePrincipal(encoded) };
+                if (self.#principalMemo.has(encoded)) return self.#principalMemo.get(encoded);
+                const value = decodePrincipal(encoded);
+                if (self.#principalMemo.size >= PRINCIPAL_MEMO_CAP) {
+                    // Map iteration is insertion order, so the first key is
+                    // the oldest entry — a bound, not an LRU: correctness
+                    // never depends on WHICH entry goes, only that the map
+                    // cannot grow with the identity population.
+                    const oldest = self.#principalMemo.keys().next().value;
+                    if (oldest !== undefined) self.#principalMemo.delete(oldest);
                 }
-                return self.#principalMemo.value;
+                self.#principalMemo.set(encoded, value);
+                return value;
             },
             async save(): Promise<void> {
                 // Fold any tracked mutations first so `wanted` sits above

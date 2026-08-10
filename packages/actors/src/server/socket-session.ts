@@ -560,6 +560,31 @@ export async function createActorSocketSession(
         watches.set(id, watch);
         stats?.subscriptionOpened();
         const tracked = (): boolean => !closed && watches.get(id) === watch;
+        // The same bound the call path arms, applied to ESTABLISHMENT:
+        // pipeline + authorization + dispatch + the FIRST value. A watch
+        // read is a normal turn on a single-threaded actor, so on a busy
+        // one the seed can queue arbitrarily long — and the watch path
+        // deliberately has no runtime deadline (the loop lives forever), so
+        // before this timer a starved seed held the subscription open
+        // SILENTLY, forever, loop and keep-alive included (#180). A seeded
+        // subscription is never timed out — pushes are the loop's cadence.
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        let timedOut: ServerFnError | null = null;
+        const disarmDeadline = (): void => {
+            if (deadline !== undefined) clearTimeout(deadline);
+            deadline = undefined;
+        };
+        if (posture.timeoutMs !== undefined && posture.timeoutMs > 0) {
+            deadline = setTimeout(() => {
+                timedOut = new ServerFnError(
+                    504,
+                    `[sigx actors] subscription "${sub.t}#${sub.m}" timed out before its first value`
+                );
+                // The abort releases everything the starved seed held —
+                // fan-out subscriber, shared loop when last-out, keep-alive.
+                watch.ctrl.abort(timedOut);
+            }, posture.timeoutMs);
+        }
         try {
             if (!host.dispatchWatch) {
                 throw new ServerFnError(
@@ -584,14 +609,21 @@ export async function createActorSocketSession(
             for (;;) {
                 const { value, done } = await iterator.next();
                 if (done || !tracked()) break;
+                // Established: the deadline covered exactly the first value.
+                disarmDeadline();
                 // A pushed value is byte-identical to a `$live` frame.
                 reply({ i: id, v: encodeWire(value) });
             }
+            // A fired deadline ends the aborted subscriber CLEANLY (`done`),
+            // so the starvation must be re-raised to become the frame the
+            // client is owed — silence is the #180 failure mode.
+            if (timedOut !== null) throw timedOut;
             // The watch ended server-side (the actor stopped): like `$live`,
             // no terminal frame — a reconnect re-seeds it.
         } catch (error) {
             if (tracked()) reply({ i: id, e: toFrameError(error) });
         } finally {
+            disarmDeadline();
             if (watches.get(id) === watch) {
                 watches.delete(id);
                 stats?.subscriptionClosed();
