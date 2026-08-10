@@ -155,9 +155,9 @@ export const demoSnapshot: MonitorSnapshot = {
         gauges: null
     },
     activations: [
-        { type: 'Counter', key: 'cart', queued: 0, ageMs: 167_000, idleMs: 167_000, keptAlive: false, tasks: 0 },
-        { type: 'Counter', key: 'cold-0', queued: 0, ageMs: 161_000, idleMs: 2000, keptAlive: false, tasks: 0 },
-        { type: 'Counter', key: 'cold-1', queued: 3, ageMs: 167_000, idleMs: 2000, keptAlive: true, tasks: 2 }
+        { type: 'Counter', key: 'cart', queued: 0, ageMs: 167_000, idleMs: 167_000, keptAlive: false, tasks: 0, watchLoops: 0, watchSubscribers: 0 },
+        { type: 'Counter', key: 'cold-0', queued: 0, ageMs: 161_000, idleMs: 2000, keptAlive: false, tasks: 0, watchLoops: 0, watchSubscribers: 0 },
+        { type: 'Counter', key: 'cold-1', queued: 3, ageMs: 167_000, idleMs: 2000, keptAlive: true, tasks: 2, watchLoops: 0, watchSubscribers: 0 }
     ],
     health: {
         live: true,

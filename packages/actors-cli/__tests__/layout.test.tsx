@@ -122,7 +122,7 @@ describe('rows render as lines', () => {
                 // to FIT while overflowing the terminal — the exact bug
                 // display-cell measurement exists for, so an assertion using
                 // `.length` could never have caught it.
-                { type: 'Counter', key: '用户名称超长的键-42', queued: 1, ageMs: 1000, idleMs: 0, keptAlive: false, tasks: 0 }
+                { type: 'Counter', key: '用户名称超长的键-42', queued: 1, ageMs: 1000, idleMs: 0, keptAlive: false, tasks: 0, watchLoops: 0, watchSubscribers: 0 }
             ]
         };
         const out = lines(<GrainsScreen state={state} pane={PANES.narrow} cursor={cursorModel(0)} />);

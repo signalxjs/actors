@@ -1299,6 +1299,18 @@ export interface HostStats {
      * you are looking at it.
      */
     transitional: { activating: number; deactivating: number };
+    /**
+     * Shared watch loops across all activations. OPTIONAL because
+     * `HostStats` crosses the wire inside a cluster `HostReport`, and a
+     * mixed-version fleet must keep parsing reports that predate the field.
+     *
+     * The number to watch against `activations` and subscriber counts: a
+     * popular read costs ONE loop however many subscribers share it, but a
+     * read that consults `ctx.principal` splits per distinct identity
+     * (#121) — a loop count tracking the subscriber count on a hot actor is
+     * the fan-out cliff of #180 building.
+     */
+    watchLoops?: number;
 }
 
 /**
@@ -1330,7 +1342,8 @@ export const emptyHostStats = (): HostStats => ({
     activations: 0,
     queued: 0,
     perType: {},
-    transitional: { activating: 0, deactivating: 0 }
+    transitional: { activating: 0, deactivating: 0 },
+    watchLoops: 0
 });
 
 /** One live activation, as `Host.activations()` reports it. */
@@ -1350,6 +1363,14 @@ export interface ActivationInfo {
     /** Detached task runs currently held by this activation — the actors
      *  hosting long-running work. Counted in `keptAlive` too. */
     tasks: number;
+    /** Shared watch loops on this activation — one per watched
+     *  `(method, throttleMs, args)`, or per distinct principal once the
+     *  read is observed consulting `ctx.principal` (#121). */
+    watchLoops: number;
+    /** Live watch subscribers across those loops. Healthy sharing is many
+     *  subscribers per loop; a ratio near 1 with a high loop count is the
+     *  per-identity split that collapses fan-out (#180). */
+    watchSubscribers: number;
 }
 
 export interface ActivationsOptions {

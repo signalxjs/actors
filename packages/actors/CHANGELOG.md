@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Watch-loop observability** (#180): `HostStats.watchLoops` — a live
+  gauge of shared watch loops across activations, flowing into `metrics()`
+  gauges, `ops()` and the cluster `HostReport` with no new plumbing
+  (optional on the wire, so mixed-version fleets keep parsing) — and
+  `ActivationInfo.watchLoops`/`watchSubscribers`, so `activations()` (and
+  anything built on it, like `sigx actors top`) can show which actor holds
+  the loops. The per-principal watch split (#121) is one loop per distinct
+  identity; a loop count tracking the subscriber count on a hot actor is
+  the fan-out collapse of #180 building, and until now it was visible only
+  from a collapsed deployment.
+
 ## [0.6.0] - 2026-08-09
 
 ### Added

@@ -774,6 +774,7 @@ export class LocalHost implements ActorDispatcher {
         let queued = 0;
         let activating = 0;
         let deactivating = 0;
+        let watchLoops = 0;
         const perType: Record<string, number> = {};
         for (const [, slot] of this.#directory) {
             // A slot mid-transition has no Activation to read, but it is
@@ -789,9 +790,10 @@ export class LocalHost implements ActorDispatcher {
             }
             activations++;
             queued += slot.activation.turns.depth;
+            watchLoops += slot.activation.watchLoops;
             perType[slot.activation.ref.type] = (perType[slot.activation.ref.type] ?? 0) + 1;
         }
-        return { activations, queued, perType, transitional: { activating, deactivating } };
+        return { activations, queued, perType, transitional: { activating, deactivating }, watchLoops };
     }
 
     activations(options: ActivationsOptions = {}): readonly ActivationInfo[] {
@@ -817,7 +819,9 @@ export class LocalHost implements ActorDispatcher {
                 // that was last used in the future.
                 idleMs: Math.max(0, now - activation.lastActivityMs),
                 keptAlive: activation.keptAlive,
-                tasks: activation.tasks
+                tasks: activation.tasks,
+                watchLoops: activation.watchLoops,
+                watchSubscribers: activation.watchSubscribers
             });
         }
 

@@ -108,7 +108,7 @@ function snapshot(over: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
             gauges: null
         },
         activations: [
-            { type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004, idleMs: 0, keptAlive: false, tasks: 0 }
+            { type: 'Cart', key: 'user-42', queued: 7, ageMs: 812_004, idleMs: 0, keptAlive: false, tasks: 0, watchLoops: 0, watchSubscribers: 0 }
         ],
         health: { live: true, ready: true, fatal: false, uptimeMs: 65_000, checks: {}, host: null },
         partial: false,

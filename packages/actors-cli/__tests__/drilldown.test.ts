@@ -249,7 +249,7 @@ describe('renderStats says which scope a number belongs to', () => {
             snapshot({
                 cluster: clusterView(),
                 activations: [
-                    { type: 'Counter', key: 'cart', queued: 1, ageMs: 1000, idleMs: 0, keptAlive: false, tasks: 0 }
+                    { type: 'Counter', key: 'cart', queued: 1, ageMs: 1000, idleMs: 0, keptAlive: false, tasks: 0, watchLoops: 0, watchSubscribers: 0 }
                 ]
             }),
             'http://host-a'

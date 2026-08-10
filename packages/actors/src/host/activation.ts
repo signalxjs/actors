@@ -540,6 +540,19 @@ export class Activation {
         return this.#tasks.size;
     }
 
+    /** Shared watch loop count (observability — `ActivationInfo.watchLoops`). */
+    get watchLoops(): number {
+        return this.#watches.size;
+    }
+
+    /** Watch subscribers across those loops (observability —
+     *  `ActivationInfo.watchSubscribers`). O(loops), paid per ops poll. */
+    get watchSubscribers(): number {
+        let subscribers = 0;
+        for (const entry of this.#watches.values()) subscribers += entry.handles.size;
+        return subscribers;
+    }
+
     /** The identity used in call chains. */
     get id(): string {
         return actorId(this.ref);
