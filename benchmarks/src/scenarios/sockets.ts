@@ -79,9 +79,9 @@ interface Row {
     publishFailures: number;
     subscriptionErrors: number;
     /** Connections closed under us — see `sockets/slow-consumer` (#182). */
-    drops?: number;
-    /** Subscribers deliberately made to stop reading (#182). */
-    slowConnections?: number;
+    drops: number;
+    /** Subscribers deliberately made to stop reading (#182); 0 unless asked. */
+    slowConnections: number;
     maxBufferedBytes: number;
     latencyMs: { p50: number; p90: number; p99: number; max: number } | null;
     partial?: boolean;

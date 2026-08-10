@@ -25,6 +25,8 @@ export interface WsLoadRow {
     subscriptionErrors: number;
     drops: number;
     seqMismatches: number;
+    /** Subscribers deliberately made to stop reading (#182); 0 unless asked. */
+    slowConnections: number;
     maxBufferedBytes: number;
     clientRssMb: number;
     /** From the PUBLISHING pod only — percentiles do not merge. */
