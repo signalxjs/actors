@@ -570,11 +570,22 @@ async function wsLoad(args) {
  * different deployments. (Adding it refuses comparison against artifacts
  * recorded before it was in the shape — deliberate: those runs' pool size
  * is unknown to the guard.)
+ *
+ * `TRANSPORT` joins it for the sharper version of the same argument (#203):
+ * over TCP there is no pool to size, because every stream is multiplexed
+ * onto one connection per peer. A TCP run and an HTTP run are not two
+ * measurements of one deployment.
  */
 const SOCKET_KNOBS = [
     'ENABLE_SOCKET',
     'ENABLE_SESSIONS',
     'FETCH_CONNECTIONS',
+    // The host-to-host link (#203). Here for the same reason
+    // `FETCH_CONNECTIONS` is: TCP multiplexes every cross-host watch stream
+    // onto ONE connection per peer, so the pool arithmetic that bound the
+    // identity ceiling does not apply to it at all. Two runs over different
+    // transports measure different deployments.
+    'TRANSPORT',
     'SOCKET_PATH',
     'SOCKET_ORIGIN',
     'SOCKET_MAX_CONCURRENT',

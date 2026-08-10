@@ -77,6 +77,14 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.port }}
+            {{- if eq .Values.env.transport "tcp" }}
+            # Host-to-host is pod-IP direct, so this is declaration rather
+            # than plumbing — but it is what makes the link visible to
+            # anything reading the pod spec (network policy, an operator
+            # wondering what 7312 is).
+            - name: hosttcp
+              containerPort: {{ .Values.env.tcpPort }}
+            {{- end }}
           env:
             - name: PORT
               value: {{ .Values.port | quote }}
@@ -98,6 +106,10 @@ spec:
               value: {{ .Values.env.sigxNamespace | quote }}
             - name: FETCH_CONNECTIONS
               value: {{ .Values.env.fetchConnections | quote }}
+            - name: TRANSPORT
+              value: {{ .Values.env.transport | quote }}
+            - name: TCP_PORT
+              value: {{ .Values.env.tcpPort | quote }}
             - name: MEMBERSHIP
               value: {{ .Values.membership | quote }}
             - name: CLUSTER_SECRET

@@ -439,7 +439,8 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   as the thing to copy.
   N identical host pods (env-driven `server.mjs`, `cluster()` with
   `redisCluster` or `k8sMembership` per values toggle, `redisStorage`
-  CAS persistence), an in-cluster closed-loop load generator, a Helm
+  CAS persistence, and `TRANSPORT=http|tcp` for the host-to-host link —
+  #203, part of `INFRA_SHAPE` because TCP has no fetch pool to size), an in-cluster closed-loop load generator, a Helm
   chart, and `deploy/testenv.mjs` — the whole Azure environment as one
   command per verb (up / status / test / baseline / bench / load /
   ws-up / ws-load / ws-bench / migrate-check / down). The WebSocket half (#172) is
