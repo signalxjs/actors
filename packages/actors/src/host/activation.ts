@@ -573,9 +573,12 @@ export class Activation {
      * and a one-slot memo thrashed into one decode per read turn — O(P)
      * decodes per publish, pure waste (#180). Insertion-order eviction at
      * the cap; identities churning past 256 on one activation pay a decode
-     * per eviction, which is the pre-map cost, not a new one.
+     * per eviction, which is the pre-map cost, not a new one. Lazy (null
+     * until the first decode): the map is per activation, and an actor
+     * that never reads `ctx.principal` must not pay ~200 bytes for it —
+     * `mem/per-actor-footprint` gates exactly this.
      */
-    #principalMemo = new Map<string, unknown>();
+    #principalMemo: Map<string, unknown> | null = null;
 
     /**
      * The call context of the turn asking — the ONE reader `ctx.actor()`
@@ -823,6 +826,17 @@ export class Activation {
                     seeded = true;
                     try {
                         if (interleave) return await this.enqueue(method, args, invokeCall);
+                        // Uncontended fast path: zero depth means no turn is
+                        // queued OR running — so no drain turn either, and a
+                        // drain turn is the only thing that can hold pump
+                        // jobs, so the pump is empty too. A direct enqueue
+                        // is then semantically identical (there is nothing
+                        // to be fair TO) and skips the pump's per-job
+                        // bookkeeping — the single-watch hot path
+                        // (`streams/live-watch`) measurably cares.
+                        if (this.turns.depth === 0) {
+                            return await this.enqueue(method, args, invokeCall);
+                        }
                         this.#watchPump ??= createWatchReadPump({
                             enqueueTurn: (body) => this.turns.run(body),
                             closed: () => this.turns.closed
@@ -1896,6 +1910,7 @@ export class Activation {
                 if (base !== undefined) self.#watchPrincipalDependent.add(base);
                 const encoded = current?.principal;
                 if (encoded === undefined) return null;
+                self.#principalMemo ??= new Map();
                 if (self.#principalMemo.has(encoded)) return self.#principalMemo.get(encoded);
                 const value = decodePrincipal(encoded);
                 if (self.#principalMemo.size >= PRINCIPAL_MEMO_CAP) {
