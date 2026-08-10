@@ -145,6 +145,14 @@ jobs:
           case "$VERB" in
             bench) node perf/aks/deploy/testenv.mjs bench \
                      --json="$RUNNER_TEMP/infra.json" $EXTRA_ARGS ;;
+            # The runner is ephemeral, so `--save-baseline` here would write
+            # a file nobody ever reads again. The JSON result IS the durable
+            # artifact: download two of them and compare with
+            #   pnpm bench:diff --before=sockets-old.json --after=sockets-new.json
+            # which judges runs against each other without either machine
+            # holding state.
+            ws-bench) node perf/aks/deploy/testenv.mjs ws-bench \
+                     --json="$RUNNER_TEMP/sockets.json" $EXTRA_ARGS ;;
             *)     node perf/aks/deploy/testenv.mjs "$VERB" $EXTRA_ARGS ;;
           esac 2>&1 | tee "$RUNNER_TEMP/testenv.log"
 
@@ -159,10 +167,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Every verb uploads its (post-masking) log; `infra.json` exists only
-      # for `bench` — the one verb that MEASURES — carrying metric names,
-      # values and the deployment shape (replicas/nodes/tag/knobs), no
-      # hostnames. Still worth an eyeball on the first runs.
+      # Every verb uploads its (post-masking) log; the JSON results exist
+      # only for the verbs that MEASURE — `bench` and `ws-bench` — carrying
+      # metric names, values and the deployment shape (replicas/nodes/tag/
+      # knobs), no hostnames. On an ephemeral runner these artifacts are the
+      # ONLY durable output of a measured run, which is why `ws-bench` gets
+      # one too: a baseline written to the runner's disk is a baseline
+      # nobody can compare against.
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
@@ -170,5 +181,6 @@ jobs:
           name: cluster-test-${{ inputs.verb }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/infra.json
+            ${{ runner.temp }}/sockets.json
             ${{ runner.temp }}/testenv.log
           if-no-files-found: ignore
