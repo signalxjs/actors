@@ -16,7 +16,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor, type ActorCallContext, type AnyActorDefinition } from '@sigx/actors';
 import { createHost, type Host } from '@sigx/actors/host';
 import { isActorError, isActorErrorKind } from '../src/errors';
+import {
+    declaresPrincipalIndependent,
+    type WatchDeclarationOptions
+} from '../src/watch-core';
 import { stubServerApp } from '@sigx/server/testing';
+import { preferLocalPolicy } from '@sigx/actors/cluster';
 import { createCluster, quiet, type ClusterHarness } from './harness';
 
 interface User {
@@ -269,7 +274,13 @@ describe('watch declaration: principalIndependent (#138)', () => {
                     }
                 })
             });
-            harness = await createCluster(2, { actors: [Liar] });
+            // `preferLocalPolicy` PLUS activating from host 1 is what pins
+            // the actor there — without a policy the default may claim it on
+            // host 0, making the watches below local and the stream counts 0.
+            harness = await createCluster(2, {
+                actors: [Liar],
+                policy: preferLocalPolicy()
+            });
             const ref = { type: 'ClusterLiar', key: 'shared' } as const;
             // Own it on host 1 so the watches below cross the hop.
             await harness.hosts[1]!.actor(Liar, 'shared').increment();
@@ -368,6 +379,35 @@ describe('watch declaration: principalIndependent (#138)', () => {
                 } as unknown as Record<string, { principalIndependent: true }>
             });
             await expect(firstCallError(bad)).resolves.toMatch(/reserved name/);
+        });
+
+        it('a MALFORMED watches map reads as "not declared" on the relay', async () => {
+            // The relay reads the declaration before anything validates it —
+            // it may never activate the actor at all. `Object.hasOwn(null, m)`
+            // throws, so an unguarded read would crash coalescing on a host
+            // that is only passing the subscription through, instead of
+            // leaving the owner to fail loudly.
+            for (const malformed of [null, [], 'nope', 42]) {
+                expect(
+                    declaresPrincipalIndependent(
+                        { watches: malformed } as unknown as WatchDeclarationOptions,
+                        'feed'
+                    )
+                ).toBe(false);
+            }
+            // And a well-formed map still answers.
+            expect(
+                declaresPrincipalIndependent(
+                    { watches: { feed: { principalIndependent: true } } },
+                    'feed'
+                )
+            ).toBe(true);
+            // Inherited keys never count.
+            const inherited = Object.create({ feed: { principalIndependent: true } }) as Record<
+                string,
+                { principalIndependent: true }
+            >;
+            expect(declaresPrincipalIndependent({ watches: inherited }, 'feed')).toBe(false);
         });
 
         it('a name matching no method warns rather than throwing', async () => {

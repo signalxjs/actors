@@ -274,15 +274,25 @@ export interface WatchDeclarationOptions {
  *
  * Own keys only, the `methodAuthorize` / `methodReentrancy` rule — an actor
  * must not inherit a sharing promise from `Object.prototype`.
+ *
+ * Shape-guarded rather than trusting the type, because the RELAY reads this
+ * before anything validates the definition — it may never activate the actor
+ * at all, and `validateWatchDeclarations` runs at the owner's first
+ * activation. A malformed `watches` (`null`, an array, a string) must read as
+ * "not declared" and leave the owner to fail loudly, not crash coalescing on
+ * a host that is only passing the subscription through.
  */
 export function declaresPrincipalIndependent(
     opts: WatchDeclarationOptions,
     method: string
 ): boolean {
-    const map = opts.watches;
+    const map = opts.watches as unknown;
     return (
-        map !== undefined &&
+        typeof map === 'object' &&
+        map !== null &&
+        !Array.isArray(map) &&
         Object.hasOwn(map, method) &&
-        map[method]?.principalIndependent === true
+        (map as Record<string, { principalIndependent?: true } | undefined>)[method]
+            ?.principalIndependent === true
     );
 }
