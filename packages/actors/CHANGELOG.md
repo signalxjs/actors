@@ -25,7 +25,7 @@
   subscription 504 error frame and releases everything the starved seed
   held (fan-out subscriber, shared loop, keep-alive). Previously it hung
   silently forever. A seeded subscription is never timed out. The `$live`
-  endpoint has the same gap and is tracked as a follow-up.
+  endpoint has the same gap, tracked as #192.
 
 ### Added
 

@@ -29,12 +29,24 @@ Two properties carry the scaling story, and neither is an optimisation:
   re-invocation, and the value emitted is the final one, never a stale
   intermediate.
 
-The loop's re-read is a **normal serialized turn** (`Activation.enqueue` from
-the entry's `invoke` closure) — the watch gets exactly the isolation every
-other call has, and its reads queue behind (and ahead of) everything else on
-the activation's single turn queue. The seed read fires synchronously when the
-first subscriber attaches, so subscribing has a turn's worth of cost *for the
-first subscriber on a key* and near-zero for everyone after.
+The loop's re-read runs with **a normal turn's isolation** — call context,
+observer event, and change boundary per read — but serial-lane watch reads
+do not each hold a queue slot: they run through the **watch read pump**
+(`host/watch-pump.ts`, #180). The pump keeps at most ONE drain turn on the
+queue, running pending reads back-to-back up to a 32-read slice per turn,
+**seeds first**, with the remainder (and anything requested mid-drain)
+re-enqueued at the tail. Three consequences carry #180's fix: the whole
+watch population contributes O(1) queue slots however many loops exist; an
+external call waits for at most one slice, never O(loops) read turns; and a
+new subscriber's seed drains ahead of every pending re-read, so
+establishment cannot starve behind steady-state fan-out. Failure stays per
+read (one rejecting read reaches its own loop only; the drain turn never
+rejects — the `Turns` tail must never carry a rejection). Interleaved
+methods keep the direct `enqueue` path: they never contend on the serial
+lane, and batching them would add serialization they opted out of. The seed
+read is still requested synchronously when the first subscriber attaches —
+subscribing costs a read *for the first subscriber on a key* and near-zero
+for everyone after.
 
 A watch subscriber's change feed rides the `ticksOnly` sentinel — it never
 costs a state snapshot. That contract, and what breaks if the pump ever reads
@@ -101,17 +113,31 @@ Per-user (`mine()`, one distinct identity per connection):
 
 It is a cliff, not a curve, and **establishment is what breaks**: re-running
 250 identities at 1 publish/s connects 216 of them and serves them at full
-rate with 52 ms p50 — every failure happened while dialling. The mechanism:
+rate with 52 ms p50 — every failure happened while dialling. The mechanism,
+as measured (pre-pump):
 
 - P distinct principals = P watch loops on one activation, each with its own
   change subscription. Every mutating turn dirties all P; after the 50 ms
-  window each enqueues its own read turn — **O(P) turns per publish** on one
+  window each enqueued its own read turn — **O(P) turns per publish** on one
   serial queue.
-- A new identity's seed is one more serialized turn, FIFO behind those — and
-  the watch path arms **no server-side deadline** (it bypasses
-  `CallDeadlines` by design; the loop lives forever), so a starved seed waits
-  as long as the client does. Establishment and steady-state feed on each
-  other past the threshold: the collapse of #180.
+- A new identity's seed was one more serialized turn, FIFO behind those — and
+  the watch path armed **no deadline anywhere** (it bypasses `CallDeadlines`
+  by design; the loop lives forever), so a starved seed waited as long as the
+  client did, silently. Establishment and steady-state fed on each other past
+  the threshold: the collapse of #180.
+
+Two changes moved this (#180). The **watch read pump** (above) removed both
+FIFO costs: the watch population now holds one queue slot, and seeds drain
+first — Tier 1's `live/principal-fanout` gates the counts. And the **socket
+session arms the posture's `timeoutMs` on establishment** (pipeline +
+authorization + dispatch + first value): a seed that still cannot run in
+time answers a per-subscription 504 frame and releases the loop and
+keep-alive it held, instead of hanging forever. A seeded subscription is
+never timed out; the `$live` endpoint still has the hang-forever gap
+(#192). The remaining per-identity costs — the reads
+themselves, P change subs, P settle timers, P socket frames per window —
+are real but they are the steady-state model, which held at 216 identities
+even pre-pump; the cross-host multiplier stays with #138.
 
 Local control measurement (200 subscribers, #172): 31 actor turns anonymous vs
 6 200 per-user for the same publish load; one identity watching a
@@ -135,9 +161,13 @@ coalescing does guarantee are gated by the `cluster/live-fanout` benchmark.
 
 ## Sizing guidance, and the guardrails that pin it
 
-Until #180's establishment fix and #138 land, treat identity-dependent live
-reads on one hot actor as bounded at **~100 distinct principals** (the
-measured cliff starts between 100 and 250 on 1-CPU pods). Concretely:
+The pre-pump ceiling was **~100 distinct principals** on one hot actor (the
+measured cliff started between 100 and 250 on 1-CPU pods). The pump moves
+the establishment wall; where the new ceiling lands is a cluster
+measurement — `sockets/principal-cliff`'s `max_healthy_identities` against
+the recorded pre-fix artifact — not a promise, and until it is re-measured
+the old number is the one to size against. #138's cross-host multiplier is
+untouched either way. Concretely:
 
 - Keep `mine()`-shaped reads — anything consulting `ctx.principal` — off hot
   shared actors. Shard them: a per-user or per-cohort actor holds the
@@ -150,7 +180,8 @@ measured cliff starts between 100 and 250 on 1-CPU pods). Concretely:
   `ActivationInfo.watchLoops`/`watchSubscribers` for the per-actor drill-down:
   many subscribers per loop is healthy sharing; a loop count tracking the
   subscriber count on a hot actor is this cliff building.
-- What pins the numbers: `sockets/principal-cliff` (Tier 3, recorded —
-  `max_healthy_identities` is the figure #180 exists to move) and the
-  measured tables in `benchmarks/BASELINES.md`. Changes to the watch
-  machinery must show those moving, not just unit tests passing.
+- What pins the numbers: `live/principal-fanout` (Tier 1, `exact` — the
+  loop/seed/read counts, gated on every PR), `sockets/principal-cliff`
+  (Tier 3, recorded — `max_healthy_identities` is the figure #180 exists to
+  move) and the measured tables in `benchmarks/BASELINES.md`. Changes to
+  the watch machinery must show those moving, not just unit tests passing.
