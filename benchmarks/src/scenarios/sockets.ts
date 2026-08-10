@@ -460,28 +460,36 @@ const declaredFanout: Scenario = {
  * keeping up.
  *
  * The socket send path is fire-and-forget — nothing in the runtime reads
- * `bufferedAmount` — so #182 says a slow client shows up as MEMORY rather
- * than as backpressure. Every run so far has recorded `maxBufferedBytes: 0`,
- * which means that claim is *structural* and has never actually been
- * observed: the rig had no way to produce a slow consumer.
+ * `bufferedAmount` — so #182 says a slow client shows up as MEMORY on the
+ * host rather than as backpressure. `SLOW_FRACTION` produces such a client
+ * by pausing the TCP socket underneath a fraction of subscribers (see
+ * `stall()` in `ws-loadgen.mjs` for why it must be the socket and not the
+ * message handler). Nothing evicts them: the session's `{ p: 1 }` is an
+ * application frame with no pong requirement, and `@sigx/actors-ws`
+ * installs no WebSocket keepalive and no idle timeout.
  *
- * `SLOW_FRACTION` produces one, by pausing the TCP socket underneath a
- * fraction of subscribers (see `stall()` in `ws-loadgen.mjs` for why it must
- * be the socket and not the message handler). Nothing evicts them: the
- * session's `{ p: 1 }` is an application frame with no pong requirement, and
- * `@sigx/actors-ws` installs no WebSocket keepalive and no idle timeout.
+ * **What this scenario deliberately does NOT report is the buffer itself.**
+ * The rig's `maxBufferedBytes` is sampled from the CLIENT's
+ * `WebSocket#bufferedAmount` — data queued to send — and a subscriber sends
+ * almost nothing, so it sits at ~0 however much the host is holding. The
+ * host has no `bufferedAmount` instrumentation anywhere (`socketStats()`
+ * has none, nor does `@sigx/actors-ws`), which is #182's own point and also
+ * why #182 cannot be settled from this side of the socket. Reporting the
+ * client number here would produce a confident `0` that means nothing, and
+ * that is how "the hosts never outran the clients" gets written down.
  *
- * What to expect, and what each outcome MEANS — this scenario is a question,
- * not a regression gate, so every metric here is informational:
+ * What it reports instead is the CONSEQUENCE, which is observable — and
+ * this is a question rather than a gate, so every metric is informational:
  *
- * - `max_buffered_bytes` climbing with `drops` flat is #182 confirmed: the
- *   host holds unbounded per-connection memory for a client that never
- *   reads, and nothing pushes back.
- * - `drops` climbing instead is a FINDING, not a broken rig — something did
- *   react (the kernel, the proxy, `ws`), and where is then worth knowing.
- * - the healthy subscribers' `deliveries_per_sec` falling is the one that
- *   would change the sizing rule: it would mean a slow client degrades
- *   service for everyone on the same host, not just for itself.
+ * - `top/deliveries_per_sec` falling against a run at the same rung with
+ *   `slow_connections: 0` is the finding that changes the sizing rule: a
+ *   slow client degrading service for everyone on its host, not only itself.
+ * - `drops` climbing means something DID react (the kernel, the ingress,
+ *   `ws`), and where is then worth knowing — the runtime is not the only
+ *   thing in the path.
+ * - both flat means the host absorbed it silently, which is #182's
+ *   prediction and the case that needs host-side instrumentation to confirm
+ *   rather than merely fail to refute.
  */
 const slowConsumer: Scenario = {
     name: 'sockets/slow-consumer',
@@ -547,11 +555,12 @@ const slowConsumer: Scenario = {
                 direction: 'higher',
                 informational: true
             },
-            // Direction is 'higher' ONLY because the harness needs one: a
-            // bigger number here is the DEFECT, not an improvement. It is
-            // informational so nothing reads a verdict off it either way.
             {
-                name: 'max_buffered_bytes',
+                // The CLIENT's send buffer, recorded only so a reader can
+                // see it stayed ~0 and know that is expected — a subscriber
+                // sends nothing. It is NOT the host's buffer and must never
+                // be quoted as evidence about #182 either way.
+                name: 'client_max_buffered_bytes',
                 value: top?.maxBufferedBytes ?? 0,
                 unit: 'bytes',
                 direction: 'higher',

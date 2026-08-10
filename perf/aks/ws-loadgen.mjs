@@ -240,16 +240,26 @@ function createClient(index) {
  * never notices — you would measure the generator's own event loop and
  * report it as backpressure. Pausing the `net.Socket` stops reading, the
  * receive window closes, and the server's send buffer is where the
- * unconsumed data actually piles up. That is the thing `maxBufferedBytes`
- * counts, and the thing #182 says nothing in the runtime reacts to.
+ * unconsumed data actually piles up.
+ *
+ * **That growth is NOT what `maxBufferedBytes` reports.** This generator
+ * samples the CLIENT's `WebSocket#bufferedAmount` — data queued to SEND —
+ * and a subscriber sends almost nothing, so that number is ~0 whatever the
+ * server is holding. The host has no `bufferedAmount` instrumentation at
+ * all (there is none in `socketStats()` or in `@sigx/actors-ws`), which is
+ * exactly #182's point and also why #182 cannot be settled from this side
+ * of the socket. What this arm CAN observe is the consequence: whether
+ * healthy subscribers degrade, and whether anything drops the stalled
+ * ones.
  *
  * Nothing evicts these connections, which is the point: the socket session's
  * `{ p: 1 }` is an APPLICATION frame with no pong requirement, and
  * `@sigx/actors-ws` installs no WebSocket-level keepalive and no idle
  * timeout. So a stalled subscriber is not disconnected — it is unbounded
- * memory on the host, and the run should show `maxBufferedBytes` climbing
- * with `drops` staying flat. A rung where drops climb instead is a finding,
- * not a broken rig: something DID react.
+ * memory on the host — unobservable from here, but its CONSEQUENCES are
+ * not. A rung where `drops` climbs is a finding: something DID react. A rung
+ * where healthy subscribers' delivery rate falls is the finding that changes
+ * the sizing rule.
  *
  * `SLOW_RESUME_MS > 0` duty-cycles instead — a merely slow client rather
  * than a dead one, which is the shape a real bad network produces.
@@ -259,8 +269,8 @@ function stall(state) {
     // is a PRIVATE field, so it is the one thing here that a `ws` upgrade
     // could take away — and a silent no-op would be the worst possible
     // failure: the row would report N slow connections, none of them would
-    // actually stall, and `maxBufferedBytes: 0` would then read as "#182
-    // disproven" when the arm never ran at all. So it returns null and the
+    // actually stall, and the rung would look like a slow-consumer
+    // measurement while being ordinary fan-out. So it returns null and the
     // caller counts what really stalled.
     const socket = state.socket?._socket;
     if (!socket || typeof socket.pause !== 'function') return null;
@@ -612,10 +622,10 @@ async function runRung(n) {
         read: READ,
         principal: PRINCIPAL,
         // What actually stalled, never what was asked for. A rung reporting
-        // the intention while nothing stalled is how `maxBufferedBytes: 0`
-        // gets misread as a finding. Reported even when zero, so a reader
-        // comparing two rungs can see which had slow subscribers without
-        // going back to the invocation.
+        // the intention while nothing stalled is ordinary fan-out wearing
+        // this arm's name. Reported even when zero, so a reader comparing
+        // two rungs can see which had slow subscribers without going back to
+        // the invocation.
         slowConnections: stalled,
         publishes,
         publishFailures,
