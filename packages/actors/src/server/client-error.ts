@@ -30,8 +30,19 @@ export function toClientError(error: unknown): unknown {
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'deadlock':
         case 'activation':
+        case 'watch-declaration':
         default:
             // Server-side bugs/config problems: mask in prod (plain 500).
+            //
+            // `watch-declaration` (#138) is listed rather than left to the
+            // default so it reads as decided, not forgotten. It is a
+            // DEFINITION bug — the same class as `activation` — and its
+            // message names the actor type, the method and the shape of its
+            // declarations, none of which a browser should be told. The
+            // author sees it where it is actionable: the throw happens in
+            // every build, the turn observer sees the failure, and `__DEV__`
+            // logs it at the point of detection (which may be several hops
+            // from the subscriber that reports the 500).
             return error;
     }
 }

@@ -120,7 +120,7 @@ export class ActorWatchDeclarationError extends ActorError {
     constructor(type: string, method: string) {
         super(
             'watch-declaration',
-            `[sigx actors] "${type}.${method}" declares \`watches: { ${method}: ` +
+            `[sigx actors] "${type}.${method}" declares \`watches: { '${method}': ` +
                 `{ principalIndependent: true } }\` but consulted \`ctx.principal\` while ` +
                 `serving a watch. Identity is an input to this read, so its subscribers ` +
                 `cannot share one loop. Remove the declaration — or, if the touch was ` +

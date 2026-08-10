@@ -257,8 +257,9 @@ function writeCanonical(value: unknown, out: string[]): void {
 
 /**
  * The structural subset of `ActorOptions` the watch-sharing declaration
- * needs — the `ReentrancyOptions` shape, so neither the cluster bundle nor
- * this module depends on the full definition type.
+ * needs. Structural rather than an import of the definition type, following
+ * `ReentrancyOptions`, so neither the cluster bundle nor this module has to
+ * depend on the full `ActorOptions` generic to read one flag.
  */
 export interface WatchDeclarationOptions {
     readonly watches?: Readonly<Record<string, { principalIndependent?: true } | undefined>>;
