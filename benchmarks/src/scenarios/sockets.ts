@@ -261,7 +261,13 @@ const principalCliff: Scenario = {
     name: 'sockets/principal-cliff',
     description: 'how many DISTINCT identities one actor can serve live before dialling fails (#180)',
     async run(ctx: RunContext): Promise<Metric[]> {
-        const rungs = ladder('INFRA_WS_IDENTITY_LADDER', ctx.quick ? '50,100,250' : '50,100,250,500');
+        // 1000 was measured clean once the fetch pool stopped binding
+        // (#194), so the default ladder reaches past the old 100–250 shelf
+        // — a recorded run should find the cliff, not its own ceiling.
+        const rungs = ladder(
+            'INFRA_WS_IDENTITY_LADDER',
+            ctx.quick ? '50,100,250' : '50,100,250,500,1000'
+        );
         const result = await drive({
             mode: 'hot',
             actors: 1,

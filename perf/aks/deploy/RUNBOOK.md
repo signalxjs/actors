@@ -583,6 +583,17 @@ Pass/fail, and what to record:
   0.18 ms → 1.02 ms. On a cluster it also multiplies the cross-host
   streams, so check `remoteWatches` / `coalescedWatches` in
   `/_sigx/ops/cluster` for both arms.
+- **Size `env.fetchConnections` before a per-user run, or the pool is what
+  you measure (#194).** Every per-principal cross-host stream PINS one
+  pooled host-to-host connection for the life of the subscription, and at
+  the default 64/peer the pool — not the runtime — was the 100–250
+  identity cliff of #180: identities × ⅔ streams across (replicas−1)
+  pools. Deploy with
+  `testenv.mjs ws-up socket.sessions=true env.fetchConnections=1024`
+  for identity ladders past ~150, and expect a rung to read starved
+  establishment (504 subscription errors, publishes barely landing) when
+  the pool binds. The pool size is part of `INFRA_SHAPE`, so a recorded
+  run under a different pool is refused rather than compared.
 
 ### Recording it instead of reading it (#184)
 
@@ -604,7 +615,10 @@ of sockets on a paid cluster.
 
 `sockets/principal-cliff` is the one to watch. It climbs distinct
 identities until dialling fails and records `max_healthy_identities` —
-the number #180 exists to move, sitting between 100 and 250 today.
+the number #180 existed to move. It sat between 100 and 250 while the
+fetch pool bound (#194); with the pool sized (`env.fetchConnections=1024`)
+and the #193 pump in the image, every rung through 1000 measured clean —
+the recorded 500 is the ladder's old ceiling, not a cliff.
 
 Sockets are HOST-AFFINE: the client is pinned to whichever pod the Service
 gave it, and every call inside re-dispatches through placement. The edge

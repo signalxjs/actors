@@ -561,10 +561,20 @@ async function wsLoad(args) {
  * `SOCKET_MAX_SUBSCRIPTIONS=1024` is not comparable with one under the
  * default 256, and without them in the shape the comparison is made anyway
  * and reported as a code change.
+ *
+ * `FETCH_CONNECTIONS` is here for the same reason despite not being a
+ * socket knob: it is the host-to-host fetch pool, and every per-principal
+ * cross-host watch stream PINS one pooled connection for the life of the
+ * subscription — the pool size, not the runtime, was the 100–250 identity
+ * cliff of #180 (#194). Two runs under different pool sizes measure
+ * different deployments. (Adding it refuses comparison against artifacts
+ * recorded before it was in the shape — deliberate: those runs' pool size
+ * is unknown to the guard.)
  */
 const SOCKET_KNOBS = [
     'ENABLE_SOCKET',
     'ENABLE_SESSIONS',
+    'FETCH_CONNECTIONS',
     'SOCKET_PATH',
     'SOCKET_ORIGIN',
     'SOCKET_MAX_CONCURRENT',

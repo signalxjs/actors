@@ -126,18 +126,27 @@ as measured (pre-pump):
   client did, silently. Establishment and steady-state fed on each other past
   the threshold: the collapse of #180.
 
-Two changes moved this (#180). The **watch read pump** (above) removed both
-FIFO costs: the watch population now holds one queue slot, and seeds drain
-first — Tier 1's `live/principal-fanout` gates the counts. And the **socket
-session arms the posture's `timeoutMs` on establishment** (pipeline +
-authorization + dispatch + first value): a seed that still cannot run in
-time answers a per-subscription 504 frame and releases the loop and
-keep-alive it held, instead of hanging forever. A seeded subscription is
-never timed out; the `$live` endpoint still has the hang-forever gap
-(#192). The remaining per-identity costs — the reads
-themselves, P change subs, P settle timers, P socket frames per window —
-are real but they are the steady-state model, which held at 216 identities
-even pre-pump; the cross-host multiplier stays with #138.
+Two changes moved the local mechanism (#180). The **watch read pump**
+(above) removed both FIFO costs: the watch population now holds one queue
+slot, and seeds drain first — Tier 1's `live/principal-fanout` gates the
+counts. And the **socket session arms the posture's `timeoutMs` on
+establishment** (pipeline + authorization + dispatch + first value): a
+seed that still cannot run in time answers a per-subscription 504 frame
+and releases the loop and keep-alive it held, instead of hanging forever.
+A seeded subscription is never timed out; the `$live` endpoint still has
+the hang-forever gap (#192).
+
+**On the cluster, the shelf turned out to be a different mechanism** — and
+the 504s are what made it diagnosable (#194). Every per-principal
+cross-host stream pins one pooled host-to-host connection for the life of
+the subscription, and the measured 100–250 ceiling was the rig's fetch
+pool arithmetic (64/peer × 2 relay pods = 128 streams ≈ 190 identities),
+not the turn queue: the pump image alone left `max_healthy_identities` at
+100, and sizing the pool on the same image took 1 000 identities to zero
+failures at the throttle-floor latency. The remaining per-identity costs —
+the reads themselves, P change subs, P settle timers, P socket frames, and
+above all **one held connection per identity per host hop** until #138 —
+are the steady-state model.
 
 Local control measurement (200 subscribers, #172): 31 actor turns anonymous vs
 6 200 per-user for the same publish load; one identity watching a
@@ -161,13 +170,15 @@ coalescing does guarantee are gated by the `cluster/live-fanout` benchmark.
 
 ## Sizing guidance, and the guardrails that pin it
 
-The pre-pump ceiling was **~100 distinct principals** on one hot actor (the
-measured cliff started between 100 and 250 on 1-CPU pods). The pump moves
-the establishment wall; where the new ceiling lands is a cluster
-measurement — `sockets/principal-cliff`'s `max_healthy_identities` against
-the recorded pre-fix artifact — not a promise, and until it is re-measured
-the old number is the one to size against. #138's cross-host multiplier is
-untouched either way. Concretely:
+The old ceiling was **~100 distinct principals** on one hot actor — and
+it was the host-to-host fetch pool, not the runtime (#194): with the pool
+sized to the identity population and the #193 pump in place, **1 000
+distinct identities on one actor measured clean** (zero failures, p50 at
+the 50 ms throttle floor; `max_healthy_identities` recorded 500 as the
+ladder's ceiling). The durable sizing rule: per-principal cross-host
+streams each hold a pooled connection until #138 lands, so size the
+host-to-host pool for the signed-in watcher population, or use
+`@sigx/actors-tcp` (one multiplexed connection per peer). Concretely:
 
 - Keep `mine()`-shaped reads — anything consulting `ctx.principal` — off hot
   shared actors. Shard them: a per-user or per-cohort actor holds the
