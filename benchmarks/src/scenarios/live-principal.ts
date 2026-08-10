@@ -9,9 +9,14 @@
  * construction here: P identities cost exactly P loops, P seed turns, and
  * P read turns per publish, while the same P identities watching an
  * identity-blind read cost exactly 1 of each. All of those gate `exact` —
- * the establishment fix #180 calls for moves `seed_turns` and
- * `read_turns_per_publish` down, and this scenario is what shows it (and
- * what catches a regression quietly re-splitting or re-serializing).
+ * as INVARIANTS of the model: the split is per identity, and each loop
+ * reads once per publish. The #180 establishment fix (the watch read
+ * pump) deliberately does NOT move these counts — every read still runs,
+ * with a full turn's isolation; what it moves is the queue-slot
+ * contribution and seed ordering, which the informational rows corroborate
+ * (`publishes_per_sec`, `seed_latency_under_load_ms`) and
+ * `watch-batch.test.ts` pins. A change in an exact row here is a semantic
+ * change to the split itself.
  *
  * Establishment latency under load rides along informationally: one
  * process, one CPU, so it describes the mechanism (a new identity's seed
@@ -111,9 +116,9 @@ const principalFanout: Scenario = {
                         unit: 'turns',
                         direction: 'lower',
                         // One seed invoke per created loop, over a fully
-                        // awaited sequence. P today; the #180 establishment
-                        // fix moves how these are SCHEDULED, and any change
-                        // to how many run lands here.
+                        // awaited sequence. The pump (#180) changes how
+                        // these are SCHEDULED, never how many run — any
+                        // change to the count lands here.
                         exact: true
                     }
                 );
@@ -137,8 +142,10 @@ const principalFanout: Scenario = {
                         direction: 'lower',
                         // One re-read per loop per mutation, barriered by
                         // the drain — no timers, no background work under
-                        // the manual scheduler. THIS is the O(P) the #180
-                        // fix exists to amortize.
+                        // the manual scheduler. This O(P) READ WORK is the
+                        // steady-state model (only #138-class semantics
+                        // could shrink it); the pump amortizes its queue
+                        // overhead without touching the count.
                         exact: true
                     },
                     {

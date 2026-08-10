@@ -1595,10 +1595,12 @@ awaited — see the scenario header for why that makes the counts exact.
 One variable changes between the arms — does the read touch
 `ctx.principal` — and every per-identity count collapses to 1. This is
 #121's split (correct, per-identity views) priced in turns on one serial
-queue, and `read_turns_per_publish` is the number the #180 establishment
-fix exists to amortize: the fix should move `seed_turns` /
-`read_turns_per_publish` scheduling costs down while `watch_loops` stays P
-(identity remains an input to the read until #138-class semantics exist).
+queue. The #180 establishment fix (the watch read pump) does NOT move
+these counts — every read still runs, one per loop per publish, and
+`watch_loops` stays P (identity remains an input to the read until
+#138-class semantics exist). What the pump moves is the queue-slot
+contribution and seed ordering, which the informational rows below are the
+scenario's window on.
 
 ### The mechanism's shape, informational
 
