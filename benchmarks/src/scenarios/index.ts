@@ -10,6 +10,7 @@ import { redisScenarios } from './redis.ts';
 import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
+import { livePrincipalScenarios } from './live-principal.ts';
 import { WS_ENABLED, wsHint as wsReason, socketScenarios } from './sockets.ts';
 import { topicScenarios } from './topics.ts';
 import { wireScenarios } from './wire.ts';
@@ -49,6 +50,7 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...statelessScenarios,
     ...topicScenarios,
     ...liveFanoutScenarios,
+    ...livePrincipalScenarios,
     ...redisScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),

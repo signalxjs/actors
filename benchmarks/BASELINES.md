@@ -1564,3 +1564,56 @@ if #138 lands.
   `pnpm bench:diff --before=sockets-old.json --after=sockets-new.json`
   rather than expecting `--compare` to find a baseline the runner threw
   away.
+## 2026-08-10 · Tier 1 — the per-principal watch split, counted (#180)
+
+| | |
+|---|---|
+| Machine | Apple M4, darwin/arm64 |
+| Node | v24.11.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Commit | `1153c94` (dirty — the scenario itself) |
+| Settings | 1 run × 150 ms slices |
+| Conditions | **Contended** (probe varied 50%) — which is exactly why the gating rows are counts: every `exact` value below is identical on a quiet machine. Treat the two timing rows as shape, not figures. |
+
+`live/principal-fanout` is the laptop-priced counterpart of Tier 3's
+`sockets/principal-cliff` (2026-08-09 above): the costs that collapsed the
+AKS rig between 100 and 250 identities, as counts that hold by
+construction. One actor; P distinct identities watch `mine()` (which reads
+`ctx.principal`); the control arm has the same identities watch the
+identity-blind `current()`. Throttle 0, establishment sequential and
+awaited — see the scenario header for why that makes the counts exact.
+
+### The split, per distinct identity — all `exact`, all gate
+
+| metric | P=1 | P=25 | P=100 | anon control (P=100) |
+|---|---:|---:|---:|---:|
+| `watch_loops` | 1 | 25 | 100 | **1** |
+| `seed_turns` | 1 | 25 | 100 | — |
+| `read_turns_per_publish` | 1 | 25 | 100 | **1** |
+| `read_turns_per_publish_spread` | 0 | 0 | 0 | — |
+
+One variable changes between the arms — does the read touch
+`ctx.principal` — and every per-identity count collapses to 1. This is
+#121's split (correct, per-identity views) priced in turns on one serial
+queue. The #180 establishment fix (the watch read pump) does NOT move
+these counts — every read still runs, one per loop per publish, and
+`watch_loops` stays P (identity remains an input to the read until
+#138-class semantics exist). What the pump moves is the queue-slot
+contribution and seed ordering, which the informational rows below are the
+scenario's window on.
+
+### The mechanism's shape, informational
+
+| metric | P=1 | P=25 | P=100 |
+|---|---:|---:|---:|
+| `seed_latency_under_load_ms` | 0.098 | 0.149 | 0.426 |
+| `publishes_per_sec` | 39.3 k | 5.4 k | 1.0 k |
+
+A new identity's seed queues behind the P re-reads the last publish
+requested — establishment latency scales with P even on one warm CPU with
+a trivial read. On the cluster the same mechanism, at 10 publishes/s under
+a 1000m CPU limit and with the client dialling on a timeout, is the cliff:
+seeds starve, clients give up and retry, and the rung fails while
+steady-state delivery to the already-established is still fine. The
+publish/drain round-trip falling ~40× from P=1 to P=100 is the O(P) turns
+per publish, paid in-process.
