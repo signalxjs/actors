@@ -174,8 +174,9 @@ The old ceiling was **~100 distinct principals** on one hot actor — and
 it was the host-to-host fetch pool, not the runtime (#194): with the pool
 sized to the identity population and the #193 pump in place, **1 000
 distinct identities on one actor measured clean** (zero failures, p50 at
-the 50 ms throttle floor; `max_healthy_identities` recorded 500 as the
-ladder's ceiling). The durable sizing rule: per-principal cross-host
+the 50 ms throttle floor; the recorded `max_healthy_identities: 500` was
+the ceiling of the ladder as it stood that day — the default ladder now
+reaches 1000). The durable sizing rule: per-principal cross-host
 streams each hold a pooled connection until #138 lands, so size the
 host-to-host pool for the signed-in watcher population, or use
 `@sigx/actors-tcp` (one multiplexed connection per peer). Concretely:

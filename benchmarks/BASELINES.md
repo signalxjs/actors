@@ -1683,8 +1683,10 @@ the hand rows above measured it clean). p50 55.1 ms, p99 78.0 ms at 500.
   means every artifact recorded before this section refuses against new
   ones. Deliberate: their pool size is unknown to the guard.
 - **Sizing rule** for per-user live fan-out over the HTTP host transport:
-  pool per peer ≥ distinct signed-in watchers × (replicas−1)/replicas ÷
-  (replicas−1) — or stop paying a connection per identity: `@sigx/actors-tcp`
+  each relay pod holds ~`watchers ÷ replicas` streams to the owner, so set
+  the pool per peer to at least that — an expectation, not a bound, so add
+  headroom for placement skew. Or stop paying a connection per identity:
+  `@sigx/actors-tcp`
   multiplexes every stream over one connection per peer (this measurement is
   its "justified by socket count" case on the client-fan-out axis), and #138
   would collapse identity-independent reads to one stream outright.

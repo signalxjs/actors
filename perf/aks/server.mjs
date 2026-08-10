@@ -107,7 +107,16 @@ const socketNum = (name) => {
 // (#138), and at the default 64 the POOL — not the runtime — was the
 // 100–250 identity cliff of #180 (#194). It is part of INFRA_SHAPE for
 // exactly that reason.
-const agent = new Agent({ connections: Number(process.env.FETCH_CONNECTIONS ?? 64) });
+const fetchConnections = (() => {
+    const raw = process.env.FETCH_CONNECTIONS ?? '64';
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1) {
+        console.error(`[perf-aks] FETCH_CONNECTIONS must be a positive integer, got '${raw}'`);
+        process.exit(1);
+    }
+    return value;
+})();
+const agent = new Agent({ connections: fetchConnections });
 
 const providers = (() => {
     if (MEMBERSHIP === 'redis') {
