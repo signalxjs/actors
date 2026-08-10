@@ -553,16 +553,24 @@ async function runRung(n) {
     const elapsedMs = performance.now() - measureStarted;
     clearInterval(sampler);
     clearInterval(progress);
-    // Resume before teardown: a paused socket cannot complete a close
-    // handshake, and the leftovers would be counted as drops by the next
-    // rung rather than as this arm's doing.
-    resumeSlow();
 
     // Let the last throttle window flush before counting: the watch throttle
     // is trailing, so a delivery for the final publish can still be up to
     // one window away. Without this every run under-reports by a hair.
+    // Stalled sockets are still PAUSED here, deliberately — they did not
+    // receive during the window and must not appear to have.
     await sleep(250);
+    // FROZEN before the slow sockets are resumed. Resuming floods each one's
+    // buffered backlog through `onMessage`, and counting that would inflate
+    // `deliveriesPerSec` with traffic the window never delivered — worse, it
+    // would MASK the one outcome that changes the sizing rule, since a burst
+    // from the stalled subscribers papers over healthy ones having degraded.
     const delivered = deliveries - deliveriesAtStart;
+
+    // Only now, and only for teardown: a paused socket cannot complete a
+    // close handshake, and the leftovers would land on the next rung as
+    // drops rather than as this arm's doing.
+    resumeSlow();
 
     const summary = {
         runId: RUN_ID,
