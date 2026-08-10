@@ -35,6 +35,7 @@ import { mintCallId } from '../call-id';
 import {
     canonicalKey,
     createFanOut,
+    declaresPrincipalIndependent,
     DEFAULT_WATCH_THROTTLE_MS,
     type FanOut
 } from '../watch-core';
@@ -459,6 +460,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #declaredPolicies = new Map<string, PlacementPolicy | null>();
     /** Per-type stateless memo — same lazy shape as `#declaredPolicies`. */
     #statelessTypes = new Map<string, boolean>();
+    /**
+     * `type + '#' + method` → did it declare its watched read
+     * principal-independent (#138)? Same lazy shape again. `#` cannot occur
+     * in a type name (`defineActor` refuses it), so the composite is
+     * injective.
+     */
+    #principalIndependentWatches = new Map<string, boolean>();
     /** Our live directory claims: actorId → the entry we wrote. */
     #claimed = new Map<string, DirectoryEntry>();
     /** actorId → hostId hint. Insertion-ordered Map as a cheap LRU. */
@@ -920,6 +928,35 @@ class ClusterPlacementImpl implements ClusterPlacement {
         return is;
     }
 
+    /**
+     * Did this method declare its watched read principal-independent (#138)?
+     * Lazily memoized, the `#isStateless` shape.
+     *
+     * CONSERVATIVE on every unknown — no bound host, no definition (a
+     * routing-only host, a lazily-registered type not yet loaded), or a
+     * failed load — because `false` is today's behaviour: one stream per
+     * principal. Being wrong in that direction costs connections; being
+     * wrong in the other would merge identities the owner never agreed to
+     * merge. A load failure is left un-memoized for the same reason
+     * `#declaredPolicy` leaves it: the dispatch path is what reports it.
+     */
+    async #declaresPrincipalIndependent(type: string, method: string): Promise<boolean> {
+        const key = `${type}#${method}`;
+        const memo = this.#principalIndependentWatches.get(key);
+        if (memo !== undefined) return memo;
+        const host = this.#host;
+        if (!host) return false;
+        let def: AnyActorDefinition | null;
+        try {
+            def = (await host.definition(type)) ?? null;
+        } catch {
+            return false;
+        }
+        const declared = def !== null && declaresPrincipalIndependent(def.__sigxActor, method);
+        this.#principalIndependentWatches.set(key, declared);
+        return declared;
+    }
+
     async locate(ref: ActorRef): Promise<ActorLocation> {
         this.#counters.locates++;
         // Same fast path as dispatcherFor: holding the claim answers with
@@ -1165,18 +1202,32 @@ class ClusterPlacementImpl implements ClusterPlacement {
             // an absent and an explicit default coalesce. Args go through
             // the WIRE codec: two arg lists this encoding cannot tell apart
             // are indistinguishable to the owner too, so sharing them is
-            // sound by construction. The principal is in the key because
-            // the owner splits identity-dependent reads per principal
-            // (#121) and the relay cannot see that discovery — carrying it
-            // keeps coalescing sound at the cost of not sharing across
-            // DISTINCT principals (#138 tracks restoring that).
+            // sound by construction. The principal is in the key by DEFAULT
+            // because the owner splits identity-dependent reads per
+            // principal (#121) and the relay cannot see that discovery —
+            // carrying it keeps coalescing sound at the cost of not sharing
+            // across DISTINCT principals.
+            //
+            // Unless the method declared `principalIndependent` (#138), in
+            // which case identity is not an input to the read and every
+            // subscriber may share one stream whoever they are. The owner
+            // polices that promise where the read RUNS — a declared read
+            // observed consulting `ctx.principal` fails the watch — so this
+            // relay does not have to trust its own view of the definition.
+            const shared = await this.#declaresPrincipalIndependent(ref.type, method);
             const throttleMs = options?.throttleMs ?? DEFAULT_WATCH_THROTTLE_MS;
             const key = canonicalKey([
                 actorId(ref),
                 method,
                 throttleMs,
                 hostWireCodec.encode(args),
-                call.principal ?? null
+                // `true` rather than reusing the anonymous `null` slot:
+                // `canonicalKey` tags booleans ('t') apart from null ('z')
+                // and from every encoded principal ('sN:'), so the shared
+                // key is injective by grammar rather than by case analysis —
+                // and a memo that flips cannot silently graft a shared
+                // population onto an anonymous stream.
+                shared ? true : (call.principal ?? null)
             ]);
             // Synchronous check+set after the await, so concurrent first
             // pulls race to one entry.
@@ -1184,7 +1235,15 @@ class ClusterPlacementImpl implements ClusterPlacement {
             if (entry !== undefined) {
                 this.#counters.coalescedWatches++;
             } else {
-                entry = this.#openCoalesced(key, ref, method, args, options, call.principal, {
+                // A shared stream carries NO principal, rather than the first
+                // subscriber's: the key and the call context must agree about
+                // what identity this stream has. If the declaration turns out
+                // to be a lie, the read then runs under the LEAST-privileged
+                // identity for everyone — strictly better than handing one
+                // arbitrary subscriber's view to the rest — and it costs an
+                // honest read nothing, by declaration.
+                const principal = shared ? undefined : call.principal;
+                entry = this.#openCoalesced(key, ref, method, args, options, principal, {
                     hostId: target.hostId
                 });
             }
@@ -1247,7 +1306,17 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // shared stream. Nothing sound is lost: the owner's shared watch
         // loop already re-invokes under its FIRST subscriber's context only
         // (`Activation.openWatch`), and the principal is in the coalescing
-        // key, so every subscriber on this stream shares it by construction.
+        // key — so every subscriber on this stream shares it by
+        // construction, EXCEPT on a `principalIndependent` stream (#138),
+        // where `principal` is undefined and the read has declared it cannot
+        // tell the difference. Either way the identity this runs under is
+        // the one the key promises, never one subscriber's borrowed by the
+        // rest.
+        //
+        // Authorization is unaffected in both cases: policies are decided
+        // per subscriber at the ENTRY point on this host, and the internal
+        // host-to-host mount never re-runs them (see `host-endpoint.ts`).
+        // Coalescing shares a READ, never a decision.
         const sharedCall: ActorCallContext = {
             callChain: [],
             callId: mintCallId(),

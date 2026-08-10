@@ -4,6 +4,9 @@
 
 ### Changed
 
+- **`ActorErrorKind` gains `'watch-declaration'`** (#138), carried across the
+  host-to-host wire like every other branded kind. A peer on an older build
+  degrades it to an ordinary error rather than mis-branding it.
 - **Watch reads are batched — the per-principal fan-out cliff moves**
   (#180): an activation's serial watch reads now run through a watch read
   pump — the whole watch population holds ONE turn-queue slot (a drain of
@@ -29,6 +32,33 @@
 
 ### Added
 
+- **`watches: { m: { principalIndependent: true } }` — cross-principal
+  sharing, restored where it is sound** (#138): the cluster relay keys its
+  coalesced cross-host watch on the caller's principal whether or not the
+  read consults it, because it cannot observe the owner's per-principal
+  discovery (#121). So 10 000 signed-in subscribers across 3 hosts cost
+  10 000 cross-host streams even on an identity-blind read — and each one
+  pins a pooled host-to-host connection for the life of the subscription,
+  which is what made the fetch pool the real identity ceiling (#194).
+  Declaring a method `principalIndependent` drops the principal from that
+  key, so the whole signed-in population shares one stream. `cluster/
+  live-fanout` gates it: `declared=P/*` reads 1 stream and P−1 joins,
+  `undeclared=P/*` reads P and 0, both `exact`.
+
+  **The promise is policed, unlike `reads:`.** A declared read observed
+  consulting `ctx.principal` fails the watch with the new branded
+  `ActorWatchDeclarationError` — in every build, on the owner, whether or
+  not any relay coalesced, and rethrown by the invoke wrapper so a read body
+  that catches it still cannot return a value. It does not heal on
+  re-subscribe or failover: the declaration is source code, while the
+  discovery it contradicts is per activation. A relay that cannot resolve
+  the definition keys per principal, the conservative direction.
+
+  It is a promise about **identity only** — `ctx.bag` remains
+  first-subscriber-only on any coalesced stream (#137), and identity reached
+  through `ctx.actor()` into another actor is invisible to it, exactly as it
+  is to #121. A touch that only *authorizes* trips it too; that belongs in
+  `authorize`/`methodAuthorize`, which run per subscriber outside any turn.
 - **Watch-loop observability** (#180): `HostStats.watchLoops` — a live
   gauge of shared watch loops across activations, flowing into `metrics()`
   gauges, `ops()` and the cluster `HostReport` with no new plumbing

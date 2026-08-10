@@ -33,7 +33,8 @@ const ACTOR_ERROR_KINDS = new Set<string>([
     'host-shutdown',
     'call-timeout',
     'wrong-host',
-    'unreachable'
+    'unreachable',
+    'watch-declaration'
 ]);
 
 /**

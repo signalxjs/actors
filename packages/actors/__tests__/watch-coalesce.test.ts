@@ -38,6 +38,33 @@ const Counter = defineActor({
     })
 });
 
+/**
+ * The #138 arm: `feed` promises its result ignores `ctx.principal`, so the
+ * relay may share ONE stream across distinct identities. `scaled` sits on
+ * the same actor UNDECLARED, so the two can be compared with one variable.
+ */
+const Feed = defineActor({
+    type: 'Feed',
+    allowAnonymous: true,
+    watches: { feed: { principalIndependent: true } },
+    state: () => ({ count: 0 }),
+    methods: (ctx) => ({
+        async feed() {
+            invocations++;
+            return ctx.state.count;
+        },
+        async scaled(by: number) {
+            invocations++;
+            return ctx.state.count * by;
+        },
+        async increment(by: number) {
+            ctx.state.count += by;
+            await ctx.save();
+            return ctx.state.count;
+        }
+    })
+});
+
 let seq = 0;
 function call(principal?: string): { call: ActorCallContext; abort: AbortController } {
     const abort = new AbortController();
@@ -55,7 +82,7 @@ function call(principal?: string): { call: ActorCallContext; abort: AbortControl
 let harness: ClusterHarness | null = null;
 
 async function twoHosts(): Promise<ClusterHarness> {
-    harness = await createCluster(2, { actors: [Counter], policy: preferLocalPolicy() });
+    harness = await createCluster(2, { actors: [Counter, Feed], policy: preferLocalPolicy() });
     return harness;
 }
 
@@ -180,11 +207,13 @@ describe('cross-host watch coalescing', () => {
         await expect(bNext).rejects.toThrow();
     });
 
-    it('distinct principals do NOT share a stream', async () => {
+    it('distinct principals do NOT share an UNDECLARED read', async () => {
         // The owner splits identity-dependent reads per principal (#121)
-        // and the relay cannot see that discovery, so the key carries the
-        // encoded principal. Cross-principal sharing for reads that ignore
-        // identity is #138.
+        // and the relay cannot see that discovery, so an undeclared read
+        // keeps the encoded principal in its key. This is the control for
+        // the `principalIndependent` cases below (#138) — it pins the
+        // conservative default, so a change that starts sharing an
+        // undeclared read fails here.
         const h = await twoHosts();
         await h.hosts[1]!.actor(Counter, 'who').increment(1);
         const delta = deltas(h);
@@ -352,5 +381,131 @@ describe('cross-host watch coalescing', () => {
         await a.return?.();
         await b.return?.();
         await c.return?.();
+    });
+
+    describe('principalIndependent (#138)', () => {
+        it('a DECLARED read shares ONE stream across distinct principals', async () => {
+            // The measurement this whole change exists for: pre-fix this
+            // reads { remote: 3, joined: 0, inbound: 3 } — one held
+            // host-to-host connection per identity, which is what put the
+            // AKS identity ceiling at the fetch pool's arithmetic (#194).
+            const h = await twoHosts();
+            await h.hosts[1]!.actor(Feed, 'all').increment(1);
+            const delta = deltas(h);
+
+            const ref = { type: 'Feed', key: 'all' } as const;
+            const alice = h.hosts[0]!
+                .dispatchWatch!(ref, 'feed', [], call('alice').call)
+                [Symbol.asyncIterator]();
+            const bob = h.hosts[0]!
+                .dispatchWatch!(ref, 'feed', [], call('bob').call)
+                [Symbol.asyncIterator]();
+            const carol = h.hosts[0]!
+                .dispatchWatch!(ref, 'feed', [], call('carol').call)
+                [Symbol.asyncIterator]();
+            expect((await alice.next()).value).toBe(1);
+            expect((await bob.next()).value).toBe(1);
+            expect((await carol.next()).value).toBe(1);
+
+            expect(delta()).toEqual({ remote: 1, joined: 2, inbound: 1 });
+
+            // And the shared stream really serves all three.
+            await h.hosts[1]!.actor(Feed, 'all').increment(4);
+            expect((await alice.next()).value).toBe(5);
+            expect((await bob.next()).value).toBe(5);
+            expect((await carol.next()).value).toBe(5);
+
+            await alice.return?.();
+            await bob.return?.();
+            await carol.return?.();
+        });
+
+        it('anonymous and signed-in subscribers of a declared read share one stream', async () => {
+            // Pins the `true` marker slot: the shared key is not the
+            // anonymous key wearing a disguise, but both populations land
+            // on it.
+            const h = await twoHosts();
+            await h.hosts[1]!.actor(Feed, 'mixed').increment(2);
+            const delta = deltas(h);
+
+            const ref = { type: 'Feed', key: 'mixed' } as const;
+            const anon = h.hosts[0]!
+                .dispatchWatch!(ref, 'feed', [], call().call)
+                [Symbol.asyncIterator]();
+            const alice = h.hosts[0]!
+                .dispatchWatch!(ref, 'feed', [], call('alice').call)
+                [Symbol.asyncIterator]();
+            expect((await anon.next()).value).toBe(2);
+            expect((await alice.next()).value).toBe(2);
+
+            expect(delta()).toEqual({ remote: 1, joined: 1, inbound: 1 });
+
+            await anon.return?.();
+            await alice.return?.();
+        });
+
+        it('the declaration is per METHOD, not per actor', async () => {
+            // `feed` is declared, `scaled` is not, on the SAME actor: two
+            // identities cost 1 stream on the first and 2 on the second.
+            const h = await twoHosts();
+            await h.hosts[1]!.actor(Feed, 'per-method').increment(3);
+            const delta = deltas(h);
+
+            const ref = { type: 'Feed', key: 'per-method' } as const;
+            const open = (method: string, who: string): AsyncIterator<unknown> =>
+                h.hosts[0]!
+                    .dispatchWatch!(ref, method, method === 'scaled' ? [2] : [], call(who).call)
+                    [Symbol.asyncIterator]();
+            const its = [
+                open('feed', 'alice'),
+                open('feed', 'bob'),
+                open('scaled', 'alice'),
+                open('scaled', 'bob')
+            ];
+            for (const it of its) await it.next();
+
+            // 1 shared (feed) + 2 per-principal (scaled) = 3 streams; the
+            // one join is feed's second subscriber.
+            expect(delta()).toEqual({ remote: 3, joined: 1, inbound: 3 });
+
+            for (const it of its) await it.return?.();
+        });
+
+        it('a relay that cannot resolve the definition keys conservatively', async () => {
+            // No definition (a routing-only host, a lazily-registered type
+            // not yet loaded, a failed module load) must NOT be read as
+            // "declared" — being wrong that way merges identities the owner
+            // never agreed to merge.
+            const h = await twoHosts();
+            await h.hosts[1]!.actor(Feed, 'blind').increment(1);
+            const delta = deltas(h);
+
+            const relay = h.hosts[0]! as unknown as {
+                definition: (type: string) => unknown;
+            };
+            const real = relay.definition.bind(relay);
+            // Null, not a throw: that is what a relay WITHOUT the type
+            // actually answers. (A throwing `definition` would fail the
+            // dispatch itself, several layers before coalescing.)
+            relay.definition = (type: string) => (type === 'Feed' ? null : real(type));
+            try {
+                const ref = { type: 'Feed', key: 'blind' } as const;
+                const alice = h.hosts[0]!
+                    .dispatchWatch!(ref, 'feed', [], call('alice').call)
+                    [Symbol.asyncIterator]();
+                const bob = h.hosts[0]!
+                    .dispatchWatch!(ref, 'feed', [], call('bob').call)
+                    [Symbol.asyncIterator]();
+                expect((await alice.next()).value).toBe(1);
+                expect((await bob.next()).value).toBe(1);
+
+                expect(delta()).toEqual({ remote: 2, joined: 0, inbound: 2 });
+
+                await alice.return?.();
+                await bob.return?.();
+            } finally {
+                relay.definition = real;
+            }
+        });
     });
 });
