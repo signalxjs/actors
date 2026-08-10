@@ -42,7 +42,9 @@ scenarios through the ordinary baseline machinery, with `INFRA_SHAPE`
 carrying the actors release's socket caps so a run under a different
 `SOCKET_MAX_SUBSCRIPTIONS` is refused rather than compared. The figures in
 the 2026-08-09 section below predate that and were read off a terminal;
-treat them as the first measurement, not as a baseline file.
+treat them as the first measurement. The 2026-08-10 section is the first
+one produced BY the harness, and is what a later run should be compared
+against.
 
 Opt-in (`BENCH_INFRA=1` plus an `INFRA_URL`, a signed-cookie secret, and a
 load VM), and the load is driven FROM A VM IN THE CLUSTER'S REGION: the
@@ -1491,3 +1493,74 @@ placement whatever `PLACEMENT` says. Nothing here measures the public
 ingress path, TLS cost, or behaviour across a rolling restart — and nothing
 here was run with a slow consumer, which is the one shape most likely to
 find the missing backpressure.
+
+## 2026-08-10 · Tier 3 — the socket run, recorded (#184)
+
+The same axis as the section above, this time through the harness rather
+than read off a terminal: `testenv.mjs ws-bench` drove the `sockets/*`
+scenarios and the result was kept as a JSON artifact. **This is the section
+to compare against** — the 2026-08-09 figures were the first measurement
+and were transcribed by hand.
+
+| | |
+|---|---|
+| Shape | `ws replicas=3 nodes=3 image=db2b296 knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1` |
+| Cluster | AKS, `Standard_D2ls_v6` (2 vCPU, 1900m allocatable), `limits.cpu 1000m` |
+| Driver | in-cluster `ws-loadgen.mjs` Jobs, ONE pod, 30 s per rung |
+| Settings | `--runs=1` (each run is a real Job; the harness discards a warmup) |
+
+Socket caps were the runtime defaults throughout — 256 in-flight calls, 256
+subscriptions, 30 s keepalive, no revalidation, no lifetime cap. They are in
+the shape string, so a run under different caps is refused rather than
+compared.
+
+### `sockets/hot-fanout` — N subscribers on one actor, 10 publishes/s
+
+| subscribers | deliveries/s | p50 | p99 | connect failures |
+|---|---|---|---|---|
+| 1 000 | 10 042 | 63.0 ms | 72.6 ms | 0 |
+| 5 000 | 36 369 | 138.5 ms | 246.1 ms | 0 |
+| 10 000 | 38 302 | 225.7 ms | 539.4 ms | 0 |
+
+`peak_open` 10 001 (the subscribers plus the publisher's own connection),
+`peak_subscriptions` 10 000, `protocol_breaches` 0, `max_buffered_bytes` 0
+at every rung.
+
+**It reproduces.** Against the hand-run a day earlier at the same rungs:
+10 022 → 10 042 msg/s and 63 → 63.0 ms p50 at 1 000 subscribers. The 5 000
+and 10 000 rungs read lower here (36 369 vs 41 584; 38 302 vs 48 429)
+because these ran a 30 s window against the earlier 60 s one — a shorter
+window pays proportionally more of its time for the dial and the trailing
+throttle flush. Same shape, and the same conclusion: throughput plateaus
+while latency keeps climbing.
+
+### `sockets/idle-capacity` — held connections, no traffic
+
+1 000 / 5 000 / 10 000 all connected with a zero failure rate, `peak_open`
+10 000, zero breaches. One generator pod, so this says nothing about the
+ceiling — the 2026-08-09 section reached ~84 000 concurrent with four pods,
+and the per-pod ephemeral port range (~28k) is what bounds a single one.
+
+### `sockets/principal-cliff` — `max_healthy_identities` = **100**
+
+The headline of this section, and the number to watch. It reproduces the
+hand-run exactly: 100 distinct signed-in identities on one actor dial and
+serve cleanly (1 005 msg/s, p50 53.5 ms, p99 60.2 ms, zero failures); the
+next rung up does not.
+
+Against 10 000 anonymous subscribers on the same actor in the same run,
+that is the whole of #180 in one metric — and it is the metric that moves
+if #138 lands.
+
+### Two notes for whoever compares the next run
+
+- **`gc/*` metrics ride along and mean nothing here.** The harness attaches
+  them automatically and they describe the LOCAL Node process, which in
+  this tier only orchestrates `kubectl`. Ignore them; they are not
+  measuring the cluster.
+- **A baseline FILE is per-machine, and the runner is disposable.** The
+  durable artifact is `sockets.json` on the workflow run. Compare two of
+  them with
+  `pnpm bench:diff --before=sockets-old.json --after=sockets-new.json`
+  rather than expecting `--compare` to find a baseline the runner threw
+  away.
