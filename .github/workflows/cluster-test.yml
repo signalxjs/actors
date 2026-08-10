@@ -147,8 +147,10 @@ jobs:
                      --json="$RUNNER_TEMP/infra.json" $EXTRA_ARGS ;;
             # The runner is ephemeral, so `--save-baseline` here would write
             # a file nobody ever reads again. The JSON result IS the durable
-            # artifact: keep two of them and `pnpm bench:diff --before= --after=`
-            # compares runs without either machine holding state.
+            # artifact: download two of them and compare with
+            #   pnpm bench:diff --before=sockets-old.json --after=sockets-new.json
+            # which judges runs against each other without either machine
+            # holding state.
             ws-bench) node perf/aks/deploy/testenv.mjs ws-bench \
                      --json="$RUNNER_TEMP/sockets.json" $EXTRA_ARGS ;;
             *)     node perf/aks/deploy/testenv.mjs "$VERB" $EXTRA_ARGS ;;
