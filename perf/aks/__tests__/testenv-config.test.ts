@@ -11,6 +11,7 @@
  * any az/kubectl call, so nothing here needs (or touches) a cloud.
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -107,5 +108,38 @@ describe('testenv.mjs identity validation', () => {
         const { code, stdout } = run('nuke');
         expect(code).toBe(1);
         expect(stdout).toContain('usage: node testenv.mjs');
+    });
+
+    /**
+     * The dispatch workflow lists the verbs as a `choice`, and GitHub
+     * refuses anything outside it with a 422 — so a verb added here but not
+     * there exists everywhere except the place people actually run it from.
+     * That is not hypothetical: `ws-bench` shipped in #185 and could not be
+     * dispatched at all until #187, which is this test.
+     *
+     * The verb list comes from the script's OWN usage line rather than a
+     * copy kept here, so the only thing that can drift is the workflow.
+     */
+    it('offers every verb in the dispatch workflow', () => {
+        const { stdout } = run('nuke');
+        const usage = /usage: node testenv\.mjs <([^>]+)>/.exec(stdout);
+        expect(usage).not.toBeNull();
+        const verbs = usage![1]!.split('|');
+        expect(verbs.length).toBeGreaterThan(5);
+
+        const workflow = readFileSync(
+            fileURLToPath(new URL('../../../.github/workflows/cluster-test.yml', import.meta.url)),
+            'utf8'
+        );
+        // The `options:` block of the `verb` input — the first one in the
+        // file, and the only choice input it has.
+        const block = /options:\n((?:\s+- \S+\n)+)/.exec(workflow);
+        expect(block).not.toBeNull();
+        const offered = block![1]!
+            .split('\n')
+            .map((line) => line.replace(/^\s*-\s*/, '').trim())
+            .filter(Boolean);
+
+        expect([...verbs].sort()).toEqual([...offered].sort());
     });
 });

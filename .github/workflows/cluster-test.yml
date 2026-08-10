@@ -32,6 +32,7 @@ on:
           - load
           - ws-up
           - ws-load
+          - ws-bench
           - migrate-check
           - vm-up
           - down
