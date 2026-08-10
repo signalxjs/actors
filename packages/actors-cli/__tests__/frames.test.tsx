@@ -87,8 +87,8 @@ describe('rendered frames', () => {
                     ? {
                           ...host,
                           activations: [
-                              { type: 'Counter', key: 'cart', queued: 3, ageMs: 167_000, idleMs: 2000, keptAlive: true, tasks: 1 },
-                              { type: 'Counter', key: 'cold-0', queued: 0, ageMs: 161_000, idleMs: 2000, keptAlive: false, tasks: 0 }
+                              { type: 'Counter', key: 'cart', queued: 3, ageMs: 167_000, idleMs: 2000, keptAlive: true, tasks: 1, watchLoops: 0, watchSubscribers: 0 },
+                              { type: 'Counter', key: 'cold-0', queued: 0, ageMs: 161_000, idleMs: 2000, keptAlive: false, tasks: 0, watchLoops: 0, watchSubscribers: 0 }
                           ]
                       }
                     : host
