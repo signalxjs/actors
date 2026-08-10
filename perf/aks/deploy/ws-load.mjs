@@ -57,13 +57,40 @@ function discard(dir) {
 }
 
 /**
- * `ops.sockets` summed across every host, read from INSIDE the pods.
+ * `ops.sockets` AND the cluster watch counters, summed across every host,
+ * read from INSIDE the pods.
  *
  * `kubectl exec` rather than a port-forward because the counters are PER
  * HOST and the Service would load-balance a single poll to whichever pod it
  * liked — giving one host's numbers and calling them the fleet's. The
  * bearer secret is already in each pod's environment, so it never has to
  * leave the cluster or land in this process's argv.
+ *
+ * Two sections, because they answer different questions, and they are
+ * gathered DIFFERENTLY.
+ *
+ * `ops.sockets` is the OUTCOME — connections held, messages delivered, what
+ * a client experienced. It is per host, so it is summed across pods.
+ *
+ * The cluster watch counters are the MECHANISM: `remoteWatches` (cross-host
+ * streams a host holds on peers), `coalescedWatches` (attaches that joined
+ * an existing one) and `inboundWatches` (what actually crossed). This
+ * deployment mounts `clusterStats()` as its `cluster` ops section, which
+ * ALREADY fans out to every member and returns `totals.counters` — so it is
+ * read from ONE pod and never summed. Summing it per pod would multiply the
+ * whole fleet by the pod count, which is exactly the kind of number that
+ * looks plausible in a table and is wrong by 3x.
+ *
+ * `partial` rides along because `clusterStats` sets it when a member did not
+ * answer, and every total is then a LOWER BOUND. A stream count quoted
+ * without it can understate the very thing the run is measuring.
+ *
+ * The mechanism half was added for #202. Every socket run before it could
+ * see a cliff but not what caused one — and #180 was mis-attributed exactly
+ * that way: the owner's turn queue was blamed for a shelf that turned out to
+ * be the fetch pool (#194), and the stream counts would have said so in one
+ * look. They are returned under a `cluster/` prefix so a caller cannot
+ * confuse a stream count with a socket count.
  */
 export function socketTotals(kube, namespace) {
     const pods = kube(['-n', namespace, 'get', 'pod', '-l',
@@ -71,6 +98,8 @@ export function socketTotals(kube, namespace) {
         '-o', 'jsonpath={.items[*].metadata.name}'], { allowFail: true })
         ?.split(/\s+/).filter(Boolean) ?? [];
     const totals = {};
+    /** Fleet-wide watch counters, taken once — see the note above. */
+    let watches = null;
     let hosts = 0;
     for (const pod of pods) {
         const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
@@ -79,12 +108,13 @@ export function socketTotals(kube, namespace) {
             '.then((r) => r.text()).then((t) => console.log(t))'
         ], { allowFail: true });
         if (!out) continue;
-        let section;
+        let ops;
         try {
-            section = JSON.parse(out)?.ops?.sockets;
+            ops = JSON.parse(out)?.ops;
         } catch {
             continue;
         }
+        const section = ops?.sockets;
         // A missing section, or an `{ error }` from a throwing provider,
         // must not be added as zeros — that reads as "this host served
         // nothing", which is a different claim.
@@ -93,9 +123,34 @@ export function socketTotals(kube, namespace) {
         for (const [key, value] of Object.entries(section)) {
             if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
         }
+        // Fleet-wide already, so taken from the FIRST pod that carries it
+        // and never added to. Independent of the socket section: a host
+        // answering `sockets` may still have a throwing or absent `cluster`
+        // (single-node, or a provider fault), and that must not drop the
+        // socket numbers that did arrive.
+        const cluster = ops?.cluster;
+        if (cluster && !cluster.error && cluster.totals?.counters && !watches) {
+            watches = {};
+            for (const key of WATCH_COUNTERS) {
+                const value = cluster.totals.counters[key];
+                if (typeof value === 'number') watches[`cluster/${key}`] = value;
+            }
+            // A missing member makes every total a lower bound; say so
+            // rather than let the number be read as complete.
+            watches['cluster/partial'] = cluster.partial ? 1 : 0;
+        }
     }
-    return { hosts, totals };
+    return { hosts, totals: { ...totals, ...(watches ?? {}) } };
 }
+
+/**
+ * The mechanism counters worth reporting — an allowlist, not everything
+ * under `totals.counters`. The section carries dozens of fields (directory
+ * ops, locates, retries); pulling them all in would bury the three that
+ * describe watch fan-out and quietly grow the recorded artifact every time
+ * the runtime gains a counter.
+ */
+const WATCH_COUNTERS = ['remoteWatches', 'coalescedWatches', 'inboundWatches'];
 
 /**
  * One row per rung, summed across the Job's pods.
@@ -308,7 +363,12 @@ export async function runWsLoad(options) {
 
     const delta = {};
     for (const [key, value] of Object.entries(after.totals)) {
+        // Gauges describe a moment, not an interval — diffing them is
+        // meaningless. `cluster/partial` is a FLAG for the same reason: it
+        // says the fleet fan-out missed a member, and 1 − 1 = 0 would read
+        // as "complete".
         if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
+        if (key === 'cluster/partial') continue;
         delta[key] = value - (before.totals[key] ?? 0);
     }
 
@@ -322,6 +382,10 @@ export async function runWsLoad(options) {
         peakSubscriptions,
         samples,
         delta,
+        // Distinct from `partial` above, which is about the LOAD JOB's pods.
+        // This one says the cluster stats fan-out missed a host, so the
+        // watch-stream counts in `delta` are a lower bound.
+        watchesPartial: after.totals['cluster/partial'] === 1,
         partial
     };
 }

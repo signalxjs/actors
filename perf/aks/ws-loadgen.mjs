@@ -13,7 +13,11 @@
  *   CONNECTIONS       one rung, when LADDER is unset         default 1000
  *   ACTORS            distinct keys (hot)                    default 1
  *   SUBS_PER_CONN     subscriptions each connection holds    default 1
- *   READ              current | mine                         default current
+ *   READ              current | shared | mine                default current
+ *                     `current` identity-blind UNDECLARED, `shared` the
+ *                     same read DECLARED principalIndependent (#138),
+ *                     `mine` identity-dependent. With PRINCIPAL=per-user
+ *                     the first two differ in exactly one thing.
  *   PRINCIPAL         anon | per-user                        default anon
  *   SESSION_SECRET    must match the host's, for per-user    default dev secret
  *   PUBLISH_RATE      publishes/sec across the key space     default 10
@@ -87,8 +91,8 @@ const MODE = process.env.MODE ?? 'hot';
 const CONNECTIONS = num('CONNECTIONS', 1000);
 const ACTORS = Math.max(1, num('ACTORS', 1));
 const SUBS_PER_CONN = Math.max(1, num('SUBS_PER_CONN', 1));
-const READ = process.env.READ === 'mine' ? 'mine' : 'current';
-const PRINCIPAL = process.env.PRINCIPAL === 'per-user' ? 'per-user' : 'anon';
+const READ = process.env.READ ?? 'current';
+const PRINCIPAL = process.env.PRINCIPAL ?? 'anon';
 const SESSION_SECRET = process.env.SESSION_SECRET ?? 'perf-aks-dev-secret';
 const PUBLISH_RATE = num('PUBLISH_RATE', 10);
 const PAYLOAD_BYTES = num('PAYLOAD_BYTES', 0);
@@ -118,6 +122,24 @@ const SOCKET_PATH = process.env.SOCKET_PATH ?? '/_sigx/socket';
 const MODES = new Set(['idle', 'hot', 'spread', 'calls']);
 if (!MODES.has(MODE)) {
     console.error(`[ws-loadgen] MODE must be ${[...MODES].join('|')}, got '${MODE}'`);
+    process.exit(1);
+}
+
+// READ and PRINCIPAL are validated rather than defaulted, unlike most knobs
+// here, because a typo in either does not fail — it silently runs a
+// DIFFERENT EXPERIMENT and reports it under the name you asked for.
+// `READ=shred` would measure the undeclared arm and be recorded as the
+// declared one (#138); `PRINCIPAL=peruser` would measure anonymous fan-out
+// and be recorded as per-user, which is the distinction the whole socket
+// axis rests on. A wrong number is worse than no number.
+const READS = new Set(['current', 'shared', 'mine']);
+if (!READS.has(READ)) {
+    console.error(`[ws-loadgen] READ must be ${[...READS].join('|')}, got '${READ}'`);
+    process.exit(1);
+}
+const PRINCIPALS = new Set(['anon', 'per-user']);
+if (!PRINCIPALS.has(PRINCIPAL)) {
+    console.error(`[ws-loadgen] PRINCIPAL must be ${[...PRINCIPALS].join('|')}, got '${PRINCIPAL}'`);
     process.exit(1);
 }
 

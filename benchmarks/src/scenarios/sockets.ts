@@ -89,6 +89,8 @@ interface RunResult {
     peakSubscriptions: number;
     hosts: number;
     delta: Record<string, number>;
+    /** The cluster stats fan-out missed a host — watch counts are a lower bound. */
+    watchesPartial?: boolean;
     partial: boolean;
 }
 
@@ -189,6 +191,57 @@ function runMetrics(result: RunResult): Metric[] {
             unit: 'count',
             direction: 'lower',
             noiseFloor: 1
+        },
+        ...watchMetrics(result)
+    ];
+}
+
+/**
+ * The MECHANISM counters (#202), when the run carried them.
+ *
+ * `remote_watch_streams` is the number this whole axis turns on: with a
+ * per-principal key it tracks the identity population and each one pins a
+ * pooled host-to-host connection, which is what put the ceiling at the
+ * fetch pool's arithmetic (#194). On a `principalIndependent` read (#138)
+ * it should stay flat as identities grow.
+ *
+ * Informational, never `exact` and never gating: placement is `random` on
+ * this deployment, sockets are host-affine, and the count depends on how
+ * subscribers landed across pods. It is here to ATTRIBUTE a cliff, not to
+ * pin an invariant — `cluster/live-fanout` does that at Tier 1.
+ *
+ * Absent rather than zero when the run did not collect them: a zero here
+ * would read as "no cross-host streams", which is a claim about the
+ * runtime, not about the harness.
+ */
+function watchMetrics(result: RunResult): Metric[] {
+    const opened = result.delta['cluster/remoteWatches'];
+    if (opened === undefined) return [];
+    // A missed member makes every count a lower bound. Renaming rather than
+    // footnoting it: the metric name is all a comparison carries forward, so
+    // a lower bound must not sit in the same row as a complete count.
+    const at = result.watchesPartial ? 'lower_bound/' : '';
+    return [
+        {
+            name: `${at}remote_watch_streams`,
+            value: opened,
+            unit: 'count',
+            direction: 'lower',
+            informational: true
+        },
+        {
+            name: `${at}coalesced_watch_joins`,
+            value: result.delta['cluster/coalescedWatches'] ?? 0,
+            unit: 'count',
+            direction: 'higher',
+            informational: true
+        },
+        {
+            name: `${at}inbound_watch_streams`,
+            value: result.delta['cluster/inboundWatches'] ?? 0,
+            unit: 'count',
+            direction: 'lower',
+            informational: true
         }
     ];
 }
@@ -308,4 +361,80 @@ const principalCliff: Scenario = {
     }
 };
 
-export const socketScenarios: Scenario[] = [idleCapacity, hotFanout, principalCliff];
+/**
+ * The #138 arm: the SAME identity population, on a read that declared
+ * itself principal-independent.
+ *
+ * `Fanout.shared()` is byte-for-byte `Fanout.current()` plus
+ * `watches: { shared: { principalIndependent: true } }`, so the relay
+ * coalesces it across identities instead of holding one cross-host stream —
+ * and one pooled connection — per principal. Everything else here is
+ * `sockets/principal-cliff` verbatim, including the ladder, so the two
+ * scenarios differ in exactly one thing and their `max_healthy_identities`
+ * are directly comparable.
+ *
+ * **It runs at the CHART DEFAULT `FETCH_CONNECTIONS=64` on purpose.** That
+ * is what makes this a different claim from #194's: that run escaped the
+ * ceiling by sizing the pool to the identity population, which is a
+ * mitigation. If #138 works, the pool never binds in the first place and
+ * the arm walks the whole ladder on the untouched default. A run under a
+ * resized pool proves nothing here and `INFRA_SHAPE` refuses it anyway.
+ *
+ * The `undeclared` twin is `sockets/principal-cliff` itself — it uses
+ * `mine()`, which genuinely consults identity. `current()` (identity-blind,
+ * undeclared) is the tighter control and is what
+ * `INFRA_WS_DECLARED_CONTROL=1` switches this scenario to, for a run that
+ * wants the pair with the read body held constant.
+ */
+const declaredFanout: Scenario = {
+    name: 'sockets/declared-fanout',
+    description:
+        'distinct identities on a principalIndependent read — does #138 remove the ceiling at the default pool?',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const rungs = ladder(
+            'INFRA_WS_IDENTITY_LADDER',
+            ctx.quick ? '50,100,250' : '50,100,250,500,1000'
+        );
+        const result = await drive({
+            mode: 'hot',
+            actors: 1,
+            read: process.env.INFRA_WS_DECLARED_CONTROL === '1' ? 'current' : 'shared',
+            principal: 'per-user',
+            ladder: rungs.join(','),
+            parallelism: 1,
+            publishRate: process.env.INFRA_WS_PUBLISH_RATE ?? 10,
+            durationS: Math.max(30, Math.round(ctx.durationMs / 1000)),
+            probes: 20,
+            connectBatch: 50,
+            connectTimeoutS: 10
+        });
+        // Same posture as principal-cliff: a rung failing to dial IS the
+        // measurement, so a partial ladder is not refused.
+
+        const clean = result.merged.filter((row) => row.connectFailures === 0);
+        const highest = clean.length > 0 ? Math.max(...clean.map((row) => row.n)) : 0;
+        const healthy = clean.find((row) => row.n === highest);
+
+        return [
+            {
+                name: 'max_healthy_identities',
+                value: highest,
+                unit: 'count',
+                direction: 'higher',
+                // Not exact, for the reason `principal-cliff` documents: the
+                // cliff's location depends on CPU share and dial rate, not
+                // only on the runtime.
+                noiseFloor: 1
+            },
+            ...(healthy ? rowMetrics(healthy, 'healthy/') : []),
+            ...runMetrics(result)
+        ];
+    }
+};
+
+export const socketScenarios: Scenario[] = [
+    idleCapacity,
+    hotFanout,
+    principalCliff,
+    declaredFanout
+];

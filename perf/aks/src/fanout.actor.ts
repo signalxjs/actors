@@ -45,6 +45,12 @@ export const Fanout = defineActor({
     // Public on purpose: the load generators subscribe bare, and the
     // anonymous arm is half the experiment.
     allowAnonymous: true,
+    // `shared` promises its result ignores `ctx.principal`, so the relay may
+    // coalesce it ACROSS distinct identities (#138) instead of holding one
+    // cross-host stream — and one pooled host-to-host connection — per
+    // identity. `current` is the same read left undeclared, which is the
+    // control; `mine` genuinely consults identity and must never be declared.
+    watches: { shared: { principalIndependent: true } },
     state: () => ({ seq: 0, at: 0, payload: '' }),
     methods: (ctx) => ({
         /**
@@ -72,6 +78,21 @@ export const Fanout = defineActor({
 
         /** The identity-blind read. Every subscriber shares one watch loop. */
         async current() {
+            return { seq: ctx.state.seq, at: ctx.state.at, payload: ctx.state.payload };
+        },
+
+        /**
+         * The DECLARED twin of `current()` — byte-for-byte the same body,
+         * plus `watches: { shared: { principalIndependent: true } }` above.
+         *
+         * Separate from `current()` rather than a flag on it, deliberately:
+         * `current()` stays the UNDECLARED control, so the pair measures the
+         * #138 relay behaviour with exactly one variable and every `sockets/*`
+         * figure recorded before this actor grew a third read stays
+         * comparable. Declaring `current()` in place would have deleted the
+         * control and silently rebased the lot.
+         */
+        async shared() {
             return { seq: ctx.state.seq, at: ctx.state.at, payload: ctx.state.payload };
         },
 

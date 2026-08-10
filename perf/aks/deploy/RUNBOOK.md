@@ -540,6 +540,14 @@ node perf/aks/deploy/testenv.mjs ws-load mode=spread ladder=1000,5000 publishRat
 # 5. THE ARM THAT CHANGES THE ANSWER — signed-in instead of anonymous
 node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000,5000 \
   read=mine principal=per-user
+
+# 6. the #138 pair — SAME identities, one declared principal-independent.
+#    Run both at the DEFAULT pool: the point is that the declared arm does
+#    not need it sized. `current` and `shared` are the same read body.
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=100,250,500,1000 \
+  read=current principal=per-user      # undeclared control
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=100,250,500,1000 \
+  read=shared  principal=per-user      # declared (#138)
 ```
 
 **A generator pod caps at ~28k connections — measured, not predicted.** A
@@ -576,13 +584,23 @@ Pass/fail, and what to record:
   Expect latency p50 to sit at ~50 ms plus fan-out for the same reason.
 - **Report the anonymous and per-user arms separately, never averaged.**
   A live read that consults `ctx.principal` gets one watch loop per
-  identity (#121), and a cross-host watch coalesces per principal
-  unconditionally (#138) — so signed-in fan-out costs O(identities) actor
-  turns where anonymous costs O(1). Measured locally at 200 subscribers on
-  one actor: 31 turns anonymous vs 6200 per-user, with publish p50 moving
-  0.18 ms → 1.02 ms. On a cluster it also multiplies the cross-host
-  streams, so check `remoteWatches` / `coalescedWatches` in
-  `/_sigx/ops/cluster` for both arms.
+  identity (#121), and a cross-host watch coalesces per principal unless
+  the method declared `principalIndependent` (#138) — so signed-in fan-out
+  costs O(identities) actor turns where anonymous costs O(1). Measured
+  locally at 200 subscribers on one actor: 31 turns anonymous vs 6200
+  per-user, with publish p50 moving 0.18 ms → 1.02 ms. On a cluster it also
+  multiplies the cross-host streams. **Since #202 you no longer have to go
+  and look**: the verb reports `cluster/remoteWatches`,
+  `cluster/coalescedWatches` and `cluster/inboundWatches` in the summed
+  delta, taken from `clusterStats()` (already fleet-wide — read once, never
+  summed per pod). If it also prints `cluster/partial`, a member did not
+  answer and those three are LOWER BOUNDS.
+- **`Fanout` carries three reads, and picking the wrong one silently
+  measures something else.** `current()` is identity-blind and UNDECLARED,
+  `shared()` is the same body DECLARED `principalIndependent`, `mine()`
+  genuinely consults identity. `read=` is validated and the generator exits
+  on an unknown value rather than defaulting — a typo used to run a
+  different experiment under the name you asked for.
 - **Size `env.fetchConnections` before a per-user run, or the pool is what
   you measure (#194).** Every per-principal cross-host stream PINS one
   pooled host-to-host connection for the life of the subscription, and at
@@ -594,6 +612,12 @@ Pass/fail, and what to record:
   establishment (504 subscription errors, publishes barely landing) when
   the pool binds. The pool size is part of `INFRA_SHAPE`, so a recorded
   run under a different pool is refused rather than compared.
+- **The `read=shared` arm is the exception, and that is the whole point.**
+  #138 removes the per-identity stream instead of budgeting for it, so that
+  arm should walk the ladder at the untouched default 64. Sizing the pool
+  for it would measure #194's mitigation a second time and prove nothing:
+  run the pair at the default, and only then, if you want, repeat with a
+  sized pool to confirm the two answers converge.
 
 ### Recording it instead of reading it (#184)
 
