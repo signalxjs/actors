@@ -98,8 +98,9 @@ export function socketTotals(kube, namespace) {
         '-o', 'jsonpath={.items[*].metadata.name}'], { allowFail: true })
         ?.split(/\s+/).filter(Boolean) ?? [];
     const totals = {};
-    /** Fleet-wide watch counters, taken once — see the note above. */
+    /** Fleet-wide watch counters — see the note below on which pod's win. */
     let watches = null;
+    let watchesComplete = false;
     let hosts = 0;
     for (const pod of pods) {
         const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
@@ -123,13 +124,20 @@ export function socketTotals(kube, namespace) {
         for (const [key, value] of Object.entries(section)) {
             if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
         }
-        // Fleet-wide already, so taken from the FIRST pod that carries it
-        // and never added to. Independent of the socket section: a host
-        // answering `sockets` may still have a throwing or absent `cluster`
-        // (single-node, or a provider fault), and that must not drop the
-        // socket numbers that did arrive.
+        // Fleet-wide already, so taken from ONE pod and never added to.
+        // Independent of the socket section: a host answering `sockets` may
+        // still have a throwing or absent `cluster` (single-node, or a
+        // provider fault), and that must not drop the socket numbers that
+        // did arrive.
+        //
+        // Not simply the first pod that answers: a fan-out is `partial` when
+        // the COLLECTOR could not reach a member, which is a property of
+        // that pod's moment, not of the fleet. So a complete view REPLACES a
+        // partial one, and the scan stops early only once it has a complete
+        // one — otherwise one pod's transient timeout would degrade every
+        // count in the run to a lower bound for no reason.
         const cluster = ops?.cluster;
-        if (cluster && !cluster.error && cluster.totals?.counters && !watches) {
+        if (cluster && !cluster.error && cluster.totals?.counters && !watchesComplete) {
             watches = {};
             for (const key of WATCH_COUNTERS) {
                 const value = cluster.totals.counters[key];
@@ -137,7 +145,8 @@ export function socketTotals(kube, namespace) {
             }
             // A missing member makes every total a lower bound; say so
             // rather than let the number be read as complete.
-            watches['cluster/partial'] = cluster.partial ? 1 : 0;
+            watchesComplete = !cluster.partial;
+            watches['cluster/partial'] = watchesComplete ? 0 : 1;
         }
     }
     return { hosts, totals: { ...totals, ...(watches ?? {}) } };
