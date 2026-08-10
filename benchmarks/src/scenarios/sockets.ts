@@ -488,7 +488,19 @@ const slowConsumer: Scenario = {
     description: 'a fraction of subscribers stop reading — is there any send-path backpressure? (#182)',
     async run(ctx: RunContext): Promise<Metric[]> {
         const rungs = ladder('INFRA_WS_SLOW_LADDER', ctx.quick ? '500' : '1000,5000');
-        const fraction = Number(process.env.INFRA_WS_SLOW_FRACTION ?? '0.1');
+        // Validated HERE as well as in the generator, and deliberately not
+        // defaulted past a bad value: the generator's own guard fires inside
+        // a Job on a live cluster, minutes and one deploy after the mistake.
+        // A typo should cost a shell prompt, not a rung.
+        const raw = process.env.INFRA_WS_SLOW_FRACTION ?? '0.1';
+        const fraction = Number(raw);
+        if (!Number.isFinite(fraction) || fraction <= 0 || fraction > 1) {
+            throw new Error(
+                `[sockets/slow-consumer] INFRA_WS_SLOW_FRACTION must be a number in (0, 1], ` +
+                    `got '${raw}'. Zero would run the scenario with no slow consumer at all, ` +
+                    `which is a different measurement wearing this one's name.`
+            );
+        }
         const result = await drive({
             mode: 'hot',
             actors: 1,

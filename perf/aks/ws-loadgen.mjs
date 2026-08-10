@@ -147,8 +147,22 @@ if (!READS.has(READ)) {
     console.error(`[ws-loadgen] READ must be ${[...READS].join('|')}, got '${READ}'`);
     process.exit(1);
 }
+// All three are validated, not merely defaulted. A negative `SLOW_AFTER_S`
+// arms the stall immediately, which measures failed ESTABLISHMENT (#180's
+// axis) instead of an established subscriber falling behind — the exact
+// thing the delay exists to avoid. A negative `SLOW_RESUME_MS` turns the
+// duty cycle into a zero-delay interval that spins the event loop, so the
+// generator becomes the bottleneck and the run measures itself.
 if (!(SLOW_FRACTION >= 0 && SLOW_FRACTION <= 1)) {
     console.error(`[ws-loadgen] SLOW_FRACTION must be between 0 and 1, got '${SLOW_FRACTION}'`);
+    process.exit(1);
+}
+if (!(Number.isFinite(SLOW_AFTER_S) && SLOW_AFTER_S >= 0)) {
+    console.error(`[ws-loadgen] SLOW_AFTER_S must be >= 0, got '${SLOW_AFTER_S}'`);
+    process.exit(1);
+}
+if (!(Number.isFinite(SLOW_RESUME_MS) && SLOW_RESUME_MS >= 0)) {
+    console.error(`[ws-loadgen] SLOW_RESUME_MS must be >= 0, got '${SLOW_RESUME_MS}'`);
     process.exit(1);
 }
 
