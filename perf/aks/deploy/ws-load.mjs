@@ -57,13 +57,44 @@ function discard(dir) {
 }
 
 /**
- * `ops.sockets` summed across every host, read from INSIDE the pods.
+ * `ops.sockets` AND the cluster watch counters, summed across every host,
+ * read from INSIDE the pods.
  *
  * `kubectl exec` rather than a port-forward because the counters are PER
  * HOST and the Service would load-balance a single poll to whichever pod it
  * liked — giving one host's numbers and calling them the fleet's. The
  * bearer secret is already in each pod's environment, so it never has to
  * leave the cluster or land in this process's argv.
+ *
+ * Two sections, because they answer different questions, and they are
+ * gathered DIFFERENTLY.
+ *
+ * `ops.sockets` is the OUTCOME — connections held, messages delivered, what
+ * a client experienced. It is per host, so it is summed across pods.
+ *
+ * The cluster watch counters are the MECHANISM: `remoteWatches` (cross-host
+ * streams a host holds on peers), `coalescedWatches` (attaches that joined
+ * an existing one) and `inboundWatches` (what actually crossed). They come
+ * from the `cluster` section of `GET {base}` — which is this host's own
+ * `placement.report()`, PER HOST, so it is summed across pods exactly like
+ * `ops.sockets`.
+ *
+ * Not from `clusterStats()`: that is a different route (`GET {base}/cluster`)
+ * and a different shape (`totals.counters`, already fanned out). Reading a
+ * fleet total per pod and summing it would multiply the cluster by the pod
+ * count; reading it from one pod would work but pays a full fan-out per
+ * poll to learn what the pods are already telling us individually.
+ *
+ * A pod that does not answer makes the sum a LOWER BOUND, which is why
+ * completeness is tracked rather than assumed: a stream count quoted short
+ * understates the very thing the run is measuring.
+ *
+ * The mechanism half was added for #202. Every socket run before it could
+ * see a cliff but not what caused one — and #180 was mis-attributed exactly
+ * that way: the owner's turn queue was blamed for a shelf that turned out to
+ * be the fetch pool (#194), and the stream counts would have said so in one
+ * look. They are returned under a `cluster/` prefix so a caller cannot
+ * confuse a stream count with a socket count.
  */
 export function socketTotals(kube, namespace) {
     const pods = kube(['-n', namespace, 'get', 'pod', '-l',
@@ -71,6 +102,10 @@ export function socketTotals(kube, namespace) {
         '-o', 'jsonpath={.items[*].metadata.name}'], { allowFail: true })
         ?.split(/\s+/).filter(Boolean) ?? [];
     const totals = {};
+    /** Watch counters, summed per host like the socket ones. */
+    const watches = {};
+    /** Pods that answered with a cluster section — all of them, or it is short. */
+    let clusterHosts = 0;
     let hosts = 0;
     for (const pod of pods) {
         const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
@@ -79,12 +114,28 @@ export function socketTotals(kube, namespace) {
             '.then((r) => r.text()).then((t) => console.log(t))'
         ], { allowFail: true });
         if (!out) continue;
-        let section;
+        let ops;
         try {
-            section = JSON.parse(out)?.ops?.sockets;
+            ops = JSON.parse(out)?.ops;
         } catch {
             continue;
         }
+        // The cluster section FIRST, and independently of the socket one —
+        // the two are unrelated failures. A pod whose `sockets` section is
+        // absent or throwing still has watch counters worth having, and
+        // skipping it via the `continue` below would silently cost the run
+        // its mechanism numbers.
+        const counters = ops?.cluster?.counters;
+        if (counters && !ops.cluster.error) {
+            clusterHosts++;
+            for (const key of WATCH_COUNTERS) {
+                const value = counters[key];
+                if (typeof value === 'number') {
+                    watches[`cluster/${key}`] = (watches[`cluster/${key}`] ?? 0) + value;
+                }
+            }
+        }
+        const section = ops?.sockets;
         // A missing section, or an `{ error }` from a throwing provider,
         // must not be added as zeros — that reads as "this host served
         // nothing", which is a different claim.
@@ -94,8 +145,23 @@ export function socketTotals(kube, namespace) {
             if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
         }
     }
-    return { hosts, totals };
+    // `watchesComplete` is reported ALONGSIDE the totals rather than as a
+    // pseudo-counter inside them: it is a property of the snapshot, and a
+    // caller subtracting two snapshots must be able to see it on both.
+    // Complete means EVERY pod answered — anything less and the sum is
+    // short by however much the silent hosts were holding.
+    const watchesComplete = pods.length > 0 && clusterHosts === pods.length;
+    return { hosts, totals: { ...totals, ...watches }, watchesComplete };
 }
+
+/**
+ * The mechanism counters worth reporting — an allowlist, not everything
+ * under `totals.counters`. The section carries dozens of fields (directory
+ * ops, locates, retries); pulling them all in would bury the three that
+ * describe watch fan-out and quietly grow the recorded artifact every time
+ * the runtime gains a counter.
+ */
+const WATCH_COUNTERS = ['remoteWatches', 'coalescedWatches', 'inboundWatches'];
 
 /**
  * One row per rung, summed across the Job's pods.
@@ -306,9 +372,24 @@ export async function runWsLoad(options) {
         }
     }
 
+    // A delta is only as trustworthy as BOTH ends of it. `clusterStats` sets
+    // `partial` when the polling host could not reach a member, and the two
+    // failures point OPPOSITE WAYS: a partial baseline understates `before`
+    // and so OVERSTATES the delta, while a partial end snapshot understates
+    // it. Neither is a "lower bound" — the error direction depends on which
+    // end lost a host, and the magnitude on how many.
+    //
+    // So the watch counters are reported only when both snapshots saw the
+    // whole fleet, and omitted entirely otherwise. A number whose error
+    // direction is unknown is worse than no number in a rig whose output
+    // gets pasted into BASELINES.md as fact.
+    const watchesTrustworthy = before.watchesComplete && after.watchesComplete;
     const delta = {};
     for (const [key, value] of Object.entries(after.totals)) {
+        // Gauges describe a moment, not an interval — diffing them is
+        // meaningless.
         if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
+        if (key.startsWith('cluster/') && !watchesTrustworthy) continue;
         delta[key] = value - (before.totals[key] ?? 0);
     }
 
@@ -322,6 +403,10 @@ export async function runWsLoad(options) {
         peakSubscriptions,
         samples,
         delta,
+        // Distinct from `partial` above, which is about the LOAD JOB's pods.
+        // False means a cluster-stats fan-out missed a host at one end or
+        // the other, so no `cluster/*` key is present in `delta` at all.
+        watchesTrustworthy,
         partial
     };
 }

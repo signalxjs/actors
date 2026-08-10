@@ -143,4 +143,35 @@ describe('Fanout', () => {
         expect(shared).not.toHaveProperty('who');
         expect(shared.seq).toBe(1);
     });
+
+    it('`shared()` is `current()` — same value, still identity-blind (#138)', async () => {
+        // The #138 arm compares `current` (undeclared) against `shared`
+        // (declared `principalIndependent`) and attributes any difference to
+        // the DECLARATION. That inference is only valid while the two read
+        // bodies stay identical, and nothing else in the rig would notice
+        // them drifting — the generator just subscribes to a method name.
+        const h = host;
+        const ref = { type: 'Fanout', key: 'declared' };
+        await h.dispatch(ref, 'publish', [8, false], call());
+
+        const undeclared = await h.dispatch(ref, 'current', [], call({ principal: 'ada' }));
+        const declared = await h.dispatch(ref, 'shared', [], call({ principal: 'ada' }));
+        expect(declared).toEqual(undeclared);
+
+        // And identity is not an input to it — the promise the declaration
+        // makes, and what the runtime would fail the watch over.
+        const asBob = await h.dispatch(ref, 'shared', [], call({ principal: 'bob' }));
+        expect(asBob).toEqual(declared);
+        expect(declared).not.toHaveProperty('who');
+    });
+
+    it('declares `shared` and ONLY `shared` as principal-independent', async () => {
+        // `mine()` consults `ctx.principal`, so declaring it would make the
+        // relay merge identities onto one stream and the owner fail every
+        // watch of it. `current()` is deliberately left undeclared because
+        // it is the control the #138 arm is measured against — declaring it
+        // would quietly delete the control.
+        const watches = Fanout.__sigxActor.watches as Record<string, unknown> | undefined;
+        expect(watches).toEqual({ shared: { principalIndependent: true } });
+    });
 });

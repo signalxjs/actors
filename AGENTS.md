@@ -458,9 +458,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   set `throttleMs`, so all of them run at the fixed 50 ms watch throttle;
   and a live read that consults `ctx.principal` gets one watch loop per
   identity (#121) while a cross-host watch coalesces per principal unless
-  the method declares `principalIndependent` (#138) — which `Fanout`
-  deliberately does NOT, because measuring the undeclared cost is the
-  experiment — so anonymous and signed-in fan-out are
+  the method declares `principalIndependent` (#138) — so `Fanout` carries
+  THREE reads that differ in one thing each: `current()` identity-blind and
+  undeclared, `shared()` the same body declared, `mine()` genuinely
+  identity-dependent. Anonymous and signed-in fan-out are
   different measurements and are never averaged. Identity (RG, cluster, ACR, region, DNS, load-VM
   names) is REQUIRED env with no defaults — the code is public, the
   estate is not; in CI the values come from Actions secrets (see
