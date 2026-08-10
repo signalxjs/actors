@@ -68,7 +68,12 @@ export interface WatchReadPumpDeps {
 const DEFAULT_SLICE = 32;
 
 export function createWatchReadPump(deps: WatchReadPumpDeps): WatchReadPump {
-    const sliceSize = deps.sliceSize ?? DEFAULT_SLICE;
+    // Clamped to a whole number ≥ 1 — a zero (or NaN, which fails every
+    // comparison) slice would drain nothing and re-enqueue forever, turning
+    // a misconfiguration into scheduled reads that never settle.
+    const sliceSize = Number.isFinite(deps.sliceSize)
+        ? Math.max(1, Math.floor(deps.sliceSize as number))
+        : DEFAULT_SLICE;
     const seeds: WatchReadJob[] = [];
     const reads: WatchReadJob[] = [];
     /** A drain turn is enqueued or running — single flight. */

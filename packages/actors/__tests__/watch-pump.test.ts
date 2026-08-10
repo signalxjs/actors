@@ -164,3 +164,14 @@ describe('createWatchReadPump', () => {
         expect(await settled).toBe('again');
     });
 });
+
+describe('sliceSize validation', () => {
+    it.each([0, -1, Number.NaN])('a degenerate sliceSize (%s) clamps instead of hanging', async (size) => {
+        const { pump, h } = harness(size as number);
+        const log: string[] = [];
+        const settled = pump.schedule(job(log, 'a'), false);
+        await h.step();
+        expect(await settled).toBe('a');
+        expect(h.pending).toHaveLength(0);
+    });
+});
