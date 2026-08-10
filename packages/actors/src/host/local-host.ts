@@ -804,24 +804,30 @@ export class LocalHost implements ActorDispatcher {
         const now = Date.now();
         const nowMonotonic = performance.now();
 
-        const rows: ActivationInfo[] = [];
+        const rows: { activation: Activation; info: ActivationInfo }[] = [];
         for (const [, slot] of this.#directory) {
             if (slot.phase !== 'active') continue;
             const { activation } = slot;
             if (wanted !== undefined && activation.ref.type !== wanted) continue;
             rows.push({
-                type: activation.ref.type,
-                key: activation.ref.key,
-                queued: activation.turns.depth,
-                ageMs: Math.max(0, Math.round(nowMonotonic - activation.startedMs)),
-                // Clamped: `lastActivityMs` is wall-clock, so an NTP step
-                // backwards mid-activation would otherwise report an actor
-                // that was last used in the future.
-                idleMs: Math.max(0, now - activation.lastActivityMs),
-                keptAlive: activation.keptAlive,
-                tasks: activation.tasks,
-                watchLoops: activation.watchLoops,
-                watchSubscribers: activation.watchSubscribers
+                activation,
+                info: {
+                    type: activation.ref.type,
+                    key: activation.ref.key,
+                    queued: activation.turns.depth,
+                    ageMs: Math.max(0, Math.round(nowMonotonic - activation.startedMs)),
+                    // Clamped: `lastActivityMs` is wall-clock, so an NTP step
+                    // backwards mid-activation would otherwise report an actor
+                    // that was last used in the future.
+                    idleMs: Math.max(0, now - activation.lastActivityMs),
+                    keptAlive: activation.keptAlive,
+                    tasks: activation.tasks,
+                    watchLoops: activation.watchLoops,
+                    // Filled below, after the top-N cut: summing handle sets
+                    // is O(watch loops), and a poll must pay for the rows it
+                    // RETURNS, not every activation on the host.
+                    watchSubscribers: 0
+                }
             });
         }
 
@@ -829,7 +835,7 @@ export class LocalHost implements ActorDispatcher {
         // turns, the oldest activation, the most idle. Ties break on the
         // actor id so the order is stable between polls — a table that
         // reshuffles rows with equal values is unreadable.
-        rows.sort((a, b) => {
+        rows.sort(({ info: a }, { info: b }) => {
             const primary =
                 sortBy === 'queued'
                     ? b.queued - a.queued
@@ -839,7 +845,11 @@ export class LocalHost implements ActorDispatcher {
             if (primary !== 0) return primary;
             return a.type === b.type ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) : a.type < b.type ? -1 : 1;
         });
-        return rows.length > limit ? rows.slice(0, limit) : rows;
+        const top = rows.length > limit ? rows.slice(0, limit) : rows;
+        return top.map(({ activation, info }) => {
+            info.watchSubscribers = activation.watchSubscribers;
+            return info;
+        });
     }
 }
 
