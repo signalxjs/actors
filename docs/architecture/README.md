@@ -44,6 +44,7 @@ Every arrow that crosses a box is a seam, and every seam is listed in
 |---|---|
 | [`seams.md`](seams.md) | What are the extension points, what does each promise, and which are public? |
 | [`runtime-internals.md`](runtime-internals.md) | What is a turn, what runs outside one, how is a deadlock detected? |
+| [`live-and-watch.md`](live-and-watch.md) | How does a live read fan out, when does it split per identity, and where is the sizing cliff? |
 | [`wire-and-frames.md`](wire-and-frames.md) | What is on the wire, which mounts exist, what is reserved? |
 | [`clustering.md`](clustering.md) | How do hosts find each other and agree on who owns an actor? |
 | [`conformance-suites.md`](conformance-suites.md) | How is a new provider or transport proven correct? |
