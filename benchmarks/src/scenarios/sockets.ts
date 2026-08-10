@@ -521,6 +521,17 @@ const slowConsumer: Scenario = {
         refusePartial(result, 'sockets/slow-consumer');
 
         const top = result.merged[result.merged.length - 1];
+        // The generator reports what ACTUALLY stalled, and zero means the
+        // arm did not run — `stall()` depends on a private `ws` field, and a
+        // silent no-op would leave `max_buffered_bytes: 0` looking like #182
+        // disproven rather than never tested. Refuse rather than record it.
+        if ((top?.slowConnections ?? 0) === 0) {
+            throw new Error(
+                `[sockets/slow-consumer] asked for ${fraction} of subscribers to stop ` +
+                    `reading and none did. Without a slow consumer this rung measures ` +
+                    `ordinary fan-out, and its buffered-bytes figure means nothing.`
+            );
+        }
         return [
             {
                 name: 'slow_fraction',

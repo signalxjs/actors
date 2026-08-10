@@ -255,11 +255,15 @@ function createClient(index) {
  * than a dead one, which is the shape a real bad network produces.
  */
 function stall(state) {
-    // `ws` exposes the underlying socket once the upgrade completes; before
-    // that there is nothing to pause and the connection is not yet holding
-    // any deliveries anyway.
+    // `ws` exposes the underlying socket once the upgrade completes. This
+    // is a PRIVATE field, so it is the one thing here that a `ws` upgrade
+    // could take away — and a silent no-op would be the worst possible
+    // failure: the row would report N slow connections, none of them would
+    // actually stall, and `maxBufferedBytes: 0` would then read as "#182
+    // disproven" when the arm never ran at all. So it returns null and the
+    // caller counts what really stalled.
     const socket = state.socket?._socket;
-    if (!socket || typeof socket.pause !== 'function') return () => {};
+    if (!socket || typeof socket.pause !== 'function') return null;
     let stopped = false;
     socket.pause();
     if (SLOW_RESUME_MS <= 0) {
@@ -304,6 +308,8 @@ async function runRung(n) {
 
     /** Connections chosen to stop reading — see `stall()` and #182. */
     const slowClients = [];
+    /** How many ACTUALLY stalled. Reported, rather than the intended count. */
+    let stalled = 0;
     let resumeSlow = () => {};
     let connected = 0;
     let connectFailures = 0;
@@ -463,8 +469,21 @@ async function runRung(n) {
     if (slowClients.length > 0) {
         const stops = [];
         const armed = setTimeout(() => {
-            for (const c of slowClients) stops.push(stall(c.state));
-            log(`  ${stops.length} connection(s) stopped reading (#182)`);
+            for (const c of slowClients) {
+                const stop = stall(c.state);
+                if (stop) stops.push(stop);
+            }
+            stalled = stops.length;
+            log(`  ${stalled}/${slowClients.length} connection(s) stopped reading (#182)`);
+            if (stalled < slowClients.length) {
+                // Loud, because every downstream number is now describing a
+                // different experiment than the one that was asked for.
+                log(
+                    `  WARNING: ${slowClients.length - stalled} could not be stalled — ` +
+                        `the underlying socket was unreachable. This rung is NOT the ` +
+                        `slow-consumer measurement it claims to be.`
+                );
+            }
         }, SLOW_AFTER_S * 1000);
         armed.unref();
         resumeSlow = () => {
@@ -592,10 +611,12 @@ async function runRung(n) {
         subsPerConn: MODE === 'idle' || MODE === 'calls' ? 0 : SUBS_PER_CONN,
         read: READ,
         principal: PRINCIPAL,
-        // Reported even when zero: a reader comparing two rungs must be able
-        // to see that one of them had stalled subscribers and the other did
-        // not, without going back to the invocation.
-        slowConnections: slowClients.length,
+        // What actually stalled, never what was asked for. A rung reporting
+        // the intention while nothing stalled is how `maxBufferedBytes: 0`
+        // gets misread as a finding. Reported even when zero, so a reader
+        // comparing two rungs can see which had slow subscribers without
+        // going back to the invocation.
+        slowConnections: stalled,
         publishes,
         publishFailures,
         deliveries: delivered,
