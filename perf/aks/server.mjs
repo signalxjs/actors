@@ -101,7 +101,22 @@ const socketNum = (name) => {
 // One bounded pool for host-to-host calls. Node's global fetch is
 // unbounded (~2 sockets per in-flight request per peer); this caps it at
 // the per-peer concurrency we actually want.
-const agent = new Agent({ connections: Number(process.env.FETCH_CONNECTIONS ?? 64) });
+//
+// SIZE IT FOR PER-USER LIVE FAN-OUT: every per-principal cross-host watch
+// stream pins one pooled connection for the life of the subscription
+// (#138), and at the default 64 the POOL — not the runtime — was the
+// 100–250 identity cliff of #180 (#194). It is part of INFRA_SHAPE for
+// exactly that reason.
+const fetchConnections = (() => {
+    const raw = process.env.FETCH_CONNECTIONS ?? '64';
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1) {
+        console.error(`[perf-aks] FETCH_CONNECTIONS must be a positive integer, got '${raw}'`);
+        process.exit(1);
+    }
+    return value;
+})();
+const agent = new Agent({ connections: fetchConnections });
 
 const providers = (() => {
     if (MEMBERSHIP === 'redis') {

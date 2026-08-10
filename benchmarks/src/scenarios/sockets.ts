@@ -242,16 +242,19 @@ const hotFanout: Scenario = {
  * The cliff, as one number.
  *
  * A live read that consults `ctx.principal` gets one watch loop per encoded
- * principal (#121), and each loop's first read is a turn on a
- * single-threaded actor — so establishing them competes with fan-out for
- * the same queue until new subscribers stop completing. Measured on AKS the
- * wall sits between 100 and 250 identities on one actor, where ANONYMOUS
- * subscribers to the same actor reach 20 000.
+ * principal (#121), each loop's first read is a turn on a single-threaded
+ * actor (batched since #193), and each identity's cross-host stream PINS
+ * one pooled host-to-host connection for the subscription's lifetime
+ * (#138). The measured 100–250 wall on AKS was that LAST cost under the
+ * default `FETCH_CONNECTIONS=64` (#194): with the pool sized to the
+ * identity population, 1000 identities dialled clean where ANONYMOUS
+ * subscribers to the same actor reach 20 000 either way.
  *
  * `max_healthy_identities` is the highest rung that dialled cleanly. That
- * is the number #180 exists to move and #138 would move, and tracking it is
- * the whole point of this scenario: a ratio at a safe rung would read ~1.0
- * and say nothing.
+ * is the number #180 existed to move and #138 still would (fewer held
+ * connections, not just fewer loops), and tracking it is the whole point
+ * of this scenario: a ratio at a safe rung would read ~1.0 and say
+ * nothing.
  *
  * The generator stops its ladder at the first rung with connect failures,
  * so the cost is bounded — and `connectTimeoutS` is deliberately short here
@@ -261,7 +264,13 @@ const principalCliff: Scenario = {
     name: 'sockets/principal-cliff',
     description: 'how many DISTINCT identities one actor can serve live before dialling fails (#180)',
     async run(ctx: RunContext): Promise<Metric[]> {
-        const rungs = ladder('INFRA_WS_IDENTITY_LADDER', ctx.quick ? '50,100,250' : '50,100,250,500');
+        // 1000 was measured clean once the fetch pool stopped binding
+        // (#194), so the default ladder reaches past the old 100–250 shelf
+        // — a recorded run should find the cliff, not its own ceiling.
+        const rungs = ladder(
+            'INFRA_WS_IDENTITY_LADDER',
+            ctx.quick ? '50,100,250' : '50,100,250,500,1000'
+        );
         const result = await drive({
             mode: 'hot',
             actors: 1,

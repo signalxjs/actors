@@ -1617,3 +1617,76 @@ seeds starve, clients give up and retry, and the rung fails while
 steady-state delivery to the already-established is still fine. The
 publish/drain round-trip falling ~40× from P=1 to P=100 is the O(P) turns
 per publish, paid in-process.
+
+## 2026-08-10 · Tier 3 — the identity cliff was the fetch pool (#194)
+
+| | |
+|---|---|
+| Cluster | AKS, 3 × `Standard_D2ls_v6`, `limits.cpu 1000m`, `ENABLE_SESSIONS=1,ENABLE_SOCKET=1` |
+| Images | pre-fix `db2b296` (recorded 2026-08-10 morning, above) · post-#193 `d4fc459` |
+| Driver | in-cluster `ws-loadgen.mjs`, one pod, `connectBatch=50` |
+| Artifacts | Actions runs 31363879792 (pre-fix), 31376118653 (pump, pool 64), 31378307872 / 31379030048 (the A/B), 31379350809 (recorded, pool 1024) |
+
+The #193 watch read pump merged with a Tier-1 proof (`live/principal-fanout`:
+~6× publish/drain throughput at P=25/100, seeds never behind re-reads) — and
+the recorded `sockets/principal-cliff` did not move: `max_healthy_identities`
+read **100** on the pump image exactly as it had before it. What changed is
+that the failure became visible: at 250 identities the rung now showed **128
+per-subscription 504s** (the new establishment deadline) instead of silent
+hangs, one publish landing in a 270 s window.
+
+**The binding constraint was `FETCH_CONNECTIONS` — the rig's undici pool for
+host-to-host fetch, default 64 per peer origin.** Every per-principal
+cross-host watch is a held-open HTTP response that PINS one pooled connection
+for the life of the subscription (#138 keys coalescing on the principal, so
+distinct identities never share). Sockets are host-affine, so ~⅔ of
+subscribers relay: identities × ⅔ held streams across (replicas−1) = 2 pools
+of 64 = 128 slots. 100 identities → ~67 streams → fits. 250 → ~167 → the
+pool pins forever and every later relay→owner request — seeds AND the
+publisher's own dispatch — starves behind connections that never free.
+Predicted ceiling ≈ 190: the measured shelf sat between 100 and 250, on
+every run, from the first measurement on.
+
+### The A/B — same image, one variable
+
+`ws-up env.fetchConnections=1024`, hand ladder, 10 publishes/s, 30 s rungs:
+
+| identities | pool | connected | failures | sub errors | deliveries/s | p50 | p99 | publishes |
+|---|---|---|---|---|---|---|---|---|
+| 250 | 64 | 225 | 25 | **128** | 0.4 | — | — | **1** (in 270 s) |
+| 250 | 1024 | 250 | **0** | 0 | 2 512 | 55.3 ms | 59.8 ms | 302 of 300 |
+| 500 | 1024 | 500 | **0** | 0 | 5 021 | 55.0 ms | 69.0 ms | 302 |
+| 1 000 | 1024 | 1 000 | **0** | 0 | 7 772 | 61.0 ms | 104.3 ms | 302 |
+
+One thousand distinct signed-in identities on one actor, zero failures, full
+publish rate, p50 at the 50 ms throttle floor. Pre-fix this rung connected
+484 of 1 000 and delivered 2/s. At 1 000 the coalescing ratio dips
+(`deliveriesPerPublish` 773) and p99 stretches — the delivery path starting
+to work, not establishment failing.
+
+### The recorded run under the sized pool
+
+`ws-bench` on `d4fc459`, `env.fetchConnections=1024`:
+**`max_healthy_identities: 500`** — every rung clean, so the value is the
+ladder's own ceiling, not a cliff (the ladder default now reaches 1000, and
+the hand rows above measured it clean). p50 55.1 ms, p99 78.0 ms at 500.
+
+### What to take from it
+
+- **Attribution, honestly.** #180 read the cliff as the owner's turn queue.
+  That serialization was real (Tier 1 counts it) and is fixed, but the
+  cluster shelf was the pool arithmetic — the establishment 504s the fix
+  added are what made the difference diagnosable. Both halves were needed:
+  the pump for the queue, the pool for the cluster number.
+- **`FETCH_CONNECTIONS` is now part of `INFRA_SHAPE`** (this section's
+  change), so a run under a different pool refuses to compare — which also
+  means every artifact recorded before this section refuses against new
+  ones. Deliberate: their pool size is unknown to the guard.
+- **Sizing rule** for per-user live fan-out over the HTTP host transport:
+  each relay pod holds ~`watchers ÷ replicas` streams to the owner, so set
+  the pool per peer to at least that — an expectation, not a bound, so add
+  headroom for placement skew. Or stop paying a connection per identity:
+  `@sigx/actors-tcp`
+  multiplexes every stream over one connection per peer (this measurement is
+  its "justified by socket count" case on the client-fan-out axis), and #138
+  would collapse identity-independent reads to one stream outright.
