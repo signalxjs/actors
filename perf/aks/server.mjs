@@ -154,7 +154,12 @@ if (TRANSPORT !== 'http' && TRANSPORT !== 'tcp') {
     console.error(`[perf-aks] TRANSPORT must be http or tcp, got '${TRANSPORT}'`);
     process.exit(1);
 }
-const TCP_PORT = (() => {
+// Parsed only when it is USED. The chart always sets it (default 7312), so
+// under `TRANSPORT=http` a bad value can only come from someone deliberately
+// setting a knob this mode ignores — refusing to boot over it would be a
+// surprising failure in the default configuration. The path that matters
+// still fails loudly: a bad port with `TRANSPORT=tcp` never starts.
+const tcpPort = () => {
     const raw = process.env.TCP_PORT ?? '7312';
     const parsed = Number(raw);
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
@@ -162,7 +167,7 @@ const TCP_PORT = (() => {
         process.exit(1);
     }
     return parsed;
-})();
+};
 
 const httpLeg = httpTransport({
     fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
@@ -176,7 +181,7 @@ const plugin = cluster({
     // thing it cannot work out for itself inside a pod.
     transport:
         TRANSPORT === 'tcp'
-            ? [tcpTransport({ port: TCP_PORT, advertiseHost: POD_IP }), httpLeg]
+            ? [tcpTransport({ port: tcpPort(), advertiseHost: POD_IP }), httpLeg]
             : httpLeg
 });
 
