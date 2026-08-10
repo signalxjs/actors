@@ -425,6 +425,40 @@ describe('live subscriptions', () => {
         await until(() => framesFor(link, 2).length >= 1);
         expect(framesFor(link, 2)[0]).toEqual({ i: 2, v: 0 });
     });
+
+    it('a subscription whose seed starves answers a 504 frame instead of hanging (#180)', async () => {
+        // The same posture bound the CALL path arms: pipeline + dispatch +
+        // the FIRST value. Before #180 the watch path armed nothing, and a
+        // seed queued behind a wedged turn held the subscription — loop,
+        // change sub and keep-alive included — open forever, silently.
+        restore = stubServerApp({ posture: { timeoutMs: 50 } });
+        const s = await start();
+        const { session, link } = await connect(s);
+        // Wedge the actor: `slow` parks on a gate the afterEach releases.
+        session.handle(JSON.stringify({ i: 1, s: 'Cart#slow', a: ['w'] }));
+        // The seed read queues behind the parked turn and cannot run.
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 2).length === 1);
+        expect((framesFor(link, 2)[0] as { e: { status: number } }).e.status).toBe(504);
+        // The failure is the subscription's, not the connection's — and the
+        // entry is gone, so the id is reusable and stats read zero.
+        expect(link.closes).toEqual([]);
+        await until(() => session.stats().subscriptions === 0);
+    });
+
+    it('the deadline covers only establishment — a seeded subscription is never timed out', async () => {
+        restore = stubServerApp({ posture: { timeoutMs: 50 } });
+        const s = await start();
+        const { session, link } = await connect(s);
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 1).length >= 1);
+        expect(framesFor(link, 1)[0]).toEqual({ i: 1, v: 0 });
+        // Outlive the timeout, then prove the watch still pushes.
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        session.handle(JSON.stringify({ i: 2, s: 'Cart#add', a: ['w', 'x'] }));
+        await until(() => framesFor(link, 1).some((f) => 'v' in f && f.v === 1));
+        expect(framesFor(link, 1).every((f) => !('e' in f))).toBe(true);
+    });
 });
 
 describe('keepalive', () => {

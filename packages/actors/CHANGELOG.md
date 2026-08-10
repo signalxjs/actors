@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Watch reads are batched — the per-principal fan-out cliff moves**
+  (#180): an activation's serial watch reads now run through a watch read
+  pump — the whole watch population holds ONE turn-queue slot (a drain of
+  up to 32 reads per turn, each still a full turn of its own for context,
+  observability and change boundaries), and a NEW subscriber's seeding
+  read drains ahead of every pending re-read. Before this, P distinct
+  identities watching one principal-consulting read (#121) put O(P)
+  serialized read turns on the queue per publish, and establishment
+  starved behind them — measured on AKS as live fan-out collapsing between
+  100 and 250 signed-in subscribers on one actor while 20 000 anonymous
+  ones held. Steady-state semantics are unchanged: one loop per identity,
+  the 50 ms trailing throttle, per-read isolation. The decoded-principal
+  memo also became a bounded per-identity map (it thrashed into one decode
+  per read turn under interleaving identities).
+- **A socket subscription that cannot seed now fails visibly** (#180):
+  `createActorSocketSession` arms the app posture's `timeoutMs` on the
+  watch path, covering establishment — pipeline, authorization, dispatch
+  and the FIRST value. On expiry the subscription answers a per-
+  subscription 504 error frame and releases everything the starved seed
+  held (fan-out subscriber, shared loop, keep-alive). Previously it hung
+  silently forever. A seeded subscription is never timed out. The `$live`
+  endpoint has the same gap, tracked as #192.
+
 ### Added
 
 - **Watch-loop observability** (#180): `HostStats.watchLoops` — a live
