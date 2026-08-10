@@ -89,8 +89,8 @@ interface RunResult {
     peakSubscriptions: number;
     hosts: number;
     delta: Record<string, number>;
-    /** The cluster stats fan-out missed a host — watch counts are a lower bound. */
-    watchesPartial?: boolean;
+    /** Both cluster-stats snapshots saw the whole fleet; false ⇒ no `cluster/*`. */
+    watchesTrustworthy?: boolean;
     partial: boolean;
 }
 
@@ -210,34 +210,33 @@ function runMetrics(result: RunResult): Metric[] {
  * subscribers landed across pods. It is here to ATTRIBUTE a cliff, not to
  * pin an invariant — `cluster/live-fanout` does that at Tier 1.
  *
- * Absent rather than zero when the run did not collect them: a zero here
- * would read as "no cross-host streams", which is a claim about the
- * runtime, not about the harness.
+ * Absent rather than zero when the run did not collect them — a zero here
+ * would read as "no cross-host streams", which is a claim about the runtime
+ * rather than about the harness. The harness drops them whenever either
+ * cluster-stats snapshot missed a host, because the two failures point
+ * opposite ways (a partial baseline OVERSTATES the delta, a partial end
+ * snapshot understates it), so there is no honest label for the result.
  */
 function watchMetrics(result: RunResult): Metric[] {
     const opened = result.delta['cluster/remoteWatches'];
     if (opened === undefined) return [];
-    // A missed member makes every count a lower bound. Renaming rather than
-    // footnoting it: the metric name is all a comparison carries forward, so
-    // a lower bound must not sit in the same row as a complete count.
-    const at = result.watchesPartial ? 'lower_bound/' : '';
     return [
         {
-            name: `${at}remote_watch_streams`,
+            name: 'remote_watch_streams',
             value: opened,
             unit: 'count',
             direction: 'lower',
             informational: true
         },
         {
-            name: `${at}coalesced_watch_joins`,
+            name: 'coalesced_watch_joins',
             value: result.delta['cluster/coalescedWatches'] ?? 0,
             unit: 'count',
             direction: 'higher',
             informational: true
         },
         {
-            name: `${at}inbound_watch_streams`,
+            name: 'inbound_watch_streams',
             value: result.delta['cluster/inboundWatches'] ?? 0,
             unit: 'count',
             direction: 'lower',

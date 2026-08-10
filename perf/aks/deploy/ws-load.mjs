@@ -98,7 +98,7 @@ export function socketTotals(kube, namespace) {
         '-o', 'jsonpath={.items[*].metadata.name}'], { allowFail: true })
         ?.split(/\s+/).filter(Boolean) ?? [];
     const totals = {};
-    /** Fleet-wide watch counters — see the note below on which pod's win. */
+    /** Fleet-wide watch counters — see the note below on which pod wins. */
     let watches = null;
     let watchesComplete = false;
     let hosts = 0;
@@ -143,13 +143,13 @@ export function socketTotals(kube, namespace) {
                 const value = cluster.totals.counters[key];
                 if (typeof value === 'number') watches[`cluster/${key}`] = value;
             }
-            // A missing member makes every total a lower bound; say so
-            // rather than let the number be read as complete.
             watchesComplete = !cluster.partial;
-            watches['cluster/partial'] = watchesComplete ? 0 : 1;
         }
     }
-    return { hosts, totals: { ...totals, ...(watches ?? {}) } };
+    // `watchesComplete` is reported ALONGSIDE the totals rather than as a
+    // pseudo-counter inside them: it is a property of the snapshot, and a
+    // caller subtracting two snapshots must be able to see it on both.
+    return { hosts, totals: { ...totals, ...(watches ?? {}) }, watchesComplete };
 }
 
 /**
@@ -370,14 +370,24 @@ export async function runWsLoad(options) {
         }
     }
 
+    // A delta is only as trustworthy as BOTH ends of it. `clusterStats` sets
+    // `partial` when the polling host could not reach a member, and the two
+    // failures point OPPOSITE WAYS: a partial baseline understates `before`
+    // and so OVERSTATES the delta, while a partial end snapshot understates
+    // it. Neither is a "lower bound" — the error direction depends on which
+    // end lost a host, and the magnitude on how many.
+    //
+    // So the watch counters are reported only when both snapshots saw the
+    // whole fleet, and omitted entirely otherwise. A number whose error
+    // direction is unknown is worse than no number in a rig whose output
+    // gets pasted into BASELINES.md as fact.
+    const watchesTrustworthy = before.watchesComplete && after.watchesComplete;
     const delta = {};
     for (const [key, value] of Object.entries(after.totals)) {
         // Gauges describe a moment, not an interval — diffing them is
-        // meaningless. `cluster/partial` is a FLAG for the same reason: it
-        // says the fleet fan-out missed a member, and 1 − 1 = 0 would read
-        // as "complete".
+        // meaningless.
         if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
-        if (key === 'cluster/partial') continue;
+        if (key.startsWith('cluster/') && !watchesTrustworthy) continue;
         delta[key] = value - (before.totals[key] ?? 0);
     }
 
@@ -392,9 +402,9 @@ export async function runWsLoad(options) {
         samples,
         delta,
         // Distinct from `partial` above, which is about the LOAD JOB's pods.
-        // This one says the cluster stats fan-out missed a host, so the
-        // watch-stream counts in `delta` are a lower bound.
-        watchesPartial: after.totals['cluster/partial'] === 1,
+        // False means a cluster-stats fan-out missed a host at one end or
+        // the other, so no `cluster/*` key is present in `delta` at all.
+        watchesTrustworthy,
         partial
     };
 }

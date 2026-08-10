@@ -593,8 +593,10 @@ Pass/fail, and what to record:
   and look**: the verb reports `cluster/remoteWatches`,
   `cluster/coalescedWatches` and `cluster/inboundWatches` in the summed
   delta, taken from `clusterStats()` (already fleet-wide — read once, never
-  summed per pod). If it also prints `cluster/partial`, a member did not
-  answer and those three are LOWER BOUNDS.
+  summed per pod). If they are ABSENT, a cluster-stats fan-out missed a host
+  at one end of the run or the other — a partial baseline overstates the
+  delta and a partial end snapshot understates it, so the harness drops them
+  rather than print a number whose error direction is unknown.
 - **`Fanout` carries three reads, and picking the wrong one silently
   measures something else.** `current()` is identity-blind and UNDECLARED,
   `shared()` is the same body DECLARED `principalIndependent`, `mine()`
