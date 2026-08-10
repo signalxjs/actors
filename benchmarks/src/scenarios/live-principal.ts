@@ -29,6 +29,7 @@
  * identity resolves straight to a qualified key.
  */
 import { defineActor } from '@sigx/actors';
+import type { BenchPrincipal } from '../app.ts';
 import type { ActorCallContext } from '@sigx/actors/host';
 import { createBenchHost } from '../host-fixture.ts';
 import type { Metric, RunContext, Scenario } from '../types.ts';
@@ -44,7 +45,7 @@ const PrincipalCounter = defineActor({
         },
         /** Consults the principal: one loop per distinct identity (#121). */
         mine() {
-            const me = (ctx.principal as { id: string } | null)?.id ?? 'nobody';
+            const me = (ctx.principal as BenchPrincipal | null)?.id ?? 'nobody';
             return `${me}:${ctx.state.count}`;
         },
         async increment() {
