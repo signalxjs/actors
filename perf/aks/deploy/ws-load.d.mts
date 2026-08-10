@@ -50,8 +50,19 @@ export interface WsLoadResult {
     peakOpen: number;
     peakSubscriptions: number;
     samples: number;
-    /** Monotonic `ops.sockets` totals, after minus before. */
+    /**
+     * Monotonic totals, after minus before: `ops.sockets` always, plus
+     * `cluster/remoteWatches` / `cluster/coalescedWatches` /
+     * `cluster/inboundWatches` when `watchesTrustworthy`.
+     */
     delta: Record<string, number>;
+    /**
+     * Both snapshots saw EVERY host's cluster section. False means no
+     * `cluster/*` key is present in `delta` at all — a delta is only as
+     * trustworthy as both ends of it, and a short baseline overstates it
+     * while a short end snapshot understates it.
+     */
+    watchesTrustworthy: boolean;
     partial: boolean;
 }
 
@@ -81,4 +92,10 @@ export function mergeRows(
 export function socketTotals(
     kube: (args: string[], opts?: { allowFail?: boolean }) => string | null,
     namespace: string
-): { hosts: number; totals: Record<string, number> };
+): {
+    hosts: number;
+    /** `ops.sockets` per host, plus `cluster/*` watch counters, summed. */
+    totals: Record<string, number>;
+    /** Every pod answered with a cluster section; false ⇒ the sum is short. */
+    watchesComplete: boolean;
+};

@@ -74,16 +74,20 @@ function discard(dir) {
  *
  * The cluster watch counters are the MECHANISM: `remoteWatches` (cross-host
  * streams a host holds on peers), `coalescedWatches` (attaches that joined
- * an existing one) and `inboundWatches` (what actually crossed). This
- * deployment mounts `clusterStats()` as its `cluster` ops section, which
- * ALREADY fans out to every member and returns `totals.counters` — so it is
- * read from ONE pod and never summed. Summing it per pod would multiply the
- * whole fleet by the pod count, which is exactly the kind of number that
- * looks plausible in a table and is wrong by 3x.
+ * an existing one) and `inboundWatches` (what actually crossed). They come
+ * from the `cluster` section of `GET {base}` — which is this host's own
+ * `placement.report()`, PER HOST, so it is summed across pods exactly like
+ * `ops.sockets`.
  *
- * `partial` rides along because `clusterStats` sets it when a member did not
- * answer, and every total is then a LOWER BOUND. A stream count quoted
- * without it can understate the very thing the run is measuring.
+ * Not from `clusterStats()`: that is a different route (`GET {base}/cluster`)
+ * and a different shape (`totals.counters`, already fanned out). Reading a
+ * fleet total per pod and summing it would multiply the cluster by the pod
+ * count; reading it from one pod would work but pays a full fan-out per
+ * poll to learn what the pods are already telling us individually.
+ *
+ * A pod that does not answer makes the sum a LOWER BOUND, which is why
+ * completeness is tracked rather than assumed: a stream count quoted short
+ * understates the very thing the run is measuring.
  *
  * The mechanism half was added for #202. Every socket run before it could
  * see a cliff but not what caused one — and #180 was mis-attributed exactly
@@ -98,9 +102,10 @@ export function socketTotals(kube, namespace) {
         '-o', 'jsonpath={.items[*].metadata.name}'], { allowFail: true })
         ?.split(/\s+/).filter(Boolean) ?? [];
     const totals = {};
-    /** Fleet-wide watch counters — see the note below on which pod wins. */
-    let watches = null;
-    let watchesComplete = false;
+    /** Watch counters, summed per host like the socket ones. */
+    const watches = {};
+    /** Pods that answered with a cluster section — all of them, or it is short. */
+    let clusterHosts = 0;
     let hosts = 0;
     for (const pod of pods) {
         const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
@@ -117,25 +122,18 @@ export function socketTotals(kube, namespace) {
         }
         // The cluster section FIRST, and independently of the socket one —
         // the two are unrelated failures. A pod whose `sockets` section is
-        // absent or throwing can still be the only one carrying a complete
-        // `clusterStats()` fan-out, and skipping it with the `continue`
-        // below silently cost the whole run its mechanism counters.
-        //
-        // Fleet-wide already, so taken from ONE pod and never added to. Not
-        // simply the first pod that answers, either: a fan-out is `partial`
-        // when the COLLECTOR could not reach a member, which is a property
-        // of that pod's moment rather than of the fleet. So a complete view
-        // REPLACES a partial one, and the scan settles only once it has a
-        // complete one — otherwise one pod's transient timeout would throw
-        // away every count in the run for no reason.
-        const cluster = ops?.cluster;
-        if (cluster && !cluster.error && cluster.totals?.counters && !watchesComplete) {
-            watches = {};
+        // absent or throwing still has watch counters worth having, and
+        // skipping it via the `continue` below would silently cost the run
+        // its mechanism numbers.
+        const counters = ops?.cluster?.counters;
+        if (counters && !ops.cluster.error) {
+            clusterHosts++;
             for (const key of WATCH_COUNTERS) {
-                const value = cluster.totals.counters[key];
-                if (typeof value === 'number') watches[`cluster/${key}`] = value;
+                const value = counters[key];
+                if (typeof value === 'number') {
+                    watches[`cluster/${key}`] = (watches[`cluster/${key}`] ?? 0) + value;
+                }
             }
-            watchesComplete = !cluster.partial;
         }
         const section = ops?.sockets;
         // A missing section, or an `{ error }` from a throwing provider,
@@ -150,7 +148,10 @@ export function socketTotals(kube, namespace) {
     // `watchesComplete` is reported ALONGSIDE the totals rather than as a
     // pseudo-counter inside them: it is a property of the snapshot, and a
     // caller subtracting two snapshots must be able to see it on both.
-    return { hosts, totals: { ...totals, ...(watches ?? {}) }, watchesComplete };
+    // Complete means EVERY pod answered — anything less and the sum is
+    // short by however much the silent hosts were holding.
+    const watchesComplete = pods.length > 0 && clusterHosts === pods.length;
+    return { hosts, totals: { ...totals, ...watches }, watchesComplete };
 }
 
 /**

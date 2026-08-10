@@ -94,8 +94,11 @@ interface RunResult {
     partial: boolean;
 }
 
+// No cast: `ws-load.d.mts` declares the shape, and a cast here would hide
+// exactly the drift it exists to catch — the metric mapping below is the
+// part most likely to be silently wrong.
 async function drive(values: Record<string, unknown>): Promise<RunResult> {
-    return (await runWsLoad({
+    return await runWsLoad({
         context: CONTEXT,
         namespace: NAMESPACE,
         release: RELEASE,
@@ -104,7 +107,7 @@ async function drive(values: Record<string, unknown>): Promise<RunResult> {
         imageTag: IMAGE_TAG,
         workload: WORKLOAD,
         values
-    })) as RunResult;
+    });
 }
 
 /**
