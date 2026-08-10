@@ -115,27 +115,19 @@ export function socketTotals(kube, namespace) {
         } catch {
             continue;
         }
-        const section = ops?.sockets;
-        // A missing section, or an `{ error }` from a throwing provider,
-        // must not be added as zeros — that reads as "this host served
-        // nothing", which is a different claim.
-        if (!section || section.error) continue;
-        hosts++;
-        for (const [key, value] of Object.entries(section)) {
-            if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
-        }
-        // Fleet-wide already, so taken from ONE pod and never added to.
-        // Independent of the socket section: a host answering `sockets` may
-        // still have a throwing or absent `cluster` (single-node, or a
-        // provider fault), and that must not drop the socket numbers that
-        // did arrive.
+        // The cluster section FIRST, and independently of the socket one —
+        // the two are unrelated failures. A pod whose `sockets` section is
+        // absent or throwing can still be the only one carrying a complete
+        // `clusterStats()` fan-out, and skipping it with the `continue`
+        // below silently cost the whole run its mechanism counters.
         //
-        // Not simply the first pod that answers: a fan-out is `partial` when
-        // the COLLECTOR could not reach a member, which is a property of
-        // that pod's moment, not of the fleet. So a complete view REPLACES a
-        // partial one, and the scan stops early only once it has a complete
-        // one — otherwise one pod's transient timeout would degrade every
-        // count in the run to a lower bound for no reason.
+        // Fleet-wide already, so taken from ONE pod and never added to. Not
+        // simply the first pod that answers, either: a fan-out is `partial`
+        // when the COLLECTOR could not reach a member, which is a property
+        // of that pod's moment rather than of the fleet. So a complete view
+        // REPLACES a partial one, and the scan settles only once it has a
+        // complete one — otherwise one pod's transient timeout would throw
+        // away every count in the run for no reason.
         const cluster = ops?.cluster;
         if (cluster && !cluster.error && cluster.totals?.counters && !watchesComplete) {
             watches = {};
@@ -144,6 +136,15 @@ export function socketTotals(kube, namespace) {
                 if (typeof value === 'number') watches[`cluster/${key}`] = value;
             }
             watchesComplete = !cluster.partial;
+        }
+        const section = ops?.sockets;
+        // A missing section, or an `{ error }` from a throwing provider,
+        // must not be added as zeros — that reads as "this host served
+        // nothing", which is a different claim.
+        if (!section || section.error) continue;
+        hosts++;
+        for (const [key, value] of Object.entries(section)) {
+            if (typeof value === 'number') totals[key] = (totals[key] ?? 0) + value;
         }
     }
     // `watchesComplete` is reported ALONGSIDE the totals rather than as a

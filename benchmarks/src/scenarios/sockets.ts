@@ -394,10 +394,17 @@ const declaredFanout: Scenario = {
             'INFRA_WS_IDENTITY_LADDER',
             ctx.quick ? '50,100,250' : '50,100,250,500,1000'
         );
+        // The toggle is resolved ONCE and reported as a metric below. A
+        // scenario that can silently run its own control is the same trap
+        // the generator's `READ` validation closes one layer down: the
+        // recorded artifact is named `sockets/declared-fanout` either way,
+        // and nothing downstream would show which arm produced the number
+        // now sitting in BASELINES.md.
+        const control = process.env.INFRA_WS_DECLARED_CONTROL === '1';
         const result = await drive({
             mode: 'hot',
             actors: 1,
-            read: process.env.INFRA_WS_DECLARED_CONTROL === '1' ? 'current' : 'shared',
+            read: control ? 'current' : 'shared',
             principal: 'per-user',
             ladder: rungs.join(','),
             parallelism: 1,
@@ -415,6 +422,16 @@ const declaredFanout: Scenario = {
         const healthy = clean.find((row) => row.n === highest);
 
         return [
+            {
+                // 1 = the DECLARED read (`shared`), 0 = the undeclared
+                // control (`current`). Present in every saved artifact so a
+                // number can never be quoted under the wrong arm.
+                name: 'declared_read',
+                value: control ? 0 : 1,
+                unit: 'count',
+                direction: 'higher',
+                informational: true
+            },
             {
                 name: 'max_healthy_identities',
                 value: highest,
