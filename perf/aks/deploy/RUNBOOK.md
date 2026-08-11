@@ -678,6 +678,57 @@ Probes are never stalled (they carry the latency samples), and the selection
 is deterministic rather than random so two runs of a rung stall the same
 connections.
 
+### (s) Over TCP — does multiplexing remove the pool arithmetic? (#203)
+
+The sizing guidance for per-user live fan-out ends with three options, and
+only two have ever been measured: declare the read (#138, scenario (q)6),
+size `fetchConnections` (#194), or **use `@sigx/actors-tcp`**. The third is
+prose. `perf/` contained no reference to `tcpTransport` at all.
+
+The claim is that one multiplexed connection per peer makes the pool
+arithmetic moot: N per-principal watch streams cost 1 connection rather than
+N pooled ones, so the ceiling simply does not exist — no declaration, no
+sizing. What is unknown is what it costs INSTEAD, because a few hundred
+concurrent held-open streams is a different regime from the request/response
+traffic Tier 2 measured.
+
+```sh
+# deploy the same image over TCP — a rollout, so do it before any rung
+node perf/aks/deploy/testenv.mjs ws-up socket.sessions=true env.transport=tcp
+
+# the per-user ladder at the DEFAULT pool, which is what binds over HTTP
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=100,250,500,1000 \
+  read=mine principal=per-user
+```
+
+`tcpTransport` is chained ahead of `httpTransport` rather than replacing it,
+so a peer that has not yet published a tcp address is still reachable — a
+single transport is strict, and during a rolling deploy that is half the
+cluster unreachable.
+
+**`TRANSPORT` is part of `INFRA_SHAPE`**, so a TCP run refuses to compare
+against an HTTP one rather than being quietly diffed against it. That is the
+whole point: over TCP there is no pool to size, so the two are not two
+measurements of one deployment.
+
+**Check `hosts_with_tcp_transport` before believing any of it.** Every socket
+run now records how many hosts reported `tcp` in their transport chain. The
+chain falls through to HTTP per LINK for any peer advertising no tcp address,
+so a fleet still mid-rollout produces a perfectly clean HTTP measurement
+wearing the tcp label — and `INFRA_SHAPE` would then compare it as tcp. If
+that number is short of the host count, the run is void. (A host whose
+listener failed to bind cannot start at all, so a pod that answers has one;
+the mixed fleet is the case worth catching.)
+
+Three numbers make the comparison, against scenario (q)5 on the same ladder:
+
+- `max_healthy_identities` — the ceiling, if there still is one.
+- `cluster/remoteWatches` — unchanged by transport (it counts STREAMS, not
+  connections), so it is the control that proves the two runs did the same
+  work.
+- delivery p50/p99 — the cost of multiplexing, and the one place
+  head-of-line blocking would show up.
+
 ### Recording it instead of reading it (#184)
 
 Everything above is the hand-run: it prints JSON and you read it. To get a

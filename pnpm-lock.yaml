@@ -418,6 +418,9 @@ importers:
       '@sigx/actors-redis':
         specifier: workspace:*
         version: link:../../packages/actors-redis
+      '@sigx/actors-tcp':
+        specifier: workspace:*
+        version: link:../../packages/actors-tcp
       '@sigx/actors-ws':
         specifier: workspace:*
         version: link:../../packages/actors-ws

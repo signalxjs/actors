@@ -65,6 +65,13 @@ export interface WsLoadResult {
      * while a short end snapshot understates it.
      */
     watchesTrustworthy: boolean;
+    /**
+     * Hosts reporting `tcp` in their transport chain at the end of the run.
+     * A `TRANSPORT=tcp` run where this is short of `hosts` measured a fleet
+     * still partly on HTTP — the chain falls through per link, so that
+     * produces a clean HTTP number wearing the tcp label (#203).
+     */
+    tcpHosts: number;
     partial: boolean;
 }
 
@@ -100,4 +107,6 @@ export function socketTotals(
     totals: Record<string, number>;
     /** Every pod answered with a cluster section; false ⇒ the sum is short. */
     watchesComplete: boolean;
+    /** Pods reporting `tcp` in their transport chain (#203). */
+    tcpHosts: number;
 };

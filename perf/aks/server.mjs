@@ -9,6 +9,8 @@
  *   OPS_SECRET          /_sigx/ops bearer token            REQUIRED
  *   SIGX_NAMESPACE      Redis key namespace                default sigx
  *   FETCH_CONNECTIONS   undici pool size per peer origin   default 64
+ *   TRANSPORT           http | tcp — host-to-host link      default http
+ *   TCP_PORT            listener port when TRANSPORT=tcp    default 7312
  *   MEMBERSHIP          redis | k8s                        default redis
  *   POD_NAMESPACE       k8s namespace (MEMBERSHIP=k8s)     downward API
  *
@@ -42,7 +44,8 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { health, metrics, ops } from '@sigx/actors/host';
 import { socketStats } from '@sigx/actors/server';
 import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
-import { cluster, clusterStats } from '@sigx/actors/cluster';
+import { cluster, clusterStats, httpTransport } from '@sigx/actors/cluster';
+import { tcpTransport } from '@sigx/actors-tcp';
 import { redisCluster, redisDirectory } from '@sigx/actors-redis';
 import { k8sMembership } from '@sigx/actors-k8s';
 import { Redis } from 'ioredis';
@@ -133,11 +136,53 @@ const providers = (() => {
     process.exit(1);
 })();
 
+// The host-to-host link (#203). HTTP is the default and what every recorded
+// baseline was measured over; `tcp` is the axis this knob exists to price.
+//
+// A CHAIN, never `tcpTransport()` alone: a single transport is strict, so a
+// peer that publishes no tcp address is unreachable rather than reached over
+// HTTP — which during a rolling deploy is half the cluster. With
+// `httpTransport()` last, links upgrade one at a time as peers gain a tcp
+// address and no window exists where a peer cannot be reached at all.
+//
+// The pool matters to the HTTP leg only. That is the whole point of
+// measuring this: every per-principal cross-host watch stream PINS one
+// pooled connection for the life of the subscription (#194), and one
+// multiplexed connection per peer has no such arithmetic.
+const TRANSPORT = process.env.TRANSPORT ?? 'http';
+if (TRANSPORT !== 'http' && TRANSPORT !== 'tcp') {
+    console.error(`[perf-aks] TRANSPORT must be http or tcp, got '${TRANSPORT}'`);
+    process.exit(1);
+}
+// Parsed only when it is USED. The chart always sets it (default 7312), so
+// under `TRANSPORT=http` a bad value can only come from someone deliberately
+// setting a knob this mode ignores — refusing to boot over it would be a
+// surprising failure in the default configuration. The path that matters
+// still fails loudly: a bad port with `TRANSPORT=tcp` never starts.
+const tcpPort = () => {
+    const raw = process.env.TCP_PORT ?? '7312';
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+        console.error(`[perf-aks] TCP_PORT must be a valid port, got '${raw}'`);
+        process.exit(1);
+    }
+    return parsed;
+};
+
+const httpLeg = httpTransport({
+    fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
+});
 const plugin = cluster({
     providers,
     advertise: `http://${POD_IP}:${PORT}`,
     secret: CLUSTER_SECRET,
-    fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
+    // `tcpTransport` reads its bound address back after listening and
+    // publishes it in this host's descriptor, so `advertiseHost` is the only
+    // thing it cannot work out for itself inside a pod.
+    transport:
+        TRANSPORT === 'tcp'
+            ? [tcpTransport({ port: tcpPort(), advertiseHost: POD_IP }), httpLeg]
+            : httpLeg
 });
 
 // One recorder shared by every session on this host. The session records

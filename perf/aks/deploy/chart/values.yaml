@@ -23,6 +23,13 @@ env:
   sigxNamespace: sigx
   # undici pool size per peer origin for host-to-host fetch.
   fetchConnections: 64
+  # http | tcp — the HOST-TO-HOST link (#203). Every recorded baseline was
+  # measured over http; tcp multiplexes every stream onto one connection per
+  # peer, so the `fetchConnections` arithmetic that bound the identity
+  # ceiling (#194) does not apply to it. Part of INFRA_SHAPE: a run over one
+  # is not comparable with a run over the other.
+  transport: http
+  tcpPort: 7312
 
 secrets:
   # Empty = generated on install and PRESERVED on upgrade (lookup guard).

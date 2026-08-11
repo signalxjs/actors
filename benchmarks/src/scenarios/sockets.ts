@@ -95,6 +95,8 @@ interface RunResult {
     delta: Record<string, number>;
     /** Both cluster-stats snapshots saw the whole fleet; false ⇒ no `cluster/*`. */
     watchesTrustworthy?: boolean;
+    /** Hosts reporting `tcp` in their transport chain (#203). */
+    tcpHosts?: number;
     partial: boolean;
 }
 
@@ -188,6 +190,18 @@ function runMetrics(result: RunResult): Metric[] {
         {
             name: 'peak_subscriptions',
             value: result.peakSubscriptions,
+            unit: 'count',
+            direction: 'higher',
+            informational: true
+        },
+        {
+            // Which host-to-host transport the fleet ACTUALLY ran, recorded
+            // on every socket run. `tcpTransport` falls through to HTTP per
+            // link for any peer advertising no tcp address, so a fleet
+            // mid-rollout yields a clean HTTP measurement wearing the tcp
+            // label (#203) — and `INFRA_SHAPE` would compare it as tcp.
+            name: 'hosts_with_tcp_transport',
+            value: result.tcpHosts ?? 0,
             unit: 'count',
             direction: 'higher',
             informational: true
