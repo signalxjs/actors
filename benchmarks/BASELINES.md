@@ -1436,11 +1436,23 @@ from 602 to 131 per minute across those rungs with zero failures, because
 the publishing turn queues behind fan-out on a single-threaded actor.
 **Write throughput to a hot actor degrades as its audience grows.** (#182)
 
-Two figures that did NOT move: `maxBufferedBytes` stayed 0 at every rung —
-the hosts never outran the clients — and `protocolBreaches` stayed 0
-throughout. The absence of send-path backpressure is therefore a
-*structural* gap here rather than an observed failure; demonstrating it
-needs a deliberately slow consumer, which the rig cannot do yet.
+Two figures that did NOT move: `maxBufferedBytes` stayed 0 at every rung and
+`protocolBreaches` stayed 0 throughout. The absence of send-path backpressure
+is therefore a *structural* gap here rather than an observed failure.
+
+> ⚠️ **That `maxBufferedBytes` is the CLIENT's buffer, and an earlier version
+> of this paragraph read it as "the hosts never outran the clients". It does
+> not say that** (#208). It is `ws-loadgen` sampling the subscriber's own
+> `WebSocket#bufferedAmount` — data queued to *send* — and a subscriber sends
+> almost nothing, so it reads ~0 however much a host is holding. Nothing in
+> the runtime instruments the host side, so these zeros are equally consistent
+> with unbounded host buffering. #182 is left unrefuted here, not answered.
+>
+> The original paragraph went on to say that demonstrating it "needs a
+> deliberately slow consumer, which the rig cannot do yet". The rig gained one
+> in #205 and it ran — see the 2026-08-11 section. It does not close this,
+> because a slow consumer proves nothing about a buffer nobody measures; what
+> is still missing is the host-side counter (#208), not the workload.
 
 ### Identity is the cliff — and it is not a curve
 
@@ -1690,3 +1702,154 @@ the hand rows above measured it clean). p50 55.1 ms, p99 78.0 ms at 500.
   multiplexes every stream over one connection per peer (this measurement is
   its "justified by socket count" case on the client-fan-out axis), and #138
   would collapse identity-independent reads to one stream outright.
+
+## 2026-08-11 · Tier 3 — declaring the read removes the identity ceiling (#138/#210)
+
+| | |
+|---|---|
+| Cluster | AKS, 3 × `Standard_D2ls_v6` (2 vCPU), `limits.cpu 1000m`, 1 Redis |
+| Shape | `ws replicas=3 nodes=3 image=0d2d38d knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=http` |
+| Pool | **`FETCH_CONNECTIONS` at the chart default 64 — untouched.** That is the whole point (below). |
+| Runtime | undici 7.29.0, `ws` 8.21.1 (lockfile at `0d2d38d`) |
+| Driver | in-cluster `ws-loadgen.mjs`, ONE pod, `connectBatch=50`, 30 s rungs, 10 publishes/s |
+| Artifacts | Actions runs 31520378502 (smoke), 31522212324 (`mine`), 31522864082 (`current`), 31524388378 (`shared`), **31524781111 (`ws-bench`, `sockets.json`)** |
+
+#194 escaped the identity cliff by *resizing the pool* — 64 → 1024 — which
+answered "can this deployment carry 1 000 signed-in watchers?" but not "does
+the per-identity stream have to exist at all?". #201 shipped
+`watches: { m: { principalIndependent: true } }` to answer the second
+question, and this is the measurement: **the same ladder, the same untouched
+64-connection pool, one variable.**
+
+`Fanout` carries three reads that differ in exactly one thing each — and the
+middle one matters most, because it isolates the declaration from the read
+body:
+
+| arm | reads `ctx.principal`? | declared `principalIndependent`? |
+|---|---|---|
+| `mine()` | yes | n/a |
+| `current()` | no | **no** |
+| `shared()` | no — byte-for-byte `current()`'s body | **yes** |
+
+### The ladder — `principal=per-user`, one distinct identity per subscriber
+
+| n | arm | connected | connect failures | subscription errors | deliveries/s | deliveries/publish | p50 | p99 | publishes |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 | `mine` | 100 | 0 | 0 | 1 002 | 100 | 55.7 ms | 60.7 ms | 301 |
+| 250 | `mine` | 216 | 34 | **128** | 0.3 | 88 | — | — | **1** (in 271 s) |
+| 100 | `current` | 100 | 0 | 0 | 1 002 | 100 | 56.9 ms | 61.6 ms | 301 |
+| 250 | `current` | 203 | 47 | **89** | 0.4 | 114 | — | — | **1** (in 271 s) |
+| 100 | **`shared`** | 100 | 0 | 0 | 1 003 | 100 | 55.5 ms | 62.5 ms | 301 |
+| 250 | **`shared`** | **250** | **0** | **0** | 2 506 | 250 | 53.9 ms | 57.6 ms | 301 |
+| 500 | **`shared`** | **500** | **0** | **0** | 5 020 | 500 | 61.2 ms | 68.1 ms | 302 |
+| 1 000 | **`shared`** | **1 000** | **0** | **0** | 10 028 | 1 000 | 62.0 ms | 69.4 ms | 301 |
+
+Both control arms shelve between 100 and 250, and the ladder stops there —
+the rig refuses to climb past a rung that could not hold its connections,
+since that measures nothing but the failure mode. The
+declared arm walks to the top of the ladder with zero failures, full publish
+rate, `deliveries_per_publish` exactly equal to the subscriber count at every
+rung, and p50 pinned near the 50 ms watch throttle floor. `peak_open` on the
+declared 1 000 rung was **1 001** (the subscribers plus the publisher's own
+connection), `peak_subscriptions` 1 000, `protocol_breaches` 0.
+
+**The `mine` 250 rung reproduces #194 to the digit** — 128 subscription errors
+against #194's 128, one publish landing in a ~270 s window. Same pool
+arithmetic (2 relay pods × 64 slots), same cliff, a day and four merges later.
+That reproduction is what licenses reading the `shared` column as a change in
+mechanism rather than in weather.
+
+### The mechanism, counted — why it moved
+
+`ops.cluster.counters`, summed across the three hosts, delta over each run:
+
+| arm | rungs in the run | subscriptions opened | `remoteWatches` | `coalescedWatches` | `inboundWatches` |
+|---|---|---:|---:|---:|---:|
+| `mine` | 100 + a failed 250 | 350 | **233** | **0** | 199 |
+| `current` | 100 + a failed 250 | 350 | **232** | **0** | 185 |
+| **`shared`** | 100 + 250 + 500 + 1 000 | 1 850 | **8** | **1 225** | 8 |
+
+This is the claim in two columns. Sockets are host-affine, so ~⅔ of
+subscribers watch an actor another host owns; undeclared, each of those opens
+its own cross-host stream, which is a held-open HTTP response pinning one
+pooled connection for the life of the subscription. `coalescedWatches` is 0 in
+both control arms because the coalescing key carries the principal and no two
+subscribers share one.
+
+Declared, the principal leaves the key: **8 remote streams served 1 850
+subscriptions**, and 1 225 joins landed on a stream that already existed. The
+pool never binds because the thing that exhausted it no longer exists. The
+smoke rung shows the same shape in miniature — 100 identities, 3 remote
+streams, 59 coalesced joins.
+
+### The recorded run — both arms in one artifact, one shape
+
+The hand-run above is the experiment; this is the number a later run compares
+against. `ws-bench` drove the `sockets/*` scenarios on the same deployment, so
+`sockets/principal-cliff` (`mine`) and `sockets/declared-fanout` (`shared`)
+carry the identical `INFRA_SHAPE` — no cross-shape inference required:
+
+| scenario | `max_healthy_identities` | deliveries/s | p50 | p99 | `remote_watch_streams` | `coalesced_watch_joins` |
+|---|---:|---:|---:|---:|---:|---:|
+| `sockets/principal-cliff` | **100** | 1 004 | 54.1 ms | 61.8 ms | 267 | **0** |
+| `sockets/declared-fanout` | **1 000** | 10 018 | 62.9 ms | 70.5 ms | **10** | 1 247 |
+
+`declared_read: 1` rides in the `declared-fanout` artifact, so the arm cannot
+be quoted under the wrong name later. The `principal-cliff` value reproduces
+#184's recorded 100 and #194's shelf exactly. **1 000 is the ladder's own top,
+not a cliff** — every rung was clean, as the hand-run table shows.
+
+Two other scenarios ran in the same sweep and belong here as context rather
+than as findings:
+
+- **`sockets/hot-fanout`** — 10 000 *anonymous* subscribers on one actor:
+  34 795 msg/s, p50 264.7 ms, zero failures, `peak_open` 10 001. It runs the
+  **undeclared** `current()` read, and its `remote_watch_streams` is still
+  **6** for 10 609 coalesced joins — because anonymous subscribers all encode
+  to the same principal, so the coalescing key already matched. Undeclared
+  plus anonymous coalesces; undeclared plus per-user opens 232 streams. That
+  gap is precisely the asymmetry #138 closes: what anonymous fan-out got for
+  free, a declared read now gets for signed-in fan-out.
+- **`sockets/idle-capacity`** — 1 000 / 5 000 / 10 000 all connected with a
+  zero failure rate, `peak_open` 10 000. One generator pod, so this says
+  nothing about the ceiling (see the 2026-08-09 section).
+
+### The slow-consumer arm, and what it does not say
+
+`sockets/slow-consumer` also ran (it is part of the sweep, not of this
+question). At the 5 000 rung with `slow_fraction=0.1`: **480 slow connections**
+genuinely established, `drops` **0**, healthy delivery 19 055 msg/s, p50
+258.1 ms.
+
+> ⚠️ **This does not confirm #182 and cannot.** `client_max_buffered_bytes` is
+> 0, and it is the *client's* outbox — the host has no `bufferedAmount`
+> instrumentation at all (#208). The arm measures consequences: healthy
+> subscribers kept being served and nothing was dropped while a tenth of the
+> population read slowly. Read that as "not refuted", never as "no host
+> buffering occurred".
+
+### What to take from it
+
+- **#138 removes the ceiling; it does not merely raise it.**
+  `max_healthy_identities` **100 → 1 000, one declaration apart, same shape**.
+  The controls fail at the same rung they failed at before #201, on the same
+  pool. The declared arm reaches the ladder's own top — not a cliff — and does
+  it at `FETCH_CONNECTIONS=64`, where #194 needed 1 024. The sizing rule from
+  #194 still holds for reads that genuinely depend on identity; for reads that
+  do not, the rule is now "declare it".
+- **The declaration is the variable, not the read body.** `current()` and
+  `shared()` are the same code. Anyone tempted to conclude "identity-blind
+  reads are fine" from the older anonymous-fan-out numbers should read the
+  `current` row: identity-blind and undeclared is exactly as expensive as
+  identity-dependent, because the runtime cannot know the difference.
+- **Delivery scales linearly across the declared ladder** — 1 003 → 2 506 →
+  5 020 → 10 028 msg/s at 10 publishes/s — with p50 moving only 55.5 → 62.0 ms.
+  At these rungs the constraint is neither establishment nor the pool. The
+  ~16k/s/host delivery plateau from the 2026-08-09 section is still out there;
+  this ladder does not reach it.
+- **What this does NOT measure.** `TRANSPORT=tcp` (#203) is the third answer
+  to the same problem and is deliberately unmeasured here — with the ceiling
+  removed by declaration, multiplexing is a nice-to-have on this axis rather
+  than a fix, and measuring it first would have risked crediting it. #182 is
+  untouched: every `max_buffered_bytes` above is the client's, and means
+  nothing about a host's (#208).
