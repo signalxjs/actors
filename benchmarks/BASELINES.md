@@ -1438,9 +1438,7 @@ the publishing turn queues behind fan-out on a single-threaded actor.
 
 Two figures that did NOT move: `maxBufferedBytes` stayed 0 at every rung and
 `protocolBreaches` stayed 0 throughout. The absence of send-path backpressure
-is therefore a *structural* gap here rather than an observed failure;
-demonstrating it needs a deliberately slow consumer, which the rig cannot do
-yet.
+is therefore a *structural* gap here rather than an observed failure.
 
 > ⚠️ **That `maxBufferedBytes` is the CLIENT's buffer, and an earlier version
 > of this paragraph read it as "the hosts never outran the clients". It does
@@ -1449,6 +1447,12 @@ yet.
 > almost nothing, so it reads ~0 however much a host is holding. Nothing in
 > the runtime instruments the host side, so these zeros are equally consistent
 > with unbounded host buffering. #182 is left unrefuted here, not answered.
+>
+> The original paragraph went on to say that demonstrating it "needs a
+> deliberately slow consumer, which the rig cannot do yet". The rig gained one
+> in #205 and it ran — see the 2026-08-11 section. It does not close this,
+> because a slow consumer proves nothing about a buffer nobody measures; what
+> is still missing is the host-side counter (#208), not the workload.
 
 ### Identity is the cliff — and it is not a curve
 
