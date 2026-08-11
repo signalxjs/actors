@@ -1799,12 +1799,13 @@ Two other scenarios ran in the same sweep and belong here as context rather
 than as findings:
 
 - **`sockets/hot-fanout`** — 10 000 *anonymous* subscribers on one actor:
-  34 795 msg/s, p50 264.7 ms, zero failures, `peak_open` 10 001. Its
-  `remote_watch_streams` is **6** for 10 609 coalesced joins, because
-  anonymous subscribers already share a principal and so already shared a
-  stream. That has always been true, and is precisely the asymmetry #138
-  closes: what anonymous fan-out got for free, a declared read now gets for
-  signed-in fan-out.
+  34 795 msg/s, p50 264.7 ms, zero failures, `peak_open` 10 001. It runs the
+  **undeclared** `current()` read, and its `remote_watch_streams` is still
+  **6** for 10 609 coalesced joins — because anonymous subscribers all encode
+  to the same principal, so the coalescing key already matched. Undeclared
+  plus anonymous coalesces; undeclared plus per-user opens 232 streams. That
+  gap is precisely the asymmetry #138 closes: what anonymous fan-out got for
+  free, a declared read now gets for signed-in fan-out.
 - **`sockets/idle-capacity`** — 1 000 / 5 000 / 10 000 all connected with a
   zero failure rate, `peak_open` 10 000. One generator pod, so this says
   nothing about the ceiling (see the 2026-08-09 section).
