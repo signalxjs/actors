@@ -78,6 +78,10 @@ interface Row {
     publishes: number;
     publishFailures: number;
     subscriptionErrors: number;
+    /** Connections closed under us — see `sockets/slow-consumer` (#182). */
+    drops: number;
+    /** Subscribers deliberately made to stop reading (#182); 0 unless asked. */
+    slowConnections: number;
     maxBufferedBytes: number;
     latencyMs: { p50: number; p90: number; p99: number; max: number } | null;
     partial?: boolean;
@@ -451,9 +455,134 @@ const declaredFanout: Scenario = {
     }
 };
 
+/**
+ * The slow-consumer arm (#182): what happens to a host when subscribers stop
+ * keeping up.
+ *
+ * The socket send path is fire-and-forget — nothing in the runtime reads
+ * `bufferedAmount` — so #182 says a slow client shows up as MEMORY on the
+ * host rather than as backpressure. `SLOW_FRACTION` produces such a client
+ * by pausing the TCP socket underneath a fraction of subscribers (see
+ * `stall()` in `ws-loadgen.mjs` for why it must be the socket and not the
+ * message handler). Nothing evicts them: the session's `{ p: 1 }` is an
+ * application frame with no pong requirement, and `@sigx/actors-ws`
+ * installs no WebSocket keepalive and no idle timeout.
+ *
+ * **What this scenario deliberately does NOT report is the buffer itself.**
+ * The rig's `maxBufferedBytes` is sampled from the CLIENT's
+ * `WebSocket#bufferedAmount` — data queued to send — and a subscriber sends
+ * almost nothing, so it sits at ~0 however much the host is holding. The
+ * host has no `bufferedAmount` instrumentation anywhere (`socketStats()`
+ * has none, nor does `@sigx/actors-ws`), which is #182's own point and also
+ * why #182 cannot be settled from this side of the socket. Reporting the
+ * client number here would produce a confident `0` that means nothing, and
+ * that is how "the hosts never outran the clients" gets written down.
+ *
+ * What it reports instead is the CONSEQUENCE, which is observable — and
+ * this is a question rather than a gate, so every metric is informational:
+ *
+ * - `top/deliveries_per_sec` falling against a run at the same rung with
+ *   `slow_connections: 0` is the finding that changes the sizing rule: a
+ *   slow client degrading service for everyone on its host, not only itself.
+ * - `drops` climbing means something DID react (the kernel, the ingress,
+ *   `ws`), and where is then worth knowing — the runtime is not the only
+ *   thing in the path.
+ * - both flat means the host absorbed it silently, which is #182's
+ *   prediction and the case that needs host-side instrumentation to confirm
+ *   rather than merely fail to refute.
+ */
+const slowConsumer: Scenario = {
+    name: 'sockets/slow-consumer',
+    description: 'a fraction of subscribers stop reading — is there any send-path backpressure? (#182)',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const rungs = ladder('INFRA_WS_SLOW_LADDER', ctx.quick ? '500' : '1000,5000');
+        // Validated HERE as well as in the generator, and deliberately not
+        // defaulted past a bad value: the generator's own guard fires inside
+        // a Job on a live cluster, minutes and one deploy after the mistake.
+        // A typo should cost a shell prompt, not a rung.
+        const raw = process.env.INFRA_WS_SLOW_FRACTION ?? '0.1';
+        const fraction = Number(raw);
+        if (!Number.isFinite(fraction) || fraction <= 0 || fraction > 1) {
+            throw new Error(
+                `[sockets/slow-consumer] INFRA_WS_SLOW_FRACTION must be a number in (0, 1], ` +
+                    `got '${raw}'. Zero would run the scenario with no slow consumer at all, ` +
+                    `which is a different measurement wearing this one's name.`
+            );
+        }
+        const result = await drive({
+            mode: 'hot',
+            actors: 1,
+            read: 'current',
+            ladder: rungs.join(','),
+            parallelism: 1,
+            publishRate: process.env.INFRA_WS_PUBLISH_RATE ?? 10,
+            // Payload matters here in a way it does not elsewhere: buffered
+            // BYTES is the observable, so a zero-length payload would show
+            // the effect only in frame overhead.
+            payloadBytes: process.env.INFRA_WS_SLOW_PAYLOAD ?? 4096,
+            durationS: Math.max(60, Math.round(ctx.durationMs / 1000)),
+            probes: 20,
+            connectBatch: 250,
+            slowFraction: fraction,
+            slowAfterS: 5
+        });
+        refusePartial(result, 'sockets/slow-consumer');
+
+        const top = result.merged[result.merged.length - 1];
+        // The generator reports what ACTUALLY stalled, and zero means the
+        // arm did not run — `stall()` depends on a private `ws` field, and a
+        // silent no-op would leave `max_buffered_bytes: 0` looking like #182
+        // disproven rather than never tested. Refuse rather than record it.
+        if ((top?.slowConnections ?? 0) === 0) {
+            throw new Error(
+                `[sockets/slow-consumer] asked for ${fraction} of subscribers to stop ` +
+                    `reading and none did. Without a slow consumer this rung measures ` +
+                    `ordinary fan-out, and its buffered-bytes figure means nothing.`
+            );
+        }
+        return [
+            {
+                name: 'slow_fraction',
+                value: fraction,
+                unit: 'ratio',
+                direction: 'higher',
+                informational: true
+            },
+            {
+                name: 'slow_connections',
+                value: top?.slowConnections ?? 0,
+                unit: 'count',
+                direction: 'higher',
+                informational: true
+            },
+            {
+                // The CLIENT's send buffer, recorded only so a reader can
+                // see it stayed ~0 and know that is expected — a subscriber
+                // sends nothing. It is NOT the host's buffer and must never
+                // be quoted as evidence about #182 either way.
+                name: 'client_max_buffered_bytes',
+                value: top?.maxBufferedBytes ?? 0,
+                unit: 'bytes',
+                direction: 'higher',
+                informational: true
+            },
+            {
+                name: 'drops',
+                value: top?.drops ?? 0,
+                unit: 'count',
+                direction: 'lower',
+                informational: true
+            },
+            ...(top ? rowMetrics(top, 'top/') : []),
+            ...runMetrics(result)
+        ];
+    }
+};
+
 export const socketScenarios: Scenario[] = [
     idleCapacity,
     hotFanout,
     principalCliff,
-    declaredFanout
+    declaredFanout,
+    slowConsumer
 ];

@@ -194,6 +194,7 @@ export function mergeRows(rows, { partial = false } = {}) {
             subscriptionErrors: 0,
             drops: 0,
             seqMismatches: 0,
+            slowConnections: 0,
             maxBufferedBytes: 0,
             clientRssMb: 0,
             latencyMs: null,
@@ -201,7 +202,8 @@ export function mergeRows(rows, { partial = false } = {}) {
         };
         merged.pods++;
         for (const key of ['connected', 'socketsExpected', 'connectFailures', 'deliveries',
-            'publishes', 'publishFailures', 'subscriptionErrors', 'drops', 'seqMismatches']) {
+            'publishes', 'publishFailures', 'subscriptionErrors', 'drops', 'seqMismatches',
+            'slowConnections']) {
             merged[key] += row[key] ?? 0;
         }
         merged.durationMs = Math.max(merged.durationMs, row.durationMs ?? 0);

@@ -86,6 +86,12 @@ spec:
               value: {{ .Values.wsLoadgen.connectBatch | quote }}
             - name: CONNECT_TIMEOUT_S
               value: {{ .Values.wsLoadgen.connectTimeoutS | quote }}
+            - name: SLOW_FRACTION
+              value: {{ .Values.wsLoadgen.slowFraction | quote }}
+            - name: SLOW_AFTER_S
+              value: {{ .Values.wsLoadgen.slowAfterS | quote }}
+            - name: SLOW_RESUME_MS
+              value: {{ .Values.wsLoadgen.slowResumeMs | quote }}
             - name: KEY_PREFIX
               value: {{ .Values.wsLoadgen.keyPrefix | quote }}
             {{- if .Values.socket.env.SOCKET_PATH }}

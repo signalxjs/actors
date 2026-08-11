@@ -574,9 +574,17 @@ Pass/fail, and what to record:
   if the two disagree, one of them is wrong and the run is void.
 - **`protocolBreaches` must be 0.** The verb fails the run on any. A breach
   means the client and the session disagree about the vocabulary.
-- **`maxBufferedBytes` climbing is the real ceiling.** The socket send path
-  is fire-and-forget — nothing in the runtime reads `bufferedAmount` — so
-  a slow client shows up as memory, not as backpressure. Record it.
+- **`maxBufferedBytes` is the CLIENT's send buffer, and cannot answer the
+  backpressure question.** The socket send path is fire-and-forget —
+  nothing in the runtime reads `bufferedAmount` — so a slow client shows up
+  as memory on the HOST. But this field is sampled from the generator's own
+  `WebSocket#bufferedAmount`, which is data queued to SEND, and a subscriber
+  sends almost nothing. It reads ~0 however much a host is holding. The
+  0 in every recorded run therefore says nothing about whether hosts
+  outran clients; it says a subscriber's outbox stayed empty, which it
+  always will. Confirming #182 needs host-side instrumentation that does
+  not exist yet (nothing in `socketStats()` or `@sigx/actors-ws` reads
+  `bufferedAmount`). Scenario (r) measures the CONSEQUENCES instead.
 - **`deliveriesPerPublish` is a coalescing ratio, not a constant.** Client
   subscriptions cannot set `throttleMs`, so every one runs at the runtime's
   fixed 50 ms watch throttle: a subscriber receives at most ~20 pushes/s,
@@ -620,6 +628,55 @@ Pass/fail, and what to record:
   for it would measure #194's mitigation a second time and prove nothing:
   run the pair at the default, and only then, if you want, repeat with a
   sized pool to confirm the two answers converge.
+
+### (r) The slow consumer — is there any send-path backpressure? (#182)
+
+Every socket run so far reports `maxBufferedBytes: 0`, so "a slow client
+becomes memory rather than backpressure" has been an argument from the code,
+not a measurement. `slowFraction` makes a slow client:
+
+```sh
+# 10% of subscribers stop reading 5s after the rung seeds. Payload matters
+# here — buffered BYTES is the observable, so 0 would show only frame
+# overhead.
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000,5000 \
+  slowFraction=0.1 payloadBytes=4096 durationS=120
+
+# a merely SLOW client rather than a dead one: pause/resume duty cycle
+node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000 \
+  slowFraction=0.1 slowResumeMs=250 payloadBytes=4096
+```
+
+**It pauses the TCP socket, not the message handler.** `ws` delivers frames
+as events whether or not the application uses them, so a slow handler still
+drains the kernel buffer and the server never notices — you would measure the
+generator's event loop and report it as backpressure. Pausing the socket
+closes the receive window, and the server's send buffer is where the
+unconsumed data actually piles up.
+
+**Nothing evicts these connections, and that is the finding, not a bug in the
+rig.** The session's `{ p: 1 }` is an APPLICATION frame with no pong
+requirement; `@sigx/actors-ws` installs no WebSocket keepalive and no idle
+timeout. So a stalled subscriber is not disconnected — it is unbounded memory
+on the host.
+
+**What it can and cannot see.** Not the host's send buffer: nothing
+instruments it, and the rig's `maxBufferedBytes` is the client's own outbox
+(~0 for a subscriber, always). What it sees is the consequence:
+
+- **healthy subscribers' delivery rate falling**, against a run at the same
+  rung with no slow consumers — the finding that changes the sizing rule,
+  because it means a slow client degrades service for everyone on its host
+  rather than only itself.
+- **`drops` climbing** — something DID react (the kernel, the ingress, `ws`
+  itself). Worth knowing where; the runtime is not the only thing in the path.
+- **both flat** — the host absorbed it silently. That is #182's prediction,
+  and the case that needs host-side instrumentation to CONFIRM rather than
+  merely fail to refute.
+
+Probes are never stalled (they carry the latency samples), and the selection
+is deterministic rather than random so two runs of a rung stall the same
+connections.
 
 ### Recording it instead of reading it (#184)
 
