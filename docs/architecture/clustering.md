@@ -142,6 +142,31 @@ guarantee there is, since volatile storage has no cross-host CAS floor. A host
 registering only workers has nothing to fence and keeps serving them, which the
 worker-cluster suite pins.
 
+## Targeted worker calls
+
+`members()` and `dispatchOn()` on `ClusterPlacement` (#213) are the public
+form of the mechanism `$sigx:host#stats` always used internally: enumerate the
+view, then invoke something ON a chosen member rather than wherever placement
+routes. `workerOn(placement, target, def, key?)` is the typed sugar.
+
+Three rules keep it honest:
+
+- **Workers only.** A worker executes on the host that receives the call —
+  that is what a worker *is* — so targeting is meaningful. A stateful type is
+  refused when the caller can resolve its definition: targeted delivery would
+  fight placement over where the activation lives.
+- **One attempt.** No retry, no route cache, no directory. The caller chose
+  the host, so `unreachable` (departed) and `wrong-host` (does not register
+  the type — the registration-aware refusal above) are *answers*, propagated
+  branded, never consumed as a re-route.
+- **Self-targets stay in-process** (the `clusterStats` precedent): a host
+  often cannot reach its own advertised address, and a fenced host can still
+  serve its own workers.
+
+`targetedDispatches` counts these apart from `remoteDispatches`, and
+`addCounters` sums with `?? 0` so a mixed-version peer's report missing newer
+counters cannot NaN the `clusterStats` totals.
+
 ## Shutdown ordering
 
 The sequence is deliberately not the obvious one:
