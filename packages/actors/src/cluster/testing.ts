@@ -23,9 +23,10 @@
  */
 import { mintCallId } from '../call-id';
 import { defineActor } from '../define';
+import { defineWorker } from '../define-worker';
 import { ActorStateConflictError, isActorError, type ActorErrorShape } from '../errors';
 import type { ActorCallContext, ActorContext, AnyActorDefinition, Host } from '../types';
-import type { ClusterPlacement } from './placement';
+import { consistentHashPolicy, type ClusterPlacement } from './placement';
 import { clusterStats } from './stats';
 import type { PlacementPolicy, HostDescriptor } from './types';
 
@@ -35,6 +36,15 @@ import type { PlacementPolicy, HostDescriptor } from './types';
 export interface ConformanceClusterOptions {
     hosts: number;
     actors: readonly AnyActorDefinition[];
+    /**
+     * Per-host registration override (#214): host `i` registers THESE
+     * instead of `actors` — the heterogeneous-cluster knob behind the
+     * registration-aware cases. Optional for a harness to honor: those
+     * cases verify the topology actually took effect (via
+     * `descriptor().types`) and SKIP when it did not, so a harness that
+     * ignores this reads as skipped rather than falsely green.
+     */
+    actorsFor?: (index: number) => readonly AnyActorDefinition[];
     /** `null` = an unauthenticated cluster (no shared secret). */
     secret?: string | null;
     policy?: PlacementPolicy;
@@ -205,6 +215,22 @@ function echoActor(log: string[] = []): AnyActorDefinition {
             /** The context-bag probe: a plain copy of what this turn sees. */
             bagOf() {
                 return { ...ctx.bag };
+            }
+        })
+    }) as unknown as AnyActorDefinition;
+}
+
+const WORKER = 'ConformanceWorker';
+
+/** A stateless worker — the registration cases split registration by host,
+ *  and a worker is what a heterogeneous edge host realistically registers. */
+function workerActor(): AnyActorDefinition {
+    return defineWorker({
+        type: WORKER,
+        allowAnonymous: true,
+        methods: () => ({
+            async ping(n: number) {
+                return n + 1;
             }
         })
     }) as unknown as AnyActorDefinition;
@@ -886,6 +912,73 @@ const oneWayAcceptance: ConformanceCase = {
         })
 };
 
+const heterogeneousPlacement: ConformanceCase = {
+    name: 'a heterogeneous cluster routes a type only to hosts that register it',
+    why: 'membership without registration-aware placement (#212) lets a type land on a host that never registered it — the rolling-deploy 404, and the reason an edge role could not join the cluster',
+    run: (create) =>
+        withCluster(
+            create,
+            {
+                hosts: 2,
+                actors: [echoActor()],
+                actorsFor: (i) => (i === 0 ? [echoActor()] : [workerActor()]),
+                // Deterministic over the ELIGIBLE view. Deliberately not the
+                // suite's selfHost: a self-answering policy on the
+                // non-registering host would dispatch locally by contract,
+                // which is the policy's bug to own, not this case's subject.
+                policy: consistentHashPolicy()
+            },
+            async (h) => {
+                const edge = h.placements[1]!.descriptor().types;
+                if (edge === undefined || edge.includes(ECHO)) {
+                    return {
+                        skipped: 'the harness does not honor per-host registration (actorsFor)'
+                    };
+                }
+                // From the NON-registering host, across a SPREAD of keys:
+                // every call must cross the wire and be served by the host
+                // that registers the type. Many keys on purpose — a single
+                // key can rendezvous onto the right host by luck, and a case
+                // that fails only probabilistically pins nothing.
+                for (let i = 0; i < 16; i++) {
+                    const result = await h.hosts[1]!.dispatch(
+                        { type: ECHO, key: `het${i}` },
+                        'increment',
+                        [5],
+                        call()
+                    );
+                    assertEqual(result, 5, `key het${i} from the non-registering host`);
+                }
+                assert(
+                    h.placements[1]!.counters().remoteDispatches >= 16,
+                    'every call crossed the wire instead of activating locally'
+                );
+                assertEqual(
+                    h.placements[0]!.counters().inboundDispatches,
+                    16,
+                    'the registering host served all of them'
+                );
+                // And the worker registered only on the edge host is
+                // reachable FROM the other side, landing where it is
+                // registered — same key spread, same reason.
+                for (let i = 0; i < 8; i++) {
+                    const pong = await h.hosts[0]!.dispatch(
+                        { type: WORKER, key: `w${i}` },
+                        'ping',
+                        [1],
+                        call()
+                    );
+                    assertEqual(pong, 2, `worker key w${i} answered`);
+                }
+                assertEqual(
+                    h.placements[1]!.counters().inboundDispatches,
+                    8,
+                    'the worker executed only on the host that registers it'
+                );
+            }
+        )
+};
+
 /** Deterministic placement: whichever host first touches a key owns it. */
 const selfHost: PlacementPolicy = {
     name: 'conformance-self',
@@ -916,6 +1009,7 @@ export const transportConformance: readonly ConformanceCase[] = [
     opsStatsChannel,
     oneWayAcceptance,
     contextBagHop,
+    heterogeneousPlacement,
     authRejection,
     gracefulHandoff,
     noLinkLeak,
