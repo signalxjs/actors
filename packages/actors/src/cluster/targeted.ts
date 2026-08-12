@@ -40,10 +40,20 @@ export function workerOn<D extends AnyActorDefinition>(
         );
     }
     const ref = { type: def.type, key };
+    const methods = new Map<string, (...args: unknown[]) => Promise<unknown>>();
     return new Proxy(Object.create(null) as object, {
         get(_t, prop) {
-            if (typeof prop !== 'string') return undefined;
-            return (...args: unknown[]) => dispatchOn(target, ref, prop, args, options);
+            // `then` guarded so the proxy is never thenable: `await client`
+            // or `Promise.resolve(client)` must resolve to the client, not
+            // dispatch a method literally named "then". Same rule as the
+            // repo's other actor proxies.
+            if (typeof prop !== 'string' || prop === 'then') return undefined;
+            let method = methods.get(prop);
+            if (!method) {
+                method = (...args: unknown[]) => dispatchOn(target, ref, prop, args, options);
+                methods.set(prop, method);
+            }
+            return method;
         }
     }) as TargetedWorkerClient<D>;
 }

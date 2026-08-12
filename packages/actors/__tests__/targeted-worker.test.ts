@@ -172,6 +172,18 @@ describe('workerOn()', () => {
         await expect(relay.double(5)).resolves.toBe(10);
         expect(cluster.placements[2]!.counters().inboundDispatches).toBe(1);
     });
+
+    it('is not thenable, and method members are stable', async () => {
+        cluster = await topo();
+        const relay = workerOn(cluster.placements[0]!, cluster.placements[2]!.descriptor(), Relay);
+        // `await relay` / `Promise.resolve(relay)` must NOT dispatch a
+        // method literally named "then".
+        const resolved = await Promise.resolve(relay);
+        expect(resolved).toBe(relay);
+        expect(cluster.placements[0]!.counters().targetedDispatches).toBe(0);
+        // One function per method, not a fresh allocation per touch.
+        expect(relay.double).toBe(relay.double);
+    });
 });
 
 describe('addCounters mixed-version hardening', () => {
