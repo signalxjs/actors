@@ -282,6 +282,7 @@ describe('screens render', () => {
                         inboundWatches: 0,
                         retries: 0,
                         routingFailures: 0,
+                        targetedDispatches: 0,
                         routeCacheHits: 9,
                         routeCacheMisses: 1,
                         locates: 0,

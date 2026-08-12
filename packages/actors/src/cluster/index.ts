@@ -14,9 +14,12 @@ export {
     randomPlacementPolicy,
     type ClusterPlacement,
     type ClusterPlacementOptions,
+    type MembersFilter,
     type RebalanceOptions,
-    type RebalanceReport
+    type RebalanceReport,
+    type TargetedCallOptions
 } from './placement';
+export { workerOn, type TargetedWorkerClient } from './targeted';
 export { activationCountPolicy, type ActivationCountPolicyOptions } from './load-policy';
 export {
     handleHostRequest,

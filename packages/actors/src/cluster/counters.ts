@@ -48,6 +48,13 @@ export interface ClusterCounterTotals {
     retries: number;
     /** Calls that exhausted every attempt and threw `ActorActivationError`. */
     routingFailures: number;
+    /**
+     * `dispatchOn()` calls this host initiated (#213) — worker calls sent to
+     * a CHOSEN member, outside the routing loop. Counted apart from
+     * `remoteDispatches` because they are one-attempt by contract: no retry,
+     * no route cache, so a failure here is an answer, never a re-route.
+     */
+    targetedDispatches: number;
 
     // --- routing, inbound side (this host served a peer) ------------------
     /** Calls received from a peer on the internal mount. */
@@ -138,6 +145,7 @@ export function createCounters(): ClusterCounterTotals {
         coalescedWatches: 0,
         retries: 0,
         routingFailures: 0,
+        targetedDispatches: 0,
         inboundDispatches: 0,
         inboundStreams: 0,
         inboundWatches: 0,
@@ -177,7 +185,11 @@ export function addCounters(
 ): ClusterCounterTotals {
     const out = createCounters();
     for (const key of Object.keys(out) as (keyof ClusterCounterTotals)[]) {
-        out[key] = a[key] + b[key];
+        // `?? 0`, not a plain add: a rolling deploy IS a mixed-version
+        // cluster, and a peer on an older build answers a report missing
+        // whatever counters were added since — a bare `a + b` would NaN
+        // every total in `clusterStats` for the duration of the deploy.
+        out[key] = (a[key] ?? 0) + (b[key] ?? 0);
     }
     return out;
 }
