@@ -13,8 +13,10 @@
   `PlacementPolicy.choose()` is **narrowed** to the hosts registering
   `ref.type` — so custom policies are registration-safe without changes.
   Contract change for policy authors: the view is never empty, `self` may not
-  be in it, and the answer must be a member of it (anything else fails the
-  dispatch loudly, naming the policy). `preferLocalPolicy()` on a host that
+  be in it, and the answer must be a member of it or `self` (anything else
+  fails the dispatch loudly, naming the policy; self is always accepted
+  because it means 'local', where the fence, claim and registry guard
+  authoritatively). `preferLocalPolicy()` on a host that
   does not register the type falls through to rendezvous over the eligible
   view instead of answering `self`. A descriptor without `types` (an older
   build) stays eligible for everything — no flag day in a mixed-version

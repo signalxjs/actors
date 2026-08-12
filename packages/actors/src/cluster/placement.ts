@@ -1732,14 +1732,20 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 });
             }
             chosen = policy.choose(ref, eligible.view, this.descriptor());
-            if (!eligible.has(chosen.hostId)) {
+            if (chosen.hostId !== this.identity.hostId && !eligible.has(chosen.hostId)) {
                 // A policy bug, not a routing condition — re-placing
                 // silently would hide it (the `#declaredPolicy` unusable-
-                // strategy posture).
+                // strategy posture). Answering SELF is always allowed, even
+                // when self is not in the handed view (expired from
+                // membership, or not registering the type): self means
+                // 'local', and the local path has its own authoritative
+                // guards — the fence, the claim, the registry — where a
+                // remote answer would be dialed blind.
                 throw new Error(
                     `[sigx actors] placement policy "${policy.name ?? 'unnamed'}" chose ` +
-                        `${chosen.hostId} for "${ref.type}", which does not register that ` +
-                        `type. A policy must answer with a member of the view it was handed.`
+                        `${chosen.hostId} for "${ref.type}", which is not an eligible ` +
+                        `member of the view it was handed. A policy must answer with a ` +
+                        `member of that view, or with self.`
                 );
             }
         }

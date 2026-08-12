@@ -174,7 +174,8 @@ why the factory needs nothing from the setup context.
 
 A `PlacementPolicy`'s `choose(ref, view, self)` receives a view **pre-filtered
 to the hosts registering `ref.type`** (#212) — never empty, `self` possibly not
-in it, and the answer must be a member of it or the dispatch fails loudly.
+in it, and the answer must be a member of it (or `self`, which means "local"
+and is guarded there) or the dispatch fails loudly.
 `PolicyRuntime.view()` remains the full view (load probes are host-level). See
 [clustering — registration-aware placement](clustering.md#registration-aware-placement).
 

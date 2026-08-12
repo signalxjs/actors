@@ -105,8 +105,10 @@ label) — and eligibility is enforced at every decision point of
   filtered (homogeneous clusters pay nothing), `self` may not be in it (a host
   can place types it does not register — which is also why `preferLocalPolicy`
   falls through to rendezvous over the eligible view instead of answering
-  `self` blindly), and a policy answering a host outside it fails the dispatch
-  loudly, naming the policy.
+  `self` blindly), and a policy answering a host outside it — other than
+  `self`, which means "local" and is guarded authoritatively there by the
+  fence, the claim and the registry — fails the dispatch loudly, naming the
+  policy.
 
 An **empty** eligible set throws the branded `unplaceable` error rather than
 silently widening to the full view — silently widening is how a type lands on

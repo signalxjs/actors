@@ -219,9 +219,12 @@ export interface PolicyRuntime {
  * policy runs); `self` is always this host's full descriptor but may NOT
  * be in `view.hosts` (a host may place types it does not register — fall
  * through to an eligible host rather than answering `self` blindly); and
- * the answer MUST be a member of `view.hosts` — anything else is a policy
- * bug and fails the dispatch loudly. `PolicyRuntime.view()` remains the
- * FULL view: load probes are host-level, not per-type.
+ * the answer MUST be a member of `view.hosts` OR `self` — anything else is
+ * a policy bug and fails the dispatch loudly. (Self is always accepted
+ * because it means 'local', where the fence, the claim and the registry
+ * guard authoritatively; a remote answer would be dialed blind.)
+ * `PolicyRuntime.view()` remains the FULL view: load probes are
+ * host-level, not per-type.
  */
 export interface PlacementPolicy extends ActorPlacementStrategy {
     choose(
