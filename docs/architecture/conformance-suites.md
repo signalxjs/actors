@@ -42,10 +42,18 @@ connections all converge.
 
 The same rule is why `transportConformance` was written against
 `httpTransport()` *before* any connection-oriented transport existed — it
-describes the contract rather than one implementation's habits. Of its 18
-cases, two are link-hygiene cases HTTP skips because it holds no connections;
-`@sigx/actors-tcp` passes all 18. (The retired host-to-host WebSocket
-transport passed all 18 too — #151.)
+describes the contract rather than one implementation's habits. Two of its
+cases are link-hygiene cases HTTP skips because it holds no connections;
+`@sigx/actors-tcp` runs them all. (The retired host-to-host WebSocket
+transport passed the full suite too — #151.)
+
+Heterogeneous registration (#212) is part of the contract the suite pins:
+`ConformanceClusterOptions.actorsFor` lets a case register different actors
+per host, and the registration-aware case dispatches a type from a host that
+does not register it, asserting it lands on one that does. Honoring
+`actorsFor` is optional for a harness — the case verifies the topology took
+effect via `descriptor().types` and reports a SKIP when it did not, the
+`dropMembership` pattern: skipped is an outcome, a false green is not.
 
 **2. A case that cannot fail is decoration.**
 

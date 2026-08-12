@@ -21,7 +21,7 @@ import {
     type HostStatus
 } from '@sigx/actors/cluster';
 import { k8sMembership, kubeClient } from '@sigx/actors-k8s';
-import { buildLease, DESCRIPTOR_ANNOTATION, microTime } from '../src/lease';
+import { buildLease, parseLease, renewPatch, DESCRIPTOR_ANNOTATION, microTime } from '../src/lease';
 import { fakeKube, type FakeKube } from './fake-kube';
 
 const LABELS = { 'sigx.dev/cluster': 'default' };
@@ -39,6 +39,47 @@ async function until(cond: () => boolean, ms = 2000): Promise<void> {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe('lease descriptor round-trip', () => {
+    const leaseOptions = {
+        name: 'sigx-t',
+        namespace: 'ns',
+        labels: LABELS,
+        ttlMs: 15_000,
+        nowMs: 1_000
+    };
+
+    it('HostDescriptor.types survives buildLease → parseLease and the renew patch (#214)', () => {
+        const typed = {
+            hostId: 's.typed',
+            epoch: 3,
+            address: 'http://typed:7311',
+            status: 'active' as const,
+            types: ['Counter', 'Relay']
+        };
+        // Deep-equal on the WHOLE descriptor: `parseLease` validates the
+        // required fields and must pass everything else through untouched —
+        // a stricter validator that projects known fields would silently
+        // make a heterogeneous cluster eligible-for-everything.
+        expect(parseLease(buildLease(typed, leaseOptions))).toEqual(typed);
+        const patched = renewPatch(2_000, { ...typed, status: 'leaving' as const });
+        expect(
+            JSON.parse(patched.metadata!.annotations[DESCRIPTOR_ANNOTATION]!).types
+        ).toEqual(['Counter', 'Relay']);
+    });
+
+    it('a legacy lease without types still parses, and absent stays absent', () => {
+        const legacy = {
+            hostId: 's.legacy',
+            epoch: 1,
+            address: 'http://legacy:7311',
+            status: 'active' as const
+        };
+        const parsed = parseLease(buildLease(legacy, leaseOptions));
+        expect(parsed).toEqual(legacy);
+        expect(parsed!.types).toBeUndefined();
+    });
+});
 
 describe('k8s membership provider', () => {
     const open: ClusterMembership[] = [];

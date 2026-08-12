@@ -32,6 +32,7 @@ const createHttpCluster: TransportConformanceFactory = async (
 ): Promise<TransportConformanceHarness> => {
     const harness: ClusterHarness = await createCluster(options.hosts, {
         actors: options.actors,
+        ...(options.actorsFor ? { actorsFor: options.actorsFor } : {}),
         ...(options.secret === null ? {} : { secret: options.secret ?? 'conformance-secret' }),
         ...(options.policy ? { policy: options.policy } : {}),
         ...(options.retryBackoffMs !== undefined

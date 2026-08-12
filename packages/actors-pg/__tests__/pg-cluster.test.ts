@@ -98,6 +98,39 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
     });
 
     describe('membership', () => {
+        it('HostDescriptor.types round-trips join → view and survives setStatus (#214)', async () => {
+            // Deep-equal on the WHOLE descriptor: a provider that projects
+            // known fields instead of round-tripping would drop `types` and
+            // silently make a heterogeneous cluster eligible-for-everything.
+            const opts = { schema, heartbeatMs: 100, ttlMs: 400, pollMs: 100 };
+            const m1 = pgMembership(pool, opts);
+            const m2 = pgMembership(pool, opts);
+            const typed = {
+                hostId: 's.typed',
+                epoch: 7,
+                address: 'http://typed',
+                status: 'active' as const,
+                types: ['Counter', 'Relay']
+            };
+            await m1.join(typed);
+            await m2.join({ hostId: 's.plain', epoch: 1, address: 'http://plain', status: 'active' });
+            try {
+                const view = await m2.refresh();
+                expect(view.hosts.find((h) => h.hostId === 's.typed')).toEqual(typed);
+                // Absent stays absent — never normalized to an empty list.
+                expect(view.hosts.find((h) => h.hostId === 's.plain')!.types).toBeUndefined();
+                await m1.setStatus('leaving');
+                const republished = (await m2.refresh()).hosts.find(
+                    (h) => h.hostId === 's.typed'
+                )!;
+                expect(republished.status).toBe('leaving');
+                expect(republished.types).toEqual(['Counter', 'Relay']);
+            } finally {
+                await m1.leave();
+                await m2.leave();
+            }
+        });
+
         it('join publishes a live descriptor; leave removes it; views converge', async () => {
             const opts = { schema, heartbeatMs: 100, ttlMs: 400, pollMs: 100 };
             const m1 = pgMembership(pool, opts);

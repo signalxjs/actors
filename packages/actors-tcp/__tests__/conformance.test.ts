@@ -84,7 +84,7 @@ const createTcpCluster: TransportConformanceFactory = async (
                 : {})
         });
         const app = defineActorApp({
-            actors: options.actors,
+            actors: options.actorsFor?.(i) ?? options.actors,
             storage,
             defaults: { sweepIntervalMs: 3_600_000, reminderTickMs: 3_600_000, callTimeoutMs: 0 }
         }).use(plugin);
