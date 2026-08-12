@@ -979,6 +979,65 @@ const heterogeneousPlacement: ConformanceCase = {
         )
 };
 
+const targetedWorkerCalls: ConformanceCase = {
+    name: 'a targeted worker call lands on the chosen member; a non-registering target refuses wrong-host',
+    why: 'dispatchOn carries the fan-out/delivery path (#213) over this wire — a transport that loses the refusal kind turns a stale target into an unbranded failure instead of an answer',
+    run: (create) =>
+        withCluster(
+            create,
+            {
+                hosts: 2,
+                actors: [echoActor()],
+                actorsFor: (i) => (i === 0 ? [echoActor(), workerActor()] : [echoActor()]),
+                policy: consistentHashPolicy()
+            },
+            async (h) => {
+                const p0 = h.placements[0]!;
+                const p1 = h.placements[1]!;
+                if (!p0.dispatchOn || !p1.dispatchOn) {
+                    return { skipped: 'the harness placement predates dispatchOn (#213)' };
+                }
+                const registrar = p0.descriptor().types;
+                if (
+                    registrar === undefined ||
+                    !registrar.includes(WORKER) ||
+                    p1.descriptor().types?.includes(WORKER) !== false
+                ) {
+                    return {
+                        skipped: 'the harness does not honor per-host registration (actorsFor)'
+                    };
+                }
+                // Delivered ON the chosen member, from a host that does not
+                // register the worker at all.
+                const pong = await p1.dispatchOn(
+                    p0.identity.hostId,
+                    { type: WORKER, key: 't' },
+                    'ping',
+                    [1]
+                );
+                assertEqual(pong, 2, 'the targeted call answered');
+                assert(
+                    p0.counters().inboundDispatches >= 1,
+                    'the targeted host served it'
+                );
+                // A target that does not register the type refuses with the
+                // WRONG-HOST kind and NO owner hint — an answer, carried by
+                // this wire, never consumed as a re-route.
+                const error = await caught(() =>
+                    p0.dispatchOn!(p1.identity.hostId, { type: WORKER, key: 't' }, 'ping', [1])
+                );
+                assert(isActorError(error), `expected an actor error, got ${String(error)}`);
+                assertEqual((error as ActorErrorShape).kind, 'wrong-host', 'refusal kind');
+                assertEqual(
+                    (error as { owner?: unknown }).owner,
+                    undefined,
+                    'the refusal carries no owner hint'
+                );
+                assertEqual(p0.counters().retries, 0, 'one attempt — never retried');
+            }
+        )
+};
+
 /** Deterministic placement: whichever host first touches a key owns it. */
 const selfHost: PlacementPolicy = {
     name: 'conformance-self',
@@ -1010,6 +1069,7 @@ export const transportConformance: readonly ConformanceCase[] = [
     oneWayAcceptance,
     contextBagHop,
     heterogeneousPlacement,
+    targetedWorkerCalls,
     authRejection,
     gracefulHandoff,
     noLinkLeak,
