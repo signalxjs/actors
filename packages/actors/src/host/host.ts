@@ -187,6 +187,8 @@ class HostImpl implements Host {
         AnyActorDefinition | (() => Promise<AnyActorDefinition | Record<string, unknown>>)
     >();
     #resolved = new Map<string, AnyActorDefinition>();
+    /** `registeredTypes()`'s frozen copy — computed once, registry is fixed. */
+    #registeredTypes: readonly string[] | undefined;
     #scheduler: ActorScheduler;
     #host!: ActivationHost;
     #turnObservers = new Set<ActorTurnObserver>();
@@ -474,6 +476,14 @@ class HostImpl implements Host {
             if (def) this.#resolved.set(type, def);
             return def;
         });
+    }
+
+    registeredTypes(): readonly string[] {
+        // Registry keys, not definitions: a lazy type is listed without its
+        // module ever loading. The registry is fixed at construction, so the
+        // frozen copy is computed once.
+        this.#registeredTypes ??= Object.freeze([...this.#registry.keys()].sort());
+        return this.#registeredTypes;
     }
 
     // -----------------------------------------------------------------------

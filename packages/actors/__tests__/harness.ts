@@ -66,6 +66,9 @@ export function abortLinked(response: Response, signal: AbortSignal | null | und
 
 export interface ClusterOptions {
     actors: readonly AnyActorDefinition[];
+    /** Per-host registration override — host `i` registers THESE instead of
+     *  `actors`. The heterogeneous-cluster knob (#212). */
+    actorsFor?: (index: number) => readonly AnyActorDefinition[];
     storage?: ActorStorage;
     defaults?: HostDefaults;
     policy?: PlacementPolicy;
@@ -107,6 +110,9 @@ export interface ClusterHarness {
     /** Simulate a network partition: host `i`'s address stops resolving
      *  but its membership heartbeat stays alive. */
     unbind(i: number): void;
+    /** Start ONE MORE host on the same hub and pipe — a rolling deploy's
+     *  new pod — registering `actors`. Returns its index. */
+    add(actors: readonly AnyActorDefinition[]): Promise<number>;
     stop(): Promise<void>;
 }
 
@@ -142,7 +148,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
     const hosts: Host[] = [];
     const placements: ClusterPlacement[] = [];
     const apps: ActorApp[] = [];
-    for (let i = 0; i < n; i++) {
+    const startHost = async (i: number, actors: readonly AnyActorDefinition[]): Promise<void> => {
         const plugin = cluster({
             providers: hub.providers(),
             advertise: `http://host${i}.test`,
@@ -158,7 +164,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             ...(options.rebalance ? { rebalance: options.rebalance } : {})
         });
         let app = defineActorApp({
-            actors: options.actors,
+            actors,
             storage,
             defaults: { ...quiet, ...options.defaults }
         }).use(plugin);
@@ -168,6 +174,9 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         hosts.push(host);
         placements.push(plugin.placement);
         apps.push(app);
+    };
+    for (let i = 0; i < n; i++) {
+        await startHost(i, options.actorsFor?.(i) ?? options.actors);
     }
 
     return {
@@ -184,6 +193,11 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         },
         unbind: (i) => {
             registry.delete(`host${i}.test`);
+        },
+        add: async (actors) => {
+            const index = hosts.length;
+            await startHost(index, actors);
+            return index;
         },
         stop: async () => {
             await Promise.allSettled(apps.map((a) => a.stop({ timeoutMs: 1000 })));

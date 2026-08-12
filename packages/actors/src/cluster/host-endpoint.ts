@@ -124,6 +124,47 @@ export function resolveHostSymbol(
 }
 
 /**
+ * The CLUSTER runtimes' resolver (#212): identical to `resolveHostSymbol`,
+ * except a well-formed symbol whose TYPE this host does not register still
+ * resolves — so the refusal can carry the `wrong-host` kind (thrown by the
+ * placement's inbound guard) instead of dying here as an unbranded 404. A
+ * 404 is terminal to the caller; `wrong-host` makes it evict its route and
+ * re-place against the eligibility-filtered view, which is the correct
+ * answer in a heterogeneous cluster where the sender may simply hold a
+ * stale route (or be an older build that does not filter at all).
+ *
+ * The mode for an unregistered type is `'watch'` for the `$watch:` form and
+ * `'unary'` otherwise — a misdirected STREAM call is answered unary-shaped,
+ * which is fine: the guard throws before anything streams, and the sending
+ * transport parses an error status uniformly for both shapes.
+ *
+ * Malformed symbols, and watch-of-stream on a REGISTERED type, keep 404ing
+ * exactly as before. `hostEndpointRuntime` (a Durable Object — no cluster,
+ * nowhere to re-place) deliberately keeps `resolveHostSymbol`.
+ */
+export function resolveClusterSymbol(
+    host: Host,
+    wire: string
+): HostCallTarget | null | Promise<HostCallTarget | null> {
+    const resolved = resolveHostSymbol(host, wire);
+    const fallback = (target: HostCallTarget | null): HostCallTarget | null => {
+        if (target) return target;
+        const symbol = canonicalSymbol(wire);
+        const watch = symbol.startsWith(WATCH_SYMBOL_PREFIX);
+        const bare = watch ? symbol.slice(WATCH_SYMBOL_PREFIX.length) : symbol;
+        const hash = bare.lastIndexOf('#');
+        if (hash <= 0 || hash === bare.length - 1) return null; // malformed: still 404
+        const type = bare.slice(0, hash);
+        // A REGISTERED type that resolved to null did so for its own reason
+        // (watch-of-stream) — that stays a 404, not a wrong-host.
+        if (host.definition(type) !== null) return null;
+        return { type, method: bare.slice(hash + 1), mode: watch ? 'watch' : 'unary' };
+    };
+    if (isPromise(resolved)) return resolved.then(fallback);
+    return fallback(resolved);
+}
+
+/**
  * Adapt a host + placement to the transport runtime. It lives here rather
  * than on the placement so `handleHostRequest`'s published
  * `(host, placement)` shape keeps working for hand-rolled mounts.
@@ -132,7 +173,7 @@ export function hostRuntime(host: Host, placement: ClusterPlacement): HostTransp
     return {
         descriptor: () => placement.descriptor(),
         view: () => placement.view(),
-        resolve: (symbol) => resolveHostSymbol(host, symbol),
+        resolve: (symbol) => resolveClusterSymbol(host, symbol),
         dispatch: (ref, method, args, call) => {
             // The ops channel answers before any activation lookup, and
             // deliberately does NOT count as an inbound dispatch — reading

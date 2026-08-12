@@ -12,9 +12,11 @@
  */
 import {
     ActorActivationError,
+    ActorUnplaceableError,
     ActorUnreachableError,
     ActorWrongHostError,
     isActorError,
+    isActorErrorKind,
     type ActorOwnerHint
 } from '../errors';
 import {
@@ -60,7 +62,7 @@ import type {
     HostTransportFactory,
     HostTransportRuntime
 } from './seam';
-import { resolveHostSymbol } from './host-endpoint';
+import { resolveClusterSymbol } from './host-endpoint';
 import { fromHostWireError, hostWireCodec, toHostWireError } from './wire-errors';
 import type {
     ClusterProviders,
@@ -364,6 +366,75 @@ function activeHosts(view: MembershipView): readonly HostDescriptor[] {
  *  path should not allocate to say "it's here". */
 const LOCAL: ActorLocation = Object.freeze({ local: true as const });
 
+/** Does this member register `type`? An absent list is an older build's
+ *  descriptor and reads as "registers everything" — the legacy behavior,
+ *  and the only safe direction (#212). */
+function hostRegisters(host: HostDescriptor, type: string): boolean {
+    return host.types === undefined || host.types.includes(type);
+}
+
+/**
+ * The per-type eligibility slice of a view (#212) — the hosts registering
+ * `type` — memoized per VIEW OBJECT and then per type, the `activeHosts`
+ * posture. When every host registers the type (a homogeneous cluster, and
+ * any all-legacy view) the ORIGINAL view object is handed back, so the
+ * `activeHosts` memo still hits, `rendezvous` sees byte-identical input,
+ * and the fast path allocates nothing per call after the first look.
+ */
+interface EligibleHosts {
+    /** What `choose()` is handed — the original view when nothing filtered. */
+    readonly view: MembershipView;
+    has(hostId: string): boolean;
+}
+const eligibleCache = new WeakMap<MembershipView, Map<string, EligibleHosts>>();
+/** All hostIds of a view, memoized per view object — post-choose validation
+ *  on the all-eligible fast path, shared across types. */
+const viewIdsCache = new WeakMap<MembershipView, Set<string>>();
+function viewIds(view: MembershipView): Set<string> {
+    let ids = viewIdsCache.get(view);
+    if (ids === undefined) {
+        ids = new Set(view.hosts.map((h) => h.hostId));
+        viewIdsCache.set(view, ids);
+    }
+    return ids;
+}
+function eligibleFor(view: MembershipView, type: string): EligibleHosts {
+    let perType = eligibleCache.get(view);
+    if (perType === undefined) {
+        perType = new Map();
+        eligibleCache.set(view, perType);
+    }
+    let eligible = perType.get(type);
+    if (eligible === undefined) {
+        const hosts = view.hosts.filter((h) => hostRegisters(h, type));
+        if (hosts.length === view.hosts.length) {
+            // Everything registers the type — hand back the ORIGINAL view,
+            // but still validate membership: a policy fabricating a host
+            // outside the view must be caught here too, not only when
+            // filtering narrowed the view.
+            eligible = { view, has: (hostId) => viewIds(view).has(hostId) };
+        } else {
+            const ids = new Set(hosts.map((h) => h.hostId));
+            // Order-preserving filter, so rendezvous stays deterministic.
+            const narrowed: MembershipView = { version: view.version, hosts };
+            eligible = { view: narrowed, has: (hostId) => ids.has(hostId) };
+        }
+        perType.set(type, eligible);
+    }
+    return eligible;
+}
+
+/** Errors on the FIRST pull — where the wire pump and the caller's retry
+ *  loop both look for placement failures. */
+function failingIterable(error: unknown): AsyncIterable<unknown> {
+    return {
+        [Symbol.asyncIterator]: () => ({
+            next: () => Promise.reject(error),
+            return: () => Promise.resolve({ value: undefined, done: true as const })
+        })
+    };
+}
+
 /**
  * The `backend` tag this placement answers to. A strategy carrying a
  * DIFFERENT tag belongs to another backend and is ignored silently; one
@@ -425,7 +496,17 @@ export function preferLocalPolicy(): PlacementPolicy {
     return {
         name: 'prefer-local',
         backend: CLUSTER_BACKEND,
-        choose: (_ref, _view, self) => self
+        choose(ref, view, self) {
+            const active = activeHosts(view);
+            // Self may not be in the (eligibility-filtered, #212) view — a
+            // host placing a type it does not register cannot pin it local.
+            // Rendezvous keeps the fall-through deterministic, so racing
+            // non-registering callers agree without a directory round-trip;
+            // the directory stays the arbiter either way.
+            if (active.some((h) => h.hostId === self.hostId)) return self;
+            if (active.length === 0) return self;
+            return rendezvous(actorId(ref), active) ?? self;
+        }
     };
 }
 
@@ -456,6 +537,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #addresses: Record<string, string> | undefined;
     #local: ActorDispatcher | null = null;
     #host: Host | null = null;
+    /** The bound host's registered type names — published in the descriptor
+     *  (#212). Undefined before `bind()`, and for a hand-rolled `Host`
+     *  without `registeredTypes()`, which then publishes a legacy-shaped
+     *  descriptor (eligible for everything). */
+    #registeredTypes: readonly string[] | undefined;
     /** type → its `defineActor({ placement })` policy, or null if none. */
     #declaredPolicies = new Map<string, PlacementPolicy | null>();
     /** Per-type stateless memo — same lazy shape as `#declaredPolicies`. */
@@ -535,6 +621,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             ...(this.#options.publicAddress !== undefined
                 ? { publicAddress: this.#options.publicAddress }
                 : {}),
+            ...(this.#registeredTypes ? { types: this.#registeredTypes } : {}),
             ...(this.#options.meta ? { meta: this.#options.meta } : {})
         };
     }
@@ -558,6 +645,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
     bind(local: ActorDispatcher, host: Host): PlacementBindings {
         this.#local = local;
         this.#host = host;
+        // Captured HERE, before `start()` joins membership, so the first
+        // descriptor a peer ever sees already carries the list (#212).
+        this.#registeredTypes = host.registeredTypes?.();
         return {
             // CONTRACT: neither hook ever runs for a stateless worker type —
             // the local host skips them when it spins a pool member, so no
@@ -810,7 +900,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
         return {
             descriptor: () => this.descriptor(),
             view: () => this.view(),
-            resolve: (symbol) => resolveHostSymbol(this.#host!, symbol),
+            resolve: (symbol) => resolveClusterSymbol(this.#host!, symbol),
             dispatch: (ref, method, args, call) => {
                 // The ops channel answers before any activation lookup, and
                 // deliberately does NOT count as an inbound dispatch —
@@ -975,6 +1065,24 @@ class ClusterPlacementImpl implements ClusterPlacement {
     // -----------------------------------------------------------------------
     // Inbound (redirect-not-proxy: local or wrong-host, never forward)
 
+    /**
+     * Refuse a type this host does not register (#212) — with the
+     * `wrong-host` kind, so the caller evicts its route and re-places
+     * against the eligibility-filtered view, instead of the unbranded 404
+     * a caller can only fail on. Deliberately NO owner hint: this host has
+     * no idea who owns it, and a fabricated hint would be worse than none.
+     *
+     * Sync — the registry answers `null` for an unregistered type without
+     * loading anything; a LAZY type's key is registered, so it passes.
+     */
+    #inboundRefusal(ref: ActorRef): ActorWrongHostError | null {
+        const host = this.#host;
+        if (host && host.definition(ref.type) === null) {
+            return new ActorWrongHostError(actorLabel(ref));
+        }
+        return null;
+    }
+
     dispatchInbound(
         ref: ActorRef,
         method: string,
@@ -987,6 +1095,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // an inbound call does not pass through `useDispatch` middleware —
         // `metrics()` counts a cross-host call once, on the caller.
         this.#counters.inboundDispatches++;
+        const refusal = this.#inboundRefusal(ref);
+        if (refusal) return Promise.reject(refusal);
         return this.#local!.dispatch(ref, method, args, call);
     }
 
@@ -997,6 +1107,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
         call: ActorCallContext
     ): AsyncIterable<unknown> {
         this.#counters.inboundStreams++;
+        const refusal = this.#inboundRefusal(ref);
+        if (refusal) return failingIterable(refusal);
         return this.#local!.dispatchStream!(ref, method, args, call);
     }
 
@@ -1008,6 +1120,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
         options?: { throttleMs?: number }
     ): AsyncIterable<unknown> {
         this.#counters.inboundWatches++;
+        const refusal = this.#inboundRefusal(ref);
+        if (refusal) return failingIterable(refusal);
         return this.#local!.dispatchWatch!(ref, method, args, call, options);
     }
 
@@ -1060,6 +1174,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
             reminderShards: shards,
             uptimeMs: this.#startedAt === 0 ? 0 : Math.round(performance.now() - this.#startedAt),
             transports: this.#transports.map((t) => t.name),
+            ...(this.#registeredTypes ? { types: [...this.#registeredTypes] } : {}),
             ...(this.#options.meta ? { meta: this.#options.meta } : {}),
             ...(digest ? { metrics: digest } : {}),
             ...(health ? { health } : {}),
@@ -1557,10 +1672,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
                 return 'local';
             }
             const member = this.#member(cached);
-            if (member) {
+            if (member && hostRegisters(member, ref.type)) {
                 this.#counters.routeCacheHits++;
                 return member;
             }
+            // Departed — or live but not registering the type (#212): a hint
+            // learned from a peer that knew less than the view does. Either
+            // way the route is unusable; drop it and resolve fresh.
             this.#routeCache.delete(id);
         }
         this.#counters.routeCacheMisses++;
@@ -1571,10 +1689,17 @@ class ClusterPlacementImpl implements ClusterPlacement {
             if (entry.hostId === this.identity.hostId) return 'local';
             const member = this.#member(entry.hostId);
             if (member) {
-                this.#cacheRoute(id, entry.hostId);
-                return member;
-            }
-            if (!(await this.#options.membership.isAlive(entry.hostId))) {
+                if (hostRegisters(member, ref.type)) {
+                    this.#cacheRoute(id, entry.hostId);
+                    return member;
+                }
+                // Live but structurally unable to serve it (#212):
+                // descriptors are immutable per incarnation, so this entry
+                // is stale or poisoned and can only ever bounce callers.
+                // Evict and place fresh below, the dead-owner treatment.
+                this.#counters.directoryEvictions++;
+                await this.#options.directory.evict(id, entry);
+            } else if (!(await this.#options.membership.isAlive(entry.hostId))) {
                 // Dead owner: reclaim lazily and place fresh below.
                 this.#counters.directoryEvictions++;
                 await this.#options.directory.evict(id, entry);
@@ -1587,7 +1712,43 @@ class ClusterPlacementImpl implements ClusterPlacement {
             (await this.#declaredPolicy(ref.type)) ??
             this.#options.typePolicies?.[ref.type] ??
             this.#policy;
-        const chosen = policy.choose(ref, view, this.descriptor());
+        let chosen: HostDescriptor;
+        const activeAll = activeHosts(view);
+        if (activeAll.length === 0) {
+            // Nothing active ANYWHERE (a cluster mid-drain): eligibility has
+            // no opinion to offer — hand the policy the full view and let
+            // its own fallback answer, exactly as before #212.
+            chosen = policy.choose(ref, view, this.descriptor());
+        } else {
+            const eligible = eligibleFor(view, ref.type);
+            const activeEligible =
+                eligible.view === view ? activeAll : activeHosts(eligible.view);
+            if (activeEligible.length === 0) {
+                // Default-deny, loudly: silently widening to the full view
+                // is how a type lands on a host that never registered it.
+                throw new ActorUnplaceableError(ref.type, {
+                    hosts: view.hosts.length,
+                    active: activeAll.length
+                });
+            }
+            chosen = policy.choose(ref, eligible.view, this.descriptor());
+            if (chosen.hostId !== this.identity.hostId && !eligible.has(chosen.hostId)) {
+                // A policy bug, not a routing condition — re-placing
+                // silently would hide it (the `#declaredPolicy` unusable-
+                // strategy posture). Answering SELF is always allowed, even
+                // when self is not in the handed view (expired from
+                // membership, or not registering the type): self means
+                // 'local', and the local path has its own authoritative
+                // guards — the fence, the claim, the registry — where a
+                // remote answer would be dialed blind.
+                throw new Error(
+                    `[sigx actors] placement policy "${policy.name ?? 'unnamed'}" chose ` +
+                        `${chosen.hostId} for "${ref.type}", which is not an eligible ` +
+                        `member of the view it was handed. A policy must answer with a ` +
+                        `member of that view, or with self.`
+                );
+            }
+        }
         // Sticky: concurrent activations of one key must agree on a target
         // so racing dispatches join one claim instead of splitting.
         this.#cacheRoute(id, chosen.hostId);
@@ -1716,7 +1877,21 @@ class ClusterPlacementImpl implements ClusterPlacement {
         let lastError: unknown;
         for (let attempt = 0; attempt <= this.#retries; attempt++) {
             if (attempt > 0) this.#counters.retries++;
-            const target = await this.#resolveTarget(ref);
+            let target: 'local' | HostDescriptor;
+            try {
+                target = await this.#resolveTarget(ref);
+            } catch (error) {
+                if (!isActorErrorKind(error, 'unplaceable')) throw error;
+                // The one pod registering this type may be mid-join (a
+                // rolling deploy) — refresh and retry rather than failing
+                // the call into the deploy window.
+                lastError = error;
+                if (attempt < this.#retries) {
+                    await this.#options.membership.refresh().catch(() => {});
+                    await this.#backoff(attempt);
+                }
+                continue;
+            }
             try {
                 if (target === 'local') {
                     this.#counters.routedLocal++;
@@ -1771,6 +1946,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
     ): AsyncIterable<unknown> {
         const id = actorId(ref);
         const resolveTarget = (): Promise<'local' | HostDescriptor> => this.#resolveTarget(ref);
+        const refreshMembership = (): Promise<unknown> =>
+            this.#options.membership.refresh().catch(() => {});
         const noteFailure = (
             error: unknown,
             remote: boolean
@@ -1791,7 +1968,20 @@ class ClusterPlacementImpl implements ClusterPlacement {
             let lastError: unknown;
             for (let attempt = 0; attempt <= retries; attempt++) {
                 if (attempt > 0) counters.retries++;
-                const target = await resolveTarget();
+                let target: 'local' | HostDescriptor;
+                try {
+                    target = await resolveTarget();
+                } catch (error) {
+                    if (!isActorErrorKind(error, 'unplaceable')) throw error;
+                    // Same posture as `#routedDispatch`: a registering host
+                    // may be mid-join — refresh and retry.
+                    lastError = error;
+                    if (attempt < retries) {
+                        await refreshMembership();
+                        await backoff(attempt);
+                    }
+                    continue;
+                }
                 let iterable: AsyncIterable<unknown>;
                 if (target === 'local') {
                     counters.routedLocal++;

@@ -1454,6 +1454,19 @@ export interface Host extends ActorDispatcher {
     /** Definition lookup — the wire resolver's 404 authority. May load lazily. */
     definition(type: string): AnyActorDefinition | Promise<AnyActorDefinition | null> | null;
     /**
+     * Every registered actor type name — array- and lazy-registered alike,
+     * workers included — sorted, stable for the host's lifetime, and
+     * gathered WITHOUT loading lazy modules (registry keys, not
+     * definitions).
+     *
+     * A cluster placement publishes this in the membership descriptor
+     * (`HostDescriptor.types`) so placement can be registration-aware
+     * (#212). Optional so a hand-rolled `Host` predating it keeps
+     * compiling; a placement treats its absence like a descriptor without
+     * `types` — eligible for everything, the legacy direction.
+     */
+    registeredTypes?(): readonly string[];
+    /**
      * Where an actor lives, without dispatching or activating — delegates to
      * the placement's `locate()`.
      *

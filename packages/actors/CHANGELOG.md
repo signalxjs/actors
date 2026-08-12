@@ -4,6 +4,53 @@
 
 ### Changed
 
+- **Placement is registration-aware — default-deny** (#212): a cluster member
+  is only ever CHOSEN to host an actor type its app registers, which is what
+  makes heterogeneous clusters (different roles registering different actor
+  apps) safe to run. Enforced at every decision point, not just the policy: a
+  route-cache hint or a live directory entry naming a non-registering host is
+  dropped/evicted and the actor re-placed, and the view handed to a
+  `PlacementPolicy.choose()` is **narrowed** to the hosts registering
+  `ref.type` — so custom policies are registration-safe without changes.
+  Contract change for policy authors: the view is never empty, `self` may not
+  be in it, and the answer must be a member of it or `self` (anything else
+  fails the dispatch loudly, naming the policy; self is always accepted
+  because it means 'local', where the fence, claim and registry guard
+  authoritatively). `preferLocalPolicy()` on a host that
+  does not register the type falls through to rendezvous over the eligible
+  view instead of answering `self`. A descriptor without `types` (an older
+  build) stays eligible for everything — no flag day in a mixed-version
+  cluster. Homogeneous clusters hand policies the identical view object, so
+  the fast path is unchanged, allocation and count alike.
+- **An inbound cluster call for a type the host does not register answers
+  `wrong-host`, not 404** (#212): `resolveClusterSymbol` resolves well-formed
+  symbols for unknown types precisely so the refusal can carry the kind (with
+  NO owner hint — the refusing host has no idea who owns it), and the caller
+  evicts its route and re-places instead of failing on an unbranded 404 with
+  a poisoned route cache — the old failure mode when a rolling deploy placed
+  a brand-new type on a pod that predated it. The Durable Objects runtime
+  (`hostEndpointRuntime`) keeps the 404: no cluster, nowhere to re-place.
+
+### Added
+
+- **`HostDescriptor.types`** (#212): the actor types a host registers —
+  workers and lazy types included, gathered without loading lazy modules —
+  published in the membership descriptor at join. A typed field rather than a
+  `meta` key for the `publicAddress` reason: placement filters on it, so it
+  must not be indistinguishable from a free-form label. Round-trips through
+  every shipped provider unchanged. Also on `HostReport.types`, so
+  `clusterStats()` shows a heterogeneous cluster's registration split.
+- **`Host.registeredTypes()`**: every registered type name, sorted, stable
+  for the host's lifetime. Optional on the interface so a hand-rolled `Host`
+  keeps compiling; a placement treats its absence as a legacy descriptor.
+- **`ActorUnplaceableError`, kind `'unplaceable'`** (#212): thrown when no
+  ACTIVE host registers the requested type, instead of silently widening
+  placement to the full view. Retried through the routing loop against a
+  refreshed membership view (the one pod registering a type being mid-join
+  IS a rolling deploy), then surfaced as the `cause` of the final
+  `ActorActivationError`. Travels the host wire as a 503 with its kind; an
+  older peer degrades it to an unbranded error, the safe direction.
+
 - **`ActorErrorKind` gains `'watch-declaration'`** (#138), carried across the
   host-to-host wire like every other branded kind. A peer on an older build
   degrades it to an ordinary error rather than mis-branding it.

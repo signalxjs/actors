@@ -84,6 +84,64 @@ The transport chain is tried in order, and `dispatcherFor(target)` returning
 what makes a rolling deploy of a new transport safe, since hosts on the old
 build simply keep being reached over HTTP.
 
+## Registration-aware placement
+
+A host is only ever **chosen to host** an actor type its app registers (#212).
+The descriptor publishes the registered type names — `HostDescriptor.types`, a
+typed field for the `publicAddress` reason (placement filters on it
+default-deny, so it must not be indistinguishable from a free-form `meta`
+label) — and eligibility is enforced at every decision point of
+`#resolveTarget`, because the policy is not the only place a target comes from:
+
+- **Route cache**: a cached hint naming a host that does not register the type
+  is dropped, the existing dead-member treatment.
+- **Directory**: a live owner that does not register the type is evicted and
+  the actor re-placed — descriptors are immutable per incarnation (hostIds are
+  minted per start), so such an entry is stale or poisoned and can only ever
+  bounce callers.
+- **Policy**: `choose()` is handed a view **narrowed** to the hosts registering
+  `ref.type`, so every custom policy is registration-safe without doing
+  anything. The narrowed view preserves object identity when nothing was
+  filtered (homogeneous clusters pay nothing), `self` may not be in it (a host
+  can place types it does not register — which is also why `preferLocalPolicy`
+  falls through to rendezvous over the eligible view instead of answering
+  `self` blindly), and a policy answering a host outside it — other than
+  `self`, which means "local" and is guarded authoritatively there by the
+  fence, the claim and the registry — fails the dispatch loudly, naming the
+  policy.
+
+An **empty** eligible set throws the branded `unplaceable` error rather than
+silently widening to the full view — silently widening is how a type lands on
+a host that never registered it. It is retried through the routing loop against
+a refreshed view, because the one pod registering a type being mid-join *is* a
+rolling deploy.
+
+The receiving side enforces the same rule a second time: an inbound cluster
+call for a type this host does not register answers **`wrong-host` with no
+owner hint** (via `resolveClusterSymbol`, which resolves well-formed symbols
+for unknown types precisely so the refusal can carry a kind), instead of the
+old unbranded 404. A 404 is terminal to the caller; `wrong-host` makes it evict
+its route and re-place — which is also what an **older** sender, with no
+eligibility filtering of its own, already does with that kind. The Durable
+Objects runtime keeps the 404 (`hostEndpointRuntime` — no cluster, nowhere to
+re-place).
+
+Mixed-version rule: a descriptor **without** `types` is an older build and
+reads as "registers everything" — the legacy behavior and the only safe
+direction, since absent-means-ineligible would empty every view mid-rolling-
+deploy. Consequently the fix for "a rolling deploy places a brand-new type on
+an old pod" is partial until the fleet republishes: old pods stay eligible for
+the new type, but a new receiving pod refuses with `wrong-host` so the caller
+re-places instead of caching a poisoned route.
+
+Two deliberate non-changes: `ownsReminderShard` stays rendezvous over the FULL
+active view (shards are host-level, not typed), and fencing semantics are
+unchanged — for a volatile (`memoryStorage`) keyed actor the directory's
+single-activation invariant, which fencing defends, is the *only* single-writer
+guarantee there is, since volatile storage has no cross-host CAS floor. A host
+registering only workers has nothing to fence and keeps serving them, which the
+worker-cluster suite pins.
+
 ## Shutdown ordering
 
 The sequence is deliberately not the obvious one:
