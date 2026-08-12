@@ -387,6 +387,17 @@ interface EligibleHosts {
     has(hostId: string): boolean;
 }
 const eligibleCache = new WeakMap<MembershipView, Map<string, EligibleHosts>>();
+/** All hostIds of a view, memoized per view object — post-choose validation
+ *  on the all-eligible fast path, shared across types. */
+const viewIdsCache = new WeakMap<MembershipView, Set<string>>();
+function viewIds(view: MembershipView): Set<string> {
+    let ids = viewIdsCache.get(view);
+    if (ids === undefined) {
+        ids = new Set(view.hosts.map((h) => h.hostId));
+        viewIdsCache.set(view, ids);
+    }
+    return ids;
+}
 function eligibleFor(view: MembershipView, type: string): EligibleHosts {
     let perType = eligibleCache.get(view);
     if (perType === undefined) {
@@ -397,7 +408,11 @@ function eligibleFor(view: MembershipView, type: string): EligibleHosts {
     if (eligible === undefined) {
         const hosts = view.hosts.filter((h) => hostRegisters(h, type));
         if (hosts.length === view.hosts.length) {
-            eligible = { view, has: () => true };
+            // Everything registers the type — hand back the ORIGINAL view,
+            // but still validate membership: a policy fabricating a host
+            // outside the view must be caught here too, not only when
+            // filtering narrowed the view.
+            eligible = { view, has: (hostId) => viewIds(view).has(hostId) };
         } else {
             const ids = new Set(hosts.map((h) => h.hostId));
             // Order-preserving filter, so rendezvous stays deterministic.

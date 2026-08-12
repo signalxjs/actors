@@ -179,7 +179,7 @@ describe('default-deny eligibility', () => {
         expect(error.kind).toBe('activation');
         expect(error.cause?.kind).toBe('unplaceable');
         expect(error.cause?.message).toContain('Ghost');
-        expect(error.cause?.message).toMatch(/no live host/i);
+        expect(error.cause?.message).toMatch(/no active host/i);
     });
 
     it('unplaceable retries against a refreshed view and converges on a joiner', async () => {
@@ -200,6 +200,28 @@ describe('default-deny eligibility', () => {
         };
         cluster = await engineWeb({ typePolicies: { Counter: rogue }, retries: 0 });
         await expect(cluster.hosts[0]!.actor(Counter, 'r').bump()).rejects.toThrow(/rogue/);
+    });
+
+    it('a policy answering a host outside the VIEW fails loudly on the all-eligible fast path too', async () => {
+        // Homogeneous cluster — the identity fast path — and a policy
+        // fabricating a descriptor that is in no view at all. Post-choose
+        // validation must catch it here as well, not only when filtering
+        // narrowed the view.
+        const fabricator: PlacementPolicy = {
+            name: 'fabricator',
+            choose: () => ({
+                hostId: 's.nowhere',
+                epoch: 1,
+                address: 'http://nowhere.test',
+                status: 'active' as const
+            })
+        };
+        cluster = await createCluster(2, {
+            actors: [Counter],
+            typePolicies: { Counter: fabricator },
+            retries: 0
+        });
+        await expect(cluster.hosts[0]!.actor(Counter, 'f').bump()).rejects.toThrow(/fabricator/);
     });
 });
 

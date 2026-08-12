@@ -41,8 +41,8 @@
 - **`Host.registeredTypes()`**: every registered type name, sorted, stable
   for the host's lifetime. Optional on the interface so a hand-rolled `Host`
   keeps compiling; a placement treats its absence as a legacy descriptor.
-- **`ActorUnplaceableError`, kind `'unplaceable'`** (#212): thrown when NO
-  live host registers the requested type, instead of silently widening
+- **`ActorUnplaceableError`, kind `'unplaceable'`** (#212): thrown when no
+  ACTIVE host registers the requested type, instead of silently widening
   placement to the full view. Retried through the routing loop against a
   refreshed membership view (the one pod registering a type being mid-join
   IS a rolling deploy), then surfaced as the `cause` of the final
