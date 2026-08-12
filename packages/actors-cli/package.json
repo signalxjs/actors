@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-cli",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "description": "sigx CLI plugin for @sigx/actors — observe and monitor hosts, actors and clusters from the terminal",
     "type": "module",
     "main": "./dist/plugin.js",
@@ -57,7 +57,7 @@
         "@sigx/terminal": "^0.12.0"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.7.0",
+        "@sigx/actors": "^0.8.0",
         "@sigx/cli": ">=0.10.0"
     },
     "peerDependenciesMeta": {

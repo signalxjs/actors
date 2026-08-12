@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-cloudflare",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "description": "Cloudflare Durable Objects backend for @sigx/actors — one DO per actor",
     "type": "module",
     "main": "./dist/index.js",
@@ -58,6 +58,6 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.7.0"
+        "@sigx/actors": "^0.8.0"
     }
 }

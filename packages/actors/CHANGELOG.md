@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Added
 
 - **`ClusterPlacement.members()` / `dispatchOn()` and `workerOn()`** (#213):
