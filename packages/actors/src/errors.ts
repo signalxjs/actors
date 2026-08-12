@@ -18,6 +18,7 @@ export type ActorErrorKind =
     | 'call-timeout'
     | 'wrong-host'
     | 'unreachable'
+    | 'unplaceable'
     | 'watch-declaration';
 
 export interface ActorErrorShape extends Error {
@@ -201,6 +202,26 @@ export class ActorWrongHostError extends ActorError {
         );
         this.name = 'ActorWrongHostError';
         this.owner = owner;
+    }
+}
+
+/**
+ * No live host registers this actor type (#212), so placement has nowhere
+ * to put it. Retried against a refreshed membership view — a rolling deploy
+ * whose only pod registering the type is mid-join looks exactly like this —
+ * and surfaced as the `cause` of the final `ActorActivationError` once the
+ * retries are spent.
+ */
+export class ActorUnplaceableError extends ActorError {
+    constructor(type: string, view: { hosts: number; active: number }) {
+        super(
+            'unplaceable',
+            `[sigx actors] actor type "${type}" is registered by NO live host ` +
+                `(view: ${view.hosts} host${view.hosts === 1 ? '' : 's'}, ${view.active} ` +
+                `active). Add "${type}" to some host's defineActorApp({ actors }), or check ` +
+                `that the pods registering it are up.`
+        );
+        this.name = 'ActorUnplaceableError';
     }
 }
 

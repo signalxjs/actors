@@ -56,6 +56,13 @@ export interface HostReport {
      * whole story.
      */
     transports?: string[];
+    /**
+     * The actor types this host registers — `HostDescriptor.types` on the
+     * ops channel (#212), so a heterogeneous cluster's registration split
+     * is visible in `clusterStats()`. Absent from a peer that predates the
+     * field.
+     */
+    types?: string[];
     meta?: Record<string, string>;
     /**
      * This host's mergeable metrics, when it has `metrics()` attached and

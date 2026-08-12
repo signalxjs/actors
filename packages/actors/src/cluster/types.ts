@@ -52,6 +52,23 @@ export interface HostDescriptor extends HostIdentity {
      * "never redirect a client here" — see `ActorOwnerHint.publicAddress`.
      */
     readonly publicAddress?: string;
+    /**
+     * Every actor type this host REGISTERS (workers and lazy types
+     * included), sorted — what makes placement registration-aware (#212): a
+     * host is only ever chosen to host a type in this list.
+     *
+     * A typed field rather than a `meta` key for the `publicAddress`
+     * reason: placement filters on it default-deny, so it must not be
+     * indistinguishable from a free-form zone label.
+     *
+     * ABSENT on a host from a build predating the field, which reads as
+     * "eligible for every type" — the legacy behavior and the only safe
+     * direction (absent-means-ineligible would empty every view mid-rolling
+     * -deploy). Present is authoritative, and immutable for the host's
+     * incarnation: hostIds are minted per start, so a host can never gain
+     * or lose a type without also being a NEW host.
+     */
+    readonly types?: readonly string[];
     /** Free-form placement hints (zone, appVersion, weight …). */
     readonly meta?: Readonly<Record<string, string>>;
 }
@@ -193,6 +210,18 @@ export interface PolicyRuntime {
  *
  * `choose` is SYNC on purpose: it sits under `dispatcherFor` on the hot
  * path, which is also why `membership.view()` is sync.
+ *
+ * The `view` handed to `choose()` is pre-filtered to the hosts that
+ * REGISTER `ref.type` (#212) — a descriptor without `types` counts as
+ * registering everything — so a custom policy is registration-safe without
+ * doing anything. Three consequences to write policies against: the view
+ * is never empty (an empty eligible set throws `unplaceable` before any
+ * policy runs); `self` is always this host's full descriptor but may NOT
+ * be in `view.hosts` (a host may place types it does not register — fall
+ * through to an eligible host rather than answering `self` blindly); and
+ * the answer MUST be a member of `view.hosts` — anything else is a policy
+ * bug and fails the dispatch loudly. `PolicyRuntime.view()` remains the
+ * FULL view: load probes are host-level, not per-type.
  */
 export interface PlacementPolicy extends ActorPlacementStrategy {
     choose(
