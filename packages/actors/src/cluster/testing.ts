@@ -935,6 +935,11 @@ const heterogeneousPlacement: ConformanceCase = {
                         skipped: 'the harness does not honor per-host registration (actorsFor)'
                     };
                 }
+                // Deltas against a baseline, not absolute counts: the case
+                // pins what THESE calls did, whatever the harness dispatched
+                // while warming up.
+                const inbound0 = h.placements[0]!.counters().inboundDispatches;
+                const remote1 = h.placements[1]!.counters().remoteDispatches;
                 // From the NON-registering host, across a SPREAD of keys:
                 // every call must cross the wire and be served by the host
                 // that registers the type. Many keys on purpose — a single
@@ -950,17 +955,18 @@ const heterogeneousPlacement: ConformanceCase = {
                     assertEqual(result, 5, `key het${i} from the non-registering host`);
                 }
                 assert(
-                    h.placements[1]!.counters().remoteDispatches >= 16,
+                    h.placements[1]!.counters().remoteDispatches - remote1 >= 16,
                     'every call crossed the wire instead of activating locally'
                 );
                 assertEqual(
-                    h.placements[0]!.counters().inboundDispatches,
+                    h.placements[0]!.counters().inboundDispatches - inbound0,
                     16,
                     'the registering host served all of them'
                 );
                 // And the worker registered only on the edge host is
                 // reachable FROM the other side, landing where it is
                 // registered — same key spread, same reason.
+                const inbound1 = h.placements[1]!.counters().inboundDispatches;
                 for (let i = 0; i < 8; i++) {
                     const pong = await h.hosts[0]!.dispatch(
                         { type: WORKER, key: `w${i}` },
@@ -971,7 +977,7 @@ const heterogeneousPlacement: ConformanceCase = {
                     assertEqual(pong, 2, `worker key w${i} answered`);
                 }
                 assertEqual(
-                    h.placements[1]!.counters().inboundDispatches,
+                    h.placements[1]!.counters().inboundDispatches - inbound1,
                     8,
                     'the worker executed only on the host that registers it'
                 );
@@ -1008,7 +1014,9 @@ const targetedWorkerCalls: ConformanceCase = {
                     };
                 }
                 // Delivered ON the chosen member, from a host that does not
-                // register the worker at all.
+                // register the worker at all. Delta against a baseline, so
+                // harness warmup dispatches cannot satisfy the assertion.
+                const inbound0 = p0.counters().inboundDispatches;
                 const pong = await p1.dispatchOn(
                     p0.identity.hostId,
                     { type: WORKER, key: 't' },
@@ -1017,12 +1025,13 @@ const targetedWorkerCalls: ConformanceCase = {
                 );
                 assertEqual(pong, 2, 'the targeted call answered');
                 assert(
-                    p0.counters().inboundDispatches >= 1,
+                    p0.counters().inboundDispatches - inbound0 >= 1,
                     'the targeted host served it'
                 );
                 // A target that does not register the type refuses with the
                 // WRONG-HOST kind and NO owner hint — an answer, carried by
                 // this wire, never consumed as a re-route.
+                const retries0 = p0.counters().retries;
                 const error = await caught(() =>
                     p0.dispatchOn!(p1.identity.hostId, { type: WORKER, key: 't' }, 'ping', [1])
                 );
@@ -1033,7 +1042,7 @@ const targetedWorkerCalls: ConformanceCase = {
                     undefined,
                     'the refusal carries no owner hint'
                 );
-                assertEqual(p0.counters().retries, 0, 'one attempt — never retried');
+                assertEqual(p0.counters().retries - retries0, 0, 'one attempt — never retried');
             }
         )
 };
