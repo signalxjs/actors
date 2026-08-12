@@ -213,10 +213,55 @@ export interface RebalanceReport {
     reason?: 'balanced' | 'no-peers' | 'no-candidates' | 'not-active';
 }
 
+/** `members()` filter (#213). */
+export interface MembersFilter {
+    /** Only hosts registering this actor type. A legacy descriptor without
+     *  `types` matches ANY filter — the same rule placement itself applies. */
+    registers?: string;
+    /** Status to require. Default `'active'`; `'any'` disables the filter. */
+    status?: HostDescriptor['status'] | 'any';
+}
+
+/** One-attempt options for `dispatchOn()` (#213). */
+export interface TargetedCallOptions {
+    /** Deadline AND abort for the single attempt. Default 30 000. */
+    timeoutMs?: number;
+    signal?: AbortSignal;
+}
+
 export interface ClusterPlacement extends ActorPlacement {
     readonly identity: HostIdentity;
     /** This host's current membership descriptor. */
     descriptor(): HostDescriptor;
+    /**
+     * The current members, self included — active by default, optionally
+     * filtered to hosts registering a type (#213). A sync view read, no
+     * I/O: the queryable form of `view()`, and the primitive a fan-out
+     * ("call this worker on every host registering it") enumerates.
+     *
+     * Optional on the interface (the `noteAuthFailure` posture) so a
+     * hand-rolled placement predating it keeps compiling.
+     */
+    members?(filter?: MembersFilter): readonly HostDescriptor[];
+    /**
+     * Invoke a stateless worker method ON a specific member (#213) — the
+     * generalized `$sigx:host#stats` mechanism, public. The worker executes
+     * on the targeted host (that is what a worker IS); errors propagate
+     * branded. ONE attempt: no retry, no route cache, no directory — the
+     * caller chose the host, so an unreachable or wrong-host answer is an
+     * answer, never a condition to route around. A self-target dispatches
+     * in-process (the `clusterStats` precedent — a host often cannot reach
+     * its own advertised address). Refuses a STATEFUL type when its
+     * definition is locally resolvable: targeted delivery would fight
+     * placement over where the activation lives; dispatch those normally.
+     */
+    dispatchOn?(
+        target: HostDescriptor | string,
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        options?: TargetedCallOptions
+    ): Promise<unknown>;
     /** Whether THIS host owns a reminder shard under the current view. */
     ownsReminderShard(shard: string): boolean;
     /**
@@ -1223,6 +1268,68 @@ class ClusterPlacementImpl implements ClusterPlacement {
             );
         }
         return report;
+    }
+
+    members(filter?: MembersFilter): readonly HostDescriptor[] {
+        const status = filter?.status ?? 'active';
+        const registers = filter?.registers;
+        return this.view().hosts.filter(
+            (h) =>
+                (status === 'any' || h.status === status) &&
+                (registers === undefined || hostRegisters(h, registers))
+        );
+    }
+
+    async dispatchOn(
+        target: HostDescriptor | string,
+        ref: ActorRef,
+        method: string,
+        args: readonly unknown[],
+        options?: TargetedCallOptions
+    ): Promise<unknown> {
+        const hostId = typeof target === 'string' ? target : target.hostId;
+        // Self answers from its own descriptor: a fenced or view-absent host
+        // can still serve its own workers (worker-cluster pins that), and a
+        // host often cannot reach its own advertised address anyway.
+        const member =
+            hostId === this.identity.hostId ? this.descriptor() : this.#member(hostId);
+        if (!member) {
+            throw new ActorUnreachableError(`${hostId} — not in the membership view`);
+        }
+        // Refuse a stateful type when we can tell. A null definition (the
+        // caller does not register it) allows the call — the target's own
+        // inbound guard and directory claim still hold the invariants.
+        let def: AnyActorDefinition | null = null;
+        try {
+            def = (await this.#host?.definition(ref.type)) ?? null;
+        } catch {
+            def = null; // a failed lazy load is the dispatch path's problem
+        }
+        if (def && def.__sigxActor.stateless === undefined) {
+            throw new Error(
+                `[sigx actors] dispatchOn() is for stateless workers; "${ref.type}" is a ` +
+                    `stateful actor type, and targeted delivery would fight placement over ` +
+                    `where its activation lives. Dispatch it normally and let placement route.`
+            );
+        }
+        this.#counters.targetedDispatches++;
+        const timeoutMs = options?.timeoutMs ?? 30_000;
+        const timeout = AbortSignal.timeout(timeoutMs);
+        const call: ActorCallContext = {
+            callChain: [],
+            callId: mintCallId(),
+            // Bounded from both ends, the peerReport posture: the abort
+            // stops a hung socket here, the deadline lets the target give
+            // up on its own clock.
+            deadline: Date.now() + timeoutMs,
+            abortSignal: options?.signal
+                ? AbortSignal.any([timeout, options.signal])
+                : timeout
+        };
+        if (member.hostId === this.identity.hostId) {
+            return this.#local!.dispatch(ref, method, args, call);
+        }
+        return this.#transportDispatcher(member).dispatch(ref, method, args, call);
     }
 
     // -----------------------------------------------------------------------

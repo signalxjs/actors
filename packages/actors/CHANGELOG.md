@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`ClusterPlacement.members()` / `dispatchOn()` and `workerOn()`** (#213):
+  enumerate the membership view (active by default, filterable to hosts
+  registering a type — the queryable form of `view()`), and invoke a
+  stateless worker method ON a chosen member — the `$sigx:host#stats`
+  mechanism made public. One attempt by contract: no retry, no route cache,
+  no directory; `unreachable` and `wrong-host` propagate branded as answers.
+  Self-targets dispatch in-process. Stateful types are refused when
+  resolvable — targeted delivery would fight placement over where the
+  activation lives. New `targetedDispatches` counter.
+
+### Fixed
+
+- **`addCounters` no longer NaNs `clusterStats` totals against an older
+  peer** (#213): fields missing from a mixed-version report now sum as 0.
+  Latent since the counters shipped — any counter added in any release
+  poisoned every total for the duration of a rolling deploy.
+
 ### Changed
 
 - **Placement is registration-aware — default-deny** (#212): a cluster member
