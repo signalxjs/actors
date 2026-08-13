@@ -101,6 +101,10 @@ export function openSubscribers(
     return {
         abort: () => controller.abort(),
         async unwind(): Promise<void> {
+            // Nothing to prove with no consumers — and the wake-up mutation
+            // would be an extra (possibly durable) turn outside the timed
+            // window in every 0-subscriber arm.
+            if (drains.length === 0) return;
             controller.abort();
             await wake();
             if (!(await settledWithin(drains, TEARDOWN_TIMEOUT_MS))) {
