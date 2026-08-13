@@ -1853,3 +1853,89 @@ genuinely established, `drops` **0**, healthy delivery 19 055 msg/s, p50
   than a fix, and measuring it first would have risked crediting it. #182 is
   untouched: every `max_buffered_bytes` above is the client's, and means
   nothing about a host's (#208).
+
+## 2026-08-13 · The save-path serialize cost, priced (#227, the rest of #124)
+
+| | |
+|---|---|
+| Machine | Dedicated bench VM — AMD EPYC 9V74, 4 vCPU, linux/x64 |
+| Node | v24.18.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Commit | `b78df80` |
+| Settings | `bench.yml` dispatch, 5 rounds × 400 ms, interleaved, branch on BOTH sides |
+| Conditions | Quiet. The identical-commit A/B called **no verdict across 525 metrics**, which is also the noise audit for the three new scenarios below: every new row read `no change`. |
+
+#124's reporter re-profiled on 0.5.0 and `@sigx/serialize` moved only −7%
+while `@sigx/actors` fell −88%: the codec cost that remains lives on the
+SAVE path (`job.checkpoint()` re-encoding the whole growing state per step)
+and on the job READ path — and nothing in the suite measured either.
+`state/dirty-growth` deliberately never saves, `state/explicit-save` is
+fixed-size, and no `defineJob` fixture existed in Tier 1 at all. Three
+scenarios close that hole.
+
+### `state/save-growth` — append + `ctx.save()` per turn, 500 steps
+
+Three arms, identical except one variable each. `mem` is explicit
+persistence with no subscriber, so no tracking is installed: the turn is
+body + ONE `encodeWithHandlers` walk + a by-reference store.
+
+| arm | head (µs/turn) | tail (µs/turn) | tail delta vs `mem` |
+|---|---:|---:|---|
+| `mem` | 36.2 | 190.3 | — (the host encode walk) |
+| `stringify` | 47.7 | 287.8 | **+97 µs, +51%** — the adapter's own `JSON.stringify` walk |
+| `mem+sub` | 80.6 | 595.5 | **+405 µs, +213%** — deepTrack + the boundary `#snapshot()` |
+
+- **Every real storage adapter pays the `stringify` arm.** pg, redis,
+  surreal and `fileStorage` all stringify the encoded tree, so the honest
+  Tier-1 floor for a durable checkpoint is ~288 µs/turn at 500 rows, not
+  190. The two walks measure the same tree twice; a single-walk
+  encode-to-string in `@sigx/serialize` would collapse the delta.
+- **A subscriber still triples the turn.** Cross-check: `state/dirty-growth`
+  (walk + snapshot, NO save) tails at 416 µs on the same run, and
+  595 ≈ 190 + (416 − dispatch floor). The arms agree with each other.
+- Per-arm `settleGc()` matters: without it an arm's head window pays the
+  previous arm's GC debt — measured at 3× on `mem/head_turn_us` locally.
+
+### `jobs/status-read` — the `JobInfo` clone, by checkpoint size
+
+A paused job holding a `rows`-sized checkpoint, closed-looped through
+`status()`. `status()` returns 8 fields that deliberately EXCLUDE the
+checkpoint — and builds them via `toInfo(ctx.snapshot())`, a full
+encode+revive of everything.
+
+| checkpoint | status()/s | p99 |
+|---|---:|---:|
+| rows=0 | 406.7 k | 3.4 µs |
+| rows=200 | 6.1 k | 183.1 µs |
+| rows=2000 | 597.1 | 2.03 ms |
+
+- **681× from empty to 2 000 rows, linear in rows** (10× rows ≙ 10.2×
+  slower). The read pays for state it does not return; a `$live` watch on
+  `status()` re-pays it per tick, handing back the #130 ticksOnly win.
+- This ladder is the acceptance metric for building `JobInfo` without the
+  whole-state clone: after that fix it must go FLAT.
+
+### `jobs/checkpoint-growth` — the reporter's composite, 300 steps
+
+A real `defineJob` whose run body appends one step's output and
+checkpoints, released one step at a time; release→checkpoint-ack timed.
+
+| arm | head (µs/step) | tail (µs/step) |
+|---|---:|---:|
+| `watch=0` | 19.8 | 113.9 |
+| `watch=1` | 44.2 | 290.2 |
+
+- **A watcher multiplies a checkpoint by ~2.5×** (tail +176 µs/step): the
+  boundary snapshot plus `toInfo` over the same growing state, on top of
+  the save encode. `job.watch()` hard-codes `ctx.changes({ initial: true })`
+  with no throttle knob, so a consumer cannot opt into #130's coalescing —
+  that knob, and the `{version, encoded}` cache deferred from #129, compete
+  to close this gap; this pair of rows is their before.
+
+### Why no `exact` metric here
+
+The deterministic counters exist (encodes per step are exact by
+construction under serial dispatch) but belong in the fix PRs' unit tests,
+probe-counter style: an `exact` bench metric pinned to today's counts would
+put these scenarios in the merge-queue gate and then FAIL it on the very
+improvement the fixes intend — the same split as the 2026-08-06 section.
