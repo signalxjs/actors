@@ -283,13 +283,10 @@ class HostImpl implements Host {
                     etag: record.etag
                 };
             },
+            // Defined via its own split halves so the two paths cannot
+            // drift; the arrow captures `host` after initialization.
             saveState: (ref, raw, expectedEtag) =>
-                this.#storage.save(
-                    ref.type,
-                    ref.key,
-                    encodeWithHandlers(raw, this.#types),
-                    expectedEtag
-                ),
+                host.storeState(ref, host.encodeState(raw), expectedEtag),
             encodeState: (raw) => encodeWithHandlers(raw, this.#types),
             storeState: (ref, encoded, expectedEtag) =>
                 this.#storage.save(ref.type, ref.key, encoded, expectedEtag),

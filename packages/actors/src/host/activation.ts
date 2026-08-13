@@ -1351,6 +1351,10 @@ export class Activation {
                 this.#scheduleWriteBehind();
             }
         }
+        // A prepared snapshot nobody took this boundary (the subscriber
+        // closed, or every one deferred into its window) must not be
+        // retained until the next save — it is a whole-state copy.
+        this.#preparedSnap = null;
         if (this.#faulted && !this.#faultReported) {
             this.#faultReported = true;
             this.#host.onFault(this);
