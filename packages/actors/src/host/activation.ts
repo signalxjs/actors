@@ -147,6 +147,14 @@ export interface ActivationHost {
      */
     loadState(ref: ActorRef): Promise<{ state: object; raw: unknown; etag: string } | null>;
     saveState(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
+    /**
+     * `saveState`'s two halves, split so `#doSave` can reuse the encoded
+     * tree for the boundary snapshot BEFORE storage takes ownership of it
+     * (#233). `reviveState` is the matching revive through the same codec.
+     */
+    encodeState(raw: object): unknown;
+    storeState(ref: ActorRef, encoded: unknown, expectedEtag: string | null): Promise<string>;
+    reviveState(encoded: unknown): object;
     clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
     /** Deep, detached copy through the codec vocabulary. */
     cloneState<S>(raw: S): S;
@@ -1333,7 +1341,10 @@ export class Activation {
                 let snap: object | undefined;
                 for (const sub of this.#subs) {
                     if (this.#deferToWindow(sub)) continue;
-                    this.#deliver(sub, sub.ticksOnly ? CHANGE_TICK : (snap ??= this.#snapshot()));
+                    this.#deliver(
+                        sub,
+                        sub.ticksOnly ? CHANGE_TICK : (snap ??= this.#takeBoundarySnapshot())
+                    );
                 }
             }
             if (this.#isWriteBehind() && this.#version > this.#savedVersion) {
@@ -1400,11 +1411,45 @@ export class Activation {
         }
     }
 
+    /**
+     * Prepared at save time for the boundary emit: the snapshot revived
+     * from the SAME encode the save produced, so a boundary that both
+     * saves and emits costs one whole-state encode instead of two (#233).
+     * Version-keyed; a stale entry is dropped, never delivered.
+     */
+    #preparedSnap: { version: number; snap: object } | null = null;
+
+    /**
+     * Will `#afterTurn` at `version` want a VALUE snapshot? A false
+     * positive costs one wasted revive, a false negative one extra encode —
+     * correctness never depends on this predicate, because
+     * `#takeBoundarySnapshot` falls back to `#snapshot()` on any mismatch.
+     */
+    #wantsSnapshotAt(version: number): boolean {
+        if (version <= this.#notifiedVersion) return false;
+        for (const sub of this.#subs) {
+            // Value-wanting and not parked inside a throttle window — the
+            // same tests `#afterTurn`'s delivery loop applies, read without
+            // its side effects.
+            if (!sub.ticksOnly && !sub.done && sub.cancelWindow === null) return true;
+        }
+        return false;
+    }
+
     async #doSave(): Promise<void> {
         if (this.#faulted) throw this.#faulted;
         const version = this.#version;
         try {
-            this.#etag = await this.#host.saveState(this.ref, toRaw(this.#state), this.#etag);
+            const tree = this.#host.encodeState(toRaw(this.#state));
+            if (this.#wantsSnapshotAt(version)) {
+                // BEFORE `storeState`: storage takes ownership of the tree
+                // with no defensive clone (#25), so nothing may be built
+                // from it afterwards. Revive allocates fresh containers for
+                // every codec-produced node, so the snapshot shares nothing
+                // with the record storage now owns.
+                this.#preparedSnap = { version, snap: this.#host.reviveState(tree) };
+            }
+            this.#etag = await this.#host.storeState(this.ref, tree, this.#etag);
             this.#savedVersion = version;
         } catch (error) {
             if (isStorageConflict(error)) {
@@ -1484,6 +1529,19 @@ export class Activation {
 
     #snapshot(): object {
         return this.#host.cloneState(toRaw(this.#state));
+    }
+
+    /**
+     * The boundary's shared snapshot: the one `#doSave` prepared when it
+     * saved this same version, else a fresh clone. Consumed either way —
+     * a prepared snapshot for a version the boundary has moved past would
+     * otherwise linger until the next save.
+     */
+    #takeBoundarySnapshot(): object {
+        const prepared = this.#preparedSnap;
+        this.#preparedSnap = null;
+        if (prepared && prepared.version === this.#version) return prepared.snap;
+        return this.#snapshot();
     }
 
     #buildContext(): ActorContext<object> {

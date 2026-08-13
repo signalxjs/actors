@@ -290,6 +290,10 @@ class HostImpl implements Host {
                     encodeWithHandlers(raw, this.#types),
                     expectedEtag
                 ),
+            encodeState: (raw) => encodeWithHandlers(raw, this.#types),
+            storeState: (ref, encoded, expectedEtag) =>
+                this.#storage.save(ref.type, ref.key, encoded, expectedEtag),
+            reviveState: (encoded) => reviveWithHandlers(encoded, this.#types) as object,
             clearStoredState: (ref, expectedEtag) =>
                 this.#storage.clear(ref.type, ref.key, expectedEtag),
             cloneState: <S,>(raw: S): S =>
