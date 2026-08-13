@@ -4,6 +4,7 @@ import { tier2Scenarios } from './cluster2.ts';
 import { TIER3_ENABLED, tier3Hint as tier3Reason, tier3Scenarios } from './infra.ts';
 import { dispatchScenarios } from './dispatch.ts';
 import { frameScenarios } from './frames.ts';
+import { jobScenarios } from './jobs.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
@@ -42,6 +43,9 @@ export const THREADS_ENABLED = process.env.BENCH_THREADS === '1';
 export const ALL_SCENARIOS: Scenario[] = [
     ...dispatchScenarios,
     ...stateScenarios,
+    // The next rung of the state ladder: the same codec costs, measured on
+    // the `defineJob` path they were reported against (#124 / #227).
+    ...jobScenarios,
     ...wireScenarios,
     ...frameScenarios,
     ...lifecycleScenarios,

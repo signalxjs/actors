@@ -34,6 +34,14 @@ const MAX_BATCH = 1024;
  */
 export const LATENCY_NOISE_FLOOR_MS = 0.0005;
 
+/** `LATENCY_NOISE_FLOOR_MS` in the microseconds the per-turn metrics use. */
+export const TURN_NOISE_FLOOR_US = LATENCY_NOISE_FLOOR_MS * 1000;
+
+/** Mean of a window of per-turn timings, in microseconds. */
+export function meanUs(ms: readonly number[]): number {
+    return (ms.reduce((sum, v) => sum + v, 0) / ms.length) * 1000;
+}
+
 export interface LoopOptions {
     /** Issue operation `i`. Must resolve when the operation is complete. */
     call(i: number): Promise<unknown>;
