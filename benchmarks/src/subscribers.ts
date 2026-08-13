@@ -77,14 +77,16 @@ export function openSubscribers(
     host: Host,
     ref: ActorRef,
     count: number,
-    wake: () => Promise<unknown>
+    wake: () => Promise<unknown>,
+    /** Arguments for the `watch` stream itself (e.g. a throttle option). */
+    args: readonly unknown[] = []
 ): Subscribers {
     const controller = new AbortController();
     const drains: Promise<void>[] = [];
     if (count > 0) {
         const openStream = requireStreamDispatch(host);
         for (let i = 0; i < count; i++) {
-            const stream = openStream(ref, 'watch', [], benchCall({ abortSignal: controller.signal }));
+            const stream = openStream(ref, 'watch', [...args], benchCall({ abortSignal: controller.signal }));
             drains.push(
                 (async () => {
                     try {
