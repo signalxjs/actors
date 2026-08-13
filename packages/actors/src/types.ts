@@ -703,6 +703,16 @@ export interface ActorContextBase<S extends object> {
     /** Deep, detached copy of the current state (safe outside a turn). */
     snapshot(): S;
     /**
+     * Deep, detached copy of an arbitrary VALUE through the host codec —
+     * the same encode+revive a state snapshot uses, so custom `types:`
+     * handlers round-trip where a `structuredClone` would throw or strip
+     * them. Made for cloning a SUBTREE (`ctx.snapshot(ctx.state.items)`)
+     * when a read must return part of a large state detached: the no-arg
+     * form clones everything, and on state that grows through a run that
+     * is exactly the O(state) read cost #229 removed from `defineJob`.
+     */
+    snapshot<T>(value: T): T;
+    /**
      * Change feed: yields a `snapshot()` after every turn that mutated
      * state. Bounded buffer (drop-oldest); made for `streams:` methods,
      * which must not touch live state after their setup turn returns.

@@ -2174,7 +2174,13 @@ export class Activation {
                 cancel: (name: string) => self.#cancelTask(name),
                 list: () => self.#listTasks()
             } satisfies TaskApi,
-            snapshot(): object {
+            snapshot(value?: unknown): object {
+                // Argument COUNT, not truthiness: `snapshot(null)` is a
+                // legitimate subtree clone and must not become a whole-state
+                // snapshot.
+                if (arguments.length > 0) {
+                    return self.#host.cloneState(toRaw(value)) as object;
+                }
                 return self.#snapshot();
             },
             changes(options?: { initial?: boolean; throttleMs?: number }): AsyncIterable<object> {
