@@ -1933,6 +1933,20 @@ export class Activation {
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         const opts = this.def.__sigxActor;
+        // A declared overload pair (not a widened `value?: unknown`), so the
+        // subtree form keeps its `T` — including primitives: the argument
+        // COUNT decides, and `snapshot(null)` is a legitimate value clone,
+        // never a whole-state snapshot.
+        function snapshot(): object;
+        function snapshot<T>(value: T): T;
+        function snapshot<T>(...args: [] | [T]): T | object {
+            if (args.length > 0) {
+                // The length check proves the [T] branch; tuple-union
+                // narrowing does not, hence the assertion.
+                return self.#host.cloneState(toRaw(args[0] as T));
+            }
+            return self.#snapshot();
+        }
         const base: ActorContext<object> = {
             ref: this.ref,
             key: this.ref.key,
@@ -2174,15 +2188,7 @@ export class Activation {
                 cancel: (name: string) => self.#cancelTask(name),
                 list: () => self.#listTasks()
             } satisfies TaskApi,
-            snapshot(value?: unknown): object {
-                // Argument COUNT, not truthiness: `snapshot(null)` is a
-                // legitimate subtree clone and must not become a whole-state
-                // snapshot.
-                if (arguments.length > 0) {
-                    return self.#host.cloneState(toRaw(value)) as object;
-                }
-                return self.#snapshot();
-            },
+            snapshot,
             changes(options?: { initial?: boolean; throttleMs?: number }): AsyncIterable<object> {
                 return self.#openChanges(options);
             }
