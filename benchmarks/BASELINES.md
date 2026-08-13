@@ -1864,7 +1864,8 @@ genuinely established, `drops` **0**, healthy delivery 19 055 msg/s, p50
 |---|---|
 | Cluster | AKS, 3 × `Standard_D2ls_v6` (2 vCPU), `limits.cpu 1000m`, 1 Redis |
 | Image | `698a5bd` (v0.8.0) — **both arms, same image**, see "Why the control was re-run" |
-| Shapes | `…knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=http` vs the same with `TRANSPORT=tcp` |
+| Shape (http) | `ws replicas=3 nodes=3 image=698a5bd knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=http` |
+| Shape (tcp) | `ws replicas=3 nodes=3 image=698a5bd knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=tcp` |
 | Pool | `FETCH_CONNECTIONS` at the chart default 64 throughout — untouched, as in the 2026-08-11 section |
 | Runtime | undici 7.29.0, `ws` 8.21.1 |
 | Driver | in-cluster `ws-loadgen.mjs`, ONE pod, `connectBatch=50`, 30 s rungs, 10 publishes/s |
