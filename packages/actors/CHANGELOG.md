@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`ctx.snapshot(value)`** (#229): deep, detached copy of an arbitrary
+  value through the host codec — the same encode+revive a state snapshot
+  uses, so custom `types:` handlers round-trip where a `structuredClone`
+  would throw or strip them. Made for cloning a subtree of a large state.
+
+### Changed
+
+- **Job reads no longer clone the whole state** (#229): `status()`,
+  `JobControl.info`, `onSettled` and the `start`/`cancel`/`resume` returns
+  build `JobInfo` from live scalars instead of `ctx.snapshot()`, which was
+  encoding and reviving the entire state — growing checkpoint and result
+  included — per read (`jobs/status-read` measured it at 681× across a
+  0→2000-row checkpoint ladder; the ladder is flat now). Detachment is
+  unchanged: `progress`/`error` are fresh objects, and a declared `extra`
+  is codec-cloned as a subtree (a definition without `state:` pays no
+  codec work at all). One observable nuance: `progress` is now a shallow
+  copy of the declared all-primitive shape rather than a codec clone, so
+  undeclared non-JSON values smuggled into it no longer round-trip through
+  type handlers on the METHOD path (the `watch()` feed is unchanged).
+
 ## [0.8.0] - 2026-08-12
 
 ### Added

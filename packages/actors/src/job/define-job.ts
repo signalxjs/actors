@@ -63,6 +63,13 @@ interface JobState<Extra extends object> {
     extra: Extra;
 }
 
+/**
+ * Build `JobInfo` from an already-DETACHED state — the change feed's
+ * snapshots. The method paths use `liveInfo` instead (#229): re-cloning a
+ * feed snapshot would be waste, and cloning live state to read 8 fields
+ * was the O(state-size) read the `jobs/status-read` ladder measured at
+ * 681× across 0→2000 checkpoint rows.
+ */
 function toInfo<Extra extends object>(state: JobState<Extra>, key: string): JobInfo<Extra> {
     return {
         key,
@@ -86,6 +93,36 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
     const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     type S = JobState<Extra>;
     type Ctx = ActorContext<S>;
+
+    /**
+     * `JobInfo` off the LIVE state, without a whole-state clone (#229).
+     *
+     * Every method-path read used `toInfo(ctx.snapshot())` — a full
+     * encode+revive of the entire state, checkpoint and result included,
+     * to build 8 fields that exclude both. Safe to read live here: a
+     * method body IS a serialized turn. The detachment contract is
+     * unchanged — nothing returned aliases live state:
+     *
+     *  - the scalars cannot alias;
+     *  - `progress`/`error` are fresh shallow objects (all-primitive by
+     *    their declared types);
+     *  - `extra` — the one arbitrary user object — goes through the host
+     *    codec, but ONLY when the definition declares `state:`. The
+     *    common checkpointing job has none, and pays nothing.
+     */
+    function liveInfo(ctx: Ctx): JobInfo<Extra> {
+        const s = ctx.state;
+        return {
+            key: ctx.key,
+            status: s.status,
+            progress: s.progress ? { ...s.progress } : null,
+            attempts: s.attempts,
+            startedAt: s.startedAt,
+            finishedAt: s.finishedAt,
+            error: s.error ? { message: s.error.message } : null,
+            extra: options.state ? ctx.snapshot(s.extra) : ({} as Extra)
+        };
+    }
 
     /**
      * Terminal bookkeeping + optional retention + `onSettled`, inside one
@@ -113,7 +150,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
             // that would leave a job the runtime believes is terminal and the
             // caller believes is not.
             try {
-                await options.onSettled(control(c), toInfo(c.snapshot() as S, c.key));
+                await options.onSettled(control(c), liveInfo(c));
             } catch (error) {
                 if (__DEV__) {
                     console.error(
@@ -156,7 +193,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
 
     function control(ctx: Ctx): JobControl<Extra> {
         return {
-            info: () => toInfo(ctx.snapshot() as S, ctx.key),
+            info: () => liveInfo(ctx),
             resume: (data?: unknown) => doResume(ctx, data, false),
             cancel: () => doCancel(ctx),
             reminders: ctx.reminders
@@ -188,7 +225,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         methods: (ctx) => ({
             async start(input: In): Promise<JobInfo<Extra>> {
                 const s = ctx.state;
-                if (s.status !== 'pending') return toInfo(ctx.snapshot() as S, ctx.key);
+                if (s.status !== 'pending') return liveInfo(ctx);
                 s.status = 'running';
                 s.input = input;
                 s.attempts = 1;
@@ -200,16 +237,16 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                 s.principal = encodePrincipalValue(ctx.principal) ?? null;
                 await ctx.save();
                 await ctx.tasks.start(RUN, input);
-                return toInfo(ctx.snapshot() as S, ctx.key);
+                return liveInfo(ctx);
             },
-            status: (): JobInfo<Extra> => toInfo(ctx.snapshot() as S, ctx.key),
+            status: (): JobInfo<Extra> => liveInfo(ctx),
             async cancel(): Promise<JobInfo<Extra>> {
                 await doCancel(ctx);
-                return toInfo(ctx.snapshot() as S, ctx.key);
+                return liveInfo(ctx);
             },
             async resume(data?: unknown): Promise<JobInfo<Extra>> {
                 await doResume(ctx, data, true);
-                return toInfo(ctx.snapshot() as S, ctx.key);
+                return liveInfo(ctx);
             },
             async result(): Promise<Out> {
                 const s = ctx.state;
