@@ -19,6 +19,14 @@
 
 ### Changed
 
+- **A boundary that both saves and emits encodes the state once** (#233):
+  the change-feed snapshot is revived from the same encode the save
+  produced (before storage takes ownership of the tree, per the #25
+  contract), instead of running a second full `encodeWithHandlers` at the
+  same boundary. The default unthrottled `job.watch()` over a
+  checkpoint-per-step job — the #124 workload — paid both on every step.
+  Ticks-only (`$live`) and window-parked throttled subscribers prepare
+  nothing, as before.
 - **Job reads no longer clone the whole state** (#229): `status()`,
   `JobControl.info`, `onSettled` and the `start`/`cancel`/`resume` returns
   build `JobInfo` from live scalars instead of `ctx.snapshot()`, which was
