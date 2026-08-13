@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-13
+
 ### Added
 
 - **`ctx.snapshot(value)`** (#229): deep, detached copy of an arbitrary
