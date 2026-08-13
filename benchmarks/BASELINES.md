@@ -1854,6 +1854,176 @@ genuinely established, `drops` **0**, healthy delivery 19 055 msg/s, p50
   untouched: every `max_buffered_bytes` above is the client's, and means
   nothing about a host's (#208).
 
+  *Measured the next day — see the section below. The "nice-to-have" reading
+  was wrong in one important way: TCP is the ONLY answer for a read that
+  genuinely depends on identity, because such a read can never be declared.*
+
+## 2026-08-13 · Tier 3 — TCP does not remove the streams, it makes them free (#203/#210)
+
+| | |
+|---|---|
+| Cluster | AKS, 3 × `Standard_D2ls_v6` (2 vCPU), `limits.cpu 1000m`, 1 Redis |
+| Image | `698a5bd` (v0.8.0) — **both arms, same image**, see "Why the control was re-run" |
+| Shape (http) | `ws replicas=3 nodes=3 image=698a5bd knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=http` |
+| Shape (tcp) | `ws replicas=3 nodes=3 image=698a5bd knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=tcp` |
+| Pool | `FETCH_CONNECTIONS` at the chart default 64 throughout — untouched, as in the 2026-08-11 section |
+| Runtime | undici 7.29.0, `ws` 8.21.1 |
+| Driver | in-cluster `ws-loadgen.mjs`, ONE pod, `connectBatch=50`, 30 s rungs, 10 publishes/s |
+| Artifacts | Actions runs 31679261946 (http `mine`), 31679996106 (tcp `mine`, **discarded**), 31680288289 (tcp `mine`), 31680580939 (`ws-bench` tcp), 31687209213 (`ws-bench` http control) |
+
+The 2026-08-11 section answered the identity ceiling for reads that CAN be
+declared `principalIndependent`. This one answers the case that cannot:
+`mine()` consults `ctx.principal`, so its subscribers genuinely need
+per-identity answers, declaring it is forbidden and enforced
+(`ActorWatchDeclarationError`), and the per-identity cross-host stream is
+not a defect to remove. The question is whether that stream still has to
+cost a pooled connection.
+
+### The ladder — `read=mine principal=per-user`, one variable
+
+| n | transport | connected | connect failures | sub errors | deliveries/s | p50 | p99 |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 100 | http | 100 | 0 | 7 | 933 | 54.7 ms | 62.5 ms |
+| 250 | http | 224 | 26 | **128** | 0.4 | — | — |
+| 100 | **tcp** | 100 | 0 | 0 | 1 004 | 52.1 ms | 55.2 ms |
+| 250 | **tcp** | **250** | **0** | **0** | 2 510 | 52.3 ms | 55.9 ms |
+| 500 | **tcp** | **500** | **0** | **0** | 5 014 | 52.3 ms | 54.5 ms |
+| 1 000 | **tcp** | **1 000** | **0** | **0** | 10 029 | 52.7 ms | 67.2 ms |
+
+The HTTP arm shelves between 100 and 250 with **128 subscription errors** —
+the third independent reproduction of that exact figure (2 relay pods × 64
+pool slots), after 2026-08-10 (#194) and 2026-08-11. The TCP arm walks the
+whole ladder clean.
+
+### Why it moved — the opposite mechanism to #138
+
+`ops.cluster.counters`, summed across the three hosts:
+
+| arm | subscriptions | `remoteWatches` | `coalescedWatches` |
+|---|---:|---:|---:|
+| http `mine` | 350 | 219 | **0** |
+| **tcp `mine`** | 1 850 | **1 246** | **0** |
+| http `shared` (2026-08-11) | 1 850 | **8** | 1 225 |
+
+**TCP did not reduce the stream count. It kept every one of them.** 1 246
+against the ⅔-of-1 850 prediction of 1 233 — one cross-host stream per remote
+subscriber, exactly as on HTTP, with zero coalescing, because identity really
+is an input to this read and no declaration could honestly say otherwise.
+
+What changed is what a stream costs. Over `httpTransport()` each held-open
+response pins one slot in a 64-deep undici pool per peer; over
+`tcpTransport()` all of them multiplex onto one connection per peer. So the
+two fixes on this axis are not variants of each other:
+
+- **Declaring removes the streams** (1 233 → 8). Available only to a read
+  that ignores `ctx.principal`.
+- **TCP keeps every stream and removes its per-stream cost.** Available to
+  any read, including the ones that can never be declared.
+
+They compose: `sockets/declared-fanout` on TCP recorded **10** streams for
+1 239 coalesced joins.
+
+### The recorded runs — the 2×2, both sweeps on one image
+
+`ws-bench` ran on BOTH transports on `698a5bd`, so every cell below is the
+same image and differs only in the transport.
+**`hosts_with_tcp_transport` = 3 on every tcp scenario and 0 on every http
+one**, which is the gate #210 sets — the transport is a CHAIN
+(`[tcpTransport, httpLeg]`), so a peer advertising no tcp address falls back
+per LINK and would yield a clean HTTP measurement wearing the tcp label.
+
+`max_healthy_identities`, and the streams that explain it:
+
+| scenario | http | tcp |
+|---|---:|---:|
+| `sockets/principal-cliff` (`mine`) | **100** — 260 streams, 0 coalesced | **1 000** — 1 273 streams, 0 coalesced |
+| `sockets/declared-fanout` (`shared`) | **1 000** — 10 streams, 1 227 coalesced | **1 000** — 10 streams, 1 239 coalesced |
+
+Read the row and the column separately and the whole axis is in one table.
+**Declaring fixes the http column** (100 → 1 000 by deleting the streams).
+**TCP fixes the `mine` row** (100 → 1 000 by keeping all 1 273 and making
+them cheap). Either alone suffices; the declared read is unchanged by the
+transport because it had already stopped opening streams.
+
+A stronger gate than `hosts_with_tcp_transport` exists and was checked by
+hand: **`transportFallbacks` was 0 on all three hosts after 1 324 remote
+watch streams** — not one link fell back. It is not in the rig's output
+today (#223).
+
+### The delivery path — a smaller and messier effect than it first looked
+
+The tcp sweep also moved the ANONYMOUS fan-out numbers, which have nothing
+to do with identity. Against the http sweep on the same image, one run each:
+
+| `sockets/hot-fanout` | rung | http | tcp |
+|---|---:|---:|---:|
+| deliveries/s | 1 000 | 10 018 | 10 057 |
+| | 5 000 | **37 285** | 32 334 |
+| | 10 000 | 38 992 | **45 011** |
+| p50 | 1 000 | 63.8 ms | **54.5 ms** |
+| | 5 000 | 129.2 ms | **59.0 ms** |
+| | 10 000 | 192.0 ms | **146.9 ms** |
+| `deliveries_per_publish` | 5 000 | 4 746 | **5 000** |
+| | 10 000 | 8 069 | **10 000** |
+
+What holds up:
+
+- **`deliveries_per_publish` is exactly the subscriber count on tcp at every
+  rung**, while http falls to 0.95 and 0.81 of it at 5 000 and 10 000. Every
+  publish reached every subscriber. This is the count-like figure and it is
+  consistent.
+- **p50 is lower on tcp at every rung**, by margins (129 → 59 ms at 5 000)
+  far larger than the run-to-run spread this tier usually shows.
+
+What does NOT hold up:
+
+- **Throughput disagrees in sign between rungs** — tcp is 13% *lower* at
+  5 000 and 15% higher at 10 000. The 5 000 row is explained by the achieved
+  publish rate rather than by delivery: tcp completed ~194 publishes in the
+  window against http's ~236, delivering more per publish and fewer overall.
+  One run each, no repetition, and **timings in this tier never gate**. Treat
+  the throughput column as unresolved.
+
+> ⚠️ `AGENTS.md` describes `@sigx/actors-tcp` as "justified by socket count,
+> not latency". These figures are the first evidence that understates it at
+> high fan-out — but a single pair of runs with a sign disagreement is not
+> enough to rewrite that claim. It needs repetition before anyone edits it.
+
+**An earlier draft of this section quoted +29% throughput and a halved p50**,
+from comparing the tcp sweep against the 2026-08-11 http sweep. Those ran on
+different images: `698a5bd` improved http hot-fanout on its own (34 795 →
+38 992 msg/s and p50 264.7 → 192.0 ms at 10 000). Roughly half of the
+apparent tcp win was v0.8.0. The http control sweep exists solely to catch
+that, and it did.
+
+### Why the control was re-run rather than taken from 2026-08-11
+
+`main` moved from `0d2d38d` to `698a5bd` (v0.8.0) between the two sessions —
+**~320 changed lines in `cluster/placement.ts`, landing in the remote-watch
+region**, plus `cluster/counters.ts`. Comparing TCP-at-`698a5bd` against the
+recorded HTTP-at-`0d2d38d` would have confounded the transport with the
+runtime, so the HTTP `mine` ladder was re-run on the new image and that is
+the control above. Nothing in the tooling would have objected — the hand-run
+path has no `INFRA_SHAPE` guard (#224).
+
+Two counters were added in v0.8.0 (`targetedDispatches`, plus a `?? 0` in
+`addCounters` for mixed-version clusters); the three used for attribution
+here are unchanged in meaning.
+
+### One discarded run, and why it is named
+
+The first TCP ladder (run 31679996106) hit **4 connect failures at n=100**
+and aborted — `ws-loadgen` breaks the ladder on any connect failure — so it
+never reached the rungs that matter. The cluster had rolled over ~90 s
+earlier and was still converging (`unreachableRetries` non-zero, membership
+still moving). Re-run after it settled: every rung clean.
+
+It is recorded here because of what it would have done on the `ws-bench`
+path: `max_healthy_identities` would have read as a failure at the first
+rung and **TCP would have looked useless** — a plausible wrong number rather
+than an error. That is #222. A transport flip needs a settle period before
+measuring; pod readiness is not membership convergence.
+
 ## 2026-08-13 · The save-path serialize cost, priced (#227, the rest of #124)
 
 | | |
