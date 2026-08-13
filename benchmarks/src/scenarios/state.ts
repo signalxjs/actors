@@ -17,124 +17,32 @@
  */
 import {
     Growing,
+    GrowingSaver,
     Large,
     makeTrackedActor,
     makeWatchableActor,
     Tiny,
     WriteBehind
 } from '../actors.ts';
-import { closedLoop, LATENCY_NOISE_FLOOR_MS, sweepConcurrency } from '../loop.ts';
-import { benchCall, createBenchHost, requireStreamDispatch } from '../host-fixture.ts';
-import type { ActorRef, Host } from '@sigx/actors/host';
+import {
+    closedLoop,
+    LATENCY_NOISE_FLOOR_MS,
+    meanUs,
+    sweepConcurrency,
+    TURN_NOISE_FLOOR_US
+} from '../loop.ts';
+import { benchCall, createBenchHost, stringifyStorage } from '../host-fixture.ts';
+import { settleGc } from '../memory.ts';
+import {
+    openSubscribers,
+    settledWithin,
+    TEARDOWN_TIMEOUT_MS,
+    type Subscribers
+} from '../subscribers.ts';
+import type { ActorStorage } from '@sigx/actors/host';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 const CONCURRENCIES = [1, 64] as const;
-
-/** How long teardown may take before we call the stream path broken. */
-const TEARDOWN_TIMEOUT_MS = 2000;
-
-/** `LATENCY_NOISE_FLOOR_MS` in the microseconds the per-turn metrics use. */
-const TURN_NOISE_FLOOR_US = LATENCY_NOISE_FLOOR_MS * 1000;
-
-/**
- * `true` if every promise settled in time, `false` on timeout. The timer is
- * always cleared — an un-cleared `setTimeout` would hold the event loop open
- * past the end of the run.
- */
-async function settledWithin(promises: readonly Promise<unknown>[], ms: number): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<false>((resolve) => {
-        timer = setTimeout(() => resolve(false), ms);
-    });
-    try {
-        return await Promise.race([Promise.allSettled(promises).then(() => true), timeout]);
-    } finally {
-        clearTimeout(timer);
-    }
-}
-
-interface Subscribers {
-    /** Teardown-safe abort for a `finally`; never throws, never waits. */
-    abort(): void;
-    /** Abort, wake the parked consumers, and prove they unwound. */
-    unwind(): Promise<void>;
-}
-
-/**
- * `unwind()` belongs on the SUCCESS path only, and the `finally` deliberately
- * does not call it.
- *
- * It is an assertion, not cleanup: releasing the consumers is
- * `fixture.stop()`'s job either way — `host.stop()` deactivates, and both
- * `deactivate()` and `forceStop()` call `#closeSubs()`, which marks every sub
- * done and wakes a parked `next()` (`activation.ts:773`, `:786`, `:1850`).
- * What `unwind()` adds is the proof that the runtime releases them from the
- * CONSUMER side, on abort plus a wake-up mutation, without needing the host
- * torn down underneath it.
- *
- * Putting it in `finally` would run that assertion against a host whose
- * measurement has just thrown — and its failure, or a dispatch failure from
- * its own wake-up call, would replace the exception that actually broke the
- * round. Losing the real error to a teardown check is a bad trade.
- */
-
-/**
- * Open `count` change feeds on `ref` and drain each in the background: an
- * unconsumed feed fills its 16-slot buffer and starts dropping, which would
- * silently stop measuring the fan-out.
- *
- * Unwinding them is the fiddly half, which is why this is shared rather than
- * copied per scenario. A consumer parked in `ctx.changes()` is waiting for
- * the NEXT change, and abort alone does not wake it — so `unwind()` aborts,
- * then calls `wake` to push one more mutation, which lets each consumer see
- * the aborted signal, break, and have `for await` call `return()` on the
- * generator.
- *
- * If that does not happen we FAIL rather than carry on: the scenario runs
- * again every round, and iterators left parked on a host we are about to
- * drop would contaminate every later measurement with work nobody is
- * accounting for.
- */
-function openSubscribers(
-    host: Host,
-    ref: ActorRef,
-    count: number,
-    wake: () => Promise<unknown>
-): Subscribers {
-    const controller = new AbortController();
-    const drains: Promise<void>[] = [];
-    if (count > 0) {
-        const openStream = requireStreamDispatch(host);
-        for (let i = 0; i < count; i++) {
-            const stream = openStream(ref, 'watch', [], benchCall({ abortSignal: controller.signal }));
-            drains.push(
-                (async () => {
-                    try {
-                        for await (const _ of stream) {
-                            if (controller.signal.aborted) break;
-                        }
-                    } catch {
-                        // Aborted at teardown — expected.
-                    }
-                })()
-            );
-        }
-    }
-    return {
-        abort: () => controller.abort(),
-        async unwind(): Promise<void> {
-            controller.abort();
-            await wake();
-            if (!(await settledWithin(drains, TEARDOWN_TIMEOUT_MS))) {
-                throw new Error(
-                    `${count} change-feed consumer(s) did not unwind within ` +
-                        `${TEARDOWN_TIMEOUT_MS}ms after abort + a wake-up mutation — ` +
-                        `ctx.changes() is not releasing parked consumers.`
-                );
-            }
-        }
-    };
-}
 
 const explicitSave: Scenario = {
     name: 'state/explicit-save',
@@ -328,11 +236,6 @@ const dirtySize: Scenario = {
 const GROWTH_STEPS = 500;
 const GROWTH_WINDOW = 100;
 
-/** Mean of a window of per-turn timings, in microseconds. */
-function meanUs(ms: readonly number[]): number {
-    return (ms.reduce((sum, v) => sum + v, 0) / ms.length) * 1000;
-}
-
 /**
  * The shape #124 was actually reported against: a job actor whose state
  * accumulates a step's output per turn. Per-step cost was measured drifting
@@ -405,6 +308,95 @@ const dirtyGrowth: Scenario = {
             subs?.abort();
             await fixture.stop();
         }
+    }
+};
+
+/**
+ * The reporter's actual save shape from #124 (#227): growing state × one
+ * DURABLE save per turn — `job.checkpoint()` in a loop. `state/dirty-growth`
+ * deliberately never saves (it prices the walk + snapshot); this one prices
+ * the codec on the save path, attributed across three arms that differ in
+ * exactly one variable each:
+ *
+ *   mem        explicit persistence, no subscriber, `memoryStorage`: no
+ *              tracking is installed, so a turn is body + ONE
+ *              `encodeWithHandlers` walk + a by-reference store.
+ *   stringify  same, `stringifyStorage`: the delta vs `mem` is the second
+ *              full walk (`JSON.stringify`) every real adapter pays.
+ *   mem+sub    `memoryStorage` with one `ctx.changes()` subscriber: the
+ *              delta vs `mem` is the deepTrack walk plus the boundary
+ *              `#snapshot()` (encode + revive) the subscriber forces.
+ *
+ * All three are O(state size) per turn; what the arms buy is knowing which
+ * term dominates — the fix for each lives in a different place (the host,
+ * an upstream serialize API, the change feed).
+ */
+const saveGrowth: Scenario = {
+    name: 'state/save-growth',
+    description: 'per-turn cost of append + ctx.save() as state grows — by storage and subscriber',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const steps = ctx.quick ? 100 : GROWTH_STEPS;
+        const window = ctx.quick ? 20 : GROWTH_WINDOW;
+        const metrics: Metric[] = [];
+        // Storage constructed per arm, inside run(): a scenario re-runs
+        // every round and must not accumulate state across rounds.
+        const arms: { label: string; storage?: () => ActorStorage; subscribers: number }[] = [
+            { label: 'mem', subscribers: 0 },
+            { label: 'stringify', storage: stringifyStorage, subscribers: 0 },
+            { label: 'mem+sub', subscribers: 1 }
+        ];
+        for (const arm of arms) {
+            const fixture = await createBenchHost({
+                actors: [GrowingSaver],
+                ...(arm.storage ? { storage: arm.storage() } : {})
+            });
+            const ref = { type: GrowingSaver.type, key: 'run' };
+            const call = benchCall();
+            const step = (): Promise<unknown> =>
+                fixture.host.dispatch(ref, 'appendStepAndSave', [], call);
+            let subs: Subscribers | undefined;
+            try {
+                subs = openSubscribers(fixture.host, ref, arm.subscribers, step);
+                // The arms are read against each other, so each starts from a
+                // quiet heap: without this, an arm's head window pays the GC
+                // debt of whichever arm ran before it — measured at 3× on
+                // `mem/head_turn_us`, which runs right after `mem+sub`'s
+                // 500-row trees become garbage.
+                await settleGc();
+                const timings: number[] = [];
+                for (let i = 0; i < steps; i++) {
+                    const timed = i < window || i >= steps - window;
+                    if (!timed) {
+                        await step();
+                        continue;
+                    }
+                    const t0 = performance.now();
+                    await step();
+                    timings.push(performance.now() - t0);
+                }
+                metrics.push(
+                    {
+                        name: `${arm.label}/head_turn_us`,
+                        value: meanUs(timings.slice(0, window)),
+                        unit: 'µs',
+                        direction: 'lower',
+                        noiseFloor: TURN_NOISE_FLOOR_US
+                    },
+                    {
+                        name: `${arm.label}/tail_turn_us`,
+                        value: meanUs(timings.slice(-window)),
+                        unit: 'µs',
+                        direction: 'lower',
+                        noiseFloor: TURN_NOISE_FLOOR_US
+                    }
+                );
+                await subs.unwind();
+            } finally {
+                subs?.abort();
+                await fixture.stop();
+            }
+        }
+        return metrics;
     }
 };
 
@@ -491,5 +483,6 @@ export const stateScenarios: Scenario[] = [
     changesFanout,
     dirtySize,
     dirtyGrowth,
+    saveGrowth,
     liveWatch
 ];

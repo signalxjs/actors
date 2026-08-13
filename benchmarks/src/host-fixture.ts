@@ -24,6 +24,7 @@
  *    hide what the deadline costs. So the dispatch scenarios run both.
  */
 import './app.ts';
+import { ActorStorageConflict } from '@sigx/actors';
 import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 import type {
     ActorCallContext,
@@ -77,6 +78,48 @@ export async function createBenchHost(options: HostFixtureOptions): Promise<Host
         storage,
         clock,
         stop: () => host.stop({ timeoutMs: 5_000 })
+    };
+}
+
+/**
+ * `memoryStorage` semantics plus the one cost it deliberately skips: a full
+ * `JSON.stringify(state)` on every save. That second walk is what every
+ * real adapter pays on top of the host's `encodeWithHandlers` — pg
+ * (`storage.ts:70`), redis (`storage.ts:88`), surreal (`storage.ts:67`) and
+ * `fileStorage` (`file-storage.ts:71`) all stringify the encoded tree — so
+ * the delta between this and `memoryStorage`, everything else identical, is
+ * the adapter's serialize share and nothing else.
+ *
+ * Stringify-inside-save also satisfies the seam's ownership contract
+ * (#25) trivially: the record keeps no reference to the caller's tree.
+ */
+export function stringifyStorage(): ActorStorage {
+    const records = new Map<string, { json: string; etag: string }>();
+    let counter = 0;
+    const id = (type: string, key: string) => `${type}\u0000${key}`;
+
+    return {
+        async load(type, key) {
+            const record = records.get(id(type, key));
+            return record ? { state: JSON.parse(record.json), etag: record.etag } : null;
+        },
+        async save(type, key, state, expectedEtag) {
+            const existing = records.get(id(type, key));
+            if ((existing?.etag ?? null) !== expectedEtag) {
+                throw new ActorStorageConflict(type, key);
+            }
+            const etag = String(++counter);
+            records.set(id(type, key), { json: JSON.stringify(state), etag });
+            return etag;
+        },
+        async clear(type, key, expectedEtag) {
+            const existing = records.get(id(type, key));
+            if (!existing && expectedEtag === null) return;
+            if ((existing?.etag ?? null) !== expectedEtag) {
+                throw new ActorStorageConflict(type, key);
+            }
+            records.delete(id(type, key));
+        }
     };
 }
 

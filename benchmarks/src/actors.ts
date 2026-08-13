@@ -93,7 +93,7 @@ export interface LargeState {
 }
 
 /** ~200 rows of mixed types, including a Date so the codec has real work. */
-function makeRows(n: number): LargeState['rows'] {
+export function makeRows(n: number): LargeState['rows'] {
     return Array.from({ length: n }, (_, i) => ({
         id: i,
         name: `row-${i}`,
@@ -215,6 +215,42 @@ export const Growing = defineActor({
                 output: `output of step ${id}`,
                 at: new Date(1_700_000_000_000 + id)
             });
+            return id;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            yield* ctx.changes({ initial: true });
+        }
+    })
+});
+
+/**
+ * `Growing`'s save-per-turn twin (#227): the same accumulating state, but
+ * every appended step is followed by an explicit `ctx.save()` — the
+ * `job.checkpoint()` shape from #124, where a durable save re-encodes the
+ * whole growing state once per step.
+ *
+ * A separate definition rather than a method added to `Growing`, for the
+ * same reason `makeWatchableActor` is separate from `makeTrackedActor`:
+ * `Growing` is half of the recorded `state/dirty-growth` measurement, and
+ * the definitions under comparison differ in nothing but the variable
+ * under test.
+ */
+export const GrowingSaver = defineActor({
+    type: 'BenchGrowingSaver',
+    allowAnonymous: true,
+    state: (): GrowingState => ({ steps: [] }),
+    methods: (ctx) => ({
+        async appendStepAndSave() {
+            const id = ctx.state.steps.length;
+            ctx.state.steps.push({
+                id,
+                label: `step-${id}`,
+                output: `output of step ${id}`,
+                at: new Date(1_700_000_000_000 + id)
+            });
+            await ctx.save();
             return id;
         }
     }),
