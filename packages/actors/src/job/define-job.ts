@@ -271,11 +271,11 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         streams: (ctx) => ({
             async *watch(opts?: { throttleMs?: number }): AsyncIterable<JobInfo<Extra>> {
                 // Forwarded, not defaulted: `ctx.changes` owns the
-                // validation and the window semantics, and an omitted knob
-                // must stay byte-for-byte the old one-per-turn contract.
+                // validation and the window semantics, and an undefined
+                // knob normalizes to the old one-per-turn contract there.
                 for await (const s of ctx.changes({
                     initial: true,
-                    ...(opts?.throttleMs !== undefined ? { throttleMs: opts.throttleMs } : {})
+                    throttleMs: opts?.throttleMs
                 })) {
                     yield toInfo(s, ctx.key);
                 }
