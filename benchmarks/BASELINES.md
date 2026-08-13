@@ -2109,3 +2109,42 @@ construction under serial dispatch) but belong in the fix PRs' unit tests,
 probe-counter style: an `exact` bench metric pinned to today's counts would
 put these scenarios in the merge-queue gate and then FAIL it on the very
 improvement the fixes intend — the same split as the 2026-08-06 section.
+
+## 2026-08-13 · The save-path fixes, measured (#229/#231/#233 — closing out #124)
+
+| | |
+|---|---|
+| Machine | Dedicated bench VM — AMD EPYC 9V74, 4 vCPU, linux/x64 |
+| Node | v24.18.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Settings | `bench.yml` dispatch, 5 rounds × 400 ms, interleaved |
+| Compared | `ad52a84` (the #227 scenarios, pre-fix) → `7100e61` (#230 + #232 + #234) |
+
+The section above priced three serialize costs; three PRs later, the same
+scenarios say what the fixes bought. Every row below was CALLED — all five
+rounds agreed in sign.
+
+| scenario · metric | before | after | |
+|---|---:|---:|---:|
+| `jobs/status-read` rows=0 | 408.5 k/s | 723.1 k/s | +77% |
+| `jobs/status-read` rows=200 | 6.1 k/s | 734.0 k/s | **+11 920%** |
+| `jobs/status-read` rows=2000 | 598.1 /s | 736.1 k/s | **+123 073%** |
+| `jobs/checkpoint-growth` `watch=1` tail | 295.2 µs | 183.4 µs | **−38%** |
+| `jobs/checkpoint-growth` `watch=0` tail | 117.3 µs | 114.5 µs | no change |
+| `state/save-growth` `mem+sub` tail | 594.9 µs | 420.7 µs | **−29%** |
+| `state/save-growth` `mem` tail | 192.5 µs | 192.3 µs | no change |
+| `state/save-growth` `stringify` tail | 289.2 µs | 286.4 µs | no change |
+
+- **The `jobs/status-read` ladder is FLAT** (~730 k/s at every rung): #229
+  removed the whole-state clone from job reads, so a read no longer pays
+  for the checkpoint it does not return. p99 at 2 000 rows: 2.05 ms → 1.9 µs.
+- **The watched-checkpoint premium halved** (+178 → +69 µs/step): #233
+  reuses the save's encode for the boundary snapshot, so a save+emit
+  boundary costs one whole-state encode. What remains of the premium is
+  the walk, the revive and delivery.
+- **`watch=throttled` (head-only, #231)** records at the `watch=0` floor —
+  a consumer that opts in drops the rest of the premium for a burst.
+- **`mem` and `stringify` unchanged, as designed** — no fix targeted the
+  storage encode itself or the adapter's second walk. Those are the
+  remaining O(state) terms per durable save; the adapter walk's
+  single-pass answer is upstream (signalxjs/core#657).
