@@ -2125,7 +2125,7 @@ scenarios say what the fixes bought. Every row below was CALLED — all five
 rounds agreed in sign.
 
 | scenario · metric | before | after | |
-|---|---:|---:|---|
+|---|---:|---:|---:|
 | `jobs/status-read` rows=0 | 408.5 k/s | 723.1 k/s | +77% |
 | `jobs/status-read` rows=200 | 6.1 k/s | 734.0 k/s | **+11 920%** |
 | `jobs/status-read` rows=2000 | 598.1 /s | 736.1 k/s | **+123 073%** |
