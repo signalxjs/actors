@@ -106,13 +106,23 @@ let runSeq = 0;
 
 const checkpointGrowth: Scenario = {
     name: 'jobs/checkpoint-growth',
-    description: 'per-step cost of a checkpointing job as state grows, with and without watch()',
+    description: 'per-step cost of a checkpointing job as state grows — unwatched, watched, throttled',
     async run(ctx: RunContext): Promise<Metric[]> {
         const steps = ctx.quick ? 60 : CHECKPOINT_STEPS;
         const window = ctx.quick ? 15 : CHECKPOINT_WINDOW;
         const metrics: Metric[] = [];
-        for (const watchers of [0, 1]) {
-            const key = `run-w${watchers}-${runSeq++}`;
+        // `throttled` is `watch=1` with `watch({ throttleMs })` (#231).
+        // Under `manualScheduler` the window never closes mid-run, so the
+        // arm measures the throttle's FLOOR — a burst entirely inside one
+        // window: the leading snapshot and nothing else. The gap between
+        // it and `watch=1` is exactly what opting in buys such a burst.
+        const arms = [
+            { label: 'watch=0', count: 0, args: [] as unknown[] },
+            { label: 'watch=1', count: 1, args: [] as unknown[] },
+            { label: 'watch=throttled', count: 1, args: [{ throttleMs: 1000 }] }
+        ];
+        for (const arm of arms) {
+            const key = `run-${arm.label}-${runSeq++}`;
             const fixture = await createBenchHost({ actors: [BenchStepJob] });
             const ref = { type: BenchStepJob.type, key };
             let subs: Subscribers | undefined;
@@ -121,7 +131,7 @@ const checkpointGrowth: Scenario = {
                 // Watcher opened BEFORE the first step, so change tracking is
                 // installed for the whole run — a job is explicit-persistence
                 // and pays nothing until someone opens `watch()`.
-                subs = openSubscribers(fixture.host, ref, watchers, () => sendStep(key));
+                subs = openSubscribers(fixture.host, ref, arm.count, () => sendStep(key), arm.args);
                 // The arms are read against each other — same GC hygiene as
                 // `state/save-growth`.
                 await settleGc();
@@ -140,20 +150,30 @@ const checkpointGrowth: Scenario = {
                 }
                 metrics.push(
                     {
-                        name: `watch=${watchers}/head_step_us`,
+                        name: `${arm.label}/head_step_us`,
                         value: meanUs(timings.slice(0, window)),
                         unit: 'µs',
                         direction: 'lower',
                         noiseFloor: TURN_NOISE_FLOOR_US
                     },
                     {
-                        name: `watch=${watchers}/tail_step_us`,
+                        name: `${arm.label}/tail_step_us`,
                         value: meanUs(timings.slice(-window)),
                         unit: 'µs',
                         direction: 'lower',
                         noiseFloor: TURN_NOISE_FLOOR_US
                     }
                 );
+                // A throttled consumer's wake-up mutation is DEFERRED into
+                // the open window, so the unwind dance needs the window
+                // closed between the abort and the assertion: abort, park
+                // one more boundary, close the window (the trailing emit is
+                // the wake-up), THEN prove the consumers released.
+                if (arm.args.length > 0) {
+                    subs.abort();
+                    await sendStep(key);
+                    fixture.clock.advance(2000);
+                }
                 await subs.unwind();
             } finally {
                 subs?.abort();

@@ -8,6 +8,14 @@
   value through the host codec — the same encode+revive a state snapshot
   uses, so custom `types:` handlers round-trip where a `structuredClone`
   would throw or strip them. Made for cloning a subtree of a large state.
+- **`job.watch({ throttleMs })`** (#231): per-subscriber coalescing for
+  the job feed, forwarding `ctx.changes`'s throttle — at most one
+  `JobInfo` per window (leading + trailing, trailing taken fresh), and a
+  window still owing an emit at deactivation is flushed, so a throttled
+  watcher always sees the terminal info. Omitted = the old one-per-turn
+  contract, byte for byte. An unthrottled watcher costs one whole-state
+  snapshot per mutating turn; on the `jobs/checkpoint-growth` burst the
+  throttled arm measures at the unwatched floor.
 
 ### Changed
 

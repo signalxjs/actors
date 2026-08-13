@@ -195,6 +195,19 @@ export type JobMethodTable<In, Out, Extra extends object> = {
 };
 
 export type JobStreamTable<Extra extends object> = {
-    /** Live `JobInfo` feed: current value first, then one per change. */
-    watch(): AsyncIterable<JobInfo<Extra>>;
+    /**
+     * Live `JobInfo` feed: current value first, then one per change — or,
+     * with `throttleMs`, at most one per window (leading edge plus a
+     * trailing emit taken fresh, so it is never staler than the window).
+     *
+     * The knob is per-subscriber and matches `ctx.changes` exactly,
+     * validation included. Worth setting when the consumer redraws rather
+     * than accumulates: an unthrottled watcher costs one whole-state
+     * snapshot per mutating turn, and a job reporting progress per step
+     * over state that grows through the run pays that on every step
+     * (#231). Never loses the end of the run: a window still owing an
+     * emit when the actor deactivates is flushed — a throttled watcher
+     * always sees the terminal `JobInfo` before the feed ends.
+     */
+    watch(opts?: { throttleMs?: number }): AsyncIterable<JobInfo<Extra>>;
 };
