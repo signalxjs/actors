@@ -37,6 +37,7 @@ const PACKAGES = [
     'packages/actors',
     'packages/actors-monitor',
     'packages/actors-cli',
+    'packages/actors-dashboard',
     'packages/actors-cloudflare',
     'packages/actors-k8s',
     'packages/actors-otel',

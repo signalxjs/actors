@@ -87,6 +87,10 @@ export default defineConfig({
                 __dirname,
                 'packages/actors-cloudflare/src/index.ts'
             ),
+            '@sigx/actors-dashboard': resolve(
+                __dirname,
+                'packages/actors-dashboard/src/index.ts'
+            ),
             '@sigx/actors-monitor/format': resolve(
                 __dirname,
                 'packages/actors-monitor/src/format.ts'

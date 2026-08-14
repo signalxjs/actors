@@ -60,6 +60,12 @@
     "node_modules",
     "packages/actors-cloudflare/__tests__/workers",
     "packages/actors-cli",
+    // Excluded for the mirror image of the reason `actors-cli` is: this
+    // config sets `jsxImportSource: "sigx"`, and a published package must not
+    // depend on the umbrella (it imports the DOM platform on its first line).
+    // Its JSX resolves through `@sigx/runtime-core` instead, so it carries its
+    // own tsconfig pair and its own `typecheck` script.
+    "packages/actors-dashboard",
     "dist",
     "packages/*/dist"
   ]

@@ -1,0 +1,37 @@
+{
+    // `pnpm typecheck`, as distinct from the build — the same split
+    // `packages/actors-cli` makes, and for the same reason: CI runs
+    // `typecheck` BEFORE `build`, so a config resolving `@sigx/actors-monitor`
+    // from its built `.d.ts` would fail on a clean checkout. This one resolves
+    // it from SOURCE.
+    //
+    // Resolving from source drags files outside `rootDir` into the program,
+    // which `tsc` refuses when it is emitting. Nothing is emitted here, so
+    // `rootDir` widens to the repo and `declaration` goes off. The build
+    // config stays the strict one: it emits `.d.ts` against the PUBLISHED
+    // shape of its dependencies, which is what consumers see.
+    //
+    // It also covers `__tests__`, which the build config deliberately does
+    // not — the repo-root program excludes this package, so nothing else
+    // would.
+    "extends": "./tsconfig.json",
+    "include": ["src/**/*.ts", "src/**/*.tsx", "__tests__/**/*.ts", "__tests__/**/*.tsx"],
+    "compilerOptions": {
+        "noEmit": true,
+        "declaration": false,
+        "declarationMap": false,
+        "sourceMap": false,
+        "rootDir": "../..",
+        "paths": {
+            "@sigx/actors": ["../actors/src/index.ts"],
+            "@sigx/actors/host": ["../actors/src/host/index.ts"],
+            "@sigx/actors/cluster": ["../actors/src/cluster/index.ts"],
+            "@sigx/actors-monitor/format": ["../actors-monitor/src/format.ts"],
+            "@sigx/actors-monitor": ["../actors-monitor/src/index.ts"],
+            // Self-referential, because the tests import the package's own
+            // public entry rather than reaching into `src/` — which is the
+            // point of testing it.
+            "@sigx/actors-dashboard": ["./src/index.ts"]
+        }
+    }
+}

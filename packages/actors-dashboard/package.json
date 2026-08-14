@@ -1,0 +1,70 @@
+{
+    "name": "@sigx/actors-dashboard",
+    "version": "0.9.0",
+    "description": "The web dashboard for @sigx/actors — hosts, actors, latency, errors and cluster topology as embeddable sigx components",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "development": "./dist/index.js",
+            "production": "./dist/index.prod.js",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "CHANGELOG.md"
+    ],
+    "sideEffects": false,
+    "scripts": {
+        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly",
+        "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+        "dev": "vite build --watch"
+    },
+    "keywords": [
+        "sigx",
+        "actors",
+        "virtual-actors",
+        "observability",
+        "monitoring",
+        "dashboard",
+        "admin"
+    ],
+    "author": "Andreas Ekdahl",
+    "license": "MIT",
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/signalxjs/actors.git",
+        "directory": "packages/actors-dashboard"
+    },
+    "homepage": "https://sigx.dev/actors/",
+    "bugs": {
+        "url": "https://github.com/signalxjs/actors/issues"
+    },
+    "dependencies": {
+        "@sigx/actors-monitor": "workspace:^"
+    },
+    "peerDependencies": {
+        "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
+        "@sigx/runtime-dom": "catalog:"
+    },
+    "devDependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
+        "@sigx/runtime-dom": "catalog:",
+        "@sigx/vite": "catalog:",
+        "@types/node": "^25.9.1",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
+}
