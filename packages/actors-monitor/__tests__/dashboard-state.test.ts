@@ -8,8 +8,14 @@
  * carries tests.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { DashboardState, clampInterval, MAX_INTERVAL_MS, MIN_INTERVAL_MS } from '../src/dashboard/state';
-import type { MonitorSnapshot, MonitorSource } from '../src/source/types';
+import {
+    DashboardState,
+    clampInterval,
+    MAX_INTERVAL_MS,
+    MIN_INTERVAL_MS,
+    type MonitorSnapshot,
+    type MonitorSource
+} from '@sigx/actors-monitor';
 
 const emptyStats = {
     activations: 0,

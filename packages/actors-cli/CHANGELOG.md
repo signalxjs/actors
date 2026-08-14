@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The data layer moved to `@sigx/actors-monitor` (#239).** `httpSource`, the
+  `MonitorSnapshot` shape, `DashboardState`, rate derivation, alert derivation
+  and the formatting helpers are now a package of their own, and this one
+  depends on it. **`@sigx/actors-cli/source` re-exports all of it, so nothing
+  breaks** — but a browser should import `@sigx/actors-monitor` directly.
+
+  It moved because a web dashboard could not reach it here. This package
+  hard-depends on `@sigx/terminal` and non-optionally peers `@sigx/cli`, so
+  importing `/source` for `httpSource` cost a web app both — and that subpath
+  re-exported `embeddedSource`, whose documented job is to dynamic-`import()`
+  user code and start a real host. `embeddedSource` stays here and is now all
+  that `src/source/` owns.
+
+  Two internals went with it, because they were judgements rather than
+  drawing: `alertLines` (with `scopeOf`, `polledLabel` and `coverageNote`) and
+  the reminder-shard states. `unclaimedShards` / `splitShards` are no longer
+  exported from `src/tui` — they are `@sigx/actors-monitor`'s; `shardCells`
+  stays and maps the shared states onto `@sigx/terminal` tones.
+
+  No user-visible behaviour change: the same commands print the same output.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

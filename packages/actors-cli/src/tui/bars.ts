@@ -1,32 +1,36 @@
 /**
- * The two shapes core produces that upstream has no opinion about: a
- * `HistogramSnapshot`, and the reminder-shard claim map.
+ * The terminal's rendering of the two shapes core produces that upstream has
+ * no opinion about: a `HistogramSnapshot`, and the reminder-shard claim map.
  *
- * Everything generic that used to live in this directory — the sparkline,
- * the table layout, the cell measurement, the bar maths — is now
- * `@sigx/terminal` 0.11's, upstreamed via signalxjs/terminal#103. What is
- * left here is only what is about ACTORS: the percentile triple, and the
- * fact that a reminder shard with no claimant is an incident while a shard
- * with two is merely a divergence.
+ * Everything generic that used to live in this directory — the sparkline, the
+ * table layout, the cell measurement, the bar maths — is now
+ * `@sigx/terminal` 0.11's, upstreamed via signalxjs/terminal#103. Everything
+ * that was a JUDGEMENT about actors — a shard with no claimant is an incident
+ * while a shard with two is merely a divergence; an empty histogram is "no
+ * reading" and not three zeroes — is now `@sigx/actors-monitor`'s (#239), so
+ * the web dashboard reaches the same verdicts rather than re-deriving them.
+ *
+ * What is left is the mapping between the two: monitor vocabulary in,
+ * `@sigx/terminal` vocabulary out.
  */
-import { commonScale, type BarChartItem, type StatusCell } from '@sigx/terminal';
+import { commonScale, type BarChartItem, type StatusCell, type StatusTone } from '@sigx/terminal';
+import {
+    percentilePoints,
+    shardStates,
+    type AlertTone,
+    type ShardState
+} from '@sigx/actors-monitor';
 import type { HistogramSnapshot } from '@sigx/actors/host';
 
 /**
  * A histogram as three comparable bars.
  *
- * `null` for an absent or empty histogram rather than three zeroed bars,
- * because `BarChart` draws a `null` as "no reading" while a row of zeroes
- * asserts "we measured, and it was fast". `metrics({ histograms: false })`
- * and a host that has served nothing are both the former.
+ * `BarChartItem` is structurally a `PercentilePoint`, so this is a widening
+ * rather than a conversion — stated as a function anyway, because the day the
+ * two shapes diverge should be a type error here and not at every call site.
  */
 export function percentileItems(snapshot: HistogramSnapshot | null): BarChartItem[] {
-    const empty = !snapshot || snapshot.count === 0;
-    return [
-        { label: 'p50', value: empty ? null : snapshot.p50Ms },
-        { label: 'p90', value: empty ? null : snapshot.p90Ms },
-        { label: 'p99', value: empty ? null : snapshot.p99Ms }
-    ];
+    return percentilePoints(snapshot);
 }
 
 /**
@@ -35,7 +39,10 @@ export function percentileItems(snapshot: HistogramSnapshot | null): BarChartIte
  * each row would make a 12µs queue wait and a 47ms turn draw identically.
  *
  * Every percentile is offered to `commonScale`, not just p99: the scale has
- * to cover the tallest bar actually drawn.
+ * to cover the tallest bar actually drawn. (`percentileCeiling` in the
+ * monitor answers the same question in plain numbers; this one goes through
+ * `commonScale` because a terminal axis is quantised to cells and the
+ * rounding is the terminal's to own.)
  */
 export function histogramScale(snapshots: readonly (HistogramSnapshot | null)[]): number {
     const values: (number | null)[] = [];
@@ -46,52 +53,28 @@ export function histogramScale(snapshots: readonly (HistogramSnapshot | null)[])
     return commonScale(values);
 }
 
-/**
- * The reminder shard map as status cells.
- *
- * The three states mean genuinely different things and none of them is a
- * count you would read off a number:
- *
- *   one claimant   healthy
- *   none           NOTHING is ticking that shard — those reminders are not
- *                  firing, and nothing else in the system surfaces it
- *   two or more    views have diverged; safe (the per-shard etag CAS keeps
- *                  delivery at-most-once) but worth knowing
- *
- * Sorted numerically by index rather than lexically, so `p10` does not sit
- * between `p1` and `p2`.
- */
+/** The three shard states as `StatusGrid` tones. */
+const SHARD_TONE: Record<ShardState, StatusTone> = {
+    claimed: 'ok',
+    unclaimed: 'danger',
+    split: 'warn'
+};
+
+/** The reminder shard map as status cells, in shard order. */
 export function shardCells(shards: Record<string, readonly string[]>): StatusCell[] {
-    return Object.keys(shards)
-        .sort((a, b) => shardIndex(a) - shardIndex(b))
-        .map((shard) => {
-            const claimants = shards[shard] ?? [];
-            return {
-                label: shard,
-                tone: claimants.length === 0 ? 'danger' : claimants.length === 1 ? 'ok' : 'warn',
-                detail: claimants.join(' ')
-            } satisfies StatusCell;
-        });
+    return shardStates(shards).map(
+        (shard) =>
+            ({
+                label: shard.label,
+                tone: SHARD_TONE[shard.state],
+                detail: shard.claimants.join(' ')
+            }) satisfies StatusCell
+    );
 }
 
-/** `p12` → 12; anything unparseable sorts last but stays stable. */
-function shardIndex(shard: string): number {
-    const digits = /^p(\d+)$/.exec(shard);
-    return digits ? Number(digits[1]) : Number.MAX_SAFE_INTEGER;
-}
-
-/** Shards nothing is ticking — the finding worth alerting on. */
-export function unclaimedShards(shards: Record<string, readonly string[]>): string[] {
-    return Object.entries(shards)
-        .filter(([, claimants]) => claimants.length === 0)
-        .map(([shard]) => shard)
-        .sort((a, b) => shardIndex(a) - shardIndex(b));
-}
-
-/** Shards claimed by more than one host — views have diverged. */
-export function splitShards(shards: Record<string, readonly string[]>): string[] {
-    return Object.entries(shards)
-        .filter(([, claimants]) => claimants.length > 1)
-        .map(([shard]) => shard)
-        .sort((a, b) => shardIndex(a) - shardIndex(b));
-}
+/** An `AlertTone` as a `@sigx/terminal` colour. They happen to agree today;
+ *  the mapping exists so a new severity is a compile error, not a blank. */
+export const ALERT_COLOR: Record<AlertTone, string> = {
+    danger: 'danger',
+    warn: 'warn'
+};

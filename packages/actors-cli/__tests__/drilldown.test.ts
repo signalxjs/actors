@@ -14,9 +14,13 @@
  * as a cluster figure when it was one host's.
  */
 import { describe, expect, it } from 'vitest';
-import { DashboardState } from '../src/dashboard/state';
+import {
+    DashboardState,
+    type MonitorSnapshot,
+    type MonitorSource,
+    type SnapshotOptions
+} from '@sigx/actors-monitor';
 import { renderStats } from '../src/commands/stats';
-import type { MonitorSnapshot, MonitorSource, SnapshotOptions } from '../src/source/types';
 
 const emptyStats = {
     activations: 2,

@@ -42,12 +42,20 @@ import {
     type TableColumn
 } from '@sigx/terminal';
 import { digestSnapshot, type ActivationInfo } from '@sigx/actors/host';
-import { count, durationMs, gauge, percent, rate, uptime } from '../model/format';
-import { histogramScale, percentileItems, shardCells, splitShards, unclaimedShards } from '../tui/bars';
+import { count, durationMs, gauge, percent, rate, uptime } from '@sigx/actors-monitor/format';
+import {
+    alertLines,
+    coverageNote,
+    hostTone,
+    polledLabel,
+    scopeOf,
+    type Alert,
+    type DashboardState,
+    type HostView
+} from '@sigx/actors-monitor';
+import { ALERT_COLOR, histogramScale, percentileItems, shardCells } from '../tui/bars';
 import { wrapText } from '../tui/wrap';
 import { Line } from '../tui/components';
-import type { MonitorSnapshot, HostView } from '../source/types';
-import type { DashboardState } from './state';
 
 /**
  * The room a screen has to fill.
@@ -78,81 +86,16 @@ const TABLE_GUTTER = 1;
 
 const LABEL_WIDTH = 12;
 
-/** Status tones. `fenced` and `leaving` must never look like `active`. */
-function hostTone(status: string): string | undefined {
-    if (status === 'active' || status === 'unknown') return undefined;
-    if (status === 'fenced') return 'danger';
-    if (status === 'leaving') return 'warn';
-    return 'dim';
-}
-
-interface Alert {
-    text: string;
-    tone: string;
-}
-
 /**
- * Everything currently wrong, worst first.
+ * Each alert WRAPPED to the pane, continuation lines indented under it.
  *
- * Exported because the screens have to BUDGET for these lines as well as
- * draw them — a banner that pushes the table past the bottom of the pane is
- * the same bug as a table that does not know the width.
+ * The list itself is `@sigx/actors-monitor`'s — what is wrong, and how badly,
+ * is not a terminal question. Wrapping it is: prose cut at the pane edge
+ * throws away the half that says what to do about it, and a browser has no
+ * equivalent problem.
  */
-export function alertLines(state: DashboardState): Alert[] {
-    const { snapshot, error, paused } = state.view;
-    const lines: Alert[] = [];
-
-    if (error) {
-        // The numbers below are still the last good ones. Say so, rather
-        // than letting them read as current.
-        lines.push({ text: `poll failed — showing the last good snapshot: ${error}`, tone: 'danger' });
-    }
-    if (paused) lines.push({ text: 'PAUSED — press p to resume', tone: 'warn' });
-    if (snapshot?.partial) {
-        lines.push({
-            text: 'PARTIAL — a host did not answer, so every total is a LOWER BOUND',
-            tone: 'warn'
-        });
-    }
-    const shards = snapshot?.cluster?.reminderShards;
-    if (shards) {
-        const empty = unclaimedShards(shards);
-        const split = splitShards(shards);
-        if (empty.length > 0) {
-            lines.push({
-                text: `${empty.length} reminder shard(s) UNCLAIMED (${empty.join(' ')}) — nothing is ticking them`,
-                tone: 'danger'
-            });
-        }
-        if (split.length > 0) {
-            lines.push({
-                text: `${split.length} reminder shard(s) claimed twice — membership views have diverged`,
-                tone: 'warn'
-            });
-        }
-    }
-    const fenced = snapshot?.hosts.filter((s) => s.status === 'fenced') ?? [];
-    if (fenced.length > 0) {
-        // The one a load balancer cannot see: a fenced host still publishes
-        // `active` while refusing every activation.
-        lines.push({
-            text: `${fenced.length} host(s) FENCED — refusing activations while still published as active`,
-            tone: 'danger'
-        });
-    }
-    const auth = totalCounter(snapshot?.hosts ?? [], 'authFailures');
-    if (auth > 0) {
-        lines.push({
-            text: `${count(auth)} cluster auth failure(s) — a secret rotation has not reached every host`,
-            tone: 'danger'
-        });
-    }
-    return lines;
-}
-
-/** Each alert wrapped to the pane, continuation lines indented under it. */
 function wrappedAlerts(state: DashboardState, pane: Pane): Alert[] {
-    return alertLines(state).flatMap((alert) =>
+    return alertLines(state.view).flatMap((alert) =>
         wrapText(`! ${alert.text}`, pane.width, '  ').map((text) => ({ text, tone: alert.tone }))
     );
 }
@@ -163,7 +106,7 @@ function alerts(state: DashboardState, pane: Pane): unknown[] {
     if (lines.length === 0) return [];
     return [
         ...lines.map((line) => (
-            <Line color={line.tone} bold>
+            <Line color={ALERT_COLOR[line.tone]} bold>
                 {line.text}
             </Line>
         )),
@@ -177,10 +120,9 @@ function alertHeight(state: DashboardState, pane: Pane): number {
     return lines === 0 ? 0 : lines + 1;
 }
 
-function totalCounter(hosts: readonly HostView[], key: 'authFailures'): number {
-    let total = 0;
-    for (const host of hosts) total += host.counters?.[key] ?? 0;
-    return total;
+/** `hostTone` speaks severities; `DataTable` speaks theme colours. */
+function hostColor(status: string): string | undefined {
+    return hostTone(status) ?? undefined;
 }
 
 /**
@@ -202,45 +144,13 @@ function block(title: string, lines: readonly string[], pane: Pane, color = 'dim
 
 const blockHeight = (lines: readonly string[]): number => (lines.length === 0 ? 0 : lines.length + 2);
 
-
-/**
- * What the numbers on a panel are ABOUT.
- *
- * Stated on every screen that shows any, because the failure this milestone
- * exists to fix was not a wrong number — it was a right number under no
- * label at all, sitting directly beneath one of a different scope.
- */
-function scopeOf(snapshot: MonitorSnapshot): string {
-    const cluster = snapshot.cluster;
-    if (!cluster) return 'this host';
-    return `cluster · ${cluster.totals.hosts} host(s)`;
-}
-
-/**
- * Why cluster-wide totals might be a lower bound, or nothing.
- *
- * A host with no `metrics()`, or one mid-rolling-deploy on an older build,
- * contributes nothing — and totals covering two thirds of the fleet look
- * exactly like totals covering all of it.
- */
-/** The host whose own numbers these are — the one being polled. */
-function polledLabel(state: DashboardState): string {
-    const from = state.view.snapshot?.cluster?.from;
-    return from ? `host ${from}` : 'this host';
-}
-
-function coverageNote(snapshot: MonitorSnapshot): string | null {
-    const totals = snapshot.cluster?.totals;
-    if (!totals) return null;
-    const metrics = totals.metrics;
-    if (!metrics) {
-        return snapshot.metrics
-            ? 'calls and latency below are THIS host only — no host reported cluster metrics'
-            : null;
-    }
-    if (metrics.hosts >= totals.hosts) return null;
-    return `metrics from ${metrics.hosts} of ${totals.hosts} hosts — every figure below is a LOWER BOUND`;
-}
+// `scopeOf`, `polledLabel` and `coverageNote` are `@sigx/actors-monitor`'s
+// (#239). What a number is ABOUT — this host or the fleet, and whether the
+// fleet's total covers all of it — is the work #121 exists over, and it is
+// not a terminal question: the failure it fixes was never a wrong number, it
+// was a right one under no label at all, sitting directly beneath one of a
+// different scope. A second renderer must inherit those strings, not re-word
+// them.
 
 export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     const state = props.state;
@@ -480,7 +390,7 @@ export function HostsScreen(props: { state: DashboardState; cursor?: Model<numbe
                 width={pane.width - TABLE_GUTTER}
                 height={tableRows(pane, spent)}
                 identity={(host: HostView) => host.hostId}
-                tone={selectionTone(snapshot.hosts, props.cursor, (host: HostView) => hostTone(host.status))}
+                tone={selectionTone(snapshot.hosts, props.cursor, (host: HostView) => hostColor(host.status))}
                 emptyText="no hosts"
             />
             {block('unreachable', unreachable, pane, 'danger')}
@@ -526,7 +436,7 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
                 fan-out — so it says so, rather than sitting unlabelled under
                 a screen of cluster totals. */}
             <Heading color="dim">
-                {fitCell(`actors on ${polledLabel(props.state)}`, pane.width)}
+                {fitCell(`actors on ${polledLabel(props.state.view)}`, pane.width)}
             </Heading>
             {snapshot.activations ? (
                 <DataTable
@@ -614,7 +524,7 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
             <DetailList
                 labelWidth={LABEL_WIDTH}
                 rows={[
-                    { label: 'status', value: host.status, tone: hostTone(host.status) },
+                    { label: 'status', value: host.status, tone: hostColor(host.status) },
                     { label: 'address', value: host.address },
                     { label: 'up', value: uptime(host.uptimeMs) },
                     ...(host.health
@@ -846,7 +756,7 @@ export function HealthScreen(props: { state: DashboardState; pane?: Pane }) {
                 on the Hosts tab and in its drill-down — this one used to be
                 the only one visible, which is how a fleet with a fenced
                 peer read as healthy. */}
-            <Heading color="dim">{fitCell(polledLabel(props.state), pane.width)}</Heading>
+            <Heading color="dim">{fitCell(polledLabel(props.state.view), pane.width)}</Heading>
             {health
                 ? [
                       <DetailList

@@ -47,6 +47,7 @@ body:
         - "@sigx/actors-k8s"
         - "@sigx/actors-cloudflare"
         - "@sigx/actors-cli"
+        - "@sigx/actors-monitor"
         - "@sigx/actors-otel"
         - Not sure
     validations:

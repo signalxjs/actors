@@ -38,6 +38,8 @@
       "@sigx/actors-surreal": ["./packages/actors-surreal/src/index.ts"],
       "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"],
       "@sigx/actors-cloudflare": ["./packages/actors-cloudflare/src/index.ts"],
+      "@sigx/actors-monitor/format": ["./packages/actors-monitor/src/format.ts"],
+      "@sigx/actors-monitor": ["./packages/actors-monitor/src/index.ts"],
       "@sigx/actors-cli/source": ["./packages/actors-cli/src/source/index.ts"],
       "@sigx/actors-cli": ["./packages/actors-cli/src/plugin.ts"]
     }

@@ -30,6 +30,12 @@
             "@sigx/actors": ["../actors/src/index.ts"],
             "@sigx/actors/host": ["../actors/src/host/index.ts"],
             "@sigx/actors/cluster": ["../actors/src/cluster/index.ts"],
+            // Same reason as `@sigx/actors` above: from SOURCE, so a clean
+            // checkout typechecks before anything is built. More specific
+            // first — `paths` has no prefix fallthrough, but keeping the
+            // order honest is what stops the next entry being missed.
+            "@sigx/actors-monitor/format": ["../actors-monitor/src/format.ts"],
+            "@sigx/actors-monitor": ["../actors-monitor/src/index.ts"],
             // Self-referential, because the tests import the package's own
             // public subpath rather than reaching into `src/` — which is
             // the point of testing it. Without this it resolves through

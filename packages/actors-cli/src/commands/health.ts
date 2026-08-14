@@ -17,7 +17,7 @@
 import type { ActorsCommandContext } from './context';
 import { out, outJson } from './out';
 import { resolveSource } from '../resolve';
-import { uptime } from '../model/format';
+import { uptime } from '@sigx/actors-monitor/format';
 
 export const EXIT_READY = 0;
 export const EXIT_NOT_READY = 1;

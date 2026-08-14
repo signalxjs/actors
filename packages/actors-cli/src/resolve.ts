@@ -7,8 +7,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { ActorsArgs } from './commands/context';
 import { embeddedSource } from './source/embedded';
-import { httpSource } from './source/http';
-import type { MonitorSource } from './source/types';
+import { httpSource, type MonitorSource } from '@sigx/actors-monitor';
 
 /**
  * Where an actor app module conventionally lives. Matched in order, so the
