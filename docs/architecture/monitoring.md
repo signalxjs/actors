@@ -97,6 +97,31 @@ the distinction that matters.
    `alertLines` and `shardStates` got there (#239) — they were private
    functions inside the terminal screens until a second renderer needed them.
 
+### Three things that bit the web one (#241)
+
+They are all sigx-specific rather than actors-specific, and none of them
+produces a wrong number — but the first two are silent.
+
+**Panels must be `component()` factories, not plain functions returning JSX.**
+Both render correctly as JSX in sigx; only the first gets a reactive scope of
+its own. Without it, a snapshot arriving re-renders the whole shell — tab strip
+included — once a second, and keyboard focus does not survive that. A dashboard
+that cannot be operated from the keyboard is not a rendering bug you would see
+in a screenshot.
+
+**Props arrive through a reactive proxy, and `DashboardState`, `Series` and
+`RateTracker` hold `#private` fields.** A `#`-field read resolves against the
+receiver, so `state.calls.values()` on a proxied state throws `Cannot read
+private member #values from an object whose class did not declare it`. Hence
+`panelState(ctx.props)`, which is `toRaw` — it costs no reactivity, because
+panels track `state.view` (a signal in its own right) rather than the state
+object, and it keeps the poll loop's own bookkeeping out of the reactive graph.
+
+**Nothing may touch `document` at module scope.** `scripts/verify-pack.js`
+imports every published entry in bare Node, and SSR does the same. The
+stylesheet is injected from inside the component, and
+`@sigx/runtime-dom/platform` is a dynamic import inside `mountActorsDashboard`.
+
 ## Reaching `ops()` from a browser
 
 `ops()` sets **no CORS headers** and refuses to construct without a bearer

@@ -48,6 +48,7 @@ body:
         - "@sigx/actors-cloudflare"
         - "@sigx/actors-cli"
         - "@sigx/actors-monitor"
+        - "@sigx/actors-dashboard"
         - "@sigx/actors-otel"
         - Not sure
     validations:

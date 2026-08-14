@@ -44,6 +44,7 @@ architecture notes in [`docs/`](docs).
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — run an actor app on Workers, one DO per actor |
 | [`@sigx/actors-monitor`](packages/actors-monitor) | Renderer-free dashboard data layer — ops polling, rate derivation across resets, alerts and shard states |
 | [`@sigx/actors-cli`](packages/actors-cli) | `sigx` CLI plugin — observe hosts, actors and clusters from the terminal |
+| [`@sigx/actors-dashboard`](packages/actors-dashboard) | The web dashboard — the same five tabs as embeddable sigx components |
 | [`@sigx/actors-otel`](packages/actors-otel) | Observability exporters — Prometheus text exposition, OpenTelemetry traces and a metrics bridge |
 | [`benchmarks`](benchmarks) | Performance baselines — throughput, latency, heap footprint, leak detection. Run locally, and A/B'd on perf-sensitive PRs: timings inform, metrics marked `exact` gate (not published) |
 

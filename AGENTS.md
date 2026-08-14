@@ -399,6 +399,27 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   rather than `catalog:`. It is the one package here with a real
   (non-peer) dependency on a sibling, which is why `scripts/publish.js`
   publishes `actors-monitor` before it.
+- `packages/actors-dashboard` → `@sigx/actors-dashboard` — the WEB rendering
+  of `@sigx/actors-monitor` (#241, answering #117): the five tabs
+  `sigx actors top` has, plus the per-host drill-down, as sigx components.
+  `<ActorsDashboard source={…} />` is the whole shell; every panel is also
+  exported standalone taking `{ state }`, so a portal can embed one table, and
+  `mountActorsDashboard()` covers a page that is not a sigx app. Styling is
+  self-contained and themed by `--sigx-actors-*` custom properties.
+  **It never imports `sigx`** — the umbrella's first line is
+  `import '@sigx/runtime-dom/platform'`. JSX resolves through
+  `@sigx/runtime-core` (a `@jsxImportSource` pragma per `.tsx`, plus the
+  tsconfig and an esbuild override), and the DOM intrinsics come from a
+  types-only reference to `@sigx/runtime-dom` in `src/env.d.ts`. Which is why
+  it has **its own tsconfig pair and is excluded from the root program**, the
+  mirror image of `actors-cli`. Three things it is built around: panels are
+  real `component()` factories, not plain functions returning JSX (both work
+  as JSX in sigx, but only the first gets a reactive scope — without it a
+  snapshot re-renders the tab strip once a second and keyboard focus does not
+  survive); props arrive through a reactive proxy, so every panel starts with
+  `panelState(ctx.props)` — a `#private` field read on a proxied
+  `DashboardState` throws — and `injectStyles` is lazy, because
+  `scripts/verify-pack.js` imports every published entry in bare Node.
 - `packages/actors-otel` → `@sigx/actors-otel` — observability exporters:
   `prometheusOps()` + the pure `renderPrometheus()` on the
   OTel-free `./prometheus` entry (text exposition from the metrics digest;

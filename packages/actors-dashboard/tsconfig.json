@@ -1,0 +1,35 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "ES2022",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "moduleResolution": "bundler",
+        "strict": true,
+        "types": ["node"],
+        "declaration": true,
+        "declarationMap": true,
+        "sourceMap": true,
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+        "skipLibCheck": true,
+        "jsx": "react-jsx",
+        // `@sigx/runtime-core`, NOT `sigx`. The umbrella's first line is
+        // `import '@sigx/runtime-dom/platform'`, so depending on it would
+        // drag a renderer in behind every import of this package — the rule
+        // AGENTS states for all shipped code. The runtime factory
+        // (`jsx`/`jsxs`/`Fragment`) is runtime-core's; the DOM INTRINSICS
+        // come from `@sigx/runtime-dom`, which augments the global `JSX`
+        // namespace, and `src/env.d.ts` references it type-only.
+        //
+        // This is also why the package has its own tsconfig and the
+        // repo-root config excludes it: that one sets `jsxImportSource:
+        // "sigx"`, which cannot resolve from a package that does not depend
+        // on `sigx`. `packages/actors-cli` is excluded for the mirror-image
+        // reason (its intrinsics are the terminal's).
+        "jsxImportSource": "@sigx/runtime-core"
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx"],
+    "exclude": ["node_modules", "dist"]
+}

@@ -113,6 +113,17 @@
     "limit": "1 KB"
   },
   {
+    "name": "@sigx/actors-dashboard",
+    "path": "packages/actors-dashboard/dist/index.prod.js",
+    "limit": "9 KB",
+    "ignore": [
+      "@sigx/actors-monitor",
+      "@sigx/reactivity",
+      "@sigx/runtime-core",
+      "@sigx/runtime-dom"
+    ]
+  },
+  {
     "name": "@sigx/actors-cloudflare",
     "path": "packages/actors-cloudflare/dist/index.prod.js",
     "limit": "5 KB",
