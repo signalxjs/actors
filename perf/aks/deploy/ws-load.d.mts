@@ -51,6 +51,13 @@ export interface WsLoadResult {
     /** The `open` GAUGE sampled off the hosts while the job ran. */
     peakOpen: number;
     peakSubscriptions: number;
+    /**
+     * Deepest HOST-side send buffer sampled during the run, summed across
+     * hosts — `null` when no host could report one (#252). Never diffed
+     * across snapshots: it is a gauge, and both ends of a healthy run read
+     * 0 even if the middle was drowning.
+     */
+    peakBufferedBytes: number | null;
     samples: number;
     /**
      * Monotonic totals, after minus before: `ops.sockets` always, plus

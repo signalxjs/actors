@@ -339,6 +339,11 @@ export async function runWsLoad(options) {
 
     let peakOpen = 0;
     let peakSubscriptions = 0;
+    // The HOST-side send buffer (#252/#208). `null` until some host reports
+    // one, and it stays null when no adapter can — a 0 would be the exact
+    // claim #208 was filed about ("the hosts never outran the clients"),
+    // asserted from an absence of data.
+    let peakBufferedBytes = null;
     let samples = 0;
     let partial = false;
     const deadline = Date.now() + timeoutMs;
@@ -348,6 +353,10 @@ export async function runWsLoad(options) {
             samples++;
             peakOpen = Math.max(peakOpen, live.totals.open ?? 0);
             peakSubscriptions = Math.max(peakSubscriptions, live.totals.subscriptions ?? 0);
+            // Absent means no host could answer, which must not become a 0.
+            if (typeof live.totals.bufferedBytes === 'number') {
+                peakBufferedBytes = Math.max(peakBufferedBytes ?? 0, live.totals.bufferedBytes);
+            }
         }
         const state = kube(['-n', namespace, 'get', 'job', job, '-o',
             'jsonpath={.status.succeeded}|{.status.failed}'], { allowFail: true }) ?? '';
@@ -401,8 +410,19 @@ export async function runWsLoad(options) {
     const delta = {};
     for (const [key, value] of Object.entries(after.totals)) {
         // Gauges describe a moment, not an interval — diffing them is
-        // meaningless.
-        if (key === 'open' || key === 'inFlight' || key === 'subscriptions') continue;
+        // meaningless. `bufferedBytes` (#252) is one of them, and a
+        // particularly misleading one to diff: both ends of a healthy run
+        // are 0, so the delta is 0 and reads as "no backpressure" even if
+        // the middle of the run was drowning. It is reported from the
+        // in-run samples as `peakBufferedBytes` instead.
+        if (
+            key === 'open' ||
+            key === 'inFlight' ||
+            key === 'subscriptions' ||
+            key === 'bufferedBytes'
+        ) {
+            continue;
+        }
         if (key.startsWith('cluster/') && !watchesTrustworthy) continue;
         delta[key] = value - (before.totals[key] ?? 0);
     }
@@ -415,6 +435,9 @@ export async function runWsLoad(options) {
         hosts: after.hosts,
         peakOpen,
         peakSubscriptions,
+        // `null` = no host could report its send buffer for the whole run
+        // (an adapter without the `bufferedBytes` seam). NOT zero.
+        peakBufferedBytes,
         samples,
         delta,
         // Distinct from `partial` above, which is about the LOAD JOB's pods.
