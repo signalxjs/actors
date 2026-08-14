@@ -37,14 +37,16 @@ function fakeResponse() {
 async function call(
     url: string,
     options: {
+        method?: string;
         upstream?: (input: string, init?: RequestInit) => Promise<Response>;
         isOperator?: () => boolean;
     } = {}
 ) {
-    const fetches: { url: string; auth: string | undefined }[] = [];
+    const fetches: { url: string; method: string | undefined; auth: string | undefined }[] = [];
     const fetchStub = vi.fn(async (input: string, init?: RequestInit) => {
         fetches.push({
             url: String(input),
+            method: init?.method,
             auth: (init?.headers as Record<string, string> | undefined)?.authorization
         });
         return (
@@ -64,9 +66,13 @@ async function call(
     const { response, written } = fakeResponse();
     let nexted = false;
     try {
-        await handle({ url } as IncomingMessage, response, () => {
-            nexted = true;
-        });
+        await handle(
+            { url, method: options.method ?? 'GET' } as IncomingMessage,
+            response,
+            () => {
+                nexted = true;
+            }
+        );
     } finally {
         globalThis.fetch = original;
     }
@@ -140,5 +146,47 @@ describe('opsProxy', () => {
     it('never lets a snapshot be cached', async () => {
         const { written } = await call('/ops');
         expect(written.headers['cache-control']).toBe('no-store');
+    });
+
+    it('forwards the METHOD rather than assuming GET', async () => {
+        // `ops()` serves GET and HEAD and answers 405 to anything else.
+        // Rewriting every request as a GET makes a HEAD probe silently
+        // expensive and hides the 405 a wrong verb should produce.
+        const { fetches } = await call('/ops', { method: 'HEAD' });
+        expect(fetches[0]?.method).toBe('HEAD');
+    });
+
+    it('sends no body on a HEAD, by definition', async () => {
+        const { written } = await call('/ops', { method: 'HEAD' });
+        expect(written.status).toBe(200);
+        expect(written.body).toBe('');
+    });
+
+    it('passes through www-authenticate on a 401', async () => {
+        // Flattening it to a bare status is how you spend ten minutes
+        // wondering whether the PROXY's secret is stale or the host is.
+        const { written } = await call('/ops', {
+            upstream: async () =>
+                new Response('{"error":{}}', {
+                    status: 401,
+                    headers: { 'www-authenticate': 'Bearer' }
+                })
+        });
+        expect(written.headers['www-authenticate']).toBe('Bearer');
+    });
+
+    it('passes through allow on a 405', async () => {
+        const { written } = await call('/ops', {
+            method: 'POST',
+            upstream: async () =>
+                new Response('{"error":{}}', { status: 405, headers: { allow: 'GET, HEAD' } })
+        });
+        expect(written.headers.allow).toBe('GET, HEAD');
+    });
+
+    it('omits a header the host did not send, rather than sending an empty one', async () => {
+        const { written } = await call('/ops');
+        expect('www-authenticate' in written.headers).toBe(false);
+        expect('allow' in written.headers).toBe(false);
     });
 });

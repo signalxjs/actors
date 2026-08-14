@@ -43,6 +43,12 @@ export interface OpsProxyOptions {
 
 export type NextHandler = (error?: unknown) => void;
 
+/** `{ name: value }` when the upstream sent it, `{}` when it did not. */
+function forward(upstream: Response, name: string): Record<string, string> {
+    const value = upstream.headers.get(name);
+    return value === null ? {} : { [name]: value };
+}
+
 export function opsProxy(options: OpsProxyOptions) {
     const host = options.host.replace(/\/+$/, '');
     const base = (options.base ?? '/_sigx/ops').replace(/\/+$/, '');
@@ -71,17 +77,31 @@ export function opsProxy(options: OpsProxyOptions) {
         // itself, and a proxy that dropped either would turn the Cluster tab
         // into a 404 and the drill-down into an empty panel.
         const url = `${host}${base}${target.slice(mount.length)}`;
+        // The METHOD is forwarded, not assumed. `ops()` serves GET and HEAD
+        // and answers 405 to anything else — a proxy that turned every
+        // request into a GET would make a HEAD probe silently expensive and
+        // hide the 405 a wrong verb is supposed to produce.
+        const method = request.method ?? 'GET';
         try {
             const upstream = await fetch(url, {
+                method,
                 headers: { authorization: `Bearer ${options.secret}` }
             });
-            const body = await upstream.text();
+            // A HEAD response has no body, by definition — reading one and
+            // writing it back would make the reply not a HEAD reply.
+            const body = method === 'HEAD' ? null : await upstream.text();
             response.writeHead(upstream.status, {
                 'content-type': upstream.headers.get('content-type') ?? 'application/json',
                 // The numbers are read precisely because they change.
-                'cache-control': 'no-store'
+                'cache-control': 'no-store',
+                // Pass through the two headers that CARRY the diagnosis.
+                // Flattening a 401 to a bare status is how you spend ten
+                // minutes wondering whether the proxy's secret is stale or
+                // the host is; `allow` does the same job for a 405.
+                ...forward(upstream, 'www-authenticate'),
+                ...forward(upstream, 'allow')
             });
-            response.end(body);
+            response.end(body ?? undefined);
         } catch (error) {
             // 502 rather than 500: the dashboard renders the status text, and
             // "the cluster is not answering" is a different thing to debug

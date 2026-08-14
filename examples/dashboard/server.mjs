@@ -16,7 +16,7 @@ import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { opsProxy } from './src/ops-proxy.ts';
 import { resolveStatic } from './src/static.ts';
-import { OPS_HOST, OPS_MOUNT, OPS_SECRET, PORT } from './src/config.ts';
+import { OPS_HOST, OPS_MOUNT, OPS_SECRET, PORT } from './src/config.server.ts';
 
 const MIME = {
     '.html': 'text/html',

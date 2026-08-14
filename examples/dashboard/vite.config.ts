@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import { opsProxy } from './src/ops-proxy';
-import { OPS_HOST, OPS_MOUNT, OPS_SECRET, PORT } from './src/config';
+import { OPS_HOST, OPS_MOUNT, OPS_SECRET, PORT } from './src/config.server';
 
 export default defineConfig({
     server: { port: PORT, strictPort: true },

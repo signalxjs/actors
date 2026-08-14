@@ -71,6 +71,15 @@ The `isOperator` hook is where your real session check goes. It defaults to
 an anonymous visitor and your cluster topology, so it is not the line to
 leave for later.
 
+**And the split is structural, not a bundler optimisation.** The secret lives
+in `src/config.server.ts`; `src/config.public.ts` holds the mount path and
+nothing else; `main.tsx` imports only the second, so there is no module path
+from browser code to the first. Tree-shaking *would* drop an unused
+`OPS_SECRET` today — but a guarantee that rests on an optimiser staying clever
+breaks quietly the first time somebody adds a side effect or logs the config
+object. `__tests__/no-secret-in-browser.test.ts` walks the real import graph
+and fails if it can reach the secret, `process.env`, or the host origin.
+
 ## What to look at when you open it
 
 - **`src/main.tsx` is nine lines.** That is the point: `<ActorsDashboard>` is
@@ -138,7 +147,9 @@ ops proxy    /ops  →  http://127.0.0.1:5392  (bearer attached here, never in t
 | `index.html` | The page. Its own chrome only; everything inside `#app` is the dashboard's. |
 | `src/main.tsx` | The browser half — nine lines, no secret, no host address. |
 | `src/ops-proxy.ts` | **The point of the example.** Same-origin route → `ops()`, bearer attached server-side. |
-| `src/config.ts` | Port, host, secret and mount, in one place so the dev and prod entries cannot drift. |
+| `src/config.public.ts` | The one constant the browser may see: the mount path. Nothing else may go here. |
+| `src/config.server.ts` | Port, host and **the secret**. Nothing in the browser's import graph may reach it. |
+| `__tests__/no-secret-in-browser.test.ts` | Walks `main.tsx`'s import graph and fails if it can reach the secret, `process.env` or the host origin. |
 | `src/static.ts` | Path containment for the static server (a raw `/../package.json` must not escape `dist/`). |
 | `vite.config.ts` | Dev server on 5490, mounting the proxy as middleware. |
 | `server.mjs` | Production entry: the built client plus the same proxy. |

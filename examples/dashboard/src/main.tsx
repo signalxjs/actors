@@ -14,7 +14,7 @@
 import { defineApp } from 'sigx';
 import { ActorsDashboard } from '@sigx/actors-dashboard';
 import { httpSource } from '@sigx/actors-monitor';
-import { OPS_MOUNT } from './config';
+import { OPS_MOUNT } from './config.public';
 
 defineApp(
     ActorsDashboard({
