@@ -40,9 +40,13 @@ what makes these numbers honest, lives in
 this package renders its verdicts and re-derives none of them, which is what
 keeps it from disagreeing with the CLI.
 
-Peer dependencies: `@sigx/runtime-core`, `@sigx/runtime-dom` and
-`@sigx/reactivity` (all ≥ 0.15). Requires **Node ^20.19.0 || >=22.12.0** to
-build, and any modern browser to run.
+Peer dependencies: `@sigx/actors` (≥ 0.9), plus `@sigx/runtime-core`,
+`@sigx/runtime-dom` and `@sigx/reactivity` (all ≥ 0.15). npm installs peers
+for you. `@sigx/actors` is needed because the host drill-down decodes that
+host's own latency histogram with core's percentile walk rather than
+reimplementing it — it is WinterCG-clean and zero-dependency, so it
+tree-shakes to that walk. Requires **Node ^20.19.0 || >=22.12.0** to build,
+and any modern browser to run.
 
 ## Documentation
 

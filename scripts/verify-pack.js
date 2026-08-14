@@ -140,10 +140,100 @@ function assertTarballContents(pkgFullPath, name) {
     }
 }
 
+/** Every `.js` under a directory, recursively. `.map` and `.d.ts` are skipped. */
+function distJsFiles(dir) {
+    const found = [];
+    let entries;
+    try {
+        entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return found; // no dist — assertTarballContents already complained
+    }
+    for (const entry of entries) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) found.push(...distJsFiles(full));
+        else if (entry.name.endsWith('.js')) found.push(full);
+    }
+    return found;
+}
+
+/** `@scope/name/deep` → `@scope/name`; `pkg/deep` → `pkg`. */
+function packageOf(specifier) {
+    const parts = specifier.split('/');
+    return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+/**
+ * Every package this one IMPORTS at runtime must be one it DECLARES.
+ *
+ * The gap this closes: the smoke below installs all twelve tarballs into one
+ * sandbox, so a package that imports a sibling without declaring it resolves
+ * there and fails only for a real consumer installing it alone. That is
+ * exactly how `@sigx/actors-dashboard@0.9.0` shipped unloadable (#254) — it
+ * imports `digestSnapshot` from `@sigx/actors/host` for the per-host latency
+ * row, and named `@sigx/actors` nowhere in its manifest.
+ *
+ * Static rather than twelve more `npm install`s: it costs seconds, it is
+ * deterministic, and "every runtime import is declared" is precisely the
+ * invariant that was broken.
+ *
+ * It pins the converse too. `@sigx/actors` is an OPTIONAL peer of
+ * `@sigx/actors-monitor`, which npm does not auto-install — so that package's
+ * dist must never import it at runtime, which is the #116 guarantee that
+ * HTTP mode works with no actor runtime present. Optional peers count as
+ * declared here; the isolated-import property is the tarball smoke's job.
+ */
+function assertImportsDeclared(pkgFullPath, pkgJson) {
+    const declared = new Set([
+        ...Object.keys(pkgJson.dependencies ?? {}),
+        ...Object.keys(pkgJson.peerDependencies ?? {}),
+        // A self-import through the package's own name is how a package
+        // reaches its own subpath exports; it resolves for consumers.
+        pkgJson.name
+    ]);
+    // `from "x"`, `import "x"`, `import("x")`, `export … from "x"`.
+    //
+    // Two guards, both earned. The lookbehind stops `r.from` in minified code
+    // being read as an import keyword. And a candidate is only believed if it
+    // is a SYNTACTICALLY VALID package specifier — without that, the literal
+    // `"collected from"` in the cluster panel matched, because the closing
+    // quote of that very string sits exactly where a specifier's opening
+    // quote would, and everything up to the next quote was captured as a
+    // package name. Filtering on the npm name grammar removes that whole
+    // class: a false positive would now need a string that is itself a legal
+    // package name sitting immediately after the word `from`.
+    const CANDIDATE = /(?<![.\w$])(?:from|import)\s*\(?\s*["']([^"'\n]+)["']/g;
+    const PACKAGE_SPECIFIER =
+        /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(?:\/[a-zA-Z0-9-._~/]*)?$/;
+    const offenders = new Map();
+    for (const file of distJsFiles(join(pkgFullPath, 'dist'))) {
+        const source = readFileSync(file, 'utf-8');
+        for (const match of source.matchAll(CANDIDATE)) {
+            const specifier = match[1];
+            if (specifier.startsWith('node:')) continue;
+            if (specifier.startsWith('.')) continue; // relative — not a package
+            if (!PACKAGE_SPECIFIER.test(specifier)) continue;
+            const name = packageOf(specifier);
+            if (!declared.has(name)) offenders.set(name, `${file} → "${specifier}"`);
+        }
+    }
+    if (offenders.size > 0) {
+        const lines = [...offenders].map(([name, where]) => `  ${name}   (${where})`);
+        throw new Error(
+            `${pkgJson.name}: imports packages it does not declare:\n${lines.join('\n')}\n` +
+                'Add each to "dependencies" or "peerDependencies". The all-in-one smoke ' +
+                'below will NOT catch this — it installs every tarball together, so a ' +
+                'missing declaration resolves there and fails only for a consumer ' +
+                'installing this package on its own.'
+        );
+    }
+}
+
 function packPackage(pkgPath) {
     const pkgFullPath = join(rootDir, pkgPath);
     const pkgJson = readJson(join(pkgFullPath, 'package.json'));
     assertTarballContents(pkgFullPath, pkgJson.name);
+    assertImportsDeclared(pkgFullPath, pkgJson);
     run('pnpm pack --pack-destination ' + JSON.stringify(tarballDir), { cwd: pkgFullPath });
     const safeName = pkgJson.name.replace('@', '').replace('/', '-');
     // Exact filename, not a prefix: with the whole family in one dir,

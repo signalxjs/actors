@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-14
+
+### Fixed
+
+- **`@sigx/actors` is declared as a peer dependency — 0.9.0 could not be
+  loaded at all (#254).** `dist/index.js` imports `digestSnapshot` from
+  `@sigx/actors/host` to decode the per-host latency histogram in the drill-
+  down, and the manifest named `@sigx/actors` nowhere, so installing this
+  package on its own produced:
+
+  ```
+  Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@sigx/actors'
+    imported from node_modules/@sigx/actors-dashboard/dist/index.js
+  ```
+
+  **If you installed 0.9.0, upgrade** — there is no workaround short of
+  adding `@sigx/actors` to your own dependencies, which is what this release
+  does for you. npm ≥7 installs peers automatically, so a fresh install needs
+  no change on your side.
+
+  A peer rather than a dependency because `@sigx/actors` is WinterCG-clean
+  and zero-dependency — it is browser-safe and tree-shakes to the histogram
+  walk — and a portal that already uses it keeps a single copy. Required
+  rather than optional because the import is at module scope.
+
+  It shipped because `scripts/verify-pack.js` installed all twelve tarballs
+  into ONE sandbox, where a missing declaration always resolves. That script
+  now asserts, per package, that every bare import in its packed `dist` is a
+  package it declares.
+
+## [0.9.0] - 2026-08-14
+
 ### Added
 
 - **`@sigx/actors-dashboard` — the first-party web dashboard (#241).** The
