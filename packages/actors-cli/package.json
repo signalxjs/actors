@@ -54,6 +54,7 @@
         "url": "https://github.com/signalxjs/actors/issues"
     },
     "dependencies": {
+        "@sigx/actors-monitor": "workspace:^",
         "@sigx/terminal": "^0.12.0"
     },
     "peerDependencies": {

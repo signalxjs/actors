@@ -27,7 +27,7 @@ import {
     type MonitorSource,
     type HostView,
     type SnapshotOptions
-} from './types';
+} from '@sigx/actors-monitor';
 
 export interface EmbeddedSourceOptions {
     /** Absolute path or file: URL of the module exporting the actor app. */

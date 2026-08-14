@@ -22,8 +22,13 @@ import {
     OverviewScreen,
     HostsScreen
 } from '../src/dashboard/screens';
-import { DashboardState } from '../src/dashboard/state';
-import type { ClusterView, MonitorSnapshot, MonitorSource, HostView } from '../src/source/types';
+import {
+    DashboardState,
+    type ClusterView,
+    type HostView,
+    type MonitorSnapshot,
+    type MonitorSource
+} from '@sigx/actors-monitor';
 
 const emptyStats = {
     activations: 3,

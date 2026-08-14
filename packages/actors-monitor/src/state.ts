@@ -6,10 +6,18 @@
  * of this object, so the awkward parts — polling, back-pressure, rate
  * derivation across resets, remembering an error without discarding the
  * last good snapshot — are testable without a terminal.
+ *
+ * `signal` comes from `@sigx/reactivity` rather than from a renderer's
+ * barrel, and that is the whole reason this file can live here. Both
+ * renderers re-export the same one: `@sigx/terminal` and `sigx` are each
+ * `export * from '@sigx/reactivity'` over it. Importing it from either would
+ * have made the poll loop a terminal artefact and forced the web dashboard
+ * to write a second one — and a second poll loop is a second place to get
+ * the reset/gap rule wrong.
  */
-import { signal } from '@sigx/terminal';
-import { RateTracker, Series } from '../model/rates';
-import type { MonitorSnapshot, MonitorSource } from '../source/types';
+import { signal } from '@sigx/reactivity';
+import { RateTracker, Series } from './rates';
+import type { MonitorSnapshot, MonitorSource } from './types';
 
 export interface DashboardOptions {
     source: MonitorSource;

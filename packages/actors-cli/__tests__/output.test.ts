@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runStats } from '../src/commands/stats';
 import { runHealth } from '../src/commands/health';
 import type { ActorsCommandContext } from '../src/commands/context';
-import type { MonitorSnapshot, MonitorSource } from '../src/source/types';
+import type { MonitorSnapshot, MonitorSource } from '@sigx/actors-monitor';
 
 /**
  * Built inside `vi.hoisted` because the `vi.mock` factory below closes over

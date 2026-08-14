@@ -48,6 +48,7 @@ Every arrow that crosses a box is a seam, and every seam is listed in
 | [`wire-and-frames.md`](wire-and-frames.md) | What is on the wire, which mounts exist, what is reserved? |
 | [`clustering.md`](clustering.md) | How do hosts find each other and agree on who owns an actor? |
 | [`conformance-suites.md`](conformance-suites.md) | How is a new provider or transport proven correct? |
+| [`monitoring.md`](monitoring.md) | How is a dashboard layered, and which of its rules fail silently when re-implemented? |
 
 ## Two rules that shape most of the code
 

@@ -32,13 +32,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
 
 // Packages in dependency order (dependencies first): every sibling peers on
-// @sigx/actors, so it goes first; the siblings are independent of each other
-// and sit alphabetically. Examples and benchmarks are private and stay out.
-// Other SignalX packages (router, store, ssg, daisyui, runtime-terminal, etc.)
-// live in their own repos under https://github.com/signalxjs and are published
-// from there.
+// @sigx/actors, so it goes first, and @sigx/actors-monitor follows it because
+// @sigx/actors-cli takes a real (not peer) dependency on it — the one pair
+// here that is not independent, so it is the one pair whose order matters.
+// Everything after them is independent and sits alphabetically. Examples and
+// benchmarks are private and stay out. Other SignalX packages (router, store,
+// ssg, daisyui, runtime-terminal, etc.) live in their own repos under
+// https://github.com/signalxjs and are published from there.
 const PACKAGES = [
     'packages/actors',
+    'packages/actors-monitor',
     'packages/actors-cli',
     'packages/actors-cloudflare',
     'packages/actors-k8s',

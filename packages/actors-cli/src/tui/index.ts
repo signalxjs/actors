@@ -17,15 +17,13 @@
  * what a flat line means. `cellWidth` is gone too, as its own comment
  * promised it would be when `fitCell`/`padCell` landed.
  *
- * What remains is the two ACTOR-shaped adapters upstream has no opinion
- * about — the percentile triple and the reminder-shard claim map — plus
- * `Line`, which still has to exist because `<text>` is a span.
+ * What remains is the MAPPING between two vocabularies. The actor-shaped
+ * judgements themselves — an empty histogram is "no reading" and not three
+ * zeroes; a reminder shard with no claimant is an incident while one with two
+ * is merely a divergence — are `@sigx/actors-monitor`'s now (#239), so the web
+ * dashboard reaches them too. What is left here turns those into
+ * `@sigx/terminal` types, plus `Line`, which still has to exist because
+ * `<text>` is a span.
  */
-export {
-    histogramScale,
-    percentileItems,
-    shardCells,
-    splitShards,
-    unclaimedShards
-} from './bars';
+export { ALERT_COLOR, histogramScale, percentileItems, shardCells } from './bars';
 export { wrapText } from './wrap';

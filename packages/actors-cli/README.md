@@ -25,8 +25,12 @@ it in, so run it where the host lives — in a monorepo,
 
 Requires **Node ^20.19.0 || >=22.12.0**. `@sigx/cli` (≥ 0.10) is a peer
 dependency; `@sigx/actors` is an optional one.
-**`@sigx/actors-cli/source`** is the renderer-free data layer, for any other
-front end.
+
+Building another front end? Use
+**[`@sigx/actors-monitor`](https://www.npmjs.com/package/@sigx/actors-monitor)**
+— the renderer-free data layer this plugin draws, browser-safe and with no
+CLI peer. (`@sigx/actors-cli/source` still re-exports it, but it also carries
+`embeddedSource`, which starts a real host.)
 
 ## Documentation
 

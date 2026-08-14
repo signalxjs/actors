@@ -8,7 +8,7 @@
  * zeroes for a 401 costs ten minutes debugging a healthy cluster.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { httpSource, OpsRequestError } from '@sigx/actors-cli/source';
+import { httpSource, OpsRequestError } from '@sigx/actors-monitor';
 
 const SECRET = 'ops-secret';
 

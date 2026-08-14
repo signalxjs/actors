@@ -12,7 +12,7 @@ import { createModel, moveCursor, signal, type Model } from '@sigx/terminal';
 import type { ActorsCommandContext } from './context';
 import { out } from './out';
 import { resolveSource } from '../resolve';
-import { DashboardState } from '../dashboard/state';
+import { DashboardState } from '@sigx/actors-monitor';
 import {
     ClusterScreen,
     GrainsScreen,
@@ -21,7 +21,7 @@ import {
     HostScreen,
     HostsScreen
 } from '../dashboard/screens';
-import { count, uptime } from '../model/format';
+import { count, uptime } from '@sigx/actors-monitor/format';
 
 /** The tabs that own a cursor. */
 const HOSTS_TAB = 'hosts';

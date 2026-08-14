@@ -35,6 +35,7 @@ const rootDir = join(__dirname, '..');
 // that list ships a broken tarball.
 const PACKAGES = [
     'packages/actors',
+    'packages/actors-monitor',
     'packages/actors-cli',
     'packages/actors-cloudflare',
     'packages/actors-k8s',

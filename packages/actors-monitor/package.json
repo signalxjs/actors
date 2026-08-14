@@ -1,0 +1,74 @@
+{
+    "name": "@sigx/actors-monitor",
+    "version": "0.9.0",
+    "description": "Renderer-free data layer for @sigx/actors dashboards — ops polling, rate derivation across resets, alerts and shard states",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "development": "./dist/index.js",
+            "production": "./dist/index.prod.js",
+            "import": "./dist/index.js"
+        },
+        "./format": {
+            "types": "./dist/format.d.ts",
+            "development": "./dist/format.js",
+            "production": "./dist/format.prod.js",
+            "import": "./dist/format.js"
+        }
+    },
+    "files": [
+        "dist",
+        "CHANGELOG.md"
+    ],
+    "sideEffects": false,
+    "scripts": {
+        "build": "vite build && vite build --mode prod-dist && tsc --emitDeclarationOnly",
+        "dev": "vite build --watch"
+    },
+    "keywords": [
+        "sigx",
+        "actors",
+        "virtual-actors",
+        "observability",
+        "monitoring",
+        "dashboard",
+        "metrics"
+    ],
+    "author": "Andreas Ekdahl",
+    "license": "MIT",
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/signalxjs/actors.git",
+        "directory": "packages/actors-monitor"
+    },
+    "homepage": "https://sigx.dev/actors/",
+    "bugs": {
+        "url": "https://github.com/signalxjs/actors/issues"
+    },
+    "devDependencies": {
+        "@sigx/actors": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/vite": "catalog:",
+        "@types/node": "^25.9.1",
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    },
+    "peerDependencies": {
+        "@sigx/actors": "^0.9.0",
+        "@sigx/reactivity": "catalog:"
+    },
+    "peerDependenciesMeta": {
+        "@sigx/actors": {
+            "optional": true
+        }
+    },
+    "publishConfig": {
+        "access": "public"
+    }
+}

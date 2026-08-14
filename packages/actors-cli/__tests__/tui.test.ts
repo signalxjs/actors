@@ -11,8 +11,12 @@
  * take any of them back. So they stay, pointed at upstream: this is what we
  * depend on, stated as a test rather than as a hope.
  *
- * **What is still ours.** The two actor-shaped adapters: the percentile
- * triple and the reminder-shard claim map.
+ * **What is still ours.** The MAPPING onto `@sigx/terminal`'s vocabulary. The
+ * judgements behind it — which shard state is an incident, what an empty
+ * histogram means — moved to `@sigx/actors-monitor` (#239) and are tested
+ * there, because the web dashboard reaches the same verdicts through them.
+ * What is asserted here is that the terminal renders those verdicts as the
+ * right tones, in the right order.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -27,13 +31,7 @@ import {
     trend,
     type TableColumn
 } from '@sigx/terminal';
-import {
-    histogramScale,
-    percentileItems,
-    shardCells,
-    splitShards,
-    unclaimedShards
-} from '../src/tui';
+import { histogramScale, percentileItems, shardCells } from '../src/tui';
 
 describe('upstream contract: sparkline', () => {
     it('scales from ZERO, not from the minimum', () => {
@@ -225,15 +223,7 @@ describe('shardCells', () => {
         expect(shardCells(shards)[2]!.detail).toBe('host-a host-b');
     });
 
-    it('picks out the two findings worth acting on', () => {
-        // Unclaimed means those reminders are simply not firing, and
-        // nothing else in the system surfaces it.
-        expect(unclaimedShards(shards)).toEqual(['p1']);
-        expect(splitShards(shards)).toEqual(['p2']);
-    });
-
     it('handles an empty map', () => {
         expect(shardCells({})).toEqual([]);
-        expect(unclaimedShards({})).toEqual([]);
     });
 });

@@ -1,11 +1,11 @@
 /**
  * The normalized view a monitor renders, and the seam that produces it.
  *
- * NOTHING in `src/source/` or `src/model/` may import `@sigx/terminal`. A
- * dashboard is a rendering of this shape, and the terminal is one renderer;
- * a web one is a likely follow-up, and it should import these two
- * directories unchanged rather than reimplement the awkward parts (rate
- * derivation, `partial` handling, reconciling the embedded and HTTP shapes).
+ * NOTHING in this package may import a renderer. A dashboard is a rendering
+ * of this shape; `@sigx/actors-cli` is one renderer and
+ * `@sigx/actors-dashboard` is another, and both import this package
+ * unchanged rather than reimplement the awkward parts (rate derivation,
+ * `partial` handling, reconciling the embedded and HTTP shapes).
  *
  * The awkward parts are the point. Core reports cumulative counters with no
  * windowing, splits a cross-host call across two hosts on purpose, and marks

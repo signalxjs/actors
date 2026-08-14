@@ -9,7 +9,7 @@
  * reporting nothing: both look like real traffic.
  */
 import { describe, expect, it } from 'vitest';
-import { rateBetween, RateTracker, Series } from '@sigx/actors-cli/source';
+import { rateBetween, RateTracker, Series } from '@sigx/actors-monitor';
 
 describe('rateBetween', () => {
     it('converts a delta into per-second', () => {

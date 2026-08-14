@@ -9,8 +9,8 @@
 import type { ActorsCommandContext } from './context';
 import { out, outJson } from './out';
 import { resolveSource } from '../resolve';
-import { count, durationMs, percent, uptime } from '../model/format';
-import type { MonitorSnapshot } from '../source/types';
+import { count, durationMs, percent, uptime } from '@sigx/actors-monitor/format';
+import type { MonitorSnapshot } from '@sigx/actors-monitor';
 
 export async function runStats(ctx: ActorsCommandContext): Promise<void> {
     const source = await resolveSource(ctx.cwd, ctx.args);

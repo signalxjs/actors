@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderStats } from '../src/commands/stats';
-import { count, durationMs, ellipsis, percent, uptime } from '../src/model/format';
+import { count, durationMs, ellipsis, percent, uptime } from '@sigx/actors-monitor/format';
 import type { MonitorSnapshot } from '@sigx/actors-cli/source';
 
 const emptyStats = {

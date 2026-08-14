@@ -369,14 +369,36 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   in `pnpm test`) and REAL workerd under `__tests__/workers` (`pnpm
   test:workers`, its own config and CI job — wrangler needs Node >= 22 and
   the main matrix includes 20).
+- `packages/actors-monitor` → `@sigx/actors-monitor` — the renderer-free
+  data layer every actors dashboard is built on, extracted from
+  `@sigx/actors-cli` in #239: `httpSource`, the normalized
+  `MonitorSnapshot`, `DashboardState` (the poll loop, its
+  abandon-the-previous-poll back-pressure and its keep-the-last-good-snapshot
+  rule), rate derivation across resets, `alertLines` +
+  `scopeOf`/`polledLabel`/`coverageNote`, `shardStates` and the percentile
+  triple. **Nothing in it may import a renderer**, touch a DOM or import
+  `node:` anything — `@sigx/reactivity` is the one runtime peer, for the
+  signal the poll loop publishes through, and `@sigx/actors` is an OPTIONAL
+  types-only peer so HTTP mode still works with no runtime installed (#116).
+  It exists because the awkward parts are not the drawing: a counter going
+  backwards is a reset and must produce a GAP, a `partial` fan-out makes every
+  total a lower bound, and a `null` digest is "this host said nothing" rather
+  than "this host did nothing". Each of those fails SILENTLY when a second
+  implementation gets it wrong, so there is one. Two renderers consume it, and
+  they share the test fixture (`__tests__/fixture.ts`) precisely so a
+  disagreement between them is detectable.
 - `packages/actors-cli` → `@sigx/actors-cli` — a `@sigx/cli` PLUGIN (the
   `@sigx/lynx-cli` shape, not its own binary) that observes hosts:
   `sigx actors stats` and `sigx actors health`, over an embedded source
   (loads the project's app module in-process) or an HTTP one (polls a
-  running host's `ops()` endpoint). `@sigx/actors-cli/source` is the
-  renderer-free data layer, deliberately reusable by a future web
-  dashboard. `@sigx/cli` and `@sigx/terminal` are NOT core packages, so
-  they take literal version specs rather than `catalog:`.
+  running host's `ops()` endpoint). The data layer is
+  `@sigx/actors-monitor`'s now; `@sigx/actors-cli/source` re-exports it for
+  compatibility and owns only `embeddedSource`, which could never move —
+  it dynamic-`import()`s user code and starts a real host. `@sigx/cli` and
+  `@sigx/terminal` are NOT core packages, so they take literal version specs
+  rather than `catalog:`. It is the one package here with a real
+  (non-peer) dependency on a sibling, which is why `scripts/publish.js`
+  publishes `actors-monitor` before it.
 - `packages/actors-otel` → `@sigx/actors-otel` — observability exporters:
   `prometheusOps()` + the pure `renderPrometheus()` on the
   OTel-free `./prometheus` entry (text exposition from the metrics digest;
