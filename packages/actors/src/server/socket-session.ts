@@ -304,14 +304,45 @@ export async function createActorSocketSession(
     let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
     let revalidateTimer: ReturnType<typeof setInterval> | undefined;
 
-    const armPing = (): void => {
+    /**
+     * The keepalive is a DEADLINE, not a heartbeat: a ping goes out `pingMs`
+     * after the last outbound frame, and only if nothing was sent since.
+     *
+     * It used to be spelled as a `clearTimeout` + `setTimeout` on every
+     * outbound frame, which reads naturally and costs a timer-heap removal
+     * and insertion PER DELIVERY — profiled at 2.6% of a fan-out host's busy
+     * time doing nothing but re-arming a timer it was about to cancel again
+     * (#250; the measurement is in #245's BASELINES section). At the
+     * Tier-3-measured ~16k deliveries/s per host that is ~32 000 heap
+     * operations a second against ~10 000 live `Timeout` objects.
+     *
+     * The same deadline, priced properly: a frame stamps a timestamp, and one
+     * self-rescheduling timer checks it. A timer per PING instead of two heap
+     * operations per FRAME, with identical observable timing — a busy
+     * connection is never pinged, a connection quiet for `pingMs` always is.
+     */
+    let lastSendAt = performance.now();
+
+    const armPing = (delay = pingMs): void => {
         if (pingTimer !== undefined) clearTimeout(pingTimer);
         pingTimer = undefined;
         if (pingMs <= 0 || closed) return;
         pingTimer = setTimeout(() => {
             pingTimer = undefined;
-            reply({ p: 1 });
-        }, pingMs);
+            if (closed) return;
+            // Re-check rather than assume: frames sent while this timer was
+            // parked moved the deadline, and `reply` deliberately does not
+            // touch the timer.
+            const idle = performance.now() - lastSendAt;
+            if (idle >= pingMs) {
+                // `reply` stamps `lastSendAt`, so the next window starts from
+                // the ping itself — as it did when the ping re-armed here.
+                reply({ p: 1 });
+                armPing();
+                return;
+            }
+            armPing(pingMs - idle);
+        }, delay);
     };
 
     const reply = (frame: SocketReply): void => {
@@ -322,7 +353,8 @@ export async function createActorSocketSession(
             // The adapter's socket died under us; its close event tears the
             // session down, and a throwing send must not take a turn with it.
         }
-        armPing();
+        // The whole per-frame cost of the keepalive, by design.
+        lastSendAt = performance.now();
     };
 
     const fail = (code: number, reason: string): void => {

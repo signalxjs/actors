@@ -475,6 +475,34 @@ describe('keepalive', () => {
         await until(() => link.sent.some((f) => 'p' in f));
         expect(link.sent[0]).toEqual({ p: 1 });
     });
+
+    it('does not ping a connection that keeps sending', async () => {
+        // The deadline is measured from the last outbound frame, so traffic
+        // must keep pushing it out. Since #250 `reply()` only stamps a
+        // timestamp — it no longer re-arms the timer — so this is the test
+        // that the timer still consults that stamp instead of firing blind.
+        const s = await start();
+        const { session, link } = await connect(s, { pingMs: 40 });
+        for (let i = 1; i <= 12; i++) {
+            session.handle(JSON.stringify({ i, s: 'Cart#total', a: ['busy'] }));
+            await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+        expect(link.sent.some((f) => 'p' in f)).toBe(false);
+    });
+
+    it('pings once the burst stops', async () => {
+        // …and the other half: the same connection, gone quiet, is pinged
+        // within about one window rather than never — the failure mode a
+        // stamp-only `reply()` would have if nothing rescheduled.
+        const s = await start();
+        const { session, link } = await connect(s, { pingMs: 40 });
+        for (let i = 1; i <= 5; i++) {
+            session.handle(JSON.stringify({ i, s: 'Cart#total', a: ['burst'] }));
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(link.sent.some((f) => 'p' in f)).toBe(false);
+        await until(() => link.sent.some((f) => 'p' in f));
+    });
 });
 
 describe('origin, pinned at upgrade', () => {
