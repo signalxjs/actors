@@ -420,6 +420,12 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `panelState(ctx.props)` — a `#private` field read on a proxied
   `DashboardState` throws — and `injectStyles` is lazy, because
   `scripts/verify-pack.js` imports every published entry in bare Node.
+  It peers `@sigx/actors` **non-optionally**, unlike the monitor: the host
+  drill-down calls `digestSnapshot` to decode that host's own latency
+  histogram, at module scope. Do not "fix" that by copying the decode into
+  the monitor — core's comment on it is explicit that duplicating the
+  percentile walk is how a cluster-wide p99 quietly stops matching the
+  per-host one. Omitting the declaration shipped 0.9.0 unloadable (#254).
 - `packages/actors-otel` → `@sigx/actors-otel` — observability exporters:
   `prometheusOps()` + the pure `renderPrometheus()` on the
   OTel-free `./prometheus` entry (text exposition from the metrics digest;
