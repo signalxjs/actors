@@ -58,6 +58,21 @@ export interface LiveSubscription {
     m: string;
     /** Arguments. */
     a?: readonly unknown[];
+    /**
+     * Requested delivery window in ms — a REQUEST, not a setting.
+     *
+     * The server floors it and rounds it UP to one of a small fixed ladder of
+     * windows (`resolveClientThrottle`), because `throttleMs` is part of the
+     * watch identity and of the cross-host coalescing key: honouring an
+     * arbitrary number would give every distinct value its own watch loop and
+     * its own remote stream. Absent means "the server's default", and an
+     * absent field produces byte-for-byte the watch key it always did.
+     *
+     * One field for both mounts — `$live` and the socket session both carry
+     * `LiveSubscription`, and a subscription that means the same thing on the
+     * two wires must not be spelled two ways.
+     */
+    w?: number;
 }
 
 /** A frame, tagged with the subscription index it belongs to. */

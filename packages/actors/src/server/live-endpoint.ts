@@ -23,6 +23,7 @@ import { authorizeActorCall, encodePrincipal } from '../guards';
 import { isTraceparent } from '../traceparent';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, type LiveFrame, type LiveSubscription } from '../wire-shared';
+import { DEFAULT_WATCH_THROTTLE_MS } from '../watch-core';
 import type { AnyActorDefinition, Host } from '../types';
 
 // The wire contract itself (the symbol, the subscription record, the frame
@@ -83,7 +84,118 @@ export function resolveMaxSubscriptions(max: number): number {
     return max;
 }
 
-function parseSubscriptions(raw: unknown, max: number): LiveSubscription[] {
+/**
+ * How much say a client gets over its own delivery rate (#247).
+ *
+ * `min` is the fastest window any client may ask for; `buckets` is the ladder
+ * a request is rounded UP to. The ladder exists because `throttleMs` is part
+ * of the watch identity (`Activation.openWatch`) AND of the cross-host
+ * coalescing key (`ClusterPlacement.#coalescedWatch`): honouring an arbitrary
+ * number would give every distinct value its own watch loop and its own
+ * remote stream, which is precisely what #121/#138/#139 exist to collapse. A
+ * socket may hold 256 subscriptions, so "one loop per requested value" is a
+ * cheap way for one client to make an actor do 256x the work.
+ */
+export interface LiveThrottlePolicy {
+    /** Fastest window a client may request, in ms. */
+    min: number;
+    /** Ascending ladder of windows a request is rounded up to, in ms. */
+    buckets: readonly number[];
+}
+
+/**
+ * The default ladder. `min` is the runtime's own watch throttle, so **the
+ * default policy can only ever make a subscription SLOWER than it is today** —
+ * going faster is an explicit operator decision, the same posture as
+ * `maxSubscriptions`.
+ */
+export const DEFAULT_THROTTLE_POLICY: LiveThrottlePolicy = {
+    min: DEFAULT_WATCH_THROTTLE_MS,
+    buckets: [DEFAULT_WATCH_THROTTLE_MS, 250, 1000, 5000]
+};
+
+/**
+ * Validated at CONSTRUCTION, like `resolveMaxSubscriptions` — a policy whose
+ * ladder is empty, unsorted, or entirely below its own floor is a
+ * misconfiguration that would otherwise surface as a subscription rate nobody
+ * asked for, per subscription, at runtime.
+ */
+export function resolveThrottlePolicy(policy: LiveThrottlePolicy): LiveThrottlePolicy {
+    const { min, buckets } = policy;
+    if (!Number.isInteger(min) || min < 0) {
+        throw new Error(
+            `[sigx actors] throttlePolicy.min must be a non-negative integer of ` +
+                `milliseconds — got ${String(min)}.`
+        );
+    }
+    if (!Array.isArray(buckets) || buckets.length === 0) {
+        throw new Error('[sigx actors] throttlePolicy.buckets must be a non-empty array.');
+    }
+    let previous = -1;
+    for (const bucket of buckets) {
+        if (!Number.isInteger(bucket) || bucket < 0) {
+            throw new Error(
+                `[sigx actors] throttlePolicy.buckets must be non-negative integers of ` +
+                    `milliseconds — got ${String(bucket)}.`
+            );
+        }
+        if (bucket <= previous) {
+            throw new Error(
+                `[sigx actors] throttlePolicy.buckets must be strictly ascending — got ` +
+                    `${buckets.join(', ')}.`
+            );
+        }
+        previous = bucket;
+    }
+    if (buckets[buckets.length - 1]! < min) {
+        throw new Error(
+            `[sigx actors] throttlePolicy has no bucket at or above its own min (${min}ms) — ` +
+                `every request would be served faster than it asked for.`
+        );
+    }
+    return policy;
+}
+
+/** A `w` a client may not have. Thrown/refused, never defaulted. */
+export class BadThrottleRequest extends Error {}
+
+/**
+ * Resolve a client's requested window against the policy.
+ *
+ * - absent → `undefined`, and the caller passes NO `throttleMs`, so the watch
+ *   key is byte-for-byte the one a client that never heard of `w` produces.
+ * - a finite, non-negative number → floored at `min`, then rounded **up** to
+ *   the nearest bucket. Up, never down: a client must never be served faster
+ *   than it asked for.
+ * - above the top bucket → the top bucket. A bounded overshoot the operator
+ *   chose by picking the ladder, and it errs toward more data, never less.
+ * - anything else → `BadThrottleRequest`. Reading `w: '1000'` as "the default"
+ *   would silently bill the client 20x what it asked for, which is the whole
+ *   cost this option exists to let it avoid.
+ */
+export function resolveClientThrottle(
+    requested: unknown,
+    policy: LiveThrottlePolicy
+): number | undefined {
+    if (requested === undefined) return undefined;
+    if (typeof requested !== 'number' || !Number.isFinite(requested) || requested < 0) {
+        throw new BadThrottleRequest(
+            `throttle window must be a non-negative finite number of milliseconds — got ` +
+                `${String(requested)}`
+        );
+    }
+    const wanted = Math.max(requested, policy.min);
+    for (const bucket of policy.buckets) {
+        if (bucket >= wanted) return bucket;
+    }
+    return policy.buckets[policy.buckets.length - 1];
+}
+
+function parseSubscriptions(
+    raw: unknown,
+    max: number,
+    policy: LiveThrottlePolicy
+): LiveSubscription[] {
     if (!Array.isArray(raw)) badRequest('expected an array of subscriptions');
     // Length first, before the per-entry walk: refusing after validating
     // 40 000 entries still pays for validating 40 000 entries.
@@ -98,7 +210,18 @@ function parseSubscriptions(raw: unknown, max: number): LiveSubscription[] {
         if (sub.a !== undefined && !Array.isArray(sub.a)) {
             badRequest(`subscription ${index} has non-array args`);
         }
-        return { t: sub.t, k: sub.k, m: sub.m, a: sub.a ?? [] };
+        let w: number | undefined;
+        try {
+            w = resolveClientThrottle(sub.w, policy);
+        } catch (error) {
+            badRequest(
+                `subscription ${index}: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
+        // Absent stays ABSENT rather than becoming the resolved default: the
+        // watch key is built from what is passed, so writing a value here
+        // would rebase every existing subscription's identity.
+        return { t: sub.t, k: sub.k, m: sub.m, a: sub.a ?? [], ...(w !== undefined ? { w } : {}) };
     });
 }
 
@@ -137,11 +260,16 @@ export function subscribeAll(
     host: Host,
     rq: ServerFnContext,
     raw: unknown,
-    options: { pingMs?: number; maxSubscriptions?: number } = {}
+    options: {
+        pingMs?: number;
+        maxSubscriptions?: number;
+        throttlePolicy?: LiveThrottlePolicy;
+    } = {}
 ): AsyncGenerator<LiveFrame> {
     const subs = parseSubscriptions(
         raw,
-        resolveMaxSubscriptions(options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS)
+        resolveMaxSubscriptions(options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS),
+        resolveThrottlePolicy(options.throttlePolicy ?? DEFAULT_THROTTLE_POLICY)
     );
     if (!host.dispatchWatch) {
         throw new ServerFnError(
@@ -204,14 +332,22 @@ export function subscribeAll(
             // rides its own slot.
             const bag = takeCallBag(rq.locals);
             const principal = await encodePrincipal(rq);
-            const iterable = host.dispatchWatch!({ type: sub.t, key: sub.k }, sub.m, sub.a ?? [], {
-                callChain: [],
-                callId: mintCallId(),
-                ...(isTraceparent(traceparent) ? { traceparent } : {}),
-                ...(bag !== undefined ? { bag } : {}),
-                ...(principal !== undefined ? { principal } : {}),
-                abortSignal: rq.abortSignal
-            });
+            const iterable = host.dispatchWatch!(
+                { type: sub.t, key: sub.k },
+                sub.m,
+                sub.a ?? [],
+                {
+                    callChain: [],
+                    callId: mintCallId(),
+                    ...(isTraceparent(traceparent) ? { traceparent } : {}),
+                    ...(bag !== undefined ? { bag } : {}),
+                    ...(principal !== undefined ? { principal } : {}),
+                    abortSignal: rq.abortSignal
+                },
+                // Omitted when the client asked for nothing, so the watch key
+                // is the one it has always been (#247).
+                sub.w !== undefined ? { throttleMs: sub.w } : undefined
+            );
             const iterator = iterable[Symbol.asyncIterator]();
             stops.push(async () => void (await iterator.return?.(undefined)));
 

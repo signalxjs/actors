@@ -128,6 +128,17 @@ export interface ActorSubscription {
     key: string;
     method: string;
     args?: readonly unknown[];
+    /**
+     * Requested delivery window in ms — how STALE this subscriber is willing
+     * to be (#247). The server floors it and rounds it up to one of a fixed
+     * ladder, so ask for what the view needs rather than for a precise
+     * number: a tile that refreshes once a second should say 1000 and will
+     * then cost the host a twentieth of the sends a default subscription does.
+     *
+     * Omitted means the server's default. Two subscriptions to the same read
+     * with different windows are different subscriptions and do not share.
+     */
+    throttleMs?: number;
 }
 
 /** A transport's optional server→client push channel. */

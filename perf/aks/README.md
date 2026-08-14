@@ -54,8 +54,9 @@ TARGET_URL=http://127.0.0.1:7311 MODE=hot CONNECTIONS=5000 \
 
 One JSON line per rung. `connected` is the headline; `deliveries` is how
 many of those clients actually received a message; `deliveriesPerPublish`
-is a coalescing ratio rather than a constant, because every client
-subscription runs at the runtime's fixed 50 ms watch throttle. Cross-check
+is a coalescing ratio rather than a constant, because this generator sends
+no `w` (#247) and so every subscription it opens runs at the runtime's
+default 50 ms watch throttle. Cross-check
 `connected` against `ops.sockets.open`:
 
 ```sh

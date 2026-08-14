@@ -25,6 +25,15 @@ export {
     type ActorSocketSession,
     type ActorSocketSessionOptions
 } from './socket-session';
+/**
+ * The delivery-window policy (#247). Only the TYPE and the default are
+ * public: they are named by `ActorSocketSessionOptions.throttlePolicy`, so a
+ * consumer cannot configure one without them. `resolveClientThrottle` and
+ * `resolveThrottlePolicy` stay off the barrel for the same reason
+ * `resolveMaxSubscriptions` does — they are the mounts' shared internals, not
+ * a surface anyone outside should call.
+ */
+export { DEFAULT_THROTTLE_POLICY, type LiveThrottlePolicy } from './live-endpoint';
 export {
     socketStats,
     type SocketSessionRecorder,
