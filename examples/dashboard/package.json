@@ -1,0 +1,24 @@
+{
+    "name": "dashboard-example",
+    "private": true,
+    "type": "module",
+    "description": "The web dashboard against a real three-host cluster - and the same-origin ops proxy that keeps the bearer secret off the client",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "start": "node server.mjs",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@sigx/actors-dashboard": "workspace:*",
+        "@sigx/actors-monitor": "workspace:*",
+        "@sigx/reactivity": "catalog:",
+        "@sigx/runtime-core": "catalog:",
+        "@sigx/runtime-dom": "catalog:",
+        "sigx": "catalog:"
+    },
+    "devDependencies": {
+        "typescript": "^6.0.3",
+        "vite": "^8.0.3"
+    }
+}

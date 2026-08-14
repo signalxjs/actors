@@ -1,0 +1,42 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["vite/client", "node"],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true,
+        // JSX compiles to sigx's runtime. This is an APP, so the umbrella is
+        // right: its first line registers the DOM platform, which is exactly
+        // what a page needs and exactly what `@sigx/actors-dashboard` must
+        // not do.
+        "jsx": "react-jsx",
+        "jsxImportSource": "sigx",
+        // `@sigx/actors*` resolve from SOURCE, as every other example does,
+        // so a clean checkout typechecks before anything is built. Without
+        // this the packages' own `exports` send them at `dist/`, and the root
+        // `typecheck` script would depend on a prior `pnpm build` — which CI
+        // runs AFTER it.
+        "paths": {
+            "@sigx/actors-dashboard": ["../../packages/actors-dashboard/src/index.ts"],
+            "@sigx/actors-monitor/format": ["../../packages/actors-monitor/src/format.ts"],
+            "@sigx/actors-monitor": ["../../packages/actors-monitor/src/index.ts"],
+            "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/cluster": ["../../packages/actors/src/cluster/index.ts"],
+            "@sigx/actors": ["../../packages/actors/src/index.ts"]
+        }
+    },
+    // `env.d.ts` from the dashboard's own source declares `__DEV__`, the
+    // compile-time flag the bundler replaces — pulled in because `paths`
+    // above compiles that source as part of this program.
+    "include": [
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "*.ts",
+        "../../packages/actors-dashboard/src/env.d.ts"
+    ]
+}

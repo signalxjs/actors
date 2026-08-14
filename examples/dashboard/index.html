@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>@sigx/actors — dashboard</title>
+        <style>
+            /* The page's own chrome only. Everything inside #app is styled by
+               @sigx/actors-dashboard, which injects one <style> of its own —
+               and which you retheme by overriding --sigx-actors-* tokens
+               rather than by writing rules against its classes. */
+            body {
+                margin: 0;
+                padding: 1.5rem;
+                font-family: ui-sans-serif, system-ui, sans-serif;
+                background: #fff;
+                color: #1a1d21;
+            }
+            header { margin-bottom: 1rem; }
+            h1 { font-size: 1.1rem; margin: 0 0 0.25rem; }
+            header p { margin: 0; font-size: 0.85rem; color: #6b7280; }
+            code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+            @media (prefers-color-scheme: dark) {
+                body { background: #101215; color: #e6e8eb; }
+                header p { color: #9aa1ad; }
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Actor cluster</h1>
+            <p>
+                Polled through <code>/ops</code> — a route of this app, not of the host. The
+                ops bearer token never leaves the server.
+            </p>
+        </header>
+        <div id="app"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>
