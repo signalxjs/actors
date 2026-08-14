@@ -163,13 +163,17 @@ export interface ActorSocketSessionOptions {
      *
      * The session cannot see it — `send(message: string)` is the whole
      * contract — so the adapter supplies it: `@sigx/actors-ws/node` passes
-     * `() => client.bufferedAmount`. Without it `stats().bufferedBytes` is
-     * `null`, which MEANS "the adapter cannot tell us" and never zero: the
-     * load generators sample the CLIENT's buffer, and reading their zeros as
-     * "the hosts never outran the clients" is exactly the misreading #208
-     * was filed about.
+     * `() => client.bufferedAmount ?? null`.
+     *
+     * **Return `null`, never `0`, when the transport cannot say.** Omitting
+     * the option does the same thing. Both mean "the adapter cannot tell
+     * us", and neither may collapse into zero: the load generators sample
+     * the CLIENT's buffer, and reading their zeros as "the hosts never
+     * outran the clients" is exactly the misreading #208 was filed about. A
+     * genuine 0 — the transport asked, nothing is queued — is a real
+     * measurement and is reported as one.
      */
-    bufferedBytes?(): number;
+    bufferedBytes?(): number | null;
     /** Masked-failure observability — defaults to `posture.onError`. */
     onError?(error: unknown, info: ServerFnInfo, ctx: ServerFnContext): void | Promise<void>;
     /**
@@ -348,7 +352,9 @@ export async function createActorSocketSession(
         if (options.bufferedBytes === undefined) return null;
         try {
             const bytes = options.bufferedBytes();
-            return Number.isFinite(bytes) ? bytes : null;
+            // `null`, `undefined` and NaN all collapse to "cannot tell" —
+            // the one thing they must NOT collapse to is 0.
+            return typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : null;
         } catch {
             return null;
         }
@@ -720,7 +726,12 @@ export async function createActorSocketSession(
                 // subscription test caught it, which is the only reason this
                 // comment is here rather than a bug.
                 const written = reply({ i: id, v: encodeWire(value) });
-                stats?.delivered(written);
+                // Only what actually went out. `reply` answers 0 for a
+                // closed session or a throwing send, and counting those
+                // would inflate `deliveries` with frames the socket never
+                // saw — and desync it from `deliveryBytes`, which cannot
+                // grow by 0. A written frame is never 0 code units.
+                if (written > 0) stats?.delivered(written);
             }
             // A fired deadline ends the aborted subscriber CLEANLY (`done`),
             // so the starvation must be re-raised to become the frame the

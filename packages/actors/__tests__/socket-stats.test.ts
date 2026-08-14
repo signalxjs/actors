@@ -248,6 +248,48 @@ describe('socketStats', () => {
         expect(stats.snapshot().bufferedBytes).toBe(16);
     });
 
+    it('treats an adapter answering null or undefined as "cannot tell", not 0', async () => {
+        // The whole point of the field. An adapter that CAN report and has
+        // nothing queued answers 0 and that is a measurement; one that
+        // cannot answers null and must not be rendered as the same thing.
+        const s = await start();
+        const cannot = socketStats();
+        await connect(s, cannot, { bufferedBytes: () => null });
+        expect(cannot.snapshot().bufferedBytes).toBeNull();
+
+        const alsoCannot = socketStats();
+        await connect(s, alsoCannot, { bufferedBytes: () => undefined });
+        expect(alsoCannot.snapshot().bufferedBytes).toBeNull();
+
+        const can = socketStats();
+        await connect(s, can, { bufferedBytes: () => 0 });
+        expect(can.snapshot().bufferedBytes).toBe(0);
+    });
+
+    it('does not count a delivery the socket never saw', async () => {
+        // `reply()` answers 0 for a throwing send. Counting it would inflate
+        // `deliveries` with frames that were never written — and desync it
+        // from `deliveryBytes`, which cannot grow by 0.
+        const s = await start();
+        const stats = socketStats();
+        const l = link();
+        const session = await createActorSocketSession({
+            host: s,
+            request: new Request('http://actors.test/socket'),
+            send: () => {
+                throw new Error('socket is gone');
+            },
+            close: l.close,
+            origin: false,
+            pingMs: 0,
+            stats
+        });
+        sessions.push(session);
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'dead', m: 'total' } }));
+        await until(() => stats.snapshot().subscriptionsOpened === 1);
+        expect(stats.snapshot()).toMatchObject({ deliveries: 0, deliveryBytes: 0 });
+    });
+
     it('survives an adapter whose bufferedBytes throws', async () => {
         // It is polled from an ops request. A socket dying under the probe
         // must not take the whole snapshot down.

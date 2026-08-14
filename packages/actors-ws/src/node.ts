@@ -173,10 +173,16 @@ export function attachActorSocket(
                         // The host-side send-buffer depth (#252/#208). `ws`
                         // exposes it directly; the session cannot see it,
                         // because `send(message: string)` is the whole
-                        // contract between them. An adapter that omits this
-                        // reports `null` — "cannot tell you" — rather than a
-                        // zero anyone could read as "not buffering".
-                        bufferedBytes: () => client.bufferedAmount ?? 0
+                        // contract between them.
+                        //
+                        // `?? null` and not `?? 0`: a `MinimalWebSocket`
+                        // stand-in that omits `bufferedAmount` cannot tell us
+                        // its queue depth, and reporting that as 0 would make
+                        // "cannot tell" indistinguishable from "not
+                        // buffering" — the precise confusion #208 exists to
+                        // end. A real `ws` socket always answers a number,
+                        // including a genuine 0.
+                        bufferedBytes: () => client.bufferedAmount ?? null
                     }).then(
                         (created) => {
                             // The socket may have closed while the session was
