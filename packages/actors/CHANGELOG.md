@@ -25,8 +25,13 @@
   second was billed for twenty writes a second. It now costs a twentieth.
 
   **Nothing changes for a client that does not opt in.** An absent `w` passes
-  no `throttleMs` at all, so the watch key is byte-for-byte what it was, and
-  an explicit `w: 50` shares that same loop. The default policy's floor is
+  no `throttleMs` at all, so the watch key is byte-for-byte what it was —
+  and because the runtime keys on the resolved window, a request the policy
+  answers with `DEFAULT_WATCH_THROTTLE_MS` shares that same loop (under the
+  default policy, any `w <= 50`). That is a property of the policy rather
+  than of the field: a deployment that raises `min` puts explicit requests on
+  their own loop, while clients that ask for nothing keep the runtime
+  default. The default policy's floor is
   the runtime's own throttle, so a client can only ever ask to go slower;
   sub-50 ms delivery is an operator decision (`{ min: 0, buckets: [0, 16,
   50] }`), and `{ min: 50, buckets: [50] }` declines the feature. A malformed

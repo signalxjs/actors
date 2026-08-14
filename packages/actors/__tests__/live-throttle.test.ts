@@ -218,8 +218,32 @@ describe('the sharing invariant', () => {
         const s = await start();
         // The compatibility assertion: a client that never heard of `w` and
         // one that asks for exactly the default must not split the loop.
+        // It works because `openWatch` resolves an absent option to
+        // DEFAULT_WATCH_THROTTLE_MS and keys on the RESOLVED number.
         await subscribeEach(s, [undefined, 50, undefined, 50]);
         expect(s.stats().watchLoops).toBe(1);
+    });
+
+    it('is the POLICY that makes absent and explicit agree, not the field', async () => {
+        // Raise the floor above the runtime default and the two part company:
+        // every explicit request resolves to 250, while a client that asks
+        // for nothing still gets the runtime's own 50. That is the correct
+        // reading of `min` — a floor on what may be ASKED for, not a way to
+        // slow down clients that ask for nothing — and the doc says so
+        // rather than promising an equivalence that holds only by default.
+        const s = await start();
+        const conn = await connect(s, { throttlePolicy: { min: 250, buckets: [250, 1000] } });
+        for (const [index, w] of [undefined, 50, 250].entries()) {
+            conn.session.handle(
+                JSON.stringify({
+                    i: index + 1,
+                    sub: { t: 'Board', k: 'b1', m: 'current', ...(w !== undefined ? { w } : {}) }
+                })
+            );
+        }
+        await until(() => conn.link.sent.filter((f) => 'v' in f).length === 3);
+        // absent → 50; `50` and `250` both → 250.
+        expect(s.stats().watchLoops).toBe(2);
     });
 
     it('answers a malformed window per subscription, leaving the socket open', async () => {

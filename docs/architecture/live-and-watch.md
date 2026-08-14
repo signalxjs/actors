@@ -125,10 +125,17 @@ ceiling on fragmentation: at most `|buckets|` loops, whatever clients send.
 
 Two properties are load-bearing and are pinned by tests:
 
-- **Absent is not "the default value".** No `throttleMs` is passed, so the
-  watch key is byte-for-byte the one a client that never heard of `w`
-  produces, and an explicit `w: 50` lands on that same loop. Old and new
-  clients share.
+- **Absent is not "the default value".** No `throttleMs` is passed at all, so
+  the watch key is byte-for-byte the one a client that never heard of `w`
+  produces. `Activation.openWatch` resolves an absent option to
+  `DEFAULT_WATCH_THROTTLE_MS` and keys on the resolved number, so a request
+  the policy answers with 50 shares that loop too — under
+  `DEFAULT_THROTTLE_POLICY` that is any `w <= 50`, and old and new clients
+  share. It is a property of the POLICY, not a guarantee of the field: a
+  deployment configuring `{ min: 250, … }` puts every explicit request on a
+  different loop from the silent clients, who keep the runtime default.
+  That is the correct reading of `min` — it is a floor on what a client may
+  ASK for, not a way to slow down clients that ask for nothing.
 - **Never faster than asked.** The floor is `DEFAULT_WATCH_THROTTLE_MS`, so
   the default policy can only make a subscription slower. Sub-50 ms delivery
   is an operator decision (`{ min: 0, buckets: [0, 16, 50] }`), and
