@@ -112,8 +112,13 @@ then differ in one variable instead of two.
 | baseline | `PAYLOAD_BYTES=0` | the fixed per-delivery cost |
 | bytes | `PAYLOAD_BYTES=0,256,4096,16384` | fit `1/rate = a + b·bytes` |
 | ping off | `SOCKET_PING_MS=0` | the per-frame `armPing` re-arm |
+| multiplexed | `CONNECTIONS=250 SUBS_PER_CONN=8` | the per-SOCKET cost from the per-subscription one, at a constant 2 000 subscriptions |
 | idle | `MODE=idle` | what holding the sockets costs at zero traffic |
 | dev dist | drop `--conditions=production` | the `__DEV__` second encode walk |
+
+Keep the subscription count constant across the multiplexed pair or it
+measures nothing: `CONNECTIONS × SUBS_PER_CONN` is the quantity the host
+fans out to, and `CONNECTIONS` alone is the quantity it pays syscalls for.
 
 Load the `.cpuprofile` in Chrome DevTools, select the steady-state range
 (the ~1 s dial phase is not what you are measuring), and read **self

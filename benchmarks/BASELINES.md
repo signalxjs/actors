@@ -2233,10 +2233,40 @@ Two levers follow, and only two:
    through; see "Two limits that bound every figure above" in the 2026-08-09
    section. A subscriber that opts into a 1 s window costs 1/20 of the
    syscalls. This is now the headline fix rather than a secondary one.
-2. **Carry more subscriptions per connection.** Corking pays exactly when a
-   connection has several subscriptions firing in one tick — the real
-   multiplexed page, which this benchmark's 1-subscription-per-socket shape
-   does not represent. Worth its own measurement before its own fix.
+2. **Carry more subscriptions per connection** — measured, below, and worth
+   an order of magnitude.
+
+### The same 2 000 subscriptions, on 250 sockets instead of 2 000
+
+One variable: `CONNECTIONS=250 SUBS_PER_CONN=8` against `CONNECTIONS=2000
+SUBS_PER_CONN=1`. Same actor, same publisher, same 0-byte payload, same 2 000
+subscriptions.
+
+| | 2 000 sockets × 1 sub | 250 sockets × 8 subs |
+|---|---:|---:|
+| deliveries/s | 12 067 | **27 095** |
+| host CPU (fraction of one core) | 0.58–0.77 | **0.13–0.19** |
+| **host CPU µs per delivery** | **~54** | **~5.5** |
+| publishes achieved (of 20/s) | 12.1/s | 16.3/s |
+| p50 | 59.5 ms | 63.0 ms |
+
+**~10× less host CPU per delivery, for the same subscription count.** The
+frames are identical and `ws` still calls `send()` once per subscription —
+what changes is that eight frames queued to ONE socket in one tick leave as
+one `writev`, because Node's writable already coalesces its queue. The
+syscall count, not the frame count, is the cost.
+
+Two consequences worth carrying:
+
+- **`sockets/hot-fanout` measures the worst case, not the typical one.** Its
+  1-subscription-per-socket shape maximises the term that dominates. A real
+  page multiplexes every live read onto one connection — which `$live` and
+  the socket transport already do — so a deployment's own numbers should be
+  better than this scenario's, and the scenario should not be quoted as "what
+  a browser costs".
+- **Explicit `cork()`/`uncork()` has less headroom than it first appears**,
+  because the coalescing it would force is largely already happening. It is
+  worth measuring against this baseline before it is worth building.
 
 ### Two smaller findings, kept
 
