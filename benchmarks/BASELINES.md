@@ -2282,6 +2282,11 @@ Two consequences worth carrying:
   8 895 → 9 492 deliveries/s across the two arms, which is inside this rig's
   run-to-run spread and should not be quoted as the win — the bucket share is
   the robust number.
+  **Fixed (#250):** the deadline is now a timestamp plus one
+  self-rescheduling timer instead of a clear/set per frame. Same rig, same
+  arm, ping still ENABLED at the 30 s default: the timers bucket reads
+  **0.04%** — the `SOCKET_PING_MS=0` control's 0.02%, with the keepalive
+  still running. The whole cost is recovered rather than traded away.
 - **Payload size barely registers up to 4 KB**: 8 895 → 8 760 deliveries/s,
   while `reply`'s own `JSON.stringify` share went 3.1% → 13.0%. The host
   absorbed the extra encode out of idle rather than out of throughput, which
