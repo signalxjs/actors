@@ -177,13 +177,60 @@ function packageOf(specifier) {
  * deterministic, and "every runtime import is declared" is precisely the
  * invariant that was broken.
  *
- * It pins the converse too. `@sigx/actors` is an OPTIONAL peer of
- * `@sigx/actors-monitor`, which npm does not auto-install — so that package's
- * dist must never import it at runtime, which is the #116 guarantee that
- * HTTP mode works with no actor runtime present. Optional peers count as
- * declared here; the isolated-import property is the tarball smoke's job.
+ * **An OPTIONAL peer does not count as declared.** npm does not install one,
+ * so importing it at runtime crashes a consumer exactly as an undeclared
+ * import does — the two are the same bug wearing different manifests. This is
+ * what turns the #116 guarantee into something checked rather than claimed:
+ * `@sigx/actors` is an optional peer of `@sigx/actors-monitor`, so that
+ * package's dist may never import it, and HTTP mode keeps working with no
+ * actor runtime present.
+ *
+ * `OPTIONAL_PEER_IMPORTS` is the deliberate-exception list, in the same shape
+ * and spirit as `SMOKE_ENTRIES` above. Each entry states why, because an
+ * unexplained one is indistinguishable from the bug this function exists to
+ * catch.
  */
+/**
+ * Optional peers a package is allowed to import, and why.
+ *
+ * The legitimate pattern is an optional peer reached only from an **opt-in
+ * subpath** that exists for that integration: nobody importing `.` pays for
+ * it, and anybody importing the subpath has already chosen the dependency.
+ * This scan sees a whole `dist` at once, so it cannot verify that
+ * confinement — the entry named against each line is the claim, and the
+ * reason it is written down.
+ *
+ * Same shape and spirit as `SMOKE_ENTRIES` above. An unexplained entry here
+ * is indistinguishable from the bug this whole function exists to catch, so
+ * every one carries its reason.
+ */
+const OPTIONAL_PEER_IMPORTS = {
+    // `./app` is the sigx-app integration and `./vite` is the build plugin.
+    // A headless host imports neither, which is the entire point of core
+    // staying WinterCG-clean and zero-dependency.
+    '@sigx/actors': ['@sigx/runtime-core', '@sigx/vite', 'vite'],
+    // `./node` is the Node adapter; `./client` is the WinterCG browser half
+    // and must never reach `ws`.
+    '@sigx/actors-ws': ['ws'],
+    // Intentional AND asserted: the root entry is meant to require the peer,
+    // and the smoke below proves it fails with exactly that missing import.
+    // `./prometheus` is the OTel-free entry consumers get for free.
+    '@sigx/actors-otel': ['@opentelemetry/api'],
+    // NOT one of the above — a KNOWN GAP, tracked in #116. The plugin entry
+    // is the only entry, and it imports the runtime, so `@sigx/actors` is not
+    // really optional here: `sigx actors top --url …` in a project without
+    // the runtime installed is the case that fails. Listed rather than
+    // silently permitted, so it stays visible. Delete this line when #116
+    // lands.
+    '@sigx/actors-cli': ['@sigx/actors']
+};
+
 function assertImportsDeclared(pkgFullPath, pkgJson) {
+    const optional = Object.entries(pkgJson.peerDependenciesMeta ?? {})
+        .filter(([, meta]) => meta?.optional)
+        .map(([name]) => name);
+    const allowed = new Set(OPTIONAL_PEER_IMPORTS[pkgJson.name] ?? []);
+    const unusable = new Set(optional.filter((name) => !allowed.has(name)));
     const declared = new Set([
         ...Object.keys(pkgJson.dependencies ?? {}),
         ...Object.keys(pkgJson.peerDependencies ?? {}),
@@ -191,6 +238,7 @@ function assertImportsDeclared(pkgFullPath, pkgJson) {
         // reaches its own subpath exports; it resolves for consumers.
         pkgJson.name
     ]);
+    for (const name of unusable) declared.delete(name);
     // `from "x"`, `import "x"`, `import("x")`, `export … from "x"`.
     //
     // Two guards, both earned. The lookbehind stops `r.from` in minified code
@@ -218,13 +266,20 @@ function assertImportsDeclared(pkgFullPath, pkgJson) {
         }
     }
     if (offenders.size > 0) {
-        const lines = [...offenders].map(([name, where]) => `  ${name}   (${where})`);
+        const lines = [...offenders].map(([name, where]) => {
+            const why = unusable.has(name)
+                ? ' — declared, but as an OPTIONAL peer, which npm does not install'
+                : '';
+            return `  ${name}${why}\n      ${where}`;
+        });
         throw new Error(
-            `${pkgJson.name}: imports packages it does not declare:\n${lines.join('\n')}\n` +
-                'Add each to "dependencies" or "peerDependencies". The all-in-one smoke ' +
-                'below will NOT catch this — it installs every tarball together, so a ' +
-                'missing declaration resolves there and fails only for a consumer ' +
-                'installing this package on its own.'
+            `${pkgJson.name}: imports packages a consumer will not have:\n${lines.join('\n')}\n` +
+                'Add each to "dependencies" or a REQUIRED "peerDependencies" entry — or, if ' +
+                'the package is genuinely meant to fail without it, add it to ' +
+                'OPTIONAL_PEER_IMPORTS above with the reason. The all-in-one smoke below ' +
+                'will NOT catch this: it installs every tarball together, so a missing ' +
+                'declaration resolves there and fails only for a consumer installing this ' +
+                'package on its own.'
         );
     }
 }
