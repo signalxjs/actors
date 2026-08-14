@@ -40,6 +40,13 @@ export interface MinimalWebSocket {
     close(code?: number, reason?: string): void;
     on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): void;
     on(event: 'close', listener: () => void): void;
+    /**
+     * Bytes queued but not yet flushed to the socket — the HOST-side depth
+     * the session reports as `stats().bufferedBytes` (#252). Optional so a
+     * hand-rolled `wss` stand-in stays a valid `WebSocketServerLike`; absent
+     * simply means the host cannot report its buffer.
+     */
+    readonly bufferedAmount?: number;
 }
 
 export const DEFAULT_SOCKET_PATH = '/_sigx/socket';
@@ -162,7 +169,14 @@ export function attachActorSocket(
                         ...session,
                         request: toRequest(request),
                         send: (message) => client.send(message),
-                        close: (code, reason) => client.close(code, reason)
+                        close: (code, reason) => client.close(code, reason),
+                        // The host-side send-buffer depth (#252/#208). `ws`
+                        // exposes it directly; the session cannot see it,
+                        // because `send(message: string)` is the whole
+                        // contract between them. An adapter that omits this
+                        // reports `null` — "cannot tell you" — rather than a
+                        // zero anyone could read as "not buffering".
+                        bufferedBytes: () => client.bufferedAmount ?? 0
                     }).then(
                         (created) => {
                             // The socket may have closed while the session was

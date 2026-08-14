@@ -158,6 +158,18 @@ export interface ActorSocketSessionOptions {
      * rather than surfacing per subscription.
      */
     throttlePolicy?: LiveThrottlePolicy;
+    /**
+     * The HOST's own send-buffer depth for this connection, in bytes (#252).
+     *
+     * The session cannot see it — `send(message: string)` is the whole
+     * contract — so the adapter supplies it: `@sigx/actors-ws/node` passes
+     * `() => client.bufferedAmount`. Without it `stats().bufferedBytes` is
+     * `null`, which MEANS "the adapter cannot tell us" and never zero: the
+     * load generators sample the CLIENT's buffer, and reading their zeros as
+     * "the hosts never outran the clients" is exactly the misreading #208
+     * was filed about.
+     */
+    bufferedBytes?(): number;
     /** Masked-failure observability — defaults to `posture.onError`. */
     onError?(error: unknown, info: ServerFnInfo, ctx: ServerFnContext): void | Promise<void>;
     /**
@@ -176,8 +188,12 @@ export interface ActorSocketSession {
     /** Tear the session down: abort every in-flight call. Call it from the
      *  adapter's socket-close event. Idempotent. */
     close(): void;
-    /** Observability counters. */
-    stats(): { inFlight: number; subscriptions: number };
+    /**
+     * Observability counters. `bufferedBytes` is whatever the adapter's
+     * `bufferedBytes` option reports, or `null` when none was supplied —
+     * null MEANS "the adapter cannot tell us", never zero (#252).
+     */
+    stats(): { inFlight: number; subscriptions: number; bufferedBytes: number | null };
 }
 
 /**
@@ -323,6 +339,21 @@ export async function createActorSocketSession(
      */
     let lastSendAt = performance.now();
 
+    /**
+     * Polled from an ops request, so it must never turn a stats read into a
+     * throw: an adapter whose socket died under it reports "no data" rather
+     * than taking the whole `snapshot()` down with it.
+     */
+    const bufferedBytesOf = (): number | null => {
+        if (options.bufferedBytes === undefined) return null;
+        try {
+            const bytes = options.bufferedBytes();
+            return Number.isFinite(bytes) ? bytes : null;
+        } catch {
+            return null;
+        }
+    };
+
     const armPing = (delay = pingMs): void => {
         if (pingTimer !== undefined) clearTimeout(pingTimer);
         pingTimer = undefined;
@@ -345,16 +376,27 @@ export async function createActorSocketSession(
         }, delay);
     };
 
-    const reply = (frame: SocketReply): void => {
-        if (closed) return;
+    /**
+     * Returns the code units written, so a caller that counts deliveries
+     * gets the size for free rather than re-stringifying the frame to
+     * measure it (#252). `0` when nothing went out.
+     */
+    const reply = (frame: SocketReply): number => {
+        if (closed) return 0;
+        let written = 0;
         try {
-            send(JSON.stringify(frame));
+            const text = JSON.stringify(frame);
+            send(text);
+            written = text.length;
         } catch {
             // The adapter's socket died under us; its close event tears the
             // session down, and a throwing send must not take a turn with it.
         }
-        // The whole per-frame cost of the keepalive, by design.
+        // Stamped whether or not the send landed, exactly as the keepalive
+        // was re-armed before: on a socket dying under us the close event is
+        // what resolves this, not a shifted ping deadline.
         lastSendAt = performance.now();
+        return written;
     };
 
     const fail = (code: number, reason: string): void => {
@@ -670,7 +712,15 @@ export async function createActorSocketSession(
                 // Established: the deadline covered exactly the first value.
                 disarmDeadline();
                 // A pushed value is byte-identical to a `$live` frame.
-                reply({ i: id, v: encodeWire(value) });
+                //
+                // Two statements, and it must stay that way: written as
+                // `stats?.delivered(reply(…))` the optional chain
+                // short-circuits its own ARGUMENT when no recorder is
+                // configured, so the frame is never sent at all. Every
+                // subscription test caught it, which is the only reason this
+                // comment is here rather than a bug.
+                const written = reply({ i: id, v: encodeWire(value) });
+                stats?.delivered(written);
             }
             // A fired deadline ends the aborted subscriber CLEANLY (`done`),
             // so the starvation must be re-raised to become the frame the
@@ -705,6 +755,10 @@ export async function createActorSocketSession(
         let w: number | undefined;
         try {
             w = resolveClientThrottle(sub.w, throttlePolicy);
+            // Counted only when the policy actually MOVED the request:
+            // "asked and got it" is not a thing an operator needs to see,
+            // and "asked for 300, serving 1000" is (#252).
+            if (w !== undefined && w !== sub.w) stats?.throttleQuantized();
         } catch {
             // Refused, never defaulted — the same posture as every other
             // field here. It becomes the per-subscription 400 the caller
@@ -846,8 +900,15 @@ export async function createActorSocketSession(
             teardown();
             stats?.closed(self, openedAt);
         },
-        stats(): { inFlight: number; subscriptions: number } {
-            return { inFlight: inFlight.size, subscriptions: watches.size };
+        stats(): { inFlight: number; subscriptions: number; bufferedBytes: number | null } {
+            return {
+                inFlight: inFlight.size,
+                subscriptions: watches.size,
+                // Guarded: this is polled from an ops request, and an
+                // adapter whose socket died under it must not turn a stats
+                // read into a throw.
+                bufferedBytes: bufferedBytesOf()
+            };
         }
     };
     stats?.opened(self);

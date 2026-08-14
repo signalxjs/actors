@@ -36,6 +36,7 @@ export {
 export { DEFAULT_THROTTLE_POLICY, type LiveThrottlePolicy } from './live-endpoint';
 export {
     socketStats,
+    type SocketSessionProbe,
     type SocketSessionRecorder,
     type SocketStats,
     type SocketStatsSnapshot,

@@ -180,6 +180,87 @@ describe('socketStats', () => {
         expect(stats.snapshot()).toMatchObject({ connectionsClosed: 2, open: 0 });
     });
 
+    it('counts subscription deliveries and their bytes, not calls or streams', async () => {
+        // Deliveries is the closest thing the host has to a syscall counter
+        // (#245: a delivery is 77% socket write), so it must count exactly
+        // the fan-out frames — a unary call's `{i,v}` + `{i,d}` pair is not
+        // a delivery, however similar the frame looks.
+        const s = await start();
+        const stats = socketStats();
+        const { session } = await connect(s, stats);
+
+        session.handle(JSON.stringify({ i: 1, s: 'Cart#total', a: ['k'] }));
+        await until(() => stats.snapshot().callsStarted === 1);
+        expect(stats.snapshot()).toMatchObject({ deliveries: 0, deliveryBytes: 0 });
+
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'k', m: 'total' } }));
+        await until(() => stats.snapshot().deliveries === 1);
+
+        // Two mutations, two more pushes — the seed plus one per change.
+        session.handle(JSON.stringify({ i: 3, s: 'Cart#add', a: ['k', 'apple'] }));
+        await until(() => stats.snapshot().deliveries === 2);
+
+        const snap = stats.snapshot();
+        expect(snap.deliveries).toBe(2);
+        // Approximate by contract (code units, not UTF-8) but never a
+        // placeholder: it has to track the frames actually written.
+        expect(snap.deliveryBytes).toBeGreaterThan(0);
+        expect(snap.deliveryBytes).toBe(
+            JSON.stringify({ i: 2, v: 0 }).length + JSON.stringify({ i: 2, v: 1 }).length
+        );
+    });
+
+    it('counts a quantized throttle only when the policy MOVED the request', async () => {
+        const s = await start();
+        const stats = socketStats();
+        const { session } = await connect(s, stats);
+
+        // 50 is a bucket under the default policy — asked and got it.
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'a', m: 'total', w: 50 } }));
+        await until(() => stats.snapshot().subscriptionsOpened === 1);
+        expect(stats.snapshot().throttleQuantized).toBe(0);
+
+        // 300 is not — it is served at 1000.
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'b', m: 'total', w: 300 } }));
+        await until(() => stats.snapshot().throttleQuantized === 1);
+    });
+
+    it('reports bufferedBytes as null when no adapter can answer, and sums when they can', async () => {
+        // The #208 rule: null MEANS "nobody could tell us". A zero here
+        // would read as "the hosts are not buffering", which is the
+        // misreading that left #182 unresolved for two Tier-3 sessions.
+        const s = await start();
+        const stats = socketStats();
+        await connect(s, stats);
+        expect(stats.snapshot().bufferedBytes).toBeNull();
+
+        let depth = 7;
+        await connect(s, stats, { bufferedBytes: () => depth });
+        expect(stats.snapshot().bufferedBytes).toBe(7);
+
+        depth = 11;
+        // Polled, not accumulated — it is a gauge.
+        expect(stats.snapshot().bufferedBytes).toBe(11);
+
+        // A second reporting session sums; the silent one still contributes
+        // nothing rather than a zero.
+        await connect(s, stats, { bufferedBytes: () => 5 });
+        expect(stats.snapshot().bufferedBytes).toBe(16);
+    });
+
+    it('survives an adapter whose bufferedBytes throws', async () => {
+        // It is polled from an ops request. A socket dying under the probe
+        // must not take the whole snapshot down.
+        const s = await start();
+        const stats = socketStats();
+        await connect(s, stats, {
+            bufferedBytes: () => {
+                throw new Error('socket is gone');
+            }
+        });
+        expect(stats.snapshot().bufferedBytes).toBeNull();
+    });
+
     it('digests with the runtime histogram layout so renderers can merge it', async () => {
         const s = await start();
         const stats = socketStats();
