@@ -1425,6 +1425,14 @@ One actor, anonymous subscribers, 10 publishes/s, 60 s per rung:
 the read is shared across subscribers, but each has its own correlation id,
 so the frame is encoded and `JSON.stringify`d once per subscriber.
 
+> ⚠️ **The count is right; the attribution is wrong — retracted by #245.**
+> Profiled, the serialization is **1.7% of busy time** and the socket write is
+> **77%**: fan-out is O(N) `writev` syscalls, one per subscriber, and the
+> encode rides along. **`~62 µs per delivery` is also a throughput reciprocal
+> rather than a CPU cost** — the host under it was never shown to be
+> saturated, and the one that was measured sat at ~0.65 of a core. See
+> "Where a delivery's CPU actually goes (#245)" at the end of this file.
+
 At 84k subscribers with one publish every 4 s: p50 **1 343 ms**, p90 1 906 ms,
 p99 **2 235 ms**. 84 000 ÷ 48 000/s ≈ 1.75 s to walk the set, which is what
 those bracket — so
@@ -2148,3 +2156,104 @@ rounds agreed in sign.
   storage encode itself or the adapter's second walk. Those are the
   remaining O(state) terms per durable save; the adapter walk's
   single-pass answer is upstream (signalxjs/core#657).
+
+## 2026-08-14 · Where a delivery's CPU actually goes (#245)
+
+| | |
+|---|---|
+| Machine | 12th Gen Intel Core i9-12900HK, win32/x64, 20 threads |
+| Node | v22.22.0 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Rig | `perf/aks/ws-dev.mjs` + `ws-loadgen.mjs`, BOTH ends on one laptop |
+| Load | `MODE=hot CONNECTIONS=2000 PUBLISH_RATE=20 DURATION_S=50`, one actor |
+| Profile | `--cpu-prof --cpu-prof-interval=200`, steady-state window 15–60 s |
+
+`BASELINES.md:1424` attributed the socket fan-out ceiling to serialization —
+"O(1) actor reads and **O(N) serializations**". The count is right. **The
+attribution is wrong, and this section retracts it.**
+
+### Self time, by bucket (% of BUSY samples)
+
+| bucket | payload 0 B | payload 4 KB | 0 B, `SOCKET_PING_MS=0` |
+|---|---:|---:|---:|
+| socket write (`writev` + `node:net`/stream) | **77.4** | **73.2** | **83.1** |
+| `ws` (sender/receiver) | 6.1 | 5.2 | 6.0 |
+| **write path, combined** | **83.6** | **78.4** | **89.1** |
+| `@sigx/actors` (incl. `reply`'s own `JSON.stringify`) | 7.8 | 16.5 | 7.2 |
+| `@sigx/serialize` (`encodeWire`'s walk) | 1.7 | 1.6 | 2.5 |
+| timers (`armPing`'s clear/set pair) | 2.6 | 1.2 | **0.02** |
+| GC | 1.1 | 1.4 | 0.7 |
+| idle (of ALL samples) | 26.7 | 22.6 | 22.4 |
+
+One frame is the whole story: **`writev` (native) is 69–72% of busy time on
+its own.** It is one socket write per subscriber per delivery.
+
+### The host was never CPU-saturated
+
+`ws-dev.mjs` samples its own load since this run. Under the 2 000-subscriber
+fan-out it held **`cpu` 0.58–0.77 of one core** with 22–27% of samples idle,
+and **`cpuSystem` ran ~2× `cpuUser`** throughout (0.37–0.52 vs 0.15–0.25) —
+two independent instruments agreeing that the process spends most of its
+on-CPU time in the kernel, in the write syscall.
+
+That also settles a methodological point for the whole tier: the 2026-08-09
+figure of **"~62 µs per delivery" is a throughput reciprocal, not a CPU cost**,
+and it may not be read as one. The host under it was not saturated.
+
+### Against the thresholds this run committed to in advance
+
+| pre-registered threshold | measured | verdict |
+|---|---|---|
+| ws/net > 40% ⇒ the ceiling is the write path | 78–89% | **met, decisively** |
+| serialize + `JSON.stringify` < 15% at 0 B ⇒ a per-value encode cache is not the headline fix | 1.7% (≈5% counting `reply`'s own stringify) | **met** |
+| …unless the 4 KB arm clears ~30% | 14.6% | **not met** |
+| timers > 10% ⇒ the `armPing` re-arm leads | 2.6% | **not met** |
+| GC > 20% ⇒ allocation is the cost | 1.1–1.4% | **not met** |
+
+**So the encode-once-per-value fan-out cache is cancelled.** At 2 000
+subscribers the entire serialization term it would collapse is under 2% of
+busy time, and even a 4 KB payload leaves it under 15%. It would have been a
+correct change to a term that is not the constraint — and it carried a real
+staleness hazard (a read returning a live reference to state) plus retained
+strings behind a slow consumer. Not worth it against this profile.
+
+### What the profile says the constraint IS
+
+Every subscriber is its own socket, so a publish costs **N `writev`
+syscalls**, serialized. Nothing in the serialization path divides that, and
+neither does `cork()`/`uncork()` on this shape: with one subscription per
+connection there is only ever one frame per socket per tick to coalesce.
+
+Two levers follow, and only two:
+
+1. **Deliver less.** Deliveries per subscriber is the multiplier on the
+   syscall count, and today no client can influence it — every live
+   subscription runs at the fixed 50 ms watch throttle (`:1489`). A
+   subscriber that opts into a 1 s window costs 1/20 of the syscalls. This is
+   now the headline fix rather than a secondary one.
+2. **Carry more subscriptions per connection.** Corking pays exactly when a
+   connection has several subscriptions firing in one tick — the real
+   multiplexed page, which this benchmark's 1-subscription-per-socket shape
+   does not represent. Worth its own measurement before its own fix.
+
+### Two smaller findings, kept
+
+- **`armPing()` runs on every delivery frame** (`socket-session.ts:306` —
+  `reply()` calls it unconditionally, and it is `clearTimeout` + `setTimeout`).
+  Turning the ping off took the timers bucket from 2.60% to **0.02%** of busy.
+  A real 2.6%, and a ten-line fix, but not the ceiling. Throughput moved
+  8 895 → 9 492 deliveries/s across the two arms, which is inside this rig's
+  run-to-run spread and should not be quoted as the win — the bucket share is
+  the robust number.
+- **Payload size barely registers up to 4 KB**: 8 895 → 8 760 deliveries/s,
+  while `reply`'s own `JSON.stringify` share went 3.1% → 13.0%. The host
+  absorbed the extra encode out of idle rather than out of throughput, which
+  is what a write-bound process looks like.
+
+### What this rig cannot say
+
+Loopback, both ends on one box, Windows, and the profiler itself is in the
+measurement. Absolute throughput here means nothing next to the AKS figures.
+What transfers is the **shape**: one write syscall per subscriber per
+delivery, dominating everything the runtime does per frame. On a real NIC
+that term gets larger, not smaller.

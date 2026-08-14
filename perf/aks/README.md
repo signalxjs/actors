@@ -74,6 +74,55 @@ Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each
 other through Redis exactly as the pods do.
 
+### How to profile the fan-out path (#245)
+
+`ws-dev.mjs` prints one `[ws-dev] load` JSON line per `SAMPLE_MS` window
+(default 5 s) carrying `cpu` — a fraction of ONE core, so ~1.0 is the
+saturation line for the `limits.cpu: 1000m` shape this rig stands in for —
+plus event-loop-delay percentiles and RSS.
+
+**Read the utilisation before the profile.** A delivery rate divided by a
+host count is a throughput reciprocal; it bounds per-delivery CPU only if
+the host was saturated. A profile taken on an unsaturated host says where
+a *minority* of the wall clock went, and every share in it is a wrong
+attribution.
+
+```sh
+node --conditions=production --enable-source-maps \
+     --cpu-prof --cpu-prof-dir=./profiles --cpu-prof-interval=200 \
+     perf/aks/ws-dev.mjs
+
+# second terminal, one arm at a time
+TARGET_URL=http://127.0.0.1:7311 MODE=hot CONNECTIONS=2000 \
+PUBLISH_RATE=20 DURATION_S=120 PAYLOAD_BYTES=0 \
+  node perf/aks/ws-loadgen.mjs
+```
+
+`--conditions=production` is load-bearing: it selects `dist/*.prod.js`, so
+`__DEV__` is stripped — and `__DEV__` adds a whole second encode walk.
+Stop the host with Ctrl-C so `attachSignalHandlers` exits cleanly, then
+check the `.cpuprofile` actually landed before trusting the run.
+
+`PUBLISH_RATE=20` is at least one publish per 50 ms throttle window, so
+deliveries/s is `20 × CONNECTIONS` whatever the publisher does — the arms
+then differ in one variable instead of two.
+
+| arm | knob | separates |
+|---|---|---|
+| baseline | `PAYLOAD_BYTES=0` | the fixed per-delivery cost |
+| bytes | `PAYLOAD_BYTES=0,256,4096,16384` | fit `1/rate = a + b·bytes` |
+| ping off | `SOCKET_PING_MS=0` | the per-frame `armPing` re-arm |
+| idle | `MODE=idle` | what holding the sockets costs at zero traffic |
+| dev dist | drop `--conditions=production` | the `__DEV__` second encode walk |
+
+Load the `.cpuprofile` in Chrome DevTools, select the steady-state range
+(the ~1 s dial phase is not what you are measuring), and read **self
+time** bucketed into: `@sigx/serialize` encode · native `JSON.stringify` ·
+`socket-session.ts` + `node:internal/timers` · `ws` sender and `node:net` ·
+`watch-core` promise scaffolding · GC. Those six buckets are what decides
+which fix is worth building; the thresholds are recorded in the
+`BASELINES.md` section this recipe produced.
+
 ## Load generator
 
 `MODE=counter` (state churn — every call is a Redis CAS), `crunch`
