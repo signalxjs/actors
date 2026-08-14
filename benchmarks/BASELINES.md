@@ -2168,7 +2168,7 @@ rounds agreed in sign.
 | Load | `MODE=hot CONNECTIONS=2000 PUBLISH_RATE=20 DURATION_S=50`, one actor |
 | Profile | `--cpu-prof --cpu-prof-interval=200`, steady-state window 15–60 s |
 
-`BASELINES.md:1424` attributed the socket fan-out ceiling to serialization —
+The 2026-08-09 section attributed the socket fan-out ceiling to serialization —
 "O(1) actor reads and **O(N) serializations**". The count is right. **The
 attribution is wrong, and this section retracts it.**
 
@@ -2228,9 +2228,11 @@ Two levers follow, and only two:
 
 1. **Deliver less.** Deliveries per subscriber is the multiplier on the
    syscall count, and today no client can influence it — every live
-   subscription runs at the fixed 50 ms watch throttle (`:1489`). A
-   subscriber that opts into a 1 s window costs 1/20 of the syscalls. This is
-   now the headline fix rather than a secondary one.
+   subscription runs at `DEFAULT_WATCH_THROTTLE_MS` (`watch-core.ts`, 50 ms),
+   because neither the socket session nor `$live` passes `throttleMs`
+   through; see "Two limits that bound every figure above" in the 2026-08-09
+   section. A subscriber that opts into a 1 s window costs 1/20 of the
+   syscalls. This is now the headline fix rather than a secondary one.
 2. **Carry more subscriptions per connection.** Corking pays exactly when a
    connection has several subscriptions firing in one tick — the real
    multiplexed page, which this benchmark's 1-subscription-per-socket shape

@@ -50,8 +50,28 @@ import { Fanout } from './src/fanout.actor.ts';
 
 const PORT = Number(process.env.PORT ?? 7311);
 const OPS_SECRET = process.env.OPS_SECRET ?? 'dev-ops-secret';
-const SAMPLE_MS = Number(process.env.SAMPLE_MS ?? 5000);
-const EXIT_AFTER_S = Number(process.env.EXIT_AFTER_S ?? 0);
+/**
+ * Same fail-fast discipline as `socketNum` below, and for a sharper reason
+ * here: these two knobs are read with a `> 0` guard, so every bad value —
+ * `''`, `NaN`, `-1`, `2.5` — silently means OFF. A profiling run whose
+ * sampler quietly did not start produces a profile with no utilisation
+ * figure beside it, which is exactly the unreadable artifact this rig was
+ * changed to prevent. An unset or empty knob is the documented default; a
+ * mistyped one stops the process.
+ */
+const devNum = (name, fallback) => {
+    const raw = process.env[name];
+    if (raw === undefined || raw === '') return fallback;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+        console.error(`[ws-dev] ${name} must be a non-negative integer, got '${raw}'`);
+        process.exit(1);
+    }
+    return value;
+};
+
+const SAMPLE_MS = devNum('SAMPLE_MS', 5000);
+const EXIT_AFTER_S = devNum('EXIT_AFTER_S', 0);
 const SOCKET_ORIGIN = process.env.SOCKET_ORIGIN === 'same-origin' ? 'same-origin' : false;
 // Validated exactly as `server.mjs` validates it: an unset knob means "the
 // runtime's default", but a MISTYPED one must fail fast rather than reach
