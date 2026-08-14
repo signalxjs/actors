@@ -126,8 +126,16 @@ GET /_sigx/health/ready -> 503 {"status":"not-ready", … "leaving — draining,
 pnpm --filter counter-example cluster:serve                  # terminal 1
 
 pnpm --filter counter-example exec sigx actors top \
-    --url http://127.0.0.1:5391 --secret demo-ops-secret     # terminal 2
+    --url http://127.0.0.1:5392 --secret demo-ops-secret     # terminal 2
 ```
+
+**5392, not 5391** — the demo kills the first host on its way past (step 4)
+to show the survivors re-forming and reclaiming its reminder shards, and
+`--serve` keeps that outcome. Any surviving host is enough: the fan-out
+reaches the rest.
+
+For the same cluster in a browser, `examples/dashboard` renders it — including
+the proxy that keeps this `--secret` off the client.
 
 `--serve` skips the shutdown and keeps the cluster up under steady traffic.
 The traffic is shaped on purpose — a hot actor that builds queue depth, a

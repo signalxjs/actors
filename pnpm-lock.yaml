@@ -172,6 +172,34 @@ importers:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
 
+  examples/dashboard:
+    dependencies:
+      '@sigx/actors-dashboard':
+        specifier: workspace:*
+        version: link:../../packages/actors-dashboard
+      '@sigx/actors-monitor':
+        specifier: workspace:*
+        version: link:../../packages/actors-monitor
+      '@sigx/reactivity':
+        specifier: 'catalog:'
+        version: 0.15.3
+      '@sigx/runtime-core':
+        specifier: 'catalog:'
+        version: 0.15.2
+      '@sigx/runtime-dom':
+        specifier: 'catalog:'
+        version: 0.15.2
+      sigx:
+        specifier: 'catalog:'
+        version: 0.15.2
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.3
+        version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
+
   packages/actors:
     devDependencies:
       '@sigx/reactivity':

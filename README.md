@@ -48,7 +48,7 @@ architecture notes in [`docs/`](docs).
 | [`@sigx/actors-otel`](packages/actors-otel) | Observability exporters — Prometheus text exposition, OpenTelemetry traces and a metrics bridge |
 | [`benchmarks`](benchmarks) | Performance baselines — throughput, latency, heap footprint, leak detection. Run locally, and A/B'd on perf-sensitive PRs: timings inform, metrics marked `exact` gate (not published) |
 
-Three runnable examples, in the order they are worth reading:
+Four runnable examples, in the order they are worth reading:
 
 [`examples/counter`](examples/counter) — the runtime with **no framework at
 all**: plain DOM, one file per idea. The build-time client swap, a `watch`
@@ -79,6 +79,18 @@ streaming through the edge and a reminder firing from a real alarm. Shows the
 app **factory** shape Workers needs — a module-scope app binds whichever
 object constructs it first.
 
+[`examples/dashboard`](examples/dashboard) — the **web dashboard** against a
+real three-host cluster. Its subject is the ~60-line ops proxy: `ops()` sets
+no CORS headers and refuses to construct without a bearer secret, so a
+browser dashboard goes through a same-origin route of your own app that
+attaches the token **server-side**. The browser half is nine lines with no
+secret in it.
+
+```sh
+pnpm --filter counter-example cluster:serve   # terminal 1
+pnpm --filter dashboard-example dev           # terminal 2 → http://localhost:5490
+```
+
 ### Performance & deployment rig
 
 [`perf/`](perf) is not an example — it is how the repo measures itself.
@@ -97,9 +109,17 @@ traffic, so there is something live to point the dashboard at:
 ```sh
 pnpm build
 pnpm --filter counter-example cluster:serve        # terminal 1
+
+# terminal 2 — in the terminal…
 pnpm --filter counter-example exec sigx actors top \
-    --url http://127.0.0.1:5391 --secret demo-ops-secret   # terminal 2
+    --url http://127.0.0.1:5392 --secret demo-ops-secret
+# …or in a browser, on http://localhost:5490
+pnpm --filter dashboard-example dev
 ```
+
+**5392, not 5391**: the demo kills the first host on its way past, to show
+the survivors re-forming and reclaiming its reminder shards. Any surviving
+host is enough — the fan-out reaches the rest.
 
 The demo deliberately produces something worth looking at: a hot actor
 that builds queue depth, a spread of cold ones, a host left `leaving`
