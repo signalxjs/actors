@@ -88,15 +88,60 @@ getter throws before the read completes and the invoke wrapper rethrows if
 the body catches it. The owner-side machinery here is unchanged; a declared
 method simply can never enter `#watchPrincipalDependent`.
 
-## The throttle is fixed at 50 ms for clients
+## A client may ask to be served more slowly — from a fixed ladder
 
-`DEFAULT_WATCH_THROTTLE_MS` (`watch-core.ts`) is part of the watch identity,
-but **no client can set it**: neither the `$live` endpoint nor the socket
-session passes `throttleMs`, so every browser subscription runs at exactly
-50 ms — a hard ~20 pushes/sec ceiling per subscriber, and one reason
-`deliveries_per_publish` in the socket benchmarks is a coalescing ratio, not a
-constant. Only in-process `dispatchWatch` callers choose a window (the Tier-1
-benchmarks use 0 to make counts deterministic).
+`DEFAULT_WATCH_THROTTLE_MS` (`watch-core.ts`) is part of the watch identity.
+Until #247 **no client could set it**: neither the `$live` endpoint nor the
+socket session passed `throttleMs`, so every browser subscription ran at
+exactly 50 ms — a hard ~20 pushes/sec ceiling per subscriber, and one reason
+`deliveries_per_publish` in the socket benchmarks is a coalescing ratio rather
+than a constant.
+
+That ceiling was also a FLOOR on cost, and #245 is why it had to go: profiled,
+a delivery is 77% socket write, and every subscriber is its own socket, so a
+publish costs one `writev` per subscriber. Deliveries per subscriber is the
+multiplier on that, and it was not the subscriber's to choose. A tile happy to
+update once a second was billed for twenty writes a second, forever.
+
+A subscription may now carry `w` — a REQUESTED window in ms, on
+`LiveSubscription`, so one field serves both mounts. The server does not
+honour it verbatim:
+
+```
+absent            → no throttleMs is passed at all
+n >= 0            → max(n, policy.min), then rounded UP to the nearest bucket
+above the ladder  → the top bucket
+anything else     → refused ($live per request, the socket per subscription)
+```
+
+**Rounding up to a ladder is the whole design, not a detail.** `throttleMs` is
+in the watch key (`Activation.openWatch`) and in the cross-host coalescing key
+(`ClusterPlacement.#coalescedWatch`), so honouring arbitrary numbers would
+give every distinct value its own watch loop and its own remote stream — the
+sharing #121, #138 and #139 exist to create, undone by clients asking for
+1000, 1001 and 1002. A socket may hold 256 subscriptions, which makes that a
+cheap way for one client to multiply an actor's work. The ladder is a hard
+ceiling on fragmentation: at most `|buckets|` loops, whatever clients send.
+
+Two properties are load-bearing and are pinned by tests:
+
+- **Absent is not "the default value".** No `throttleMs` is passed, so the
+  watch key is byte-for-byte the one a client that never heard of `w`
+  produces, and an explicit `w: 50` lands on that same loop. Old and new
+  clients share.
+- **Never faster than asked.** The floor is `DEFAULT_WATCH_THROTTLE_MS`, so
+  the default policy can only make a subscription slower. Sub-50 ms delivery
+  is an operator decision (`{ min: 0, buckets: [0, 16, 50] }`), and
+  `{ min: 50, buckets: [50] }` refuses the feature outright.
+
+The client-side subscription identity (`app/live-shared.ts` `canonical()`)
+carries the window too — otherwise two subscribers who asked for different
+windows would coalesce onto one wire entry and one of them would silently get
+the other's rate.
+
+In-process `dispatchWatch` callers still choose any window they like; the
+policy governs the wire, not the runtime (the Tier-1 benchmarks use 0 to make
+counts deterministic).
 
 ## Anonymous and signed-in fan-out are different products
 

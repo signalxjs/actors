@@ -31,7 +31,18 @@ import type { LiveSubscription, SocketReply, SocketRequest } from '../socket-wir
  * the wire codec first so `bigint`/`Date`/`Map` are representable.
  */
 export function canonical(sub: ActorSubscription): string {
-    return canonicalKey([sub.type, sub.key, sub.method, encodeWire(sub.args ?? [])]);
+    // `throttleMs` is part of the identity for the same reason it is part of
+    // the SERVER's watch key: two subscribers who asked for different windows
+    // are not the same subscription. Leaving it out would coalesce them onto
+    // one wire entry and silently serve one of them the other's rate (#247) —
+    // the same class of bug the injectivity argument above is about.
+    return canonicalKey([
+        sub.type,
+        sub.key,
+        sub.method,
+        encodeWire(sub.args ?? []),
+        sub.throttleMs ?? null
+    ]);
 }
 
 /**
@@ -141,7 +152,8 @@ export function createSubscriptionSet(hooks: {
                         t: sub.type,
                         k: sub.key,
                         m: sub.method,
-                        ...(sub.args && sub.args.length > 0 ? { a: sub.args } : {})
+                        ...(sub.args && sub.args.length > 0 ? { a: sub.args } : {}),
+                        ...(sub.throttleMs !== undefined ? { w: sub.throttleMs } : {})
                     },
                     listeners: new Set(),
                     print: null,

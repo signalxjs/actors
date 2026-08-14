@@ -1492,6 +1492,11 @@ means anything without saying which one it is.**
   subscription runs at `DEFAULT_WATCH_THROTTLE_MS` (50 ms) — a hard ~20
   pushes/s per subscriber. The 53–63 ms p50 floor in the small rungs IS
   that trailing window.
+  **Since #247 they can**, from a fixed ladder of windows, floored at the
+  same 50 ms — so a subscriber may ask to be served more slowly, never
+  faster. Every figure in this section predates it and none of the
+  generators send one, so they remain no-`w` runs; a run that sets one is a
+  different measurement rather than a faster one.
 - **`deliveriesPerPublish` is a coalescing ratio, not a constant.** Above
   ~20 publishes/s per key it falls below the subscriber count by design,
   and reading it as loss is a misreading.

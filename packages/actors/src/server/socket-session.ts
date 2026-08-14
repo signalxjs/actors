@@ -69,8 +69,12 @@ import { toClientError } from './client-error';
 import {
     DEFAULT_LIVE_PING_MS,
     DEFAULT_MAX_LIVE_SUBSCRIPTIONS,
+    DEFAULT_THROTTLE_POLICY,
+    resolveClientThrottle,
     resolveMaxSubscriptions,
-    toFrameError
+    resolveThrottlePolicy,
+    toFrameError,
+    type LiveThrottlePolicy
 } from './live-endpoint';
 import type { ActorCallContext, AnyActorDefinition, Host } from '../types';
 import type { SocketSessionRecorder } from './socket-stats';
@@ -140,6 +144,20 @@ export interface ActorSocketSessionOptions {
      * fail un-retried as on any drop.
      */
     maxConnectionMs?: number;
+    /**
+     * How much say a client gets over its own delivery rate (#247).
+     *
+     * A subscription may carry `w` — a REQUESTED window in ms — which this
+     * policy floors and rounds up to one of a fixed ladder. Defaults to
+     * `DEFAULT_THROTTLE_POLICY`, whose floor is the runtime's own 50 ms watch
+     * throttle, so a client can only ever ask to be served MORE slowly.
+     * `{ min: 50, buckets: [50] }` refuses the whole feature; a lower `min`
+     * opts a deployment into sub-50 ms delivery deliberately.
+     *
+     * Validated at construction: a bad policy closes the socket with 1011
+     * rather than surfacing per subscription.
+     */
+    throttlePolicy?: LiveThrottlePolicy;
     /** Masked-failure observability — defaults to `posture.onError`. */
     onError?(error: unknown, info: ServerFnInfo, ctx: ServerFnContext): void | Promise<void>;
     /**
@@ -224,10 +242,12 @@ export async function createActorSocketSession(
     let maxSubscriptions: number;
     let revalidateMs: number;
     let maxConnectionMs: number;
+    let throttlePolicy: LiveThrottlePolicy;
     try {
         maxSubscriptions = resolveMaxSubscriptions(
             options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS
         );
+        throttlePolicy = resolveThrottlePolicy(options.throttlePolicy ?? DEFAULT_THROTTLE_POLICY);
         revalidateMs = nonNegativeMs('revalidateMs', options.revalidateMs ?? 0);
         maxConnectionMs = nonNegativeMs('maxConnectionMs', options.maxConnectionMs ?? 0);
     } catch (error) {
@@ -597,13 +617,19 @@ export async function createActorSocketSession(
             const rqCall = callContext(watch.ctrl.signal);
             await authorizeActorCall(def, sub.m, sub.k, rqCall, 'wire');
             const bag = takeCallBag(rqCall.locals);
-            const iterable = host.dispatchWatch({ type: sub.t, key: sub.k }, sub.m, sub.a ?? [], {
-                callChain: [],
-                callId: mintCallId(),
-                ...(bag !== undefined ? { bag } : {}),
-                ...(principal !== undefined ? { principal } : {}),
-                abortSignal: watch.ctrl.signal
-            });
+            const iterable = host.dispatchWatch(
+                { type: sub.t, key: sub.k },
+                sub.m,
+                sub.a ?? [],
+                {
+                    callChain: [],
+                    callId: mintCallId(),
+                    ...(bag !== undefined ? { bag } : {}),
+                    ...(principal !== undefined ? { principal } : {}),
+                    abortSignal: watch.ctrl.signal
+                },
+                sub.w !== undefined ? { throttleMs: sub.w } : undefined
+            );
             const iterator = iterable[Symbol.asyncIterator]();
             watch.iterator = iterator;
             for (;;) {
@@ -644,7 +670,19 @@ export async function createActorSocketSession(
         if (typeof sub.k !== 'string' || !sub.k) return null;
         if (typeof sub.m !== 'string' || !sub.m) return null;
         if (sub.a !== undefined && !Array.isArray(sub.a)) return null;
-        return { t: sub.t, k: sub.k, m: sub.m, a: sub.a ?? [] };
+        let w: number | undefined;
+        try {
+            w = resolveClientThrottle(sub.w, throttlePolicy);
+        } catch {
+            // Refused, never defaulted — the same posture as every other
+            // field here. It becomes the per-subscription 400 the caller
+            // already sends for a malformed record; the socket stays open,
+            // because one bad subscription is not a vocabulary breach.
+            return null;
+        }
+        // Absent stays absent: the watch key must be byte-for-byte the one a
+        // client that never sends `w` produces (#247).
+        return { t: sub.t, k: sub.k, m: sub.m, a: sub.a ?? [], ...(w !== undefined ? { w } : {}) };
     };
 
     const handleParsed = (message: SocketRequest): void => {

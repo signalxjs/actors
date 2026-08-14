@@ -585,11 +585,15 @@ Pass/fail, and what to record:
   always will. Confirming #182 needs host-side instrumentation that does
   not exist yet (nothing in `socketStats()` or `@sigx/actors-ws` reads
   `bufferedAmount`). Scenario (r) measures the CONSEQUENCES instead.
-- **`deliveriesPerPublish` is a coalescing ratio, not a constant.** Client
-  subscriptions cannot set `throttleMs`, so every one runs at the runtime's
-  fixed 50 ms watch throttle: a subscriber receives at most ~20 pushes/s,
-  and above that rate the ratio falls below the subscriber count BY DESIGN.
-  Expect latency p50 to sit at ~50 ms plus fan-out for the same reason.
+- **`deliveriesPerPublish` is a coalescing ratio, not a constant.**
+  `ws-loadgen.mjs` sends no `w`, so every subscription it opens runs at the
+  runtime's default 50 ms watch throttle: a subscriber receives at most ~20
+  pushes/s, and above that rate the ratio falls below the subscriber count BY
+  DESIGN. Expect latency p50 to sit at ~50 ms plus fan-out for the same
+  reason. (Since #247 a client MAY ask for a slower window, which is the one
+  lever on the per-subscriber write syscall #245 found — but the recorded
+  figures are all no-`w` runs, and a run that sets one is a different
+  measurement, not a faster one.)
 - **Report the anonymous and per-user arms separately, never averaged.**
   A live read that consults `ctx.principal` gets one watch loop per
   identity (#121), and a cross-host watch coalesces per principal unless

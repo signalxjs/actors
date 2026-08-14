@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A live subscription may ask to be served more slowly** (#247).
+  `ActorSubscription` gains `throttleMs`, carried on the wire as `w` on
+  `LiveSubscription` — one field, so `$live` and the socket session cannot
+  drift. The server floors it at `DEFAULT_WATCH_THROTTLE_MS` and rounds it
+  **up** to one of a fixed ladder (`DEFAULT_THROTTLE_POLICY`: 50, 250, 1000,
+  5000 ms), configurable per mount via `throttlePolicy`.
+
+  Rounding to a ladder is the design, not a detail: `throttleMs` is part of
+  the watch identity and of the cross-host coalescing key, so honouring
+  arbitrary values would give every distinct number its own watch loop and
+  its own remote stream — the sharing #121/#138/#139 exist to create, undone
+  by clients asking for 1000, 1001 and 1002. The ladder caps fragmentation at
+  `|buckets|` loops however many distinct numbers arrive.
+
+  Why it matters: #245 profiled a delivery at **77% socket write**, and every
+  subscriber is its own socket, so a publish costs one `writev` per
+  subscriber. Deliveries per subscriber is the multiplier on that, and until
+  now it was not the subscriber's to choose — a tile happy to update once a
+  second was billed for twenty writes a second. It now costs a twentieth.
+
+  **Nothing changes for a client that does not opt in.** An absent `w` passes
+  no `throttleMs` at all, so the watch key is byte-for-byte what it was, and
+  an explicit `w: 50` shares that same loop. The default policy's floor is
+  the runtime's own throttle, so a client can only ever ask to go slower;
+  sub-50 ms delivery is an operator decision (`{ min: 0, buckets: [0, 16,
+  50] }`), and `{ min: 50, buckets: [50] }` declines the feature. A malformed
+  window is refused — per subscription on the socket, per request on `$live`
+  — never quietly defaulted.
+
 ## [0.9.0] - 2026-08-13
 
 ### Added
