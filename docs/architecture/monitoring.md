@@ -106,6 +106,20 @@ type names, traffic shape and cluster topology, and actor keys are user data.
 So a browser dashboard does **not** call it directly — that would mean
 shipping the secret to the client. It calls a **same-origin route of your own
 app**, which authenticates the operator however your app already does and
-forwards to `ops()` with the bearer attached server-side. `httpSource({ url:
-'/your/route' })` with no `secret` is the browser half; `examples/dashboard`
-is a working proxy.
+forwards to `ops()` with the bearer attached server-side. The whole server
+half is:
+
+```js
+// GET /admin/ops        → the host snapshot
+// GET /admin/ops/cluster → the fan-out
+if (url.pathname.startsWith('/admin/ops')) {
+    if (!(await isOperator(request))) return new Response('no', { status: 403 });
+    return fetch(HOST_ORIGIN + url.pathname.replace('/admin', '/_sigx/ops') + url.search, {
+        headers: { authorization: `Bearer ${process.env.OPS_SECRET}` }
+    });
+}
+```
+
+and the browser half is `httpSource({ url: '/admin/ops' })` with **no**
+`secret`. Keep the path shape below `ops({ base })` intact — `httpSource`
+appends `/cluster` and the `?detail` query itself.
