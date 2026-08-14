@@ -189,6 +189,26 @@ export const actorsDashboardCss = `
 .sxad-table tr.sxad-dim td { color: var(--sigx-actors-dim); }
 .sxad-table tr[data-sxad-click] { cursor: pointer; }
 .sxad-table tr[data-sxad-click]:hover td { background: var(--sigx-actors-panel); }
+/* The real control behind a "clickable row". Styled as text so the table
+   still reads as a table, but it is a button: focusable, Enter/Space, and
+   announced as an action. Underlined on hover/focus so it is discoverable as
+   one rather than looking like a cell that happens to respond. */
+.sxad-rowbtn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+}
+.sxad-rowbtn:hover, .sxad-rowbtn:focus-visible { text-decoration: underline; }
+.sxad-rowbtn:focus-visible { outline: 2px solid var(--sigx-actors-accent); outline-offset: 2px; }
+/* Keyboard focus must survive a 1 Hz re-render visibly — a row you cannot
+   see you are on is the same defect as one you cannot reach. */
+.sxad-table tr:focus-within td { background: var(--sigx-actors-panel); }
 
 /* Series --------------------------------------------------------------- */
 

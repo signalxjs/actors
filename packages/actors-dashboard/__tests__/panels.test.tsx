@@ -257,6 +257,57 @@ describe('HostsPanel', () => {
         expect(state.view.focus).toBe('s.2sme5hx2');
         view.unmount();
     });
+
+    it('makes the drill-down a real BUTTON, not a clickable row', () => {
+        // A click handler on a `<tr>` is invisible to the keyboard and
+        // announced as a plain row, so the drill-down would simply not exist
+        // for anyone not using a mouse — with no visible symptom at all.
+        const state = demoState();
+        const view = mount(<HostsPanel state={state} />);
+        const button = view.one('tbody tr .sxad-rowbtn') as HTMLButtonElement;
+        expect(button).not.toBeNull();
+        expect(button.tagName).toBe('BUTTON');
+        // Named for what it opens, not "open" repeated once per row.
+        expect(button.getAttribute('aria-label')).toBe('open host s.2sme5hx2');
+
+        button.click();
+        expect(state.view.focus).toBe('s.2sme5hx2');
+        view.unmount();
+    });
+
+    it('puts exactly one button per row, in the identifying column', () => {
+        const view = mount(<HostsPanel state={demoState()} />);
+        const rows = view.all('tbody tr');
+        expect(view.all('tbody .sxad-rowbtn')).toHaveLength(rows.length);
+        // First cell: the host id. Anywhere else and the accessible name is
+        // a status word or a number.
+        expect(rows[0]!.children[0]!.querySelector('.sxad-rowbtn')).not.toBeNull();
+        view.unmount();
+    });
+
+    it('does not fire the pick twice when the button inside a row is clicked', () => {
+        // The row keeps a click handler as a mouse convenience, so the
+        // button's own click must not bubble into it as well.
+        const state = demoState();
+        let picks = 0;
+        const original = state.focus.bind(state);
+        state.focus = (hostId: string | null) => {
+            picks++;
+            original(hostId);
+        };
+        const view = mount(<HostsPanel state={state} />);
+        (view.one('tbody tr .sxad-rowbtn') as HTMLElement).click();
+        expect(picks).toBe(1);
+        view.unmount();
+    });
+
+    it('leaves a table with no drill-down free of buttons', () => {
+        // The Actors table is not pickable; giving every row a button there
+        // would put N unreachable-looking controls in the tab order.
+        const view = mount(<ActorsPanel state={demoState()} />);
+        expect(view.all('tbody .sxad-rowbtn')).toHaveLength(0);
+        view.unmount();
+    });
 });
 
 describe('ActorsPanel', () => {

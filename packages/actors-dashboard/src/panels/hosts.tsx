@@ -74,6 +74,7 @@ export const HostsPanel = component<PanelProps>((ctx) => () => {
                 rows={snapshot.hosts}
                 tone={rowTone}
                 onPick={(host) => state.focus(host.hostId)}
+                pickLabel={(host) => `open host ${host.hostId}`}
                 emptyText="no hosts"
             />
             {/* A host that did not answer is why every total above is a lower

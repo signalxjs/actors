@@ -85,19 +85,30 @@ export interface Column<T> {
  * The wrapper is the browser's whole answer to what cost the terminal three
  * paragraphs of budgeting: a table too wide scrolls, rather than clipping
  * columns from the right.
+ *
+ * **`onPick` puts a real `<button>` in the first cell**, and does not merely
+ * hang a click handler on the `<tr>`. A clickable row is invisible to the
+ * keyboard and announced as a plain row by a screen reader, so the drill-down
+ * would simply not exist for anyone not using a mouse — the same class of
+ * failure as re-rendering the tab strip on every poll, and worse, because
+ * there is no visible symptom at all. The row keeps a click handler as a
+ * convenience for the mouse; the button is what makes the action real.
  */
 export function DataTable<T>(props: {
     columns: readonly Column<T>[];
     rows: readonly T[];
     /** Row tone — status, queue depth, selection. */
     tone?: (row: T) => Tone | null | undefined;
-    /** Makes rows clickable; the drill-down uses it. */
+    /** Makes rows pickable; the drill-down uses it. */
     onPick?: (row: T) => void;
+    /** What activating a row does, for the accessible name: "open host a1". */
+    pickLabel?: (row: T) => string;
     emptyText: string;
     caption?: string;
 }) {
     if (props.rows.length === 0) return <p class="sxad-empty">{props.emptyText}</p>;
     const pick = props.onPick;
+    const first = props.columns[0]?.key;
     return (
         <div class="sxad-tablewrap">
             <table class="sxad-table">
@@ -118,20 +129,43 @@ export function DataTable<T>(props: {
                             data-sxad-click={pick ? '' : undefined}
                             onClick={pick ? () => pick(row) : undefined}
                         >
-                            {props.columns.map((column) => (
-                                <td
-                                    class={
-                                        column.numeric
-                                            ? 'sxad-num'
-                                            : column.key_
-                                              ? 'sxad-key'
-                                              : undefined
-                                    }
-                                    title={column.key_ ? column.value(row) : undefined}
-                                >
-                                    {column.value(row)}
-                                </td>
-                            ))}
+                            {props.columns.map((column) => {
+                                const text = column.value(row);
+                                // The button goes in the IDENTIFYING cell, so
+                                // its accessible name is the thing you are
+                                // opening rather than "open" repeated N times.
+                                const actionable = pick && column.key === first;
+                                return (
+                                    <td
+                                        class={
+                                            column.numeric
+                                                ? 'sxad-num'
+                                                : column.key_
+                                                  ? 'sxad-key'
+                                                  : undefined
+                                        }
+                                        title={column.key_ ? text : undefined}
+                                    >
+                                        {actionable ? (
+                                            <button
+                                                type="button"
+                                                class="sxad-rowbtn"
+                                                aria-label={props.pickLabel?.(row)}
+                                                onClick={(event: MouseEvent) => {
+                                                    // The row handler would
+                                                    // otherwise fire too.
+                                                    event.stopPropagation();
+                                                    pick(row);
+                                                }}
+                                            >
+                                                {text}
+                                            </button>
+                                        ) : (
+                                            text
+                                        )}
+                                    </td>
+                                );
+                            })}
                         </tr>
                     ))}
                 </tbody>
