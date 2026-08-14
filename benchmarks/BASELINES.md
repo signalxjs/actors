@@ -2247,15 +2247,24 @@ One variable: `CONNECTIONS=250 SUBS_PER_CONN=8` against `CONNECTIONS=2000
 SUBS_PER_CONN=1`. Same actor, same publisher, same 0-byte payload, same 2 000
 subscriptions.
 
-| | 2 000 sockets × 1 sub | 250 sockets × 8 subs |
-|---|---:|---:|
-| deliveries/s | 12 067 | **27 095** |
-| host CPU (fraction of one core) | 0.58–0.77 | **0.13–0.19** |
-| **host CPU µs per delivery** | **~54** | **~5.5** |
-| publishes achieved (of 20/s) | 12.1/s | 16.3/s |
-| p50 | 59.5 ms | 63.0 ms |
+**Two pairs, run on different builds a few minutes apart**, because the first
+pair alone put a 10× claim on one run each:
 
-**~10× less host CPU per delivery, for the same subscription count.** The
+| pair | | 2 000 sockets × 1 sub | 250 sockets × 8 subs |
+|---|---|---:|---:|
+| 1 | deliveries/s | 12 067 | **27 095** |
+| 1 | host CPU (fraction of one core) | 0.58–0.77 | **0.13–0.19** |
+| 1 | **host CPU µs per delivery** | **~54** | **~5.5** (≈10×) |
+| 2 | deliveries/s | 15 461 | **25 994** |
+| 2 | host CPU (fraction of one core) | 0.57–0.62 | **0.12–0.21** |
+| 2 | **host CPU µs per delivery** | **~38** | **~6.3** (≈6×) |
+| | p50 | 59.5 / 59.5 ms | 63.0 / 62.6 ms |
+
+**6–10× less host CPU per delivery, for the same subscription count.** The
+pairs disagree on the ratio — the 1-sub arm is the noisy one, 12 067 against
+15 461 for the same shape — and agree on everything that matters: same sign,
+same order, far outside the spread either arm shows on its own. Quote the
+range, not either figure. The
 frames are identical and `ws` still calls `send()` once per subscription —
 what changes is that eight frames queued to ONE socket in one tick leave as
 one `writev`, because Node's writable already coalesces its queue. The
@@ -2282,6 +2291,11 @@ Two consequences worth carrying:
   8 895 → 9 492 deliveries/s across the two arms, which is inside this rig's
   run-to-run spread and should not be quoted as the win — the bucket share is
   the robust number.
+  **Fixed (#250):** the deadline is now a timestamp plus one
+  self-rescheduling timer instead of a clear/set per frame. Same rig, same
+  arm, ping still ENABLED at the 30 s default: the timers bucket reads
+  **0.04%** — the `SOCKET_PING_MS=0` control's 0.02%, with the keepalive
+  still running. The whole cost is recovered rather than traded away.
 - **Payload size barely registers up to 4 KB**: 8 895 → 8 760 deliveries/s,
   while `reply`'s own `JSON.stringify` share went 3.1% → 13.0%. The host
   absorbed the extra encode out of idle rather than out of throughput, which

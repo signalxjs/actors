@@ -38,6 +38,19 @@
   window is refused — per subscription on the socket, per request on `$live`
   — never quietly defaulted.
 
+### Changed
+
+- **A socket session no longer re-arms its keepalive on every frame** (#250).
+  `reply()` called `clearTimeout` + `setTimeout` per outbound frame, which at
+  a fan-out host's delivery rate is tens of thousands of timer-heap
+  operations a second on a heap holding one `Timeout` per open connection —
+  profiled at 2.60% of busy time, against 0.02% with the ping switched off.
+  The keepalive is a deadline rather than a heartbeat, so it is now a
+  timestamp plus one self-rescheduling timer: one `setTimeout` per ping
+  instead of two heap operations per frame. Same rig with the ping still
+  enabled now reads 0.04%. **No observable change** — a ping still goes out
+  `pingMs` after the last outbound frame and only if nothing was sent since.
+
 ## [0.9.0] - 2026-08-13
 
 ### Added
