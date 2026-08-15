@@ -2308,3 +2308,106 @@ measurement. Absolute throughput here means nothing next to the AKS figures.
 What transfers is the **shape**: one write syscall per subscriber per
 delivery, dominating everything the runtime does per frame. On a real NIC
 that term gets larger, not smaller.
+
+## 2026-08-15 · Tier 3 — the host's own numbers, and #182 answered (#252/#258)
+
+| | |
+|---|---|
+| Shape | `ws replicas=3 nodes=3 image=98cff96 knobs=ENABLE_SESSIONS=1,ENABLE_SOCKET=1,FETCH_CONNECTIONS=64,TRANSPORT=http` |
+| Cluster | AKS, 3 × `Standard_D2ls_v6` (2 vCPU), `limits.cpu 1000m`, 1 Redis |
+| Driver | in-cluster `ws-loadgen.mjs` Jobs, `testenv.mjs ws-bench`, `--runs=1` |
+| Artifact | Actions run **31878735718** (`sockets.json`) |
+
+The first socket run carrying the host-side instrumentation from #252. Two of
+its numbers have never existed before, and one of them settles a question two
+previous sessions had to leave open.
+
+### `sockets/slow-consumer` — the hosts buffer, without bound
+
+5 000 subscribers, 10% of them made to stop reading (480 connections):
+
+| metric | value |
+|---|---:|
+| **`peak_host_buffered_bytes`** | **367 153 508** (~350 MB) |
+| `client_max_buffered_bytes` | **0** |
+| `drops` | 0 |
+| `protocol_breaches` | 0 |
+| `host_deliveries` | 2 036 000 |
+| `host_delivery_bytes` | 8 449 376 000 |
+
+**350 MB queued across three 1000m pods while every client-side signal reads
+zero.** The 2026-08-09 section's "`maxBufferedBytes` stayed 0 at every rung"
+was true and meant nothing: it was the CLIENT's buffer, as #208 pointed out.
+
+Nothing dropped and nothing broke, which is the finding rather than a
+mitigation of it — there is no backpressure to observe failing. The host
+accepts everything the fan-out produces and holds it until the socket drains,
+so **a slow consumer is funded out of the host's heap.** Filed as #258 for a
+decision; this section is the number it rests on.
+
+### The host's own delivery counts, first recorded
+
+`sockets/hot-fanout`, summed across hosts over the run: `host_deliveries`
+2 848 000 and `host_delivery_bytes` 163 584 000. Every delivery figure on this
+tier before today was the GENERATOR's count. Both are now recorded, and a gap
+between them is a finding rather than an inconsistency — on this run there was
+none worth reporting.
+
+`throttle_quantized` is 0 on every scenario, as it must be: `ws-loadgen.mjs`
+sends no `w`, so every subscription ran at the default 50 ms window. A run
+that sets one is a different measurement (#247).
+
+### The identity numbers reproduce exactly
+
+| scenario | 2026-08-11 | today |
+|---|---:|---:|
+| `sockets/principal-cliff` `max_healthy_identities` | 100 | **100** |
+| `sockets/declared-fanout` `max_healthy_identities` | 1 000 | **1 000** |
+
+Two images and five days apart, the cliff and the declared arm's ladder-top
+land on the same integers. That is the strongest evidence yet that these two
+are properties of the mechanism rather than of the weather.
+
+### The throughput deltas, and why they are NOT attributed
+
+Against run 31524781111 (2026-08-11, image `0d2d38d`):
+
+| `sockets/hot-fanout` | before | after | |
+|---|---:|---:|---|
+| 1 000 deliveries/s | 10 028 | 10 033 | +0.0% |
+| 5 000 deliveries/s | 39 831 | 39 631 | −0.5% |
+| 10 000 deliveries/s | 34 795 | **44 646** | +28.3% |
+| 1 000 p50 | 56.5 ms | 63.2 ms | +12.0% |
+| 5 000 p50 | 137.9 ms | **106.3 ms** | −22.9% |
+| 10 000 p50 | 264.7 ms | 291.8 ms | +10.2% |
+| 5 000 `deliveries_per_publish` | 4 780 | **5 000** | +4.6% |
+| 10 000 `deliveries_per_publish` | 8 468 | **10 000** | +18.1% |
+
+> ⚠️ **None of this is attributable to any particular change.** `0d2d38d` to
+> `98cff96` spans v0.8.0, v0.9.0, the whole #124 save-path arc, two new
+> packages and the four PRs of the #245 investigation. The 2026-08-13 TCP
+> section already paid for this lesson — half an apparent transport win turned
+> out to be v0.8.0 — which is why it re-ran its control on the same image.
+> Attributing any row here needs a same-image A/B, i.e. deploying a second
+> image with the change reverted, i.e. another paid session.
+
+What can be said without attribution: **`deliveries_per_publish` is now
+exactly the subscriber count at every rung**, where the 2026-08-11 HTTP run
+fell to 0.95 and 0.85 of it at 5 000 and 10 000. That is a count, not a
+timing, and it means every publish reached every subscriber.
+
+### One correction to the method
+
+**`pnpm bench:diff` enforces `INFRA_SHAPE` too.** The `--compare` path is not
+the only guarded one — `compare-files.ts` runs the same `fatalMismatch` check
+and refused this pair outright, because the image tag is part of the shape:
+
+```
+refusing to compare — the deployments differ:
+  deployment shape: … image=98cff96 … vs … image=0d2d38d …
+```
+
+That is the guard working. It also means "record with `bench:diff` across
+images" is not a procedure that exists, and the table above was assembled by
+hand from the two artifacts, precisely so it could be labelled unattributable
+rather than printed as a verdict.
