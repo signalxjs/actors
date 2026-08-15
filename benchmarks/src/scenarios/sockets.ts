@@ -87,10 +87,12 @@ interface Row {
     partial?: boolean;
 }
 
-interface RunResult {
+export interface RunResult {
     merged: Row[];
     peakOpen: number;
     peakSubscriptions: number;
+    /** Deepest HOST-side send buffer seen; `null` ⇒ no host could report one. */
+    peakBufferedBytes?: number | null;
     hosts: number;
     delta: Record<string, number>;
     /** Both cluster-stats snapshots saw the whole fleet; false ⇒ no `cluster/*`. */
@@ -213,8 +215,72 @@ function runMetrics(result: RunResult): Metric[] {
             direction: 'lower',
             noiseFloor: 1
         },
+        ...deliveryMetrics(result),
         ...watchMetrics(result)
     ];
+}
+
+/**
+ * What the HOSTS say they sent, and how deep their own buffers got (#252).
+ *
+ * Every delivery figure recorded on this tier so far is the GENERATOR's
+ * count. That is the right number for "did the client receive it" and the
+ * wrong one for "what did this cost the host" — and after #245 the second
+ * question is the interesting one, since a delivery is 77% socket write and
+ * `host_deliveries` is therefore the closest thing to a syscall count.
+ * Reported alongside the generator's, never instead of it: a gap between the
+ * two is a real finding (frames written but not received) rather than an
+ * error to reconcile away.
+ *
+ * `peak_host_buffered_bytes` is the number #182 argued about without and
+ * #208 filed for. It is **omitted, not zeroed**, when no host could report
+ * one — an adapter with no `bufferedBytes` seam yields `null`, and emitting
+ * a 0 would assert "the hosts are not buffering" from an absence of data,
+ * which is precisely the misreading that left #182 open.
+ *
+ * All informational. They describe a deployment under a load generator; the
+ * invariants live at Tier 1.
+ */
+export function deliveryMetrics(result: RunResult): Metric[] {
+    const metrics: Metric[] = [];
+    const deliveries = result.delta.deliveries;
+    if (deliveries !== undefined) {
+        metrics.push(
+            {
+                name: 'host_deliveries',
+                value: deliveries,
+                unit: 'count',
+                direction: 'higher',
+                informational: true
+            },
+            {
+                name: 'host_delivery_bytes',
+                value: result.delta.deliveryBytes ?? 0,
+                unit: 'count',
+                direction: 'higher',
+                informational: true
+            }
+        );
+    }
+    if (result.delta.throttleQuantized !== undefined) {
+        metrics.push({
+            name: 'throttle_quantized',
+            value: result.delta.throttleQuantized,
+            unit: 'count',
+            direction: 'lower',
+            informational: true
+        });
+    }
+    if (typeof result.peakBufferedBytes === 'number') {
+        metrics.push({
+            name: 'peak_host_buffered_bytes',
+            value: result.peakBufferedBytes,
+            unit: 'count',
+            direction: 'lower',
+            informational: true
+        });
+    }
+    return metrics;
 }
 
 /**

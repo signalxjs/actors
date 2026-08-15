@@ -38,6 +38,26 @@
   window is refused — per subscription on the socket, per request on `$live`
   — never quietly defaulted.
 
+- **Socket delivery counters, and the HOST's send buffer** (#252, answering
+  #208). `socketStats()` gains `deliveries` (the `{i,v}` frames pushed for a
+  subscription — not calls, not stream chunks), `deliveryBytes` (code units,
+  documented as an approximation) and `throttleQuantized` (subscriptions
+  whose requested `w` the policy moved).
+
+  The gauge is the point: `bufferedBytes` reports the host's OWN send-buffer
+  depth, summed across open sessions. The session cannot see it —
+  `send(message: string)` is the whole contract — so it arrives through a new
+  `ActorSocketSessionOptions.bufferedBytes` seam, which
+  `@sigx/actors-ws/node` fills from `ws`'s `bufferedAmount`. Until now every
+  buffered-bytes figure in the perf record was the CLIENT's, and reading its
+  zeros as "the hosts never outran the clients" is exactly what left #182
+  unresolved across two Tier-3 sessions.
+
+  `bufferedBytes` is `number | null`, and **null means "no open session could
+  answer", never zero** — the same rule `lifetimeMs` already follows.
+  `ActorSocketSession.stats()` grows the field to match, which is a change to
+  a public shape.
+
 ### Changed
 
 - **A socket session no longer re-arms its keepalive on every frame** (#250).

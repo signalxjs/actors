@@ -702,7 +702,9 @@ describe('sessions must not outlive credentials (#159)', () => {
         await until(() => framesFor(link, 1).length >= 1);
         await until(() => link.closes.length === 1);
         expect(link.closes[0]).toEqual({ code: 1008, reason: 'connection lifetime exceeded' });
-        expect(session.stats()).toEqual({ inFlight: 0, subscriptions: 0 });
+        // `bufferedBytes` is null because `connect()` supplies no adapter
+        // callback — "cannot tell you", not zero (#252).
+        expect(session.stats()).toEqual({ inFlight: 0, subscriptions: 0, bufferedBytes: null });
         // The watch released its keep-alive with the session.
         await until(() => s.activations().every((a) => !a.keptAlive));
     });

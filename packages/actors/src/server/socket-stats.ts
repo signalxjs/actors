@@ -44,6 +44,36 @@ export interface SocketStatsTotals {
     protocolBreaches: number;
     /** Connections closed by `revalidateMs`/`maxConnectionMs` (1008). */
     lifetimeCloses: number;
+    /**
+     * `{i,v}` frames pushed for a SUBSCRIPTION — not call results, not
+     * stream chunks.
+     *
+     * The closest thing the host has to a syscall counter: #245 profiled a
+     * delivery at 77% socket write, one `writev` per subscriber, so this is
+     * what a fan-out host's cost is proportional to. It is also the
+     * denominator every per-delivery figure in the Tier-3 sections is
+     * computed from — until now, only ever client-side, by the load
+     * generator.
+     */
+    deliveries: number;
+    /**
+     * Outbound bytes for those frames, as UTF-16 code units.
+     *
+     * **An approximation, deliberately.** Measuring the encoded length would
+     * mean a UTF-8 pass per frame on the exact path this work exists to keep
+     * cheap, to sharpen a number nobody bills on. ASCII payloads are exact;
+     * anything else under-reports.
+     */
+    deliveryBytes: number;
+    /**
+     * Subscriptions whose requested delivery window the policy moved (#247).
+     *
+     * Clients asking for something they are not getting is invisible
+     * otherwise — the subscription succeeds either way — and "why is my
+     * 300 ms tile updating every second?" is the support question this
+     * answers.
+     */
+    throttleQuantized: number;
 }
 
 /** What `snapshot()` reports — the ops-section payload. */
@@ -54,15 +84,40 @@ export interface SocketStatsSnapshot extends SocketStatsTotals {
     inFlight: number;
     /** Live subscriptions currently held across open sessions. */
     subscriptions: number;
+    /**
+     * Bytes queued in the HOSTS' own send buffers, summed across open
+     * sessions — `null` when no open session can report one.
+     *
+     * The number #182 has been arguing about without. The load generators
+     * sample the CLIENT's buffer, which is a different quantity: a zero
+     * there is equally consistent with the host buffering without bound,
+     * which is why #208 says #182 was "left unrefuted, not answered".
+     *
+     * Two caveats it must be read with. It is POLLED, so it under-reports
+     * peaks the same way `open` does — a burst between two `snapshot()`
+     * calls is invisible. And it is only as good as the adapter: a session
+     * constructed without a `bufferedBytes` callback contributes nothing,
+     * so `null` means "nobody could tell us" and never "zero".
+     */
+    bufferedBytes: number | null;
     /** Completed connections' lifetimes. */
     lifetimeMs: HistogramSnapshot | null;
 }
 
+/**
+ * What `snapshot()` polls an open session for. Structural rather than
+ * `ActorSocketSession`, so a session type and its recorder do not have to
+ * import each other — and it is exactly `ActorSocketSession.stats()`.
+ */
+export interface SocketSessionProbe {
+    stats(): { inFlight: number; subscriptions: number; bufferedBytes: number | null };
+}
+
 /** The session's private half — how one session reports in. */
 export interface SocketSessionRecorder {
-    opened(session: { stats(): { inFlight: number; subscriptions: number } }): void;
+    opened(session: SocketSessionProbe): void;
     closed(
-        session: { stats(): { inFlight: number; subscriptions: number } },
+        session: SocketSessionProbe,
         openedAtMs: number
     ): void;
     refused(): void;
@@ -72,6 +127,10 @@ export interface SocketSessionRecorder {
     subscriptionClosed(): void;
     protocolBreach(): void;
     lifetimeClose(): void;
+    /** One `{i,v}` subscription frame went out, carrying `chars` code units. */
+    delivered(chars: number): void;
+    /** A subscription's requested delivery window was moved by the policy. */
+    throttleQuantized(): void;
 }
 
 export interface SocketStats extends SocketSessionRecorder {
@@ -94,9 +153,12 @@ export function socketStats(): SocketStats {
         subscriptionsOpened: 0,
         subscriptionsClosed: 0,
         protocolBreaches: 0,
-        lifetimeCloses: 0
+        lifetimeCloses: 0,
+        deliveries: 0,
+        deliveryBytes: 0,
+        throttleQuantized: 0
     };
-    const open = new Set<{ stats(): { inFlight: number; subscriptions: number } }>();
+    const open = new Set<SocketSessionProbe>();
     const lifetime = new Histogram();
 
     return {
@@ -130,13 +192,26 @@ export function socketStats(): SocketStats {
         lifetimeClose() {
             totals.lifetimeCloses++;
         },
+        delivered(chars) {
+            totals.deliveries++;
+            totals.deliveryBytes += chars;
+        },
+        throttleQuantized() {
+            totals.throttleQuantized++;
+        },
         snapshot() {
             let inFlight = 0;
             let subscriptions = 0;
+            // Stays `null` unless at least one open session could answer —
+            // summing into a 0 would report "the hosts are not buffering"
+            // when the truth is "no adapter told us", which is the exact
+            // misreading #208 was filed about.
+            let bufferedBytes: number | null = null;
             for (const session of open) {
                 const s = session.stats();
                 inFlight += s.inFlight;
                 subscriptions += s.subscriptions;
+                if (s.bufferedBytes !== null) bufferedBytes = (bufferedBytes ?? 0) + s.bufferedBytes;
             }
             // `null` when nothing completed yet — nullability MEANS "no
             // data", so the runtime must not hand out an all-zeros shape a
@@ -147,6 +222,7 @@ export function socketStats(): SocketStats {
                 open: open.size,
                 inFlight,
                 subscriptions,
+                bufferedBytes,
                 lifetimeMs
             };
         },

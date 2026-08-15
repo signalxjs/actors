@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { mergeRows, runWsLoad } from '../../perf/aks/deploy/ws-load.mjs';
+import { deliveryMetrics } from '../src/scenarios/sockets.ts';
 
 /** One generator pod's line for a rung, with the fields merge touches. */
 const row = (over: Record<string, unknown> = {}) => ({
@@ -135,4 +136,51 @@ describe('runWsLoad option guards', () => {
             ).rejects.toThrow(/imageRepository\/imageTag, not through values/);
         }
     );
+});
+
+describe('deliveryMetrics (#252)', () => {
+    const base = {
+        merged: [],
+        peakOpen: 0,
+        peakSubscriptions: 0,
+        hosts: 3,
+        delta: {},
+        partial: false
+    };
+
+    it('reports what the HOSTS sent, alongside the generator count', () => {
+        const metrics = deliveryMetrics({
+            ...base,
+            delta: { deliveries: 48_000, deliveryBytes: 2_400_000 }
+        });
+        expect(metrics.map((m) => m.name)).toEqual(['host_deliveries', 'host_delivery_bytes']);
+        expect(metrics[0]).toMatchObject({ value: 48_000, informational: true });
+    });
+
+    it('omits the host counters when the run did not carry them', () => {
+        // Absent rather than 0: a zero would say "the hosts delivered
+        // nothing", which is a claim about the runtime rather than about an
+        // older image that has no such counter.
+        expect(deliveryMetrics({ ...base, delta: {} })).toEqual([]);
+    });
+
+    it('omits the buffered gauge when no host could report one', () => {
+        // THE #208 RULE. A 0 here asserts "the hosts are not buffering" from
+        // an absence of data, which is exactly what left #182 unresolved.
+        expect(
+            deliveryMetrics({ ...base, delta: { deliveries: 1 }, peakBufferedBytes: null }).some(
+                (m) => m.name === 'peak_host_buffered_bytes'
+            )
+        ).toBe(false);
+    });
+
+    it('reports the buffered gauge when a host did — including a real zero', () => {
+        const zero = deliveryMetrics({ ...base, delta: { deliveries: 1 }, peakBufferedBytes: 0 });
+        expect(zero.find((m) => m.name === 'peak_host_buffered_bytes')).toMatchObject({ value: 0 });
+        const deep = deliveryMetrics({ ...base, delta: { deliveries: 1 }, peakBufferedBytes: 9_001 });
+        expect(deep.find((m) => m.name === 'peak_host_buffered_bytes')).toMatchObject({
+            value: 9_001,
+            direction: 'lower'
+        });
+    });
 });
