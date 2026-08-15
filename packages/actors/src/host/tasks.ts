@@ -64,7 +64,7 @@ export function taskLedger(
     codec: {
         encode(value: unknown): unknown;
         revive(value: unknown): unknown;
-        stringify?(value: unknown): string;
+        stringify?(value: unknown): string | undefined;
     }
 ): TaskLedgerApi {
     let chain: Promise<unknown> = Promise.resolve();
@@ -81,8 +81,15 @@ export function taskLedger(
     // otherwise. Identical bytes either way — that equality is the contract
     // `stringifyWithHandlers` is held to — so the compare below means the
     // same thing on both paths.
+    //
+    // An `undefined` from the fused emitter falls through to the pair rather
+    // than to a substituted default: it is unreachable for a ledger (always
+    // an object; only a top-level symbol or function returns `undefined`),
+    // and inventing bytes would be worse than unreachable code — the no-op
+    // compare cannot tell a stand-in value from a real one, so a wrong
+    // string here silently turns a real edit into a skipped write.
     const toJson = (value: unknown): string =>
-        codec.stringify ? codec.stringify(value) : JSON.stringify(codec.encode(value));
+        codec.stringify?.(value) ?? JSON.stringify(codec.encode(value));
 
     async function mutateNow(edit: (ledger: TaskLedger) => void): Promise<TaskLedger> {
         for (let attempt = 1; ; attempt++) {
