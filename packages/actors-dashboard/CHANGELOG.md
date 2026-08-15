@@ -15,7 +15,7 @@
   working on it".
 
   The panels now render the banner first and then either `connecting…` or
-  `could not reach <source> — no data has arrived yet`, naming the source so a
+  `no data yet — the first poll of <source> failed`, naming the source so a
   portal watching several deployments knows which one went quiet. The ordering
   lives in one `<Awaiting>` component rather than in six copies of the early
   return, because six copies is six chances to put it back the wrong way

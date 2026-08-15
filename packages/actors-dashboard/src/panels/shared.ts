@@ -68,8 +68,15 @@ export const panelState = (props: PanelProps): DashboardState => toRaw(props.sta
  */
 export function awaitingReason(state: DashboardState): { message: string; failed: boolean } {
     if (!state.view.error) return { message: 'connecting…', failed: false };
+    // States the OUTCOME — nothing arrived — and not a cause. `httpSource`
+    // fails for reasons that are not reachability at all: a 401 means the
+    // host answered perfectly and rejected the secret, a 404 that it serves
+    // no ops endpoint. "Could not reach" would be false for both, and
+    // sending someone to check the network over a wrong bearer token is the
+    // same wasted ten minutes that endpoint's own error text exists to
+    // prevent. The banner immediately above carries the real reason.
     return {
-        message: `could not reach ${state.source.label} — no data has arrived yet`,
+        message: `no data yet — the first poll of ${state.source.label} failed`,
         failed: true
     };
 }

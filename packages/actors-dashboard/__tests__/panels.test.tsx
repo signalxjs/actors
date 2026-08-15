@@ -73,12 +73,30 @@ describe('before the first snapshot', () => {
             expect(text).toContain('connect ECONNREFUSED 127.0.0.1:5392');
             // And it says plainly that nothing has arrived, so an empty page
             // is not mistaken for an empty cluster.
-            expect(text).toContain('no data has arrived yet');
+            expect(text).toContain('no data yet');
             // Naming the source removes the "which thing is unreachable"
             // question a portal with several tenants would otherwise ask.
             expect(text).toContain('http://127.0.0.1:5391');
             view.unmount();
         }
+    });
+
+    it('does not blame reachability for a failure that is not one', () => {
+        // `httpSource` fails for reasons that have nothing to do with
+        // reaching the host: a 401 means it answered perfectly and rejected
+        // the secret. Saying "could not reach" there sends you to check the
+        // network over a wrong bearer token — the same wasted ten minutes
+        // that endpoint's own error text exists to prevent.
+        const state = pending();
+        state.view.error =
+            'http://127.0.0.1:5391 rejected the ops secret (401) — check --secret / SIGX_OPS_SECRET';
+        const view = mount(<OverviewPanel state={state} />);
+        const text = view.text();
+        expect(text).not.toContain('could not reach');
+        expect(text).toContain('the first poll of');
+        // The banner still carries the actionable part.
+        expect(text).toContain('rejected the ops secret (401)');
+        view.unmount();
     });
 
     it('puts the banner ABOVE the message, not after it', () => {
