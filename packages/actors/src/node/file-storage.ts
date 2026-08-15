@@ -8,6 +8,12 @@
  * actor, and an in-process chain serializes same-file access here). Production storage
  * belongs in real providers implementing the same three methods.
  *
+ * No `saveText`, deliberately (#238). The record is a pretty-printed
+ * `{ etag, state }` envelope, so accepting a pre-made state string would
+ * mean splicing it in by concatenation — putting the whole state on one
+ * unindented line and costing this store the one thing it exists for. A dev
+ * store trades a walk for `cat`, every time.
+ *
  * UNDER VITE: if `dir` is inside the project root, add it to
  * `server.watch.ignored` (both examples in this repo do). A save is a temp
  * file plus a rename, and Vite's HMR path reads a file it has just seen

@@ -16,7 +16,7 @@
  * `state/save-growth`'s `mem` arm.
  */
 import { closedLoop, LATENCY_NOISE_FLOOR_MS, meanUs, TURN_NOISE_FLOOR_US } from '../loop.ts';
-import { benchCall, createBenchHost } from '../host-fixture.ts';
+import { benchCall, createBenchHost, stringifyStorage, textStorage } from '../host-fixture.ts';
 import { settleGc } from '../memory.ts';
 import { openSubscribers, type Subscribers } from '../subscribers.ts';
 import {
@@ -26,7 +26,7 @@ import {
     sendStep,
     sendStop
 } from '../job-fixtures.ts';
-import type { ActorRef, Host } from '@sigx/actors/host';
+import type { ActorRef, ActorStorage, Host } from '@sigx/actors/host';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 /** Same rungs as `state/dirty-size`, so the two ladders read together. */
@@ -116,14 +116,26 @@ const checkpointGrowth: Scenario = {
         // arm measures the throttle's FLOOR — a burst entirely inside one
         // window: the leading snapshot and nothing else. The gap between
         // it and `watch=1` is exactly what opting in buys such a burst.
+        // `watch=0,text` is `watch=0` against a storage that takes JSON text
+        // (#238), which is the shape a real deployment has: pg, redis and
+        // surreal all want the string. Its delta vs `watch=0,stringify` is
+        // the adapter walk removed, on the checkpointing-job workload the
+        // whole #124 thread was reported against. Both new arms are
+        // UNWATCHED, so they read against `watch=0` and against each other
+        // without the change feed in the way.
         const arms = [
-            { label: 'watch=0', count: 0, args: [] as unknown[] },
-            { label: 'watch=1', count: 1, args: [] as unknown[] },
-            { label: 'watch=throttled', count: 1, args: [{ throttleMs: 1000 }] }
-        ];
+            { label: 'watch=0', count: 0, args: [] as unknown[], storage: undefined },
+            { label: 'watch=0,stringify', count: 0, args: [] as unknown[], storage: stringifyStorage },
+            { label: 'watch=0,text', count: 0, args: [] as unknown[], storage: textStorage },
+            { label: 'watch=1', count: 1, args: [] as unknown[], storage: undefined },
+            { label: 'watch=throttled', count: 1, args: [{ throttleMs: 1000 }], storage: undefined }
+        ] as { label: string; count: number; args: unknown[]; storage?: () => ActorStorage }[];
         for (const arm of arms) {
             const key = `run-${arm.label}-${runSeq++}`;
-            const fixture = await createBenchHost({ actors: [BenchStepJob] });
+            const fixture = await createBenchHost({
+                actors: [BenchStepJob],
+                ...(arm.storage ? { storage: arm.storage() } : {})
+            });
             const ref = { type: BenchStepJob.type, key };
             let subs: Subscribers | undefined;
             try {

@@ -132,6 +132,13 @@ export interface PluginRegistry {
      * Wrap the storage chain — caching, encryption, metrics. Applied in
      * registration order, so the LAST registered decorator is outermost and
      * therefore sees a call first.
+     *
+     * Forward every member you do not deliberately replace, `saveText`
+     * included — and forward it CONDITIONALLY, so an inner storage without
+     * it does not appear to have it. Returning a fixed three-method literal
+     * silently drops the single-walk save path (#238): the host reverts to
+     * encoding a tree the adapter then re-walks, correct but slower, with
+     * nothing to say it happened.
      */
     decorateStorage(decorate: (inner: ActorStorage) => ActorStorage): void;
     /**

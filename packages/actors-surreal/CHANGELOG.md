@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`surrealStorage` implements `ActorStorage.saveText`** (#238), so a
+  durable save no longer walks the same state twice. State is held as a JSON
+  STRING here by design, so the host's single-pass output is exactly what the
+  field wanted — one walk earlier than the `JSON.stringify` this used to run
+  over the host's tree, measured at +51% on top of the host's own encode.
+  `save` is now defined in terms of the same CAS body, so the two entry points
+  cannot drift. No schema change; a record written either way is byte-identical.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

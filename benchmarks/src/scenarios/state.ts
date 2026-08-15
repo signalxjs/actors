@@ -31,7 +31,7 @@ import {
     sweepConcurrency,
     TURN_NOISE_FLOOR_US
 } from '../loop.ts';
-import { benchCall, createBenchHost, stringifyStorage } from '../host-fixture.ts';
+import { benchCall, createBenchHost, stringifyStorage, textStorage } from '../host-fixture.ts';
 import { settleGc } from '../memory.ts';
 import {
     openSubscribers,
@@ -323,11 +323,18 @@ const dirtyGrowth: Scenario = {
  *              `encodeWithHandlers` walk + a by-reference store.
  *   stringify  same, `stringifyStorage`: the delta vs `mem` is the second
  *              full walk (`JSON.stringify`) every real adapter pays.
+ *   text       same, `textStorage`: the adapter opts into `saveText`, so the
+ *              host emits the JSON in ONE walk (#238) and the adapter walks
+ *              nothing. `stringify − text` is what that removed; `text − mem`
+ *              is what a string still costs over storing the tree by
+ *              reference. Reported per round in the same run as `stringify`,
+ *              which is the only way to read the pair without trusting two
+ *              machines to agree.
  *   mem+sub    `memoryStorage` with one `ctx.changes()` subscriber: the
  *              delta vs `mem` is the deepTrack walk plus the boundary
  *              `#snapshot()` (encode + revive) the subscriber forces.
  *
- * All three are O(state size) per turn; what the arms buy is knowing which
+ * All four are O(state size) per turn; what the arms buy is knowing which
  * term dominates — the fix for each lives in a different place (the host,
  * an upstream serialize API, the change feed).
  */
@@ -343,6 +350,7 @@ const saveGrowth: Scenario = {
         const arms: { label: string; storage?: () => ActorStorage; subscribers: number }[] = [
             { label: 'mem', subscribers: 0 },
             { label: 'stringify', storage: stringifyStorage, subscribers: 0 },
+            { label: 'text', storage: textStorage, subscribers: 0 },
             { label: 'mem+sub', subscribers: 1 }
         ];
         for (const arm of arms) {

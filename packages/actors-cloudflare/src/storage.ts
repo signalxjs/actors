@@ -60,6 +60,10 @@ export function durableObjectStorage(
             return (await storage.get<ActorStorageRecord>(recordKey(type, key))) ?? null;
         },
 
+        // No `saveText`, deliberately (#238): `storage.put` takes a
+        // STRUCTURED value and the platform serializes it itself, so this
+        // adapter never ran the second walk the option exists to remove.
+        // Handing it a string would store a JSON string it must parse back.
         save(type, key, state, expectedEtag) {
             return gate(async () => {
             const id = recordKey(type, key);

@@ -401,11 +401,50 @@ export interface ActorStorageRecord {
  * - `load` must return a record the caller may freely mutate — an
  *   implementation that holds records in memory must hand out a copy
  *   (deserializing from a stored string trivially satisfies this).
+ *
+ * A DECORATOR of this seam (`decorateStorage`) must forward every member it
+ * does not deliberately replace, `saveText` included. A decorator that
+ * returns a fixed three-method literal silently drops the optional path, and
+ * the host falls back to the two-walk one — correct, just quietly slower.
  */
 export interface ActorStorage {
     load(type: string, key: string): Promise<ActorStorageRecord | null>;
     save(type: string, key: string, state: unknown, expectedEtag: string | null): Promise<string>;
     clear(type: string, key: string, expectedEtag: string | null): Promise<void>;
+    /**
+     * OPTIONAL: save state the host has ALREADY serialized to JSON text
+     * (#238), so an adapter that wants a string stops re-walking the tree
+     * the host just built.
+     *
+     * A durable save was two full walks of the same state: the host's
+     * `encodeWithHandlers` to a JSON-safe tree, then the adapter's
+     * `JSON.stringify` over that tree. The second walk measured at +51% on
+     * top of the first (`state/save-growth`, signalxjs/actors#227), and
+     * `@sigx/serialize/stringify` can now emit the string in ONE walk.
+     *
+     * Implementing it is a promise of EQUIVALENCE, not merely of validity:
+     * `saveText(type, key, json, etag)` must be observably identical to
+     * `save(type, key, JSON.parse(json), etag)` — same CAS semantics, same
+     * `ActorStorageConflict` brand on a mismatch, and a later `load()` must
+     * return the same record either way. Implement `save` in terms of this
+     * one (`save(…, state) => saveText(…, JSON.stringify(state))`) so the
+     * two cannot drift.
+     *
+     * The same ownership contract applies, trivially: a string is immutable,
+     * so there is nothing for the caller to mutate out from under the store.
+     *
+     * ABSENT is the right answer for an adapter that genuinely wants the
+     * tree, and the host is correct either way — it keeps its encoded-tree
+     * path for exactly that case. `memoryStorage` stores the tree by
+     * reference and `durableObjectStorage` hands a structured value to the
+     * platform; for both, a string would force a parse back on load.
+     */
+    saveText?(
+        type: string,
+        key: string,
+        json: string,
+        expectedEtag: string | null
+    ): Promise<string>;
 }
 
 /**

@@ -134,6 +134,52 @@ describe.skipIf(!PG_URL)('pgStorage', () => {
         });
     });
 
+    /**
+     * The single-walk save path (#238). `saveText` is not a second storage
+     * FORMAT — it is the same write reached one walk earlier, so the only
+     * thing worth asserting is that nothing downstream can tell which one
+     * ran. `state` is a `text` column here, so the string lands in it
+     * directly.
+     */
+    describe('saveText (#238)', () => {
+        it('is implemented — this adapter stores the serialized form', () => {
+            expect(storage().saveText).toBeTypeOf('function');
+        });
+
+        it('stores exactly what save stores, given the same value', async () => {
+            const s = storage();
+            const t = type();
+            const state = { n: 1, deep: { list: [1, 2, null] }, tag: 'x' };
+            await s.saveText!(t, 'text', JSON.stringify(state), null);
+            await s.save(t, 'tree', state, null);
+            expect((await s.load(t, 'text'))?.state).toEqual((await s.load(t, 'tree'))?.state);
+        });
+
+        it('honours CAS and throws the conflict brand', async () => {
+            const s = storage();
+            const t = type();
+            const etag = await s.saveText!(t, 'k', '{"n":1}', null);
+            await expect(s.saveText!(t, 'k', '{"n":2}', 'stale')).rejects.toSatisfy(
+                isStorageConflict
+            );
+            await expect(s.saveText!(t, 'k', '{"n":2}', null)).rejects.toSatisfy(isStorageConflict);
+            expect((await s.load(t, 'k'))?.state).toEqual({ n: 1 });
+            expect(await s.saveText!(t, 'k', '{"n":2}', etag)).toBeTypeOf('string');
+            expect((await s.load(t, 'k'))?.state).toEqual({ n: 2 });
+        });
+
+        it('interleaves with save on one record', async () => {
+            // The host picks a path per boundary, so a record's etag chain
+            // runs through both.
+            const s = storage();
+            const t = type();
+            const e1 = await s.save(t, 'k', { n: 1 }, null);
+            const e2 = await s.saveText!(t, 'k', '{"n":2}', e1);
+            await expect(s.save(t, 'k', { n: 3 }, e2)).resolves.toBeTypeOf('string');
+            expect((await s.load(t, 'k'))?.state).toEqual({ n: 3 });
+        });
+    });
+
     describe('end to end', () => {
         const Cart = defineActor({
             type: 'PgCart',

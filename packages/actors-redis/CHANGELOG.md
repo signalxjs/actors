@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`redisStorage` implements `ActorStorage.saveText`** (#238), so a durable
+  save no longer walks the same state twice. The `SAVE_CAS` Lua script always
+  took the state as a string; what changes is that the string now arrives from
+  the host's single pass rather than from a `JSON.stringify` here over a tree
+  the host had just built — measured at +51% on top of the host's own encode.
+  `save` is now defined in terms of the same CAS call, so the two entry points
+  cannot drift. A record written either way is byte-identical.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed
