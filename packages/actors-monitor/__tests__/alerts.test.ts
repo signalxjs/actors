@@ -49,6 +49,19 @@ describe('alertLines', () => {
         expect(alertLines(emptyView)).toEqual([]);
     });
 
+    it('does not claim a last good snapshot when there has never been one', () => {
+        // With no snapshot the panel below the banner is EMPTY, so
+        // "showing the last good snapshot" describes a screen that does not
+        // exist. Same class of error as any other caption that outruns its
+        // data (#256).
+        const state = new DashboardState({ source: inertSource });
+        state.view.error = 'connect ECONNREFUSED';
+        const [first] = alertLines(state.view);
+        expect(first!.text).toContain('nothing has been read yet');
+        expect(first!.text).not.toContain('last good snapshot');
+        expect(first!.text).toContain('connect ECONNREFUSED');
+    });
+
     it('says the numbers on screen are the LAST GOOD ones after a failed poll', () => {
         // The alternative — blanking the panel — destroys exactly the
         // context you need to understand the hiccup.

@@ -43,6 +43,23 @@ export function Alerts(props: { alerts: readonly Alert[] }) {
     );
 }
 
+/**
+ * The pre-first-snapshot state: the alert banner, then what we are waiting on.
+ *
+ * A component rather than a line in each panel, because the ORDER is the fix
+ * — alerts above, always. Six panels each writing `if (!snapshot) return …`
+ * is six chances to put the early return above the banner again, which is the
+ * bug this replaces (#256).
+ */
+export function Awaiting(props: { alerts: readonly Alert[]; message: string; failed: boolean }) {
+    return (
+        <div>
+            <Alerts alerts={props.alerts} />
+            <p class={props.failed ? 'sxad-note' : 'sxad-empty'}>{props.message}</p>
+        </div>
+    );
+}
+
 /* -- definition rows --------------------------------------------------- */
 
 export interface DetailRow {

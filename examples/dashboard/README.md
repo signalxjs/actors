@@ -111,10 +111,14 @@ cluster this dashboard is pointed at, read `examples/counter`.
 
 ## Things that will bite you
 
-- **Pointing at 5391 gives you a dead host.** `cluster:serve` *kills* the
-  first host on its way past, to show the survivors re-forming and reclaiming
-  its reminder shards. The default here is 5392 for that reason. Any one
-  surviving host is enough — it fans out to the rest.
+- **One of the three hosts will be dead, and you cannot predict which.**
+  `cluster:serve` kills *the owner of the `cart` actor* — placement decides
+  who that is, so the casualty differs run to run. Hardcoding a port is a
+  one-in-three chance of aiming at the corpse, which is why the proxy takes a
+  **list** and uses the first that answers; any one survivor is enough,
+  because the fan-out reaches the rest. `OPS_HOSTS` overrides the list,
+  `OPS_HOST` still works for a single real deployment, and the `x-ops-host`
+  response header names whichever one replied.
 - **`ops()` is not mounted by default.** The cluster demo wires it by hand
   (`ops({ secret, cluster: (signal, query) => clusterStats(placement, { signal, ...query }) })`),
   because `ops()` lives in `/host` and `clusterStats` in `/cluster` — a
@@ -128,6 +132,11 @@ cluster this dashboard is pointed at, read `examples/counter`.
 - **`startsWith('/ops')` is too loose.** It also matches `/opsummary`, and
   would forward your bearer token to a URL nobody meant to build. The handler
   checks for the exact mount or a `/` or `?` after it; `__tests__` pins that.
+- **Relative imports between the `.ts` files `server.mjs` loads need the
+  explicit `.ts` extension.** Node's type stripping insists on it and Vite
+  does not, so a missing one breaks `pnpm start` while `pnpm dev` stays
+  perfectly green — which is exactly how the config split shipped with
+  `pnpm start` broken (#256). If you only ever run `dev`, you will not find it.
 - **`server.mjs` needs Node >= 22.18** for the `.ts` imports (built-in type
   stripping), same as `examples/counter/server.mjs`. `pnpm dev` has no such
   requirement — Vite compiles them.

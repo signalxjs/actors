@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import { opsProxy } from './src/ops-proxy';
-import { OPS_HOST, OPS_MOUNT, OPS_SECRET, PORT } from './src/config.server';
+import { OPS_HOSTS, OPS_SECRET, PORT } from './src/config.server';
+import { OPS_MOUNT } from './src/config.public';
 
 export default defineConfig({
     server: { port: PORT, strictPort: true },
@@ -16,7 +17,7 @@ export default defineConfig({
             name: 'ops-proxy',
             configureServer(server) {
                 server.middlewares.use(
-                    opsProxy({ host: OPS_HOST, secret: OPS_SECRET, mount: OPS_MOUNT })
+                    opsProxy({ hosts: OPS_HOSTS, secret: OPS_SECRET, mount: OPS_MOUNT })
                 );
                 // Printed because it is the thing to notice. Vite's banner
                 // says where the PAGE is; what makes this example worth
@@ -30,7 +31,7 @@ export default defineConfig({
                 server.printUrls = (): void => {
                     printUrls();
                     server.config.logger.info(
-                        `  ➜  ops proxy: ${OPS_MOUNT}  →  ${OPS_HOST}  ` +
+                        `  ➜  ops proxy: ${OPS_MOUNT}  →  ${OPS_HOSTS.join(", ")}  ` +
                             '(bearer attached here, never in the browser)'
                     );
                 };

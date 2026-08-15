@@ -25,13 +25,15 @@ import {
 } from '@sigx/actors-monitor';
 import { count, durationMs, gauge, rate } from '@sigx/actors-monitor/format';
 import { component } from '@sigx/runtime-core';
-import { Alerts, Bars, DetailList, Series, type DetailRow } from '../parts/primitives';
-import { callsTone, callsValue, panelState, type PanelProps } from './shared';
+import { Awaiting, Alerts, Bars, DetailList, Series, type DetailRow } from '../parts/primitives';
+import { awaitingReason, callsTone, callsValue, panelState, type PanelProps } from './shared';
 
 export const OverviewPanel = component<PanelProps>((ctx) => () => {
     const state = panelState(ctx.props);
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <p class="sxad-empty">connecting…</p>;
+    if (!snapshot) {
+        return <Awaiting alerts={alertLines(state.view)} {...awaitingReason(state)} />;
+    }
 
     const totals = snapshot.cluster?.totals;
     const activations = totals?.activations ?? sum(snapshot.hosts, (h) => h.stats.activations);

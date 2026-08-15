@@ -6,6 +6,21 @@
 
 ### Fixed
 
+- **A failing first poll now says why, on the page (#256).** Every panel
+  opened with `if (!snapshot) return <p>connecting…</p>`, and that early
+  return sat ABOVE the alert banner — so in the one case where there is no
+  snapshot *because the first poll failed*, the reason rendered nowhere except
+  `poll FAILING` in small text in the status line. A dashboard pointed at an
+  unreachable source showed "connecting…" indefinitely, which reads as "still
+  working on it".
+
+  The panels now render the banner first and then either `connecting…` or
+  `could not reach <source> — no data has arrived yet`, naming the source so a
+  portal watching several deployments knows which one went quiet. The ordering
+  lives in one `<Awaiting>` component rather than in six copies of the early
+  return, because six copies is six chances to put it back the wrong way
+  round.
+
 - **`@sigx/actors` is declared as a peer dependency — 0.9.0 could not be
   loaded at all (#254).** `dist/index.js` imports `digestSnapshot` from
   `@sigx/actors/host` to decode the per-host latency histogram in the drill-

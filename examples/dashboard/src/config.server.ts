@@ -10,20 +10,33 @@
  * this example is pointed at: three hosts on 5391–5393, ops behind
  * `demo-ops-secret`.
  */
-export { OPS_MOUNT } from './config.public';
-
 export const PORT = Number(process.env.DASHBOARD_PORT ?? 5490);
 
+/** The three hosts `pnpm --filter counter-example cluster:serve` starts. */
+const DEFAULT_HOSTS = 'http://127.0.0.1:5391,http://127.0.0.1:5392,http://127.0.0.1:5393';
+
 /**
- * Any ONE host of the cluster — it fans out to the rest for us, which is the
- * whole reason a dashboard needs one address and not a list.
+ * Candidate hosts, tried in order until one answers.
  *
- * 5392 rather than 5391, and that is not arbitrary: `cluster:serve` KILLS the
- * first host on its way past, to show the survivors re-forming and re-claiming
- * its reminder shards. Pointing at 5391 gives you a dashboard that cannot
- * connect, which reads as a broken example rather than as the demo working.
+ * A dashboard needs any ONE surviving host — the fan-out reaches the rest —
+ * and that is the invariant worth coding to, because **you cannot know which
+ * host will be alive**. `cluster:serve` kills the owner of the `cart` actor:
+ *
+ *     step(`4. Crash failover — killing the owner ${entry.hostId}`);
+ *
+ * Which host that is comes out of the placement policy, so the casualty
+ * varies from run to run — 5391 one time, 5392 the next. An earlier version
+ * of this file hardcoded a single port on the strength of one observation,
+ * which gave a one-in-three chance of aiming the example squarely at the
+ * corpse and a dashboard that read as broken (#256).
+ *
+ * `OPS_HOST` (singular) still works for the ordinary case of pointing this at
+ * one real deployment.
  */
-export const OPS_HOST = process.env.OPS_HOST ?? 'http://127.0.0.1:5392';
+export const OPS_HOSTS = (process.env.OPS_HOSTS ?? process.env.OPS_HOST ?? DEFAULT_HOSTS)
+    .split(',')
+    .map((host) => host.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
 
 /**
  * The `ops({ secret })` bearer token.

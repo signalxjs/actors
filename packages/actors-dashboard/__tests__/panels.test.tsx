@@ -44,13 +44,52 @@ const snapshotWith = (over: Partial<MonitorSnapshot>): MonitorSnapshot => ({
 const pending = (): DashboardState => new DashboardState({ source: inertSource });
 
 describe('before the first snapshot', () => {
+    const ALL = [OverviewPanel, HostsPanel, ActorsPanel, ClusterPanel, HealthPanel];
+
     it('says it is connecting rather than rendering an empty frame', () => {
         // An empty panel and a healthy cluster of zero hosts look identical.
-        for (const Panel of [OverviewPanel, HostsPanel, ActorsPanel, ClusterPanel, HealthPanel]) {
+        for (const Panel of ALL) {
             const view = mount(<Panel state={pending()} />);
             expect(view.text()).toBe('connecting…');
             view.unmount();
         }
+    });
+
+    it('shows WHY when the first poll has already failed', () => {
+        // The bug this replaces (#256): every panel returned "connecting…"
+        // BEFORE rendering the alert banner, and a failed first poll is
+        // exactly the case with no snapshot — so the commonest failure of
+        // all, "the source cannot be reached", put its reason nowhere on the
+        // page. A banner that goes quiet when it matters is worse than none,
+        // because the silence reads as "still working on it".
+        for (const Panel of ALL) {
+            const state = pending();
+            state.view.error = 'connect ECONNREFUSED 127.0.0.1:5392';
+            const view = mount(<Panel state={state} />);
+            const text = view.text();
+            expect(text).not.toBe('connecting…');
+            // The banner is present, and carries the underlying error.
+            expect(view.all('.sxad-alert').length).toBeGreaterThan(0);
+            expect(text).toContain('connect ECONNREFUSED 127.0.0.1:5392');
+            // And it says plainly that nothing has arrived, so an empty page
+            // is not mistaken for an empty cluster.
+            expect(text).toContain('no data has arrived yet');
+            // Naming the source removes the "which thing is unreachable"
+            // question a portal with several tenants would otherwise ask.
+            expect(text).toContain('http://127.0.0.1:5391');
+            view.unmount();
+        }
+    });
+
+    it('puts the banner ABOVE the message, not after it', () => {
+        // Ordering is the whole fix; asserting only presence would pass on a
+        // version that buried the reason under the placeholder.
+        const state = pending();
+        state.view.error = 'boom';
+        const view = mount(<OverviewPanel state={state} />);
+        const nodes = [...view.el.querySelectorAll('.sxad-alert, .sxad-note')];
+        expect(nodes[0]?.className).toContain('sxad-alert');
+        view.unmount();
     });
 });
 
