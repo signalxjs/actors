@@ -153,9 +153,18 @@ export class ReminderService implements ActorReminders {
             // every `reminderTickMs` on a host with no reminders at all —
             // and bump an etag no reader can distinguish from a real change.
             // (Serializing costs no more than the `save` it replaces.)
-            if (JSON.stringify(table) === before) return;
+            const json = JSON.stringify(table);
+            if (json === before) return;
             try {
-                await this.#storage.save(REMINDER_TYPE, shard, table, etag);
+                // A shard table is already JSON-native — it is stored
+                // unencoded — so the string the compare just produced IS
+                // what the store wants. Handing over the object instead
+                // would make the adapter serialize it a third time (#238).
+                if (this.#storage.saveText) {
+                    await this.#storage.saveText(REMINDER_TYPE, shard, json, etag);
+                } else {
+                    await this.#storage.save(REMINDER_TYPE, shard, table, etag);
+                }
                 return;
             } catch (error) {
                 if (!isStorageConflict(error) || attempt >= MUTATE_ATTEMPTS) throw error;

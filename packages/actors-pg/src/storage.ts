@@ -55,6 +55,37 @@ export function pgStorage(options: PgStorageOptions): ActorStorage {
     }
     const s = checkSchema(options.schema ?? 'sigx');
 
+    // The one CAS body, reached with JSON either way — from the host's own
+    // single-walk emitter via `saveText`, or from a tree `save` stringifies
+    // itself (#238). A local function rather than `this.saveText`, so the
+    // two halves stay wired together even if the storage is destructured.
+    // A `const` arrow, not a hoisted declaration: the `if (!pool) throw`
+    // above narrows `pool` for what follows it, and a function declaration
+    // could have been called before that check.
+    const put = async (
+        type: string,
+        key: string,
+        json: string,
+        expectedEtag: string | null
+    ): Promise<string> => {
+        const etag = globalThis.crypto.randomUUID();
+        const result =
+            expectedEtag === null
+                ? await pool.query(
+                      `INSERT INTO ${s}.state (type, key, etag, state)
+                       VALUES ($1, $2, $3, $4)
+                       ON CONFLICT (type, key) DO NOTHING`,
+                      [pgText(type), pgText(key), etag, json]
+                  )
+                : await pool.query(
+                      `UPDATE ${s}.state SET etag = $3, state = $4
+                       WHERE type = $1 AND key = $2 AND etag = $5`,
+                      [pgText(type), pgText(key), etag, json, expectedEtag]
+                  );
+        if ((result.rowCount ?? 0) !== 1) throw new ActorStorageConflict(type, key);
+        return etag;
+    };
+
     return {
         async load(type, key) {
             const result = await pool.query(
@@ -65,25 +96,9 @@ export function pgStorage(options: PgStorageOptions): ActorStorage {
             if (!row) return null;
             return { state: JSON.parse(row['state'] as string) as unknown, etag: row['etag'] as string };
         },
-        async save(type, key, state, expectedEtag) {
-            const etag = globalThis.crypto.randomUUID();
-            const json = JSON.stringify(state);
-            const result =
-                expectedEtag === null
-                    ? await pool.query(
-                          `INSERT INTO ${s}.state (type, key, etag, state)
-                           VALUES ($1, $2, $3, $4)
-                           ON CONFLICT (type, key) DO NOTHING`,
-                          [pgText(type), pgText(key), etag, json]
-                      )
-                    : await pool.query(
-                          `UPDATE ${s}.state SET etag = $3, state = $4
-                           WHERE type = $1 AND key = $2 AND etag = $5`,
-                          [pgText(type), pgText(key), etag, json, expectedEtag]
-                      );
-            if ((result.rowCount ?? 0) !== 1) throw new ActorStorageConflict(type, key);
-            return etag;
-        },
+        save: (type, key, state, expectedEtag) =>
+            put(type, key, JSON.stringify(state), expectedEtag),
+        saveText: put,
         async clear(type, key, expectedEtag) {
             if (expectedEtag === null) {
                 // "No record expected": success iff none exists. No write

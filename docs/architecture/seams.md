@@ -28,10 +28,12 @@ interface ActorStorage {
     load(type: string, key: string): Promise<ActorStorageRecord | null>;
     save(type: string, key: string, state: unknown, expectedEtag: string | null): Promise<string>;
     clear(type: string, key: string, expectedEtag: string | null): Promise<void>;
+    /** Optional (#238) — the same save, one walk earlier. */
+    saveText?(type: string, key: string, json: string, expectedEtag: string | null): Promise<string>;
 }
 ```
 
-Three methods, etag optimistic concurrency, no transactions.
+Three required methods, etag optimistic concurrency, no transactions.
 
 **The etag CAS is the integrity floor of the whole system.** Placement,
 directory and membership are all allowed to be briefly wrong; when they are,
@@ -46,6 +48,41 @@ Implementers: `memoryStorage` (`./host`), `fileStorage` (`./node`, dev only),
 `redisStorage`, `pgStorage`, `surrealStorage`, `durableObjectStorage`,
 `unhostedStorage` (Cloudflare's Worker half — every operation throws, because
 in-memory storage on a host that hosts nothing would be a silent lie).
+
+### `saveText` — the optional single-walk path (#238)
+
+A durable save used to walk the same state twice: the host encoded it to a
+JSON-safe tree, then the adapter ran `JSON.stringify` over that tree, because
+what a store wants is a string. The second walk measured at **+51%** on top of
+the first, per checkpoint. `saveText` lets the host emit the string in one
+pass (`stringifyWithHandlers`, `@sigx/serialize/stringify`) and hand it over.
+
+Three rules make it safe to have two doors into one write:
+
+1. **It is not a second FORMAT.** `saveText(t, k, json, etag)` must be
+   indistinguishable from `save(t, k, JSON.parse(json), etag)` — same CAS,
+   same conflict brand, same record on the next `load()`. Implement `save` in
+   terms of `saveText` so they cannot drift; the three shipped providers do.
+2. **Absent is a supported answer, and the host is correct either way.** It
+   keeps the encoded-tree path for exactly that case. `memoryStorage` stores
+   the tree by reference and `durableObjectStorage` hands a structured value
+   to the platform — for both, a string would force a parse back on load.
+   `fileStorage` declines for a different reason: its pretty-printed
+   `{ etag, state }` envelope is what makes the store `cat`-able.
+3. **A decorator must forward it, conditionally.** `decorateStorage` wrappers
+   that return a fixed three-method literal drop the fast path silently — the
+   host reverts to two walks with no error and no counter to show for it. And
+   forwarding it unconditionally is the mirror bug: it advertises a capability
+   the inner storage cannot honour.
+
+The host takes the text path only when **nothing else needs the encoded
+tree** — a boundary that also emits reuses the save's encode for its snapshot
+(#233), and reviving from text instead would fork that back into two walks.
+`#wantsSnapshotAt` is the predicate; correctness never depends on it, only
+which of two correct paths runs.
+
+Load is deliberately unchanged: `JSON.parse` + `reviveWithHandlers`, off the
+hot path. There is no revive-from-string variant and none is wanted.
 
 Plugins wrap it via `decorateStorage`; the last registered is outermost.
 

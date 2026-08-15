@@ -92,6 +92,10 @@ export async function createBenchHost(options: HostFixtureOptions): Promise<Host
  *
  * Stringify-inside-save also satisfies the seam's ownership contract
  * (#25) trivially: the record keeps no reference to the caller's tree.
+ *
+ * Left EXACTLY as it was by #238, deliberately: it is the "before" arm, and
+ * an arm that moves with the fix stops being a control. `textStorage()`
+ * below is the "after".
  */
 export function stringifyStorage(): ActorStorage {
     const records = new Map<string, { json: string; etag: string }>();
@@ -112,6 +116,59 @@ export function stringifyStorage(): ActorStorage {
             records.set(id(type, key), { json: JSON.stringify(state), etag });
             return etag;
         },
+        async clear(type, key, expectedEtag) {
+            const existing = records.get(id(type, key));
+            if (!existing && expectedEtag === null) return;
+            if ((existing?.etag ?? null) !== expectedEtag) {
+                throw new ActorStorageConflict(type, key);
+            }
+            records.delete(id(type, key));
+        }
+    };
+}
+
+/**
+ * `stringifyStorage` with the walk removed — the same store, opted into
+ * `saveText` (#238), so the host emits the JSON in ONE pass instead of
+ * building a tree this would then re-walk. Byte-identical records: it holds
+ * the same strings, reached by a different route.
+ *
+ * The pairing is the measurement. `stringify` and `text` differ in exactly
+ * one thing, so `stringify − text` IS the adapter's serialize share, and
+ * `text` against `mem` says how much of it is left. `save` still stringifies
+ * because the seam requires it to work either way — it is simply never the
+ * path the host takes here.
+ */
+export function textStorage(): ActorStorage {
+    // Keyed exactly as `stringifyStorage` keys — the two arms must differ
+    // in the walk and in nothing else.
+    const records = new Map<string, { json: string; etag: string }>();
+    let counter = 0;
+    const id = (type: string, key: string) => `${type}\u0000${key}`;
+
+    const put = async (
+        type: string,
+        key: string,
+        json: string,
+        expectedEtag: string | null
+    ): Promise<string> => {
+        const existing = records.get(id(type, key));
+        if ((existing?.etag ?? null) !== expectedEtag) {
+            throw new ActorStorageConflict(type, key);
+        }
+        const etag = String(++counter);
+        records.set(id(type, key), { json, etag });
+        return etag;
+    };
+
+    return {
+        async load(type, key) {
+            const record = records.get(id(type, key));
+            return record ? { state: JSON.parse(record.json), etag: record.etag } : null;
+        },
+        save: (type, key, state, expectedEtag) =>
+            put(type, key, JSON.stringify(state), expectedEtag),
+        saveText: put,
         async clear(type, key, expectedEtag) {
             const existing = records.get(id(type, key));
             if (!existing && expectedEtag === null) return;

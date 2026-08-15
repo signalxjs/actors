@@ -504,7 +504,34 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                             clears++;
                             storageLatency?.record(performance.now() - started);
                         }
-                    }
+                    },
+                    // Forwarded ONLY when the inner storage has it, so this
+                    // decorator neither invents the capability nor hides it
+                    // (#238). Dropping it here would be silent: the host
+                    // would fall back to the two-walk save path and nothing
+                    // would say so. A save is a save however it arrived, so
+                    // it counts into the same three counters.
+                    ...(inner.saveText
+                        ? {
+                              async saveText(
+                                  type: string,
+                                  key: string,
+                                  json: string,
+                                  expectedEtag: string | null
+                              ) {
+                                  const started = storageLatency ? performance.now() : 0;
+                                  try {
+                                      return await inner.saveText!(type, key, json, expectedEtag);
+                                  } catch (error) {
+                                      if (isStorageConflict(error)) conflicts++;
+                                      throw error;
+                                  } finally {
+                                      saves++;
+                                      storageLatency?.record(performance.now() - started);
+                                  }
+                              }
+                          }
+                        : {})
                 })
             );
 

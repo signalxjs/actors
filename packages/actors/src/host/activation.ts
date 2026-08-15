@@ -155,6 +155,17 @@ export interface ActivationHost {
     encodeState(raw: object): unknown;
     storeState(ref: ActorRef, encoded: unknown, expectedEtag: string | null): Promise<string>;
     reviveState(encoded: unknown): object;
+    /**
+     * PRESENT ONLY when the storage implements `ActorStorage.saveText`
+     * (#238): encode straight to the JSON text the store wants, in one walk,
+     * and store it — no intermediate tree is ever built.
+     *
+     * Which is exactly why `#doSave` takes it only when NOTHING else needs
+     * that tree. A boundary that also emits reuses the save's encode for its
+     * snapshot (#233); reviving from text instead would fork that back into
+     * two walks, which is the thing #233 exists to prevent.
+     */
+    saveStateText?(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
     clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
     /** Deep, detached copy through the codec vocabulary. */
     cloneState<S>(raw: S): S;
@@ -1444,16 +1455,27 @@ export class Activation {
         if (this.#faulted) throw this.#faulted;
         const version = this.#version;
         try {
-            const tree = this.#host.encodeState(toRaw(this.#state));
-            if (this.#wantsSnapshotAt(version)) {
-                // BEFORE `storeState`: storage takes ownership of the tree
-                // with no defensive clone (#25), so nothing may be built
-                // from it afterwards. Revive allocates fresh containers for
-                // every codec-produced node, so the snapshot shares nothing
-                // with the record storage now owns.
-                this.#preparedSnap = { version, snap: this.#host.reviveState(tree) };
+            const wantsSnapshot = this.#wantsSnapshotAt(version);
+            const saveText = this.#host.saveStateText;
+            if (saveText && !wantsSnapshot) {
+                // Nothing at this boundary needs the encoded tree, so never
+                // build one: one walk straight to the JSON the store wants,
+                // instead of a tree the adapter would immediately re-walk
+                // (#238). The tree branch below is what a save+emit takes.
+                this.#etag = await saveText(this.ref, toRaw(this.#state), this.#etag);
+            } else {
+                const tree = this.#host.encodeState(toRaw(this.#state));
+                if (wantsSnapshot) {
+                    // BEFORE `storeState`: storage takes ownership of the
+                    // tree with no defensive clone (#25), so nothing may be
+                    // built from it afterwards. Revive allocates fresh
+                    // containers for every codec-produced node, so the
+                    // snapshot shares nothing with the record storage now
+                    // owns.
+                    this.#preparedSnap = { version, snap: this.#host.reviveState(tree) };
+                }
+                this.#etag = await this.#host.storeState(this.ref, tree, this.#etag);
             }
-            this.#etag = await this.#host.storeState(this.ref, tree, this.#etag);
             this.#savedVersion = version;
         } catch (error) {
             if (isStorageConflict(error)) {
