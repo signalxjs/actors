@@ -330,8 +330,11 @@ class HostImpl implements Host {
                     // Byte-for-byte `JSON.stringify(encode(value))`, in one
                     // walk instead of two — which is what makes it safe to
                     // use for the ledger's no-op COMPARE as well as for the
-                    // save (#238).
-                    stringify: (value) => stringifyWithHandlers(value, this.#types) ?? 'null'
+                    // save (#238). `undefined` passes straight through to
+                    // the caller's two-walk fallback rather than being
+                    // defaulted here: a substituted value would be wrong
+                    // bytes that the compare cannot tell from real ones.
+                    stringify: (value) => stringifyWithHandlers(value, this.#types)
                 }),
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
             publish: (topic, payload, call, publisher) =>
