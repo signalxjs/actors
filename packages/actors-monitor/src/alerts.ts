@@ -37,10 +37,16 @@ export function alertLines(view: DashboardView): Alert[] {
     const lines: Alert[] = [];
 
     if (error) {
-        // The numbers below are still the last good ones. Say so, rather
-        // than letting them read as current.
+        // Two different situations, and the wrong caption for either is the
+        // same class of error this module exists to prevent. With a snapshot,
+        // the numbers below are real but STALE and must not read as current.
+        // Without one — a first poll that never landed — there is nothing
+        // below at all, and "showing the last good snapshot" would be
+        // describing a screen that does not exist (#256).
         lines.push({
-            text: `poll failed — showing the last good snapshot: ${error}`,
+            text: snapshot
+                ? `poll failed — showing the last good snapshot: ${error}`
+                : `poll failed — nothing has been read yet: ${error}`,
             tone: 'danger'
         });
     }

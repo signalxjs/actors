@@ -16,7 +16,8 @@ import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { opsProxy } from './src/ops-proxy.ts';
 import { resolveStatic } from './src/static.ts';
-import { OPS_HOST, OPS_MOUNT, OPS_SECRET, PORT } from './src/config.server.ts';
+import { OPS_HOSTS, OPS_SECRET, PORT } from './src/config.server.ts';
+import { OPS_MOUNT } from './src/config.public.ts';
 
 const MIME = {
     '.html': 'text/html',
@@ -31,7 +32,7 @@ const MIME = {
 const clientDir = join(import.meta.dirname, 'dist');
 
 const proxy = opsProxy({
-    host: OPS_HOST,
+    hosts: OPS_HOSTS,
     secret: OPS_SECRET,
     mount: OPS_MOUNT
     // isOperator: (req) => yourSessionCheck(req)   ← the line a real portal adds
@@ -64,5 +65,5 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, () => {
     console.log(`dashboard    http://localhost:${PORT}`);
-    console.log(`ops proxy    ${OPS_MOUNT}  →  ${OPS_HOST}  (bearer attached here, never in the browser)`);
+    console.log(`ops proxy    ${OPS_MOUNT}  →  ${OPS_HOSTS.join(", ")}  (bearer attached here, never in the browser)`);
 });

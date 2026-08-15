@@ -17,8 +17,8 @@
 import { component } from '@sigx/runtime-core';
 import { alertLines, hostTone, type HostView } from '@sigx/actors-monitor';
 import { count, uptime } from '@sigx/actors-monitor/format';
-import { Alerts, DataTable, Section, type Column, type Tone } from '../parts/primitives';
-import { panelState, readyWord, type PanelProps } from './shared';
+import { Awaiting, Alerts, DataTable, Section, type Column, type Tone } from '../parts/primitives';
+import { awaitingReason, panelState, readyWord, type PanelProps } from './shared';
 
 const columns: readonly Column<HostView>[] = [
     { key: 'id', header: 'host', value: (h) => h.hostId, key_: true },
@@ -60,7 +60,9 @@ function rowTone(host: HostView): Tone | null {
 export const HostsPanel = component<PanelProps>((ctx) => () => {
     const state = panelState(ctx.props);
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <p class="sxad-empty">connecting…</p>;
+    if (!snapshot) {
+        return <Awaiting alerts={alertLines(state.view)} {...awaitingReason(state)} />;
+    }
 
     const unreachable = (snapshot.cluster?.unreachable ?? []).map(
         (failure) => `${failure.hostId}  ${failure.address}  ${failure.reason} — ${failure.message}`

@@ -9,13 +9,15 @@
 import { component } from '@sigx/runtime-core';
 import { alertLines, scopeOf, shardStates } from '@sigx/actors-monitor';
 import { count, percent } from '@sigx/actors-monitor/format';
-import { Alerts, DetailList, ShardGrid, type DetailRow } from '../parts/primitives';
-import { panelState, type PanelProps } from './shared';
+import { Awaiting, Alerts, DetailList, ShardGrid, type DetailRow } from '../parts/primitives';
+import { awaitingReason, panelState, type PanelProps } from './shared';
 
 export const ClusterPanel = component<PanelProps>((ctx) => () => {
     const state = panelState(ctx.props);
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <p class="sxad-empty">connecting…</p>;
+    if (!snapshot) {
+        return <Awaiting alerts={alertLines(state.view)} {...awaitingReason(state)} />;
+    }
 
     const cluster = snapshot.cluster;
     if (!cluster) {

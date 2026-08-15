@@ -22,8 +22,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export interface OpsProxyOptions {
-    /** Origin of a host's mount, e.g. `http://127.0.0.1:5391`. */
-    host: string;
+    /**
+     * Candidate host origins, tried in order until one answers, e.g.
+     * `['http://127.0.0.1:5391', 'http://127.0.0.1:5392']`.
+     *
+     * A dashboard needs any ONE surviving host — the fan-out reaches the rest
+     * — and in a cluster demo that deliberately kills a host you cannot know
+     * in advance which one that leaves.
+     */
+    hosts: readonly string[];
     /** The `ops({ secret })` bearer token — server-side only. */
     secret: string;
     /** The path this handler answers on, e.g. `/ops`. */
@@ -50,10 +57,15 @@ function forward(upstream: Response, name: string): Record<string, string> {
 }
 
 export function opsProxy(options: OpsProxyOptions) {
-    const host = options.host.replace(/\/+$/, '');
+    const hosts = options.hosts.map((host) => host.replace(/\/+$/, ''));
+    if (hosts.length === 0) throw new Error('opsProxy needs at least one host');
     const base = (options.base ?? '/_sigx/ops').replace(/\/+$/, '');
     const mount = options.mount.replace(/\/+$/, '');
     const isOperator = options.isOperator ?? (() => true);
+    // The last host that ANSWERED, tried first next time. Without it every
+    // poll re-walks the dead hosts ahead of the live one, paying their
+    // connect timeouts once a second forever.
+    let preferred = hosts[0];
 
     return async function handle(
         request: IncomingMessage,
@@ -76,32 +88,54 @@ export function opsProxy(options: OpsProxyOptions) {
         // `httpSource` appends `/cluster` and the `?detail=1&host=…` query
         // itself, and a proxy that dropped either would turn the Cluster tab
         // into a 404 and the drill-down into an empty panel.
-        const url = `${host}${base}${target.slice(mount.length)}`;
+        const path = `${base}${target.slice(mount.length)}`;
         // The METHOD is forwarded, not assumed. `ops()` serves GET and HEAD
         // and answers 405 to anything else — a proxy that turned every
         // request into a GET would make a HEAD probe silently expensive and
         // hide the 405 a wrong verb is supposed to produce.
         const method = request.method ?? 'GET';
+        // Preferred host first, then the others — each tried only until one
+        // ANSWERS. A 401 or a 404 is an answer from a live host and is
+        // returned as-is: failing over on it would ask a second host the same
+        // question, get the same reply, and bury which host said it.
+        const order = [preferred, ...hosts.filter((host) => host !== preferred)];
+        const failures: string[] = [];
         try {
-            const upstream = await fetch(url, {
-                method,
-                headers: { authorization: `Bearer ${options.secret}` }
-            });
-            // A HEAD response has no body, by definition — reading one and
-            // writing it back would make the reply not a HEAD reply.
-            const body = method === 'HEAD' ? null : await upstream.text();
-            response.writeHead(upstream.status, {
-                'content-type': upstream.headers.get('content-type') ?? 'application/json',
-                // The numbers are read precisely because they change.
-                'cache-control': 'no-store',
-                // Pass through the two headers that CARRY the diagnosis.
-                // Flattening a 401 to a bare status is how you spend ten
-                // minutes wondering whether the proxy's secret is stale or
-                // the host is; `allow` does the same job for a 405.
-                ...forward(upstream, 'www-authenticate'),
-                ...forward(upstream, 'allow')
-            });
-            response.end(body ?? undefined);
+            for (const host of order) {
+                let upstream: Response;
+                try {
+                    upstream = await fetch(`${host}${path}`, {
+                        method,
+                        headers: { authorization: `Bearer ${options.secret}` }
+                    });
+                } catch (error) {
+                    // Transport failure — this host is not there. Try the next.
+                    failures.push(`${host}: ${(error as Error)?.message ?? String(error)}`);
+                    continue;
+                }
+                preferred = host;
+                // A HEAD response has no body, by definition — reading one and
+                // writing it back would make the reply not a HEAD reply.
+                const body = method === 'HEAD' ? null : await upstream.text();
+                response.writeHead(upstream.status, {
+                    'content-type': upstream.headers.get('content-type') ?? 'application/json',
+                    // The numbers are read precisely because they change.
+                    'cache-control': 'no-store',
+                    // Which host actually answered. In a demo that kills one
+                    // on purpose, "who am I even looking at" is the first
+                    // question, and the dashboard cannot tell you.
+                    'x-ops-host': host,
+                    // Pass through the two headers that CARRY the diagnosis.
+                    // Flattening a 401 to a bare status is how you spend ten
+                    // minutes wondering whether the proxy's secret is stale or
+                    // the host is; `allow` does the same job for a 405.
+                    ...forward(upstream, 'www-authenticate'),
+                    ...forward(upstream, 'allow')
+                });
+                response.end(body ?? undefined);
+                return;
+            }
+            throw new Error(failures.join('; '));
         } catch (error) {
             // 502 rather than 500: the dashboard renders the status text, and
             // "the cluster is not answering" is a different thing to debug
@@ -109,9 +143,12 @@ export function opsProxy(options: OpsProxyOptions) {
             response.writeHead(502, { 'content-type': 'application/json' });
             response.end(
                 JSON.stringify({
-                    error: `cannot reach ${host} — is the cluster running? (${
-                        (error as Error)?.message ?? String(error)
-                    })`
+                    // Names EVERY host tried, because "cannot reach the
+                    // cluster" is useless when the point of the list is that
+                    // any one of them would have done.
+                    error:
+                        `no host answered — is the cluster running? tried ${order.length}: ` +
+                        `${(error as Error)?.message ?? String(error)}`
                 })
             );
         }

@@ -15,8 +15,8 @@
 import { component } from '@sigx/runtime-core';
 import { alertLines, polledLabel } from '@sigx/actors-monitor';
 import { count, uptime } from '@sigx/actors-monitor/format';
-import { Alerts, DetailList, Section, type DetailRow } from '../parts/primitives';
-import {
+import { Awaiting, Alerts, DetailList, Section, type DetailRow } from '../parts/primitives';
+import { awaitingReason,
     checkLines,
     errorKindLines,
     panelState,
@@ -27,7 +27,9 @@ import {
 export const HealthPanel = component<PanelProps>((ctx) => () => {
     const state = panelState(ctx.props);
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <p class="sxad-empty">connecting…</p>;
+    if (!snapshot) {
+        return <Awaiting alerts={alertLines(state.view)} {...awaitingReason(state)} />;
+    }
 
     const health = snapshot.health;
     const metrics = snapshot.metrics;

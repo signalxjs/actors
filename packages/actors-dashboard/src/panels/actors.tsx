@@ -10,8 +10,8 @@ import { component } from '@sigx/runtime-core';
 import { alertLines, polledLabel } from '@sigx/actors-monitor';
 import { uptime } from '@sigx/actors-monitor/format';
 import type { ActivationInfo } from '@sigx/actors/host';
-import { Alerts, DataTable, Section, type Column } from '../parts/primitives';
-import { panelState, slowestMethodLines, type PanelProps } from './shared';
+import { Awaiting, Alerts, DataTable, Section, type Column } from '../parts/primitives';
+import { awaitingReason, panelState, slowestMethodLines, type PanelProps } from './shared';
 
 export const activationColumns: readonly Column<ActivationInfo>[] = [
     { key: 'type', header: 'type', value: (a) => a.type },
@@ -33,7 +33,9 @@ export const activationTone = (actor: ActivationInfo): 'warn' | null =>
 export const ActorsPanel = component<PanelProps>((ctx) => () => {
     const state = panelState(ctx.props);
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <p class="sxad-empty">connecting…</p>;
+    if (!snapshot) {
+        return <Awaiting alerts={alertLines(state.view)} {...awaitingReason(state)} />;
+    }
 
     return (
         <div>

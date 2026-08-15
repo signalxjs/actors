@@ -117,9 +117,12 @@ pnpm --filter counter-example exec sigx actors top \
 pnpm --filter dashboard-example dev
 ```
 
-**5392, not 5391**: the demo kills the first host on its way past, to show
-the survivors re-forming and reclaiming its reminder shards. Any surviving
-host is enough — the fan-out reaches the rest.
+**Any surviving host will do** — the fan-out reaches the rest. Which host
+survives is not fixed: step 4 kills *the owner of the `cart` actor* to show
+the survivors re-forming and reclaiming its reminder shards, and placement
+decides who that is, so it differs run to run. If the CLI cannot connect, try
+another port; `examples/dashboard` takes the list and uses the first that
+answers.
 
 The demo deliberately produces something worth looking at: a hot actor
 that builds queue depth, a spread of cold ones, a host left `leaving`

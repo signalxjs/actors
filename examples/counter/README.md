@@ -129,10 +129,17 @@ pnpm --filter counter-example exec sigx actors top \
     --url http://127.0.0.1:5392 --secret demo-ops-secret     # terminal 2
 ```
 
-**5392, not 5391** — the demo kills the first host on its way past (step 4)
-to show the survivors re-forming and reclaiming its reminder shards, and
-`--serve` keeps that outcome. Any surviving host is enough: the fan-out
-reaches the rest.
+**Any surviving host is enough** — the fan-out reaches the rest — but *which*
+one survives changes between runs. Step 4 kills the **owner of the `cart`
+actor**, and placement decides who that is:
+
+```js
+step(`4. Crash failover — killing the owner ${entry.hostId}`);
+```
+
+`--serve` keeps that outcome, so one of the three ports will refuse
+connections and it is not always the same one. If the CLI cannot connect, read
+the `killing the owner` line in the demo's output, or just try another port.
 
 For the same cluster in a browser, `examples/dashboard` renders it — including
 the proxy that keeps this `--secret` off the client.
