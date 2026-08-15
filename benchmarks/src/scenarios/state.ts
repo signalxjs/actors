@@ -18,6 +18,7 @@
 import {
     Growing,
     GrowingSaver,
+    GrowingSaverScalar,
     Large,
     makeTrackedActor,
     makeWatchableActor,
@@ -40,6 +41,7 @@ import {
     type Subscribers
 } from '../subscribers.ts';
 import type { ActorStorage } from '@sigx/actors/host';
+import type { AnyActorDefinition } from '@sigx/actors';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 const CONCURRENCIES = [1, 64] as const;
@@ -334,7 +336,16 @@ const dirtyGrowth: Scenario = {
  *              delta vs `mem` is the deepTrack walk plus the boundary
  *              `#snapshot()` (encode + revive) the subscriber forces.
  *
- * All four are O(state size) per turn; what the arms buy is knowing which
+ *   stringify-scalar / text-scalar
+ *              the same two storages over rows carrying NO `Date`, read
+ *              only against each other. The fused emitter's pure-JSON fast
+ *              path hands a node of plain scalars to native
+ *              `JSON.stringify` wholesale, and `pureScalars1` rejects a
+ *              `Date` — so one dated field per row disqualifies the row and
+ *              the walk emits it key by key in JS instead. These two arms
+ *              are that variable isolated, and nothing else differs.
+ *
+ * All of them are O(state size) per turn; what the arms buy is knowing which
  * term dominates — the fix for each lives in a different place (the host,
  * an upstream serialize API, the change feed).
  */
@@ -347,18 +358,37 @@ const saveGrowth: Scenario = {
         const metrics: Metric[] = [];
         // Storage constructed per arm, inside run(): a scenario re-runs
         // every round and must not accumulate state across rounds.
-        const arms: { label: string; storage?: () => ActorStorage; subscribers: number }[] = [
+        const arms: {
+            label: string;
+            storage?: () => ActorStorage;
+            subscribers: number;
+            actor?: AnyActorDefinition;
+        }[] = [
             { label: 'mem', subscribers: 0 },
             { label: 'stringify', storage: stringifyStorage, subscribers: 0 },
             { label: 'text', storage: textStorage, subscribers: 0 },
-            { label: 'mem+sub', subscribers: 1 }
+            { label: 'mem+sub', subscribers: 1 },
+            // The `-scalar` pair is the same two storages over rows carrying
+            // NO `Date`, and is read only against each other. It isolates
+            // one variable: whether the codec's vocabulary claims a value
+            // inside each row, which is what decides if the fused emitter's
+            // pure-JSON fast path can hand the row to native
+            // `JSON.stringify` or has to emit it key by key in JS.
+            {
+                label: 'stringify-scalar',
+                storage: stringifyStorage,
+                subscribers: 0,
+                actor: GrowingSaverScalar
+            },
+            { label: 'text-scalar', storage: textStorage, subscribers: 0, actor: GrowingSaverScalar }
         ];
         for (const arm of arms) {
+            const actor = arm.actor ?? GrowingSaver;
             const fixture = await createBenchHost({
-                actors: [GrowingSaver],
+                actors: [actor],
                 ...(arm.storage ? { storage: arm.storage() } : {})
             });
-            const ref = { type: GrowingSaver.type, key: 'run' };
+            const ref = { type: actor.type, key: 'run' };
             const call = benchCall();
             const step = (): Promise<unknown> =>
                 fixture.host.dispatch(ref, 'appendStepAndSave', [], call);
