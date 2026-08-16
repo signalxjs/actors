@@ -2341,8 +2341,17 @@ new arm has no "before" and cannot appear in an A/B table.
 | `jobs/checkpoint-growth` `watch=0` | 182.5 µs | 216.5 µs | **+20%** | **7/7** |
 
 Per-round deltas, dated rows: +9.2 +6.7 +4.8 +5.9 +8.7 +11.5 +7.1 %.
-Scalar rows: +1.3 +5.3 +2.8 +2.3 +2.4 +3.2 +0.8 %. Unanimous in sign both
-times, so these are called despite the scalar pair's small median.
+Scalar rows: +1.3 +5.3 +2.8 +2.3 +2.4 +3.2 +0.8 %.
+
+**These three rows are a hand sign-test, not `ab-report` verdicts**, and the
+two are not in conflict. `ab-report` compares a metric on the base side
+against the same metric on the head side; every arm in the table above
+exists only on the head side, so it has nothing to compare and correctly
+says nothing — which is also why the run as a whole reports no verdicts. The
+judgement here is the other axis: two arms measured **within one round**,
+differing in one variable, across seven rounds. Unanimous sign is what
+carries the scalar pair despite its small median; a mixed sign claims
+nothing, which is exactly what the head windows below do.
 
 ### Why — the +51% was never a walk that could be deleted
 
