@@ -50,7 +50,7 @@
         "@sigx/actors-monitor": "workspace:^"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.9.0",
+        "@sigx/actors": "^0.9.1",
         "@sigx/reactivity": "catalog:",
         "@sigx/runtime-core": "catalog:",
         "@sigx/runtime-dom": "catalog:"

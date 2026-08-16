@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-16
+
 ### Fixed
 
 - **`socketTransport().close()` during the first dial no longer leaks the

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-16
+
 ### Fixed
 
 - **The poll-failure alert no longer claims a last good snapshot when there is

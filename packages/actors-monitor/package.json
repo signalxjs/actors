@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-monitor",
-    "version": "0.9.0",
+    "version": "0.9.1",
     "description": "Renderer-free data layer for @sigx/actors dashboards — ops polling, rate derivation across resets, alerts and shard states",
     "type": "module",
     "main": "./dist/index.js",
@@ -60,7 +60,7 @@
         "vite": "^8.0.3"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.9.0",
+        "@sigx/actors": "^0.9.1",
         "@sigx/reactivity": "catalog:"
     },
     "peerDependenciesMeta": {
