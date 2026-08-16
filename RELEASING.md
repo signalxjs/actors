@@ -28,7 +28,19 @@ through CI with provenance like the rest.
 1. **Land everything first.** The tag is cut from `main`; nothing is published
    from a branch.
 
-2. **Move the versions.**
+2. **Branch, before touching a file.** Every edit below happens on the release
+   branch — `main` is protected and a direct push is rejected (#133), so a
+   bump made in the primary checkout has to be moved before it can go
+   anywhere. `pnpm wt new` cannot change your shell's directory, so the `cd`
+   is yours to do.
+
+   ```sh
+   git -C <repo>/main pull --ff-only origin main
+   pnpm wt new <n>-release-0.2.0
+   cd <repo>/branches/<n>-release-0.2.0
+   ```
+
+3. **Move the versions.**
 
    ```sh
    pnpm version:minor          # or version:patch / version:major
@@ -47,11 +59,11 @@ through CI with provenance like the rest.
    before both of them: with a real dependency the order is load-bearing, not
    cosmetic.
 
-3. **Move the changelogs.** In each package that changed, rename the
+4. **Move the changelogs.** In each package that changed, rename the
    `[Unreleased]` heading to the new version with today's date, and open a
    fresh `[Unreleased]` above it.
 
-4. **Verify locally.**
+5. **Verify locally.**
 
    ```sh
    pnpm typecheck && pnpm lint && pnpm test && pnpm build
@@ -63,15 +75,19 @@ through CI with provenance like the rest.
    a missing `files` entry, a broken `exports` map, a stale `dist/`, or a
    tarball with no LICENSE in it.
 
-5. **Land the bump through a PR, then tag the merge commit.** `main` is
-   protected — a direct push is rejected by the branch ruleset, so the bump is
-   a normal PR like any other change (#133).
+6. **Land the bump through a PR, then tag the merge commit.** It is a normal
+   PR like any other change — the branch you made in step 2.
 
    ```sh
-   pnpm wt new <n>-release-0.2.0
    git commit -am "release: v0.2.0"
+   git push -u origin <n>-release-0.2.0     # gh pr create needs it on the remote
    gh pr create --base main --title "release: v0.2.0" --reviewer @copilot
-   # …review, merge, then from an up-to-date main:
+   ```
+
+   Then, once it is reviewed and merged, tag from an up-to-date `main`:
+
+   ```sh
+   cd <repo>/main
    git pull --ff-only origin main
    git tag v0.2.0
    git push origin v0.2.0
@@ -82,11 +98,11 @@ through CI with provenance like the rest.
    `publish.js` skips versions already on the registry and would otherwise
    produce a GitHub Release with no packages behind it.
 
-6. **Watch the run.** `release.yml` re-runs lint, typecheck, build, test and
+7. **Watch the run.** `release.yml` re-runs lint, typecheck, build, test and
    `verify:pack` before it publishes anything, then publishes with provenance
    and drafts the GitHub Release.
 
-7. **Tell the docs queue.** Comment the release tag on every open docs issue
+8. **Tell the docs queue.** Comment the release tag on every open docs issue
    covering a change that shipped:
 
    ```sh
