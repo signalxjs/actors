@@ -27,15 +27,15 @@ catalog:
   # added in that release (#124). A missing named export is a hard resolution
   # failure rather than a graceful degradation, so the range says so.
   "@sigx/reactivity": ^0.15.3
-  "@sigx/runtime-core": ^0.15.0
+  "@sigx/runtime-core": ^0.15.3
   # The DOM half. Named here — rather than reached through `sigx` — because
   # `@sigx/actors-dashboard` needs the platform and its JSX intrinsics but
   # must NOT depend on the umbrella, whose first line imports
   # `@sigx/runtime-dom/platform` and so drags a renderer into anything that
   # touches it. Same single-copy reasoning as the entries around it.
-  "@sigx/runtime-dom": ^0.15.0
-  "@sigx/serialize": ^0.15.0
-  "@sigx/server": ^0.15.0
-  "@sigx/server-renderer": ^0.15.0
-  "@sigx/vite": ^0.15.0
-  "sigx": ^0.15.0
+  "@sigx/runtime-dom": ^0.15.3
+  "@sigx/serialize": ^0.15.3
+  "@sigx/server": ^0.15.3
+  "@sigx/server-renderer": ^0.15.3
+  "@sigx/vite": ^0.15.3
+  "sigx": ^0.15.3
