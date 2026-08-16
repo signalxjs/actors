@@ -2161,6 +2161,10 @@ rounds agreed in sign.
   storage encode itself or the adapter's second walk. Those are the
   remaining O(state) terms per durable save; the adapter walk's
   single-pass answer is upstream (signalxjs/core#657).
+  **Superseded — see 2026-08-15 (#238).** That answer shipped, was wired in
+  and MEASURED SLOWER (7/7 rounds), because the adapter's walk is native and
+  the single-pass one is not. The gap is still real and still unfixed; what
+  changed is that it is no longer waiting on core#657.
 
 ## 2026-08-14 · Where a delivery's CPU actually goes (#245)
 
@@ -2308,3 +2312,75 @@ measurement. Absolute throughput here means nothing next to the AKS figures.
 What transfers is the **shape**: one write syscall per subscriber per
 delivery, dominating everything the runtime does per frame. On a real NIC
 that term gets larger, not smaller.
+
+## 2026-08-15 · The single-walk save path, measured and REJECTED (#238)
+
+| | |
+|---|---|
+| Machine | Dedicated bench VM — AMD EPYC 9V74, 4 vCPU, linux/x64 |
+| Node | v24.18.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Settings | `bench.yml` dispatch, 7 rounds × 400 ms, interleaved |
+| Compared | `98cff96` (main) → `e748629` (the #238 implementation) |
+| Conditions | Quiet. **No verdicts called across 527 metrics**, and the three pre-existing arms held (`mem` 191.2 → 194.3, `stringify` 288.7 → 293.5, `mem+sub` 416.2 → 420.1) — which is what makes the within-run pairings below readable. |
+
+The 2026-08-13 section closed with the adapter's second walk as the one
+remaining O(state) term per durable save, priced at **+51%**, and said the
+answer was upstream. It arrived: signalxjs/core#663 shipped
+`stringifyWithHandlers` in `@sigx/serialize` 0.15.5 — the codec's JSON in one
+walk. #238 wired it in behind an optional `ActorStorage.saveText`.
+
+**It made the save slower, and the change was reverted.** The new arms are
+read WITHIN the head run against the arm each is meant to beat, because a
+new arm has no "before" and cannot appear in an A/B table.
+
+| pair (500-row tail) | two-walk | one-walk | delta | rounds agreeing |
+|---|---:|---:|---:|---|
+| `state/save-growth` dated rows | 293.5 µs | 315.5 µs | **+7.5%** | **7/7** |
+| `state/save-growth` scalar rows | 152.2 µs | 155.7 µs | **+2.4%** | **7/7** |
+| `jobs/checkpoint-growth` `watch=0` | 182.5 µs | 216.5 µs | **+20%** | **7/7** |
+
+Per-round deltas, dated rows: +9.2 +6.7 +4.8 +5.9 +8.7 +11.5 +7.1 %.
+Scalar rows: +1.3 +5.3 +2.8 +2.3 +2.4 +3.2 +0.8 %. Unanimous in sign both
+times, so these are called despite the scalar pair's small median.
+
+### Why — the +51% was never a walk that could be deleted
+
+**The adapter's second walk is NATIVE.** `JSON.stringify` over the encoded
+tree runs in C++; the host's `encodeWithHandlers` is the JS one. Replacing
+*JS encode + native stringify* with *one JS emitter* only wins where the
+fused walk can still reach the native serializer, and core's answer to that
+is a pure-JSON fast path: a node whose own values are all JSON-native
+scalars goes to `JSON.stringify` wholesale. `pureScalars1` **rejects a
+`Date`**.
+
+`GrowingSaver` carries `at: new Date(…)` in every row, so every row was
+disqualified and emitted key by key in JS. `stringify-scalar` /
+`text-scalar` exist to isolate exactly that: the same two storages over rows
+with the `Date` removed and nothing else changed.
+
+**Removing the `Date` halves the penalty — 7.5% → 2.4% — but does not
+reverse it.** So the fast path is real and it is not the whole story. What
+is left is granularity: the fast path fires **per node**, so 500 small rows
+means ~500 separate native calls whose results are joined in JS, against
+**one** native call over the whole tree in the two-walk version. Actor state
+is a large collection of small nodes, which is the shape this loses on.
+
+The head windows agree from the other side: at small state both pairs go
+mixed-sign (dated 3/7, scalar 1/7 — no claim), which is what fewer nodes and
+less joining should look like.
+
+### What this means
+
+- **`state/save-growth`'s `mem` / `stringify` gap is not addressable this
+  way.** It stays the remaining O(state) term per durable save, and it stays
+  unfixed — but it is no longer "waiting on upstream", it is waiting on a
+  fused emitter that batches runs of pure-scalar nodes into one native call.
+  Filed upstream with these numbers.
+- **Do not re-attempt this from the issue text alone.** #238 reads like a
+  +51% prize; it is not one. The `text*` arms and the `saveText` seam live on
+  in the `238-storage-save-text` branch, so a re-measurement after an
+  upstream change is a rebase, not a rewrite.
+- **The measurement method is the reusable part**: a new arm has no "before",
+  so pair it against its control inside one run and sign-test the rounds. The
+  A/B table cannot judge an arm that only exists on one side.
