@@ -499,9 +499,12 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `main.tsx`'s real import graph and fails if it can reach the secret,
   `process.env` or the host origin — because a guarantee resting on an
   optimiser staying clever breaks quietly. Three things that bite:
-  `cluster:serve` KILLS host 5391 on its way past (so the default target is
-  5392), a proxy that drops the query string breaks every drill-down silently,
-  and `startsWith('/ops')` alone would also proxy `/opsummary`. Not published.
+  `cluster:serve` kills the OWNER of the `cart` actor — placement decides who
+  that is, so the casualty differs run to run and any hardcoded port is a
+  one-in-three chance of aiming at the corpse (#256), which is why the proxy
+  takes a host LIST and fails over on transport errors only; a proxy that
+  drops the query string breaks every drill-down silently; and
+  `startsWith('/ops')` alone would also proxy `/opsummary`. Not published.
 - `perf/aks` → `sigx-perf-aks` — the production-shaped Kubernetes
   deployment test, and the reason `perf/` exists as a tree of its own: it
   is 4k lines of rig around a 300-line app, which under `examples/` read

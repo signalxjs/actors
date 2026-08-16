@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The poll-failure alert no longer claims a last good snapshot when there is
+  none (#256).** With a snapshot the numbers below the banner are real but
+  stale and the caption says so; with none — a first poll that never landed —
+  it now reads `poll failed — nothing has been read yet`, because the previous
+  wording described a screen that does not exist. Both renderers inherit it.
+
 ### Added
 
 - **`@sigx/actors-monitor` — the renderer-free data layer, extracted from

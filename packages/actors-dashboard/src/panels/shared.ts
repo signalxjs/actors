@@ -46,6 +46,41 @@ export interface PanelProps {
  */
 export const panelState = (props: PanelProps): DashboardState => toRaw(props.state);
 
+/**
+ * Has a poll come back yet, and if not, why not?
+ *
+ * Every panel needs this because every panel has nothing to draw until the
+ * first snapshot lands — and the shape that reads naturally,
+ *
+ *     if (!snapshot) return <p>connecting…</p>;
+ *
+ * is a trap: it returns BEFORE the alert banner, and a failed first poll is
+ * exactly the case where there is no snapshot. So the one failure a new user
+ * is most likely to hit — the source cannot be reached at all — rendered
+ * "connecting…" forever with the reason demoted to small text in the corner
+ * (#256). A banner that goes quiet precisely when it matters is worse than no
+ * banner, because the silence reads as "still working on it".
+ *
+ * Callers guard on `state.view.snapshot` themselves and pass this into
+ * `<Awaiting>`, which renders the banner above the message. That keeps the
+ * narrowing TypeScript already does — no `!` on the snapshot afterwards —
+ * while putting the ordering somewhere it cannot be got wrong per panel.
+ */
+export function awaitingReason(state: DashboardState): { message: string; failed: boolean } {
+    if (!state.view.error) return { message: 'connecting…', failed: false };
+    // States the OUTCOME — nothing arrived — and not a cause. `httpSource`
+    // fails for reasons that are not reachability at all: a 401 means the
+    // host answered perfectly and rejected the secret, a 404 that it serves
+    // no ops endpoint. "Could not reach" would be false for both, and
+    // sending someone to check the network over a wrong bearer token is the
+    // same wasted ten minutes that endpoint's own error text exists to
+    // prevent. The banner immediately above carries the real reason.
+    return {
+        message: `no data yet — the first poll of ${state.source.label} failed`,
+        failed: true
+    };
+}
+
 /** Readiness checks, one line each — `FAIL` first so it reads at a glance. */
 export function checkLines(health: HealthReport | HealthStatus | null): string[] {
     if (!health) return [];

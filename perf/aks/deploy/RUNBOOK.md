@@ -582,9 +582,13 @@ Pass/fail, and what to record:
   sends almost nothing. It reads ~0 however much a host is holding. The
   0 in every recorded run therefore says nothing about whether hosts
   outran clients; it says a subscriber's outbox stayed empty, which it
-  always will. Confirming #182 needs host-side instrumentation that does
-  not exist yet (nothing in `socketStats()` or `@sigx/actors-ws` reads
-  `bufferedAmount`). Scenario (r) measures the CONSEQUENCES instead.
+  always will.
+  **Read `peak_host_buffered_bytes` instead (#252).** The host-side gauge
+  exists now: `socketStats()` sums each session's own send-buffer depth,
+  which `@sigx/actors-ws/node` supplies from `ws`'s `bufferedAmount`. On the
+  2026-08-15 run it read **367 MB** under a 10% slow-consumer fraction while
+  the client field read 0 — which is #182 answered rather than dodged (#258).
+  `null` means no host could report one, and is NOT zero.
 - **`deliveriesPerPublish` is a coalescing ratio, not a constant.**
   `ws-loadgen.mjs` sends no `w`, so every subscription it opens runs at the
   runtime's default 50 ms watch throttle: a subscriber receives at most ~20

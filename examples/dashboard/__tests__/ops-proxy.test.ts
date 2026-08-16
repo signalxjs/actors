@@ -38,6 +38,7 @@ async function call(
     url: string,
     options: {
         method?: string;
+        hosts?: string[];
         upstream?: (input: string, init?: RequestInit) => Promise<Response>;
         isOperator?: () => boolean;
     } = {}
@@ -58,7 +59,7 @@ async function call(
     globalThis.fetch = fetchStub as unknown as typeof fetch;
 
     const handle = opsProxy({
-        host: 'http://127.0.0.1:5392',
+        hosts: options.hosts ?? ['http://127.0.0.1:5392'],
         secret: SECRET,
         mount: '/ops',
         isOperator: options.isOperator
@@ -188,5 +189,68 @@ describe('opsProxy', () => {
         const { written } = await call('/ops');
         expect('www-authenticate' in written.headers).toBe(false);
         expect('allow' in written.headers).toBe(false);
+    });
+});
+
+describe('opsProxy failover', () => {
+    const THREE = ['http://a', 'http://b', 'http://c'];
+    /** Refuse connections to `dead`; answer from anything else. */
+    const upstreamWhere = (dead: string[]) => async (input: string) => {
+        if (dead.some((host) => input.startsWith(host))) throw new Error('ECONNREFUSED');
+        return new Response('{"v":1}', { status: 200 });
+    };
+
+    it('skips a dead host and uses the next that answers', async () => {
+        // The whole point: `cluster:serve` kills the OWNER of an actor, so
+        // which host survives varies per run. Hardcoding one is a coin flip.
+        const { written, fetches } = await call('/ops', {
+            hosts: THREE,
+            upstream: upstreamWhere(['http://a'])
+        });
+        expect(written.status).toBe(200);
+        expect(fetches.map((f) => f.url)).toEqual([
+            'http://a/_sigx/ops',
+            'http://b/_sigx/ops'
+        ]);
+    });
+
+    it('names the host that answered', async () => {
+        // "Which host am I even looking at" is the first question in a demo
+        // that kills one on purpose, and the dashboard cannot tell you.
+        const { written } = await call('/ops', {
+            hosts: THREE,
+            upstream: upstreamWhere(['http://a'])
+        });
+        expect(written.headers['x-ops-host']).toBe('http://b');
+    });
+
+    it('does NOT fail over on a real answer — a 401 is the same from every host', async () => {
+        // Asking a second host the same question gets the same reply and
+        // buries which one said it.
+        const { written, fetches } = await call('/ops', {
+            hosts: THREE,
+            upstream: async () => new Response('{}', { status: 401 })
+        });
+        expect(written.status).toBe(401);
+        expect(fetches).toHaveLength(1);
+    });
+
+    it('502s only when every host refuses, and says how many it tried', async () => {
+        const { written, fetches } = await call('/ops', {
+            hosts: THREE,
+            upstream: upstreamWhere(THREE)
+        });
+        expect(written.status).toBe(502);
+        expect(fetches).toHaveLength(3);
+        expect(written.body).toContain('tried 3');
+        expect(written.body).toContain('is the cluster running?');
+    });
+
+    it('still forwards the sub-path and query to whichever host answers', async () => {
+        const { fetches } = await call('/ops/cluster?detail=1&host=s.abc', {
+            hosts: THREE,
+            upstream: upstreamWhere(['http://a'])
+        });
+        expect(fetches.at(-1)?.url).toBe('http://b/_sigx/ops/cluster?detail=1&host=s.abc');
     });
 });

@@ -10,9 +10,9 @@ import { component } from '@sigx/runtime-core';
 import { alertLines, hostTone, type HostView } from '@sigx/actors-monitor';
 import { count, durationMs, uptime } from '@sigx/actors-monitor/format';
 import { digestSnapshot } from '@sigx/actors/host';
-import { Alerts, DataTable, DetailList, Section, type DetailRow } from '../parts/primitives';
+import { Awaiting, Alerts, DataTable, DetailList, Section, type DetailRow } from '../parts/primitives';
 import { activationColumns, activationTone } from './actors';
-import {
+import { awaitingReason,
     callsTone,
     callsValue,
     checkLines,
@@ -25,7 +25,9 @@ import {
 export const HostPanel = component<PanelProps & { hostId: string }>((ctx) => () => {
     const state = panelState(ctx.props);
     const snapshot = state.view.snapshot;
-    if (!snapshot) return <p class="sxad-empty">connecting…</p>;
+    if (!snapshot) {
+        return <Awaiting alerts={alertLines(state.view)} {...awaitingReason(state)} />;
+    }
 
     const host = snapshot.hosts.find((candidate) => candidate.hostId === ctx.props.hostId);
     if (!host) {
