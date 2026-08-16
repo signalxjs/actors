@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-16
+
 ### Changed
 
 - **The data layer moved to `@sigx/actors-monitor` (#239).** `httpSource`, the

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-16
+
 ### Added
 
 - **A live subscription may ask to be served more slowly** (#247).
