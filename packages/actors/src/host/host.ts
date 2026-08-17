@@ -7,6 +7,11 @@ import {
     reviveWithHandlers,
     type TypeHandler
 } from '@sigx/serialize';
+// The opt-in subpath, not the root entry: `@sigx/serialize` is budgeted at
+// 1 KB because `@sigx/server/client` bundles it, so the single-walk emitter
+// ships separately (signalxjs/core#663). Host-side only — nothing here
+// reaches a client bundle.
+import { stringifyWithHandlers } from '@sigx/serialize/stringify';
 import { mergeCallBag } from '../call-context-bag';
 import { isActorDefinition } from '../define';
 import { hasAuthorization, serverAppConfigured } from '../guards';
@@ -291,6 +296,26 @@ class HostImpl implements Host {
             storeState: (ref, encoded, expectedEtag) =>
                 this.#storage.save(ref.type, ref.key, encoded, expectedEtag),
             reviveState: (encoded) => reviveWithHandlers(encoded, this.#types) as object,
+            // Present only if the storage takes pre-serialized JSON (#238).
+            // Read once, here: `options.storage` has already been through
+            // every `decorateStorage` plugin by the time it reaches us, so
+            // the capability is settled — and a decorator that forgets to
+            // forward `saveText` simply leaves this off, which costs the
+            // extra walk and nothing else.
+            ...(this.#storage.saveText
+                ? {
+                      saveStateText: (ref: ActorRef, raw: object, expectedEtag: string | null) => {
+                          const json = stringifyWithHandlers(raw, this.#types);
+                          // Unreachable for an object root — `undefined`
+                          // comes back only for a top-level symbol or
+                          // function — but falling back beats writing the
+                          // string "undefined" into someone's database.
+                          return json === undefined
+                              ? host.storeState(ref, host.encodeState(raw), expectedEtag)
+                              : this.#storage.saveText!(ref.type, ref.key, json, expectedEtag);
+                      }
+                  }
+                : {}),
             clearStoredState: (ref, expectedEtag) =>
                 this.#storage.clear(ref.type, ref.key, expectedEtag),
             cloneState: <S,>(raw: S): S =>
@@ -301,7 +326,15 @@ class HostImpl implements Host {
             tasks: (ref) =>
                 taskLedger(this.#storage, actorId(ref), {
                     encode: (value) => encodeWithHandlers(value, this.#types),
-                    revive: (value) => reviveWithHandlers(value, this.#types)
+                    revive: (value) => reviveWithHandlers(value, this.#types),
+                    // Byte-for-byte `JSON.stringify(encode(value))`, in one
+                    // walk instead of two — which is what makes it safe to
+                    // use for the ledger's no-op COMPARE as well as for the
+                    // save (#238). `undefined` passes straight through to
+                    // the caller's two-walk fallback rather than being
+                    // defaulted here: a substituted value would be wrong
+                    // bytes that the compare cannot tell from real ones.
+                    stringify: (value) => stringifyWithHandlers(value, this.#types)
                 }),
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
             publish: (topic, payload, call, publisher) =>

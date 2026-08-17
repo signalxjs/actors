@@ -6,6 +6,10 @@
  * must not mutate it afterwards (see `ActorStorage`). The host always
  * passes a codec-fresh `encodeWithHandlers` tree, so cloning it again here
  * was pure duplication (#25) — measured at ~14.5% of the `state/*` profile.
+ *
+ * No `saveText`, deliberately (#238): this is the adapter that genuinely
+ * wants the tree. Taking a string would mean parsing it back on every load
+ * — paying a walk to save one, on the one backend that never needed either.
  */
 import { ActorStorageConflict } from '../errors';
 import type { ActorStorage, ActorStorageRecord } from '../types';

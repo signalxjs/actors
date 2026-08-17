@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`pgStorage` implements `ActorStorage.saveText`** (#238), so a durable
+  save no longer walks the same state twice. The host emits the record's JSON
+  in one pass and it lands in the `state` `text` column directly, instead of
+  the host building a tree that `JSON.stringify` here immediately re-walked —
+  measured at +51% on top of the host's own encode. `save` is now defined in
+  terms of the same CAS body, so the two entry points cannot drift. No schema
+  change, no wire change, and a record written either way is byte-identical.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

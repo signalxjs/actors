@@ -34,7 +34,15 @@ catalog:
   # `@sigx/runtime-dom/platform` and so drags a renderer into anything that
   # touches it. Same single-copy reasoning as the entries around it.
   "@sigx/runtime-dom": ^0.15.0
-  "@sigx/serialize": ^0.15.0
+  # 0.15.6 is the floor, not 0.15.0: the save path imports
+  # `stringifyWithHandlers` from the `@sigx/serialize/stringify` SUBPATH
+  # (added in 0.15.5 by signalxjs/core#663 — a subpath missing from the
+  # exports map is a hard resolution failure rather than a graceful
+  # degradation), and 0.15.6 (core#666) is where its emitter batches runs of
+  # small rows into one native call. On 0.15.5 this wiring measured SLOWER
+  # than the two-walk pair it replaces — the floor names the version the
+  # feature is true on (#238, #265).
+  "@sigx/serialize": ^0.15.6
   "@sigx/server": ^0.15.0
   "@sigx/server-renderer": ^0.15.0
   "@sigx/vite": ^0.15.0

@@ -73,23 +73,33 @@ export function redisStorage(options: RedisStorageOptions): ActorStorage {
     base.defineCommand('sigxStClear', { numberOfKeys: 1, lua: CLEAR_CAS });
     const client = base as RedisClient & StorageCommands;
 
+    // The one CAS call, reached with JSON either way — from the host's own
+    // single-walk emitter via `saveText`, or from a tree `save` stringifies
+    // itself (#238). The Lua script always wanted a string; only the walk
+    // that produced it changes. A local function rather than `this.saveText`,
+    // so the two halves stay wired together even if the storage is
+    // destructured.
+    async function put(
+        type: string,
+        key: string,
+        json: string,
+        expectedEtag: string | null
+    ): Promise<string> {
+        const etag = globalThis.crypto.randomUUID();
+        const ok = await client.sigxStSave(stKey(type, key), expectedEtag ?? '', etag, json);
+        if (ok !== 1) throw new ActorStorageConflict(type, key);
+        return etag;
+    }
+
     return {
         async load(type, key) {
             const [etag, state] = await client.hmget(stKey(type, key), 'e', 's');
             if (etag === null || state === null) return null;
             return { state: JSON.parse(state) as unknown, etag };
         },
-        async save(type, key, state, expectedEtag) {
-            const etag = globalThis.crypto.randomUUID();
-            const ok = await client.sigxStSave(
-                stKey(type, key),
-                expectedEtag ?? '',
-                etag,
-                JSON.stringify(state)
-            );
-            if (ok !== 1) throw new ActorStorageConflict(type, key);
-            return etag;
-        },
+        save: (type, key, state, expectedEtag) =>
+            put(type, key, JSON.stringify(state), expectedEtag),
+        saveText: put,
         async clear(type, key, expectedEtag) {
             const ok = await client.sigxStClear(stKey(type, key), expectedEtag ?? '');
             if (ok !== 1) throw new ActorStorageConflict(type, key);

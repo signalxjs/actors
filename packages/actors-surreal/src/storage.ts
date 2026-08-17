@@ -54,6 +54,28 @@ export function surrealStorage(options: SurrealStorageOptions): ActorStorage {
     const t = tablesFor(options.prefix);
     const rid = (type: string, key: string): RecordId => new RecordId(t.state, [type, key]);
 
+    // The one CAS body, reached with JSON either way — from the host's own
+    // single-walk emitter via `saveText`, or from a tree `save` stringifies
+    // itself (#238). State is stored as a JSON STRING here by design (see
+    // the header), so `saveText` hands the column exactly what it wanted,
+    // one walk earlier. A local function rather than `this.saveText`, so the
+    // two halves stay wired together even if the storage is destructured.
+    async function put(
+        type: string,
+        key: string,
+        s: string,
+        expectedEtag: string | null
+    ): Promise<string> {
+        const etag = globalThis.crypto.randomUUID();
+        const id = rid(type, key);
+        const [written] =
+            expectedEtag === null
+                ? await db.query<[boolean]>(CREATE, { id, e: etag, s })
+                : await db.query<[boolean]>(CAS, { id, e: etag, s, x: expectedEtag });
+        if (written !== true) throw new ActorStorageConflict(type, key);
+        return etag;
+    }
+
     return {
         async load(type, key): Promise<ActorStorageRecord | null> {
             const [row] = await db.query<[{ e: string; s: string } | null]>(LOAD, {
@@ -62,17 +84,9 @@ export function surrealStorage(options: SurrealStorageOptions): ActorStorage {
             return row ? { state: JSON.parse(row.s) as unknown, etag: row.e } : null;
         },
 
-        async save(type, key, state, expectedEtag): Promise<string> {
-            const etag = globalThis.crypto.randomUUID();
-            const s = JSON.stringify(state);
-            const id = rid(type, key);
-            const [written] =
-                expectedEtag === null
-                    ? await db.query<[boolean]>(CREATE, { id, e: etag, s })
-                    : await db.query<[boolean]>(CAS, { id, e: etag, s, x: expectedEtag });
-            if (written !== true) throw new ActorStorageConflict(type, key);
-            return etag;
-        },
+        save: (type, key, state, expectedEtag) =>
+            put(type, key, JSON.stringify(state), expectedEtag),
+        saveText: put,
 
         async clear(type, key, expectedEtag): Promise<void> {
             const id = rid(type, key);

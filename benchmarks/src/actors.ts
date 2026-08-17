@@ -191,6 +191,11 @@ export interface GrowingState {
     steps: { id: number; label: string; output: string; at: Date }[];
 }
 
+/** `GrowingState` minus the one field the codec has a vocabulary for. */
+export interface ScalarGrowingState {
+    steps: { id: number; label: string; output: string }[];
+}
+
 /**
  * The shape #124 was reported against: a job actor whose state accumulates
  * one step's output per turn, so the graph grows monotonically through a
@@ -249,6 +254,44 @@ export const GrowingSaver = defineActor({
                 label: `step-${id}`,
                 output: `output of step ${id}`,
                 at: new Date(1_700_000_000_000 + id)
+            });
+            await ctx.save();
+            return id;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            yield* ctx.changes({ initial: true });
+        }
+    })
+});
+
+/**
+ * `GrowingSaver` with the `Date` removed, and NOTHING else — the one
+ * variable is whether the codec's vocabulary claims a value inside each row.
+ *
+ * It exists because that single field decides which of two very different
+ * serializers runs. `@sigx/serialize/stringify`'s pure-JSON fast path hands
+ * a node whose own values are all JSON-native scalars to native
+ * `JSON.stringify` wholesale; `pureScalars1` rejects a `Date`, so ONE dated
+ * field per row disqualifies the whole row and the fused walk emits it key
+ * by key in JS instead. Core's own note on that path is that it "is the
+ * difference between losing ~10% to the two-walk version and beating it",
+ * so the two fixtures should land on opposite sides of it.
+ *
+ * Paired with `GrowingSaver` in `state/save-growth`, read within one run.
+ */
+export const GrowingSaverScalar = defineActor({
+    type: 'BenchGrowingSaverScalar',
+    allowAnonymous: true,
+    state: (): ScalarGrowingState => ({ steps: [] }),
+    methods: (ctx) => ({
+        async appendStepAndSave() {
+            const id = ctx.state.steps.length;
+            ctx.state.steps.push({
+                id,
+                label: `step-${id}`,
+                output: `output of step ${id}`
             });
             await ctx.save();
             return id;

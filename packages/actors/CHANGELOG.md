@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A durable save costs one walk, not two** (#238, #265). `ActorStorage`
+  gains an optional `saveText(type, key, json, expectedEtag)`, and the host
+  emits the record's JSON directly through `stringifyWithHandlers` from
+  `@sigx/serialize/stringify` instead of encoding a tree the adapter then
+  re-walks with `JSON.stringify`.
+
+  That second walk was not incidental — it was every real adapter's, because
+  what a store wants is a string, and it measured at **+51%** on top of the
+  host's own encode (`state/save-growth`, #227). The first wiring (#238)
+  measured as a **regression** and was parked: `@sigx/serialize` 0.15.5's
+  fused emitter reached the native serializer per NODE, and actor state is a
+  large collection of small rows (signalxjs/core#666). Core v0.15.6 batches
+  runs of eligible rows into one native call, and the same arms re-measured
+  on the bench VM read **−37.7%** (dated rows, 292.1 → 182.9 µs), **−44.4%**
+  (scalar rows) and **−39.8%** (`jobs/checkpoint-growth`) against the
+  two-walk pair, 7/7 rounds each — a one-walk save now undercuts even
+  `memoryStorage`'s store-the-tree-by-reference turn. Needs
+  `@sigx/serialize` ≥ 0.15.6; the catalog pins `^0.15.6`.
+
+  **Implementing `saveText` is a promise of equivalence, not just validity**:
+  it must be indistinguishable from `save(type, key, JSON.parse(json), etag)`
+  — same CAS, same `ActorStorageConflict` brand, same record on the next
+  `load()`. `pgStorage`, `redisStorage` and `surrealStorage` implement it and
+  define `save` in terms of it, so the two cannot drift.
+
+  **Omitting it is a supported answer and costs only the old path.**
+  `memoryStorage` stores the tree by reference and `durableObjectStorage`
+  hands a structured value to the platform; for both, a string would force a
+  parse back on load. `fileStorage` also declines — its record is a
+  pretty-printed `{ etag, state }` envelope, and splicing a pre-made string
+  into that would put the whole state on one line, which is the one thing a
+  `cat`-able dev store exists for.
+
+  A **storage decorator must forward it** (`decorateStorage`), conditionally,
+  so an inner storage without it does not appear to have it. Returning a
+  fixed three-method literal silently drops the fast path: correct, quietly
+  slower, and nothing says so. The built-in `metrics()` decorator forwards it
+  and counts a save made through it identically.
+
+  Two reserved records take the same path. The **task ledger** was the worst
+  case in the repo — `JSON.stringify(encode(ledger))` for its no-op
+  before-image, the same pair again for the after-image, then the adapter's
+  own: five walks per mutation, now two. The **reminder shard table** is
+  already JSON-native, so it simply reuses the string its dirty-compare just
+  produced: three walks, now two.
+
+  Load is unchanged — `JSON.parse` + `reviveWithHandlers`, off the hot path.
+
+### Changed
+
+- **`@sigx/serialize` peer floor is now `^0.15.6`** (#238, #265), up from
+  `^0.15.0`. The save path imports `stringifyWithHandlers` from the
+  `@sigx/serialize/stringify` subpath (added in 0.15.5 — a subpath absent
+  from the exports map is a hard resolution failure rather than a graceful
+  degradation), and 0.15.6 is where its emitter batches runs of small rows
+  into one native call — on 0.15.5 this wiring measured *slower* than the
+  two-walk pair it replaces (signalxjs/core#666). The floor names the version
+  the feature is true on, same reasoning as the `@sigx/reactivity` floor.
+
 ## [0.9.1] - 2026-08-16
 
 ### Added

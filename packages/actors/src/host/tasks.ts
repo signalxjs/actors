@@ -51,11 +51,21 @@ export interface TaskLedgerApi {
 const MUTATE_ATTEMPTS = 3;
 
 /** The ledger over one actor's reserved record. `codec` is the host's
- *  state codec, so `input` survives the same vocabulary state does. */
+ *  state codec, so `input` survives the same vocabulary state does.
+ *
+ *  `codec.stringify` is optional and is `JSON.stringify(encode(value))` in
+ *  ONE walk (#238). It collapses the walks a mutation costs from five —
+ *  encode + stringify for the before-image, encode + stringify for the
+ *  after, and the adapter's own — down to two, because the same string
+ *  serves both the no-op compare and (via `saveText`) the write. */
 export function taskLedger(
     storage: ActorStorage,
     actorId: string,
-    codec: { encode(value: unknown): unknown; revive(value: unknown): unknown }
+    codec: {
+        encode(value: unknown): unknown;
+        revive(value: unknown): unknown;
+        stringify?(value: unknown): string | undefined;
+    }
 ): TaskLedgerApi {
     let chain: Promise<unknown> = Promise.resolve();
 
@@ -67,20 +77,46 @@ export function taskLedger(
         };
     }
 
+    // One walk to the JSON when the host supplied the fused emitter, two
+    // otherwise. Identical bytes either way — that equality is the contract
+    // `stringifyWithHandlers` is held to — so the compare below means the
+    // same thing on both paths.
+    //
+    // An `undefined` from the fused emitter falls through to the pair rather
+    // than to a substituted default: it is unreachable for a ledger (always
+    // an object; only a top-level symbol or function returns `undefined`),
+    // and inventing bytes would be worse than unreachable code — the no-op
+    // compare cannot tell a stand-in value from a real one, so a wrong
+    // string here silently turns a real edit into a skipped write.
+    const toJson = (value: unknown): string =>
+        codec.stringify?.(value) ?? JSON.stringify(codec.encode(value));
+
     async function mutateNow(edit: (ledger: TaskLedger) => void): Promise<TaskLedger> {
         for (let attempt = 1; ; attempt++) {
             const { ledger, etag } = await load();
-            const before = JSON.stringify(codec.encode(ledger));
+            const before = toJson(ledger);
             edit(ledger);
-            const encoded = codec.encode(ledger);
+            // The after-image: when the adapter cannot take text, what
+            // `storage.save` needs is the encoded TREE — so produce it once
+            // and stringify that, rather than a second encode hidden inside
+            // `toJson` and a third for the save. Byte equality between the
+            // fused emitter and the pair is the contract `toJson`'s header
+            // cites, so `before` and `json` still compare like for like.
+            const encoded = storage.saveText ? undefined : codec.encode(ledger);
+            const json = storage.saveText ? toJson(ledger) : JSON.stringify(encoded);
             // A no-op edit must not write (nor bump the etag).
-            if (JSON.stringify(encoded) === before) return ledger;
+            if (json === before) return ledger;
             try {
                 if (Object.keys(ledger).length === 0) {
                     // An empty ledger is a DELETED record, not `{}` — the
                     // storage stays free of one tombstone per actor that
                     // ever ran a task.
                     if (etag !== null) await storage.clear(TASKS_TYPE, actorId, etag);
+                } else if (storage.saveText) {
+                    // The compare already produced exactly what the store
+                    // wants; handing over the tree instead would make the
+                    // adapter walk it a third time.
+                    await storage.saveText(TASKS_TYPE, actorId, json, etag);
                 } else {
                     await storage.save(TASKS_TYPE, actorId, encoded, etag);
                 }

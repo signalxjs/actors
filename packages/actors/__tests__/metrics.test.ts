@@ -202,6 +202,55 @@ describe('metrics()', () => {
         }
     });
 
+    it('forwards saveText, and counts a save made through it (#238)', async () => {
+        // The decorator returns a fresh object literal, so anything it does
+        // not explicitly forward is DROPPED. Dropping `saveText` would be
+        // silent: the host would just revert to encoding a tree the adapter
+        // re-walks, with no error and no counter to show for it. So the
+        // guarantee is two-part — the capability survives the wrapper, and
+        // a save that arrives through it still counts as a save.
+        const m = metrics();
+        const inner = memoryStorage();
+        let textSaves = 0;
+        const capable = {
+            load: inner.load.bind(inner),
+            clear: inner.clear.bind(inner),
+            save: inner.save.bind(inner),
+            saveText: async (type: string, key: string, json: string, etag: string | null) => {
+                textSaves++;
+                return inner.save(type, key, JSON.parse(json), etag);
+            }
+        };
+        const app = defineActorApp({ actors: [Counter], storage: capable, defaults: quiet }).use(m);
+        const host = await app.start();
+        try {
+            await host.actor(Counter, 'a').persist();
+            expect(textSaves).toBe(1);
+            expect(m.snapshot().storage.saves).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('does not invent saveText on a storage that lacks it (#238)', async () => {
+        // The mirror image: a conditional forward that forgot its condition
+        // would advertise a capability the inner storage cannot honour, and
+        // the host would call straight through into `undefined`.
+        const m = metrics();
+        const app = defineActorApp({
+            actors: [Counter],
+            storage: memoryStorage(),
+            defaults: quiet
+        }).use(m);
+        const host = await app.start();
+        try {
+            await host.actor(Counter, 'a').persist();
+            expect(m.snapshot().storage.saves).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+
     it('reset() clears counters and drops stale types', async () => {
         const m = metrics();
         const { app, host } = await appWith(m);
