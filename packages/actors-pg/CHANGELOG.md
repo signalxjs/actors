@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-17
+
 ### Added
 
 - **`pgStorage` implements `ActorStorage.saveText`** (#238), so a durable

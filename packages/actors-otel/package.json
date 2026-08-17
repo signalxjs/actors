@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-otel",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "description": "Observability exporters for @sigx/actors — Prometheus text exposition, OpenTelemetry traces and a metrics bridge",
     "type": "module",
     "main": "./dist/index.js",
@@ -67,7 +67,7 @@
     },
     "peerDependencies": {
         "@opentelemetry/api": ">=1.9",
-        "@sigx/actors": "^0.9.1"
+        "@sigx/actors": "^0.9.2"
     },
     "peerDependenciesMeta": {
         "@opentelemetry/api": {
