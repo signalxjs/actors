@@ -2496,3 +2496,55 @@ less joining should look like.
 - **The measurement method is the reusable part**: a new arm has no "before",
   so pair it against its control inside one run and sign-test the rounds. The
   A/B table cannot judge an arm that only exists on one side.
+
+## 2026-08-17 · The single-walk save path, re-measured and ACCEPTED (#265)
+
+| | |
+|---|---|
+| Machine | Dedicated bench VM — AMD EPYC 9V74, 4 vCPU, linux/x64 |
+| Node | v24.18.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Settings | `bench.yml` dispatch, 7 rounds × 400 ms, interleaved |
+| Compared | `73a2cbf` (main) → `00f7e06` (`266-save-text-v2` = `e748629` rebased onto main, `@sigx/serialize` catalog `^0.15.6`) |
+| Conditions | Quiet. No `improved`/`regressed` verdicts across the shared metrics, and the three pre-existing arms held (`mem` 193.9 → 194.0, `stringify` 291.5 → 292.1, `mem+sub` 421.9 → 417.9) — same readability condition as the 2026-08-15 run. |
+
+The section above ended with the gap "waiting on a fused emitter that batches
+runs of pure-scalar nodes into one native call". It shipped:
+signalxjs/core#667 (`@sigx/serialize` **0.15.6**, tracked as core#666) makes
+the pure-JSON fast path fire per RUN — consecutive eligible rows go to the
+native serializer in one call, and a row whose only codec hit is a built-in
+scalar-payload leaf (`Date`, `BigInt`, `URL`, explicit `undefined`) joins the
+run via a shallow encoded copy instead of disqualifying its node.
+
+**Same branch, same arms, same hand sign-test as the 2026-08-15 section —
+opposite sign, unanimously:**
+
+| pair (500-row tail) | two-walk | one-walk | delta | rounds agreeing |
+|---|---:|---:|---:|---|
+| `state/save-growth` dated rows | 292.1 µs | 182.9 µs | **−37.7%** | **7/7** |
+| `state/save-growth` scalar rows | 152.7 µs | 90.2 µs | **−44.4%** | **7/7** |
+| `jobs/checkpoint-growth` `watch=0` | 181.9 µs | 113.1 µs | **−39.8%** | **7/7** |
+
+Per-round deltas, dated rows: −37.8 −39.7 −37.5 −37.7 −35.4 −35.6 −37.9 %.
+Scalar rows: −43.5 −45.0 −44.4 −44.9 −43.8 −20.2 −44.6 %. Checkpoint:
+−39.8 −41.5 −38.6 −41.3 −37.8 −25.7 −40.0 %.
+
+Head windows: scalar now reads −30.5% median (6/7 negative) — enough rows to
+batch even at ~100 — while the dated head window stays mixed-sign and claims
+nothing, as before.
+
+### What this means
+
+- **`text` at 182.9 µs undercuts `mem` at 194.0 µs.** A save that emits the
+  wire string outright is now cheaper than storing the tree by REFERENCE,
+  because the fused walk never builds the tree at all. The "remaining
+  O(state) term per durable save" from 2026-08-13 is not merely fixed — the
+  stringify-storage save is now the cheapest durable configuration measured.
+- **Every closing item of the 2026-08-15 section is resolved**: the upstream
+  filing (core#666) produced the batching emitter; the parked branch was the
+  promised rebase-not-rewrite; and the within-run sign-test carried the
+  verdict again, this time in the direction #238 originally hoped for.
+- The scenario-level `gc/*` rows read large "regressions" against base in the
+  raw table — an artifact of the head side running two extra arms in the same
+  scenario, not of the save path allocating more; the shared arms above are
+  the like-for-like comparison.

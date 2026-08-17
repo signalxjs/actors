@@ -2,21 +2,26 @@
 
 ## [Unreleased]
 
-## [0.9.1] - 2026-08-16
-
 ### Added
 
-- **A durable save costs one walk, not two** (#238). `ActorStorage` gains an
-  optional `saveText(type, key, json, expectedEtag)`, and the host emits the
-  record's JSON directly through `stringifyWithHandlers` from
+- **A durable save costs one walk, not two** (#238, #265). `ActorStorage`
+  gains an optional `saveText(type, key, json, expectedEtag)`, and the host
+  emits the record's JSON directly through `stringifyWithHandlers` from
   `@sigx/serialize/stringify` instead of encoding a tree the adapter then
   re-walks with `JSON.stringify`.
 
   That second walk was not incidental — it was every real adapter's, because
   what a store wants is a string, and it measured at **+51%** on top of the
-  host's own encode (`state/save-growth`, #227: 190.3 → 287.8 µs per turn on
-  ~500 rows). It was paid per durable checkpoint, so a job whose state grows
-  through a run paid it at every step.
+  host's own encode (`state/save-growth`, #227). The first wiring (#238)
+  measured as a **regression** and was parked: `@sigx/serialize` 0.15.5's
+  fused emitter reached the native serializer per NODE, and actor state is a
+  large collection of small rows (signalxjs/core#666). Core v0.15.6 batches
+  runs of eligible rows into one native call, and the same arms re-measured
+  on the bench VM read **−37.7%** (dated rows, 292.1 → 182.9 µs), **−44.4%**
+  (scalar rows) and **−39.8%** (`jobs/checkpoint-growth`) against the
+  two-walk pair, 7/7 rounds each — a one-walk save now undercuts even
+  `memoryStorage`'s store-the-tree-by-reference turn. Needs
+  `@sigx/serialize` ≥ 0.15.6; the catalog pins `^0.15.6`.
 
   **Implementing `saveText` is a promise of equivalence, not just validity**:
   it must be indistinguishable from `save(type, key, JSON.parse(json), etag)`
@@ -46,6 +51,21 @@
   produced: three walks, now two.
 
   Load is unchanged — `JSON.parse` + `reviveWithHandlers`, off the hot path.
+
+### Changed
+
+- **`@sigx/serialize` peer floor is now `^0.15.6`** (#238, #265), up from
+  `^0.15.0`. The save path imports `stringifyWithHandlers` from the
+  `@sigx/serialize/stringify` subpath (added in 0.15.5 — a subpath absent
+  from the exports map is a hard resolution failure rather than a graceful
+  degradation), and 0.15.6 is where its emitter batches runs of small rows
+  into one native call — on 0.15.5 this wiring measured *slower* than the
+  two-walk pair it replaces (signalxjs/core#666). The floor names the version
+  the feature is true on, same reasoning as the `@sigx/reactivity` floor.
+
+## [0.9.1] - 2026-08-16
+
+### Added
 
 - **A live subscription may ask to be served more slowly** (#247).
   `ActorSubscription` gains `throttleMs`, carried on the wire as `w` on
@@ -102,13 +122,6 @@
   a public shape.
 
 ### Changed
-
-- **`@sigx/serialize` peer floor is now `^0.15.5`** (#238), up from `^0.15.0`.
-  The save path imports `stringifyWithHandlers` from the
-  `@sigx/serialize/stringify` subpath, which signalxjs/core#663 added in that
-  release. A subpath absent from the exports map is a hard resolution failure
-  rather than a graceful degradation, so the range says so — the same
-  reasoning as the `@sigx/reactivity` floor.
 
 - **A socket session no longer re-arms its keepalive on every frame** (#250).
   `reply()` called `clearTimeout` + `setTimeout` per outbound frame, which at
