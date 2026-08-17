@@ -96,7 +96,14 @@ export function taskLedger(
             const { ledger, etag } = await load();
             const before = toJson(ledger);
             edit(ledger);
-            const json = toJson(ledger);
+            // The after-image: when the adapter cannot take text, what
+            // `storage.save` needs is the encoded TREE — so produce it once
+            // and stringify that, rather than a second encode hidden inside
+            // `toJson` and a third for the save. Byte equality between the
+            // fused emitter and the pair is the contract `toJson`'s header
+            // cites, so `before` and `json` still compare like for like.
+            const encoded = storage.saveText ? undefined : codec.encode(ledger);
+            const json = storage.saveText ? toJson(ledger) : JSON.stringify(encoded);
             // A no-op edit must not write (nor bump the etag).
             if (json === before) return ledger;
             try {
@@ -111,7 +118,7 @@ export function taskLedger(
                     // adapter walk it a third time.
                     await storage.saveText(TASKS_TYPE, actorId, json, etag);
                 } else {
-                    await storage.save(TASKS_TYPE, actorId, codec.encode(ledger), etag);
+                    await storage.save(TASKS_TYPE, actorId, encoded, etag);
                 }
                 return ledger;
             } catch (error) {
