@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-dashboard",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "description": "The web dashboard for @sigx/actors — hosts, actors, latency, errors and cluster topology as embeddable sigx components",
     "type": "module",
     "main": "./dist/index.js",
@@ -50,7 +50,7 @@
         "@sigx/actors-monitor": "workspace:^"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.9.1",
+        "@sigx/actors": "^0.9.2",
         "@sigx/reactivity": "catalog:",
         "@sigx/runtime-core": "catalog:",
         "@sigx/runtime-dom": "catalog:"

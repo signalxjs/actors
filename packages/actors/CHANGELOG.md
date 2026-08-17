@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-17
+
 ### Added
 
 - **A durable save costs one walk, not two** (#238, #265). `ActorStorage`

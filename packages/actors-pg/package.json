@@ -1,6 +1,6 @@
 {
     "name": "@sigx/actors-pg",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "description": "Postgres providers for @sigx/actors — etag-CAS actor storage, host membership and the distributed actor directory",
     "type": "module",
     "main": "./dist/index.js",
@@ -57,7 +57,7 @@
         "access": "public"
     },
     "peerDependencies": {
-        "@sigx/actors": "^0.9.1",
+        "@sigx/actors": "^0.9.2",
         "pg": ">=8"
     }
 }
