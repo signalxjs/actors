@@ -7,7 +7,7 @@ settings:
 catalogs:
   default:
     '@sigx/reactivity':
-      specifier: ^0.15.3
+      specifier: ^0.15.0
       version: 0.15.3
     '@sigx/runtime-core':
       specifier: ^0.15.0

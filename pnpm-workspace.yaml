@@ -26,7 +26,7 @@ catalog:
   # `deepTrack` from `@sigx/reactivity/internals`, which signalxjs/core#651
   # added in that release (#124). A missing named export is a hard resolution
   # failure rather than a graceful degradation, so the range says so.
-  "@sigx/reactivity": ^0.15.3
+  "@sigx/reactivity": ^0.15.0
   "@sigx/runtime-core": ^0.15.0
   # The DOM half. Named here — rather than reached through `sigx` — because
   # `@sigx/actors-dashboard` needs the platform and its JSX intrinsics but
