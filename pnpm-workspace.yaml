@@ -39,7 +39,7 @@ catalog:
   # which signalxjs/core#663 added in that release (#238). A subpath missing
   # from the exports map is a hard resolution failure rather than a graceful
   # degradation — the same reasoning as `@sigx/reactivity` above.
-  "@sigx/serialize": ^0.15.5
+  "@sigx/serialize": ^0.15.6
   "@sigx/server": ^0.15.0
   "@sigx/server-renderer": ^0.15.0
   "@sigx/vite": ^0.15.0
