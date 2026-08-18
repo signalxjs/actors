@@ -86,11 +86,25 @@ export interface MembershipView {
  * heartbeat record exists) — consumers only read views and probe liveness.
  */
 export interface ClusterMembership {
-    /** Register self and begin heartbeating. Resolves once visible. */
+    /**
+     * Register self and begin heartbeating. Resolves once visible.
+     *
+     * **`join` after `leave` must RE-join**, arming a fresh heartbeat and
+     * re-arming the suspicion clock — a host that registers only workers
+     * rejoins rather than fencing when it loses membership (#272), and does
+     * it through this pair. Every provider here already satisfies it;
+     * `leave` tears its timers down before it touches the store, so the two
+     * compose with no state left between them.
+     */
     join(self: HostDescriptor): Promise<void>;
     /** Update this host's advertised status (e.g. `'leaving'` on drain). */
     setStatus(status: HostStatus): Promise<void>;
-    /** Graceful exit: stop heartbeating and remove the entry. */
+    /**
+     * Graceful exit: stop heartbeating and remove the entry.
+     *
+     * Idempotent, and safe to call on an unreachable store: tear the local
+     * timers down FIRST, so a throwing store write leaves nothing beating.
+     */
     leave(): Promise<void>;
     /**
      * Current cached view — SYNC; `dispatcherFor` is on the hot path.

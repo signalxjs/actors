@@ -2,7 +2,7 @@
   {
     "name": "@sigx/actors",
     "path": "packages/actors/dist/index.prod.js",
-    "limit": "4.5 KB",
+    "limit": "4.65 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
@@ -62,7 +62,7 @@
   {
     "name": "@sigx/actors/cluster",
     "path": "packages/actors/dist/cluster.prod.js",
-    "limit": "15.5 KB",
+    "limit": "15.75 KB",
     "ignore": [
       "@sigx/server",
       "@sigx/serialize"

@@ -108,6 +108,16 @@ export interface ClusterCounterTotals {
     // --- membership -------------------------------------------------------
     membershipChanges: number;
     selfFences: number;
+    /**
+     * Membership lapses this host answered by REJOINING rather than
+     * fencing (#272) — it registers no stateful type, so it held no claim
+     * and had nothing to defend. Counted at the decision, so a loop still
+     * retrying a store that is down shows here while `rejoins` stays put.
+     */
+    rejoinAttempts: number;
+    /** …of which got back into membership. `rejoinAttempts - rejoins` is
+     *  the number of loops still running, which is 0 or 1. */
+    rejoins: number;
 
     // --- rebalancing ------------------------------------------------------
     /** `rebalance()` rounds attempted on this host (everything past the
@@ -167,6 +177,8 @@ export function createCounters(): ClusterCounterTotals {
         transportFallbacks: 0,
         membershipChanges: 0,
         selfFences: 0,
+        rejoinAttempts: 0,
+        rejoins: 0,
         rebalanceRounds: 0,
         rebalanceMigrations: 0,
         claimed: 0,

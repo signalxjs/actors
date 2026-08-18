@@ -19,6 +19,7 @@ export type ActorErrorKind =
     | 'wrong-host'
     | 'unreachable'
     | 'unplaceable'
+    | 'fenced'
     | 'watch-declaration';
 
 export interface ActorErrorShape extends Error {
@@ -223,6 +224,40 @@ export class ActorUnplaceableError extends ActorError {
                 `that the pods registering it are up.`
         );
         this.name = 'ActorUnplaceableError';
+    }
+}
+
+/**
+ * This host FENCED itself — it could not prove its own membership, so its
+ * directory claims were evicted and every actor it held was re-placed on a
+ * survivor. It may not activate an actor again under this identity.
+ *
+ * Thrown when a dispatch on a fenced host resolves to LOCAL. Its own kind
+ * rather than `unreachable` because the two want opposite handling: an
+ * unreachable peer is retried and re-routed, while a fenced host is
+ * terminal — retrying re-resolves to the same refusal, and each attempt
+ * costs a directory lookup and a membership refresh against a store that is
+ * very likely the thing that failed. So the routing loop rethrows this
+ * immediately, un-wrapped, and the caller gets the membership event rather
+ * than an `ActorActivationError` naming a symptom (#272).
+ *
+ * A PEER calling into a fenced host still gets `unreachable` from the claim
+ * guard, which is what it should act on: go somewhere else.
+ *
+ * Terminal for a host that registers a stateful actor type — a restart's
+ * fresh identity is the only safe way back, because peers may already be
+ * serving the actors it used to own. A host registering only workers claims
+ * nothing, so it rejoins on its own and never throws this.
+ */
+export class ActorFencedError extends ActorError {
+    constructor(hostId: string) {
+        super(
+            'fenced',
+            `[sigx actors] host ${hostId} is FENCED: it lost cluster membership, so its ` +
+                `actors were re-placed elsewhere and it may not activate one again. ` +
+                `Restart the process to rejoin.`
+        );
+        this.name = 'ActorFencedError';
     }
 }
 

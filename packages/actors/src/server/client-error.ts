@@ -25,8 +25,13 @@ export function toClientError(error: unknown): unknown {
             return new ServerFnError(504, error.message, { kind: error.kind });
         case 'wrong-host':
         case 'unreachable':
+        case 'fenced':
             // Cluster routing errors are resolved host-to-host and should
             // never surface here; if one does, it's retryable — 503.
+            // `fenced` is the exception that DOES surface: a fenced host
+            // still answers its public mount, and "this host is out of the
+            // cluster" is exactly what a caller (or a probe) should be told
+            // rather than a masked 500.
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'deadlock':
         case 'activation':
