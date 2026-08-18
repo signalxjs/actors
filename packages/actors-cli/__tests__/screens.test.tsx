@@ -306,6 +306,8 @@ describe('screens render', () => {
                         transportFallbacks: 0,
                         membershipChanges: 1,
                         selfFences: 0,
+                        rejoinAttempts: 0,
+                        rejoins: 0,
                         rebalanceRounds: 0,
                         rebalanceMigrations: 0,
                         claimed: 3,

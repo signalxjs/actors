@@ -485,12 +485,56 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         );
         // It dropped what it held rather than serving a second copy…
         await vi.waitFor(() => expect(cluster.hosts[0]!.stats().activations).toBe(0));
-        // …and refuses to activate again.
+        // …and refuses to activate again, saying so: `fenced`, not the
+        // `activation` error the retry loop used to wrap it in (#272).
         await expect(cluster.hosts[0]!.actor(def, 'ghost').get()).rejects.toSatisfy(
-            (e: unknown) => isActorError(e) && e.kind === 'activation'
+            (e: unknown) => isActorError(e) && e.kind === 'fenced'
         );
         // The survivor owns it now, resuming the persisted state.
         await expect(cluster.hosts[1]!.actor(def, 'ghost').increment(1)).resolves.toBe(8);
+    });
+
+    it('a fenced host names the FENCE, not a registration bug (#272)', async () => {
+        // The field report: a pod lost its membership store, fenced, and
+        // then answered every dispatch with `unknown actor type "X" — is it
+        // registered with createHost({ actors })?`. Placement had degraded
+        // to a LOCAL activation attempt (a lost view reads as "solo"), and
+        // the registry throws before `beforeActivate` — so the claim-point
+        // fence guard never ran and the caller was handed a registration
+        // bug's error for a membership event.
+        const cluster = await createCluster(1, { actors: [counterActor()] });
+        running = cluster;
+        const placement = cluster.placements[0]!;
+        // A type this host does not register — the split web/engine tier,
+        // where the web pod only ever calls types the engine owns.
+        const Ledger = defineActor({
+            type: 'Ledger',
+            allowAnonymous: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx: ActorContext<{ n: number }>) => ({
+                async read() {
+                    return ctx.state.n;
+                }
+            })
+        });
+        cluster.hub.kill(placement.identity.hostId);
+        await vi.waitFor(() => expect(placement.counters().status).toBe('fenced'));
+
+        const fenced = (error: unknown): boolean =>
+            isActorError(error) &&
+            error.kind === 'fenced' &&
+            error.message.includes(placement.identity.hostId);
+        await expect(cluster.hosts[0]!.actor(Ledger, 'x').read()).rejects.toSatisfy(fenced);
+        // …and the same for a type it DOES register: the answer is the
+        // membership event either way.
+        await expect(cluster.hosts[0]!.actor(counterActor(), 'c').get()).rejects.toSatisfy(
+            fenced
+        );
+        // Terminal, so it is answered without retrying: no backoff, and no
+        // directory lookup or membership refresh against the store that is
+        // most likely the thing that broke.
+        expect(placement.counters().retries).toBe(0);
+        expect(placement.counters().directoryLookups).toBe(0);
     });
 
     it('an empty view is solo, not lost membership — no fence', async () => {

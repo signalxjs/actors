@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fenced host says it is fenced** (#272). Dispatch on a self-fenced host
+  no longer degrades to a LOCAL activation attempt. Every branch of placement
+  that resolves to self — the `hosts.length === 0` solo path a lost view
+  produces, a policy answering self, a stale directory entry naming us — now
+  throws the new branded **`ActorFencedError`** (`kind: 'fenced'`, 503 on both
+  the public and the host-to-host wire) instead.
+
+  Reported from a split web/engine deployment whose web tier registers only
+  workers: after the pod fenced, every call came back as
+  `ActorActivationError: unknown actor type "ClientRegistry" — is it
+  registered with createHost({ actors })?`. The host registry throws before
+  `beforeActivate` runs, so the claim-point fence guard was never reached and
+  the caller was handed a registration bug's error for a membership event.
+  The new error is also TERMINAL rather than retried: the old path spent
+  three attempts, each with a directory lookup and a membership refresh,
+  against the store that had just failed.
+
+  A PEER calling into a fenced host still gets `unreachable`, which is what it
+  should act on — go somewhere else.
+
+### Added
+
+- **A host with nothing to fence rejoins instead** (#272). A host that
+  registers no stateful actor type — a `defineWorker`-only tier — holds no
+  directory claim by construction, so its membership lapse costs the cluster
+  nothing and there is no single-activation invariant for a fence to defend.
+  It now re-joins membership under the same identity, retrying with capped
+  backoff (500 ms → 30 s) until the store takes it back, and keeps serving its
+  pools throughout. Reusing the identity is sound precisely because no
+  directory entry can name a host that never claims.
+
+  Unchanged for everyone else: one stateful registration is enough to bring
+  back the terminal fence, where a restart's fresh identity is the only safe
+  way back. Two counters make the difference visible — `rejoinAttempts` (the
+  decision) and `rejoins` (got back in) — beside the existing `selfFences`.
+
 ## [0.9.2] - 2026-08-17
 
 ### Added

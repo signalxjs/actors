@@ -254,12 +254,19 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
                 const { status } = placement.counters();
                 return {
                     ready: status === 'active',
-                    // Fenced is TERMINAL for this host identity (identities
-                    // are minted per start, there is no rejoin path), so it
-                    // must fail liveness — not just readiness — or the pod
-                    // sits live-200/ready-503 forever after a membership
-                    // store outage and only a human can revive the cluster.
-                    // `leaving` stays non-fatal: draining is alive.
+                    // Fenced is TERMINAL for this host identity: it holds
+                    // (or could hold) claims a survivor has taken over, so
+                    // it may never re-register under an identity peers
+                    // remember. It must therefore fail liveness — not just
+                    // readiness — or the pod sits live-200/ready-503 forever
+                    // after a membership store outage and only a human can
+                    // revive the cluster. `leaving` stays non-fatal:
+                    // draining is alive.
+                    //
+                    // A host registering ONLY workers never reaches this
+                    // status at all: it claims nothing, so it rejoins on its
+                    // own instead of fencing (#272) and stays ready while it
+                    // retries.
                     fatal: status === 'fenced',
                     detail:
                         status === 'fenced'

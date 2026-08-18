@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The connection this package owns reconnects without limit** (#272).
+  `surrealCluster({ url })` and friends now connect with
+  `reconnect: { enabled: true, attempts: -1 }`. The SDK's default is five
+  attempts — about 31 s of backoff — after which the socket is dead for the
+  life of the process; the membership heartbeat then beats into it silently
+  until the host's TTL lapses and it fences. A membership heartbeat is a
+  process-lifetime obligation, so its transport may not have a finite one.
+
+### Changed
+
+- **A shared `db` must be connected the same way.** Documented on
+  `SurrealConnectionOptions.db` and in the README, next to the existing
+  `surrealRetryable` requirement: this package does not own that connection's
+  lifecycle and cannot install the option for you.
+
 ## [0.9.2] - 2026-08-17
 
 ### Added

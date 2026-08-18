@@ -31,7 +31,28 @@ export interface SurrealLive {
 }
 
 export interface SurrealConnectionOptions {
-    /** An existing, already-connected `Surreal` (shared with the app). */
+    /**
+     * An existing, already-connected `Surreal` (shared with the app).
+     *
+     * **It must be connected with UNLIMITED reconnect** —
+     * `reconnect: { enabled: true, attempts: -1 }`. The SDK's default is
+     * five attempts, roughly 31 s of backoff, after which the socket is
+     * dead for the life of the process: `membership`'s heartbeat then beats
+     * into a broken connection forever, silently, and the host fences on a
+     * TTL it can never renew (#272). A membership heartbeat is a
+     * process-lifetime obligation, so its transport may not have a
+     * finite one.
+     *
+     * ```ts
+     * await db.connect(url, {
+     *     reconnect: { enabled: true, attempts: -1 },
+     *     retry: { enabled: true, attempts: 5, retryable: surrealRetryable }
+     * });
+     * ```
+     *
+     * The `url` form below does this for you — this note is for the shared
+     * connection, whose lifecycle this package does not own.
+     */
     db?: SurrealQueryable;
     /** Or an endpoint — the package connects and owns its own `Surreal`.
      *  `ws://`/`wss://` is strongly preferred: the HTTP engine
@@ -141,6 +162,15 @@ function connector(options: SurrealConnectionOptions): () => Promise<SurrealQuer
                 namespace: options.namespace,
                 database: options.database,
                 authentication: options.auth,
+                // UNLIMITED, against the SDK's default of five attempts
+                // (~31 s of backoff) after which the socket is dead for the
+                // life of the process. That default is sized for a request
+                // that can fail; this connection carries a MEMBERSHIP
+                // HEARTBEAT, whose obligation lasts as long as the host. Its
+                // exhaustion is silent — the beat keeps firing into a broken
+                // socket — so the host fences on a TTL it can no longer
+                // renew and never comes back (#272).
+                reconnect: { enabled: true, attempts: -1 },
                 // See `surrealRetryable`: the CAS statements rely on a loser
                 // re-running to observe the winner, and the SDK ships retry
                 // DISABLED by default.

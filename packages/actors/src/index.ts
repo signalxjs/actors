@@ -41,6 +41,7 @@ export {
     ActorWrongHostError,
     ActorUnreachableError,
     ActorUnplaceableError,
+    ActorFencedError,
     ActorStorageConflict,
     isActorError,
     isStorageConflict,

@@ -11,7 +11,7 @@ whose one durable store is SurrealDB. Four providers, one connection.
 - **`surrealCluster()`** bundles membership + directory;
   **`surrealSchemaSql()`** / **`ensureSurrealSchema()`** provide the DDL.
 
-Two things to know before you wire it up:
+Three things to know before you wire it up:
 
 - **The DDL step is mandatory.** Reading an undefined table is an error in
   SurrealDB 3 (2.x returned `[]`).
@@ -19,6 +19,19 @@ Two things to know before you wire it up:
   no `SKIP LOCKED` and no advisory lock, so the commit-time write–write
   conflict is the only mutual exclusion — and the SDK ships retry disabled. If
   you pass your own `db`, install **`surrealRetryable`** on it.
+- **A shared `db` needs unlimited reconnect.** The SDK gives up after five
+  reconnect attempts (~31 s), after which the socket is dead for the life of
+  the process — and a membership heartbeat then beats into it silently until
+  the host's TTL lapses. Connect with
+  `reconnect: { enabled: true, attempts: -1 }`. Passing `url` instead of `db`
+  does this for you.
+
+```ts
+await db.connect(url, {
+    reconnect: { enabled: true, attempts: -1 },
+    retry: { enabled: true, attempts: 5, retryable: surrealRetryable }
+});
+```
 
 ```sh
 pnpm add @sigx/actors-surreal surrealdb

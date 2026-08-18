@@ -58,6 +58,34 @@ aged the host out. That case is deliberately not self-healing — recreating the
 Lease would re-advertise a host whose actors a survivor may be serving — so the
 host fences and the pod restart mints a fresh identity.
 
+### What a fence costs, and who pays it
+
+Fencing defends the single-activation invariant, so its scope is exactly the
+hosts that *have* claims:
+
+- A host that registers **any stateful type** fences terminally. It stops
+  claiming, deactivates what it holds, withdraws from membership, and reports
+  `fatal` on its health check so the orchestrator restarts it — a fresh
+  identity is the only safe way back, because peers may already be serving the
+  actors it used to own.
+- A host that registers **only workers** has nothing to fence. A
+  `defineWorker` pool writes no directory entry by construction, so nothing
+  anywhere names that host and nothing was re-placed when it vanished. It
+  **rejoins under the same identity** instead (#272), retrying with capped
+  backoff until the store takes it back, and serves its pools throughout. That
+  identity reuse is safe *because* of the missing claim, not in spite of it.
+
+Dispatch from a fenced host fails with the branded `fenced` error rather than
+resolving to `local`. This matters more than it looks: a fenced host's
+membership view is usually gone with the store that fenced it, and an empty
+view reads as "solo" everywhere else in placement — so without the guard, every
+call degraded into a local activation attempt and surfaced as *"unknown actor
+type"* on a tier that only ever calls types other hosts own. The error is
+terminal, not retried: re-resolving lands on the same refusal, and each attempt
+would cost a directory lookup and a membership refresh against the store that
+just failed. A *peer* calling into a fenced host still gets `unreachable`,
+which is the answer it can act on.
+
 ## Change detection
 
 Providers compare **host signatures**, not just a version counter. A host that

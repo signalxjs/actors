@@ -35,6 +35,7 @@ const ACTOR_ERROR_KINDS = new Set<string>([
     'wrong-host',
     'unreachable',
     'unplaceable',
+    'fenced',
     'watch-declaration'
 ]);
 
@@ -66,7 +67,8 @@ export function toHostWireError(error: unknown): HostWireError {
                 ? 409
                 : error.kind === 'host-shutdown' ||
                     error.kind === 'unreachable' ||
-                    error.kind === 'unplaceable'
+                    error.kind === 'unplaceable' ||
+                    error.kind === 'fenced'
                   ? 503
                   : error.kind === 'call-timeout'
                     ? 504

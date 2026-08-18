@@ -101,7 +101,7 @@ export const demoSnapshot: MonitorSnapshot = {
                 directoryEvictions: 0, hostSweeps: 2, sweptEntries: 4,
                 wrongHostRedirects: 3, unreachableRetries: 0, drainingRetries: 0,
                 authFailures: 0, transportFallbacks: 0, membershipChanges: 5,
-                selfFences: 0, rebalanceRounds: 0, rebalanceMigrations: 0, claimed: 32, routeCacheSize: 39, locates: 44, locateRemote: 12
+                selfFences: 0, rejoinAttempts: 0, rejoins: 0, rebalanceRounds: 0, rebalanceMigrations: 0, claimed: 32, routeCacheSize: 39, locates: 44, locateRemote: 12
             },
             // Cluster-wide, from the merged digests — which is the whole
             // point of milestone 9, and what the Overview must label as

@@ -12,6 +12,7 @@
  */
 import {
     ActorActivationError,
+    ActorFencedError,
     ActorUnplaceableError,
     ActorUnreachableError,
     ActorWrongHostError,
@@ -604,6 +605,15 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #routeCache = new Map<string, string>();
     #seq = 0;
     #fenced = false;
+    /** Single-flight over `#fence()`'s decision — it awaits before it
+     *  latches, and two suspicions must not both make it. */
+    #fencing = false;
+    /** The rejoin loop of a host with nothing to fence is running (#272). */
+    #rejoining = false;
+    /** Resolve the rejoin loop's current backoff sleep early, at `stop()`. */
+    #rejoinWake: (() => void) | null = null;
+    /** `stop()` has begun — the rejoin loop must not re-join behind it. */
+    #stopping = false;
     /** Single-flight guard for `#checkSelfPresence` — see the method. */
     #checkingSelf = false;
     /** Have we ever seen ourselves in a view? Absence only counts after. */
@@ -990,6 +1000,12 @@ class ClusterPlacementImpl implements ClusterPlacement {
     async stop(): Promise<void> {
         // host.stop() has already drained activations (releasing claims,
         // reason 'migrated') between beginStop() and here.
+        //
+        // FIRST, before anything awaits: a rejoin loop (#272) may be parked
+        // on a backoff sleep, and it must not put this host back into
+        // membership behind the leave below.
+        this.#stopping = true;
+        this.#rejoinWake?.();
         for (const teardown of this.#policyTeardowns) {
             try {
                 teardown();
@@ -1741,34 +1757,164 @@ class ClusterPlacementImpl implements ClusterPlacement {
         }
     }
 
+    /**
+     * Does this host register any STATEFUL actor type — anything that could
+     * ever hold a directory claim?
+     *
+     * Answered from the registry rather than from what is currently
+     * activated, because the question is structural: a `defineWorker` pool
+     * writes no claim by construction (`bind()`'s CONTRACT note), so a host
+     * registering only workers has nothing for a peer to have evicted and
+     * nothing to defend by fencing.
+     *
+     * Conservative on every unknown — a hand-rolled `Host` with no
+     * `registeredTypes()`, a lazy module that fails to load (`#isStateless`
+     * answers `false` for those), or a claim we somehow still hold — because
+     * being wrong here costs the single-activation invariant, while being
+     * wrong the other way costs one pod restart. Called once per fence, so
+     * the lazy loads it may force are paid on a path that runs at most once
+     * per membership lapse.
+     */
+    async #registersStateful(): Promise<boolean> {
+        if (this.#claimed.size > 0) return true;
+        const types = this.#registeredTypes;
+        if (types === undefined) return true;
+        for (const type of types) {
+            if (!(await this.#isStateless(type))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Re-join membership under the SAME identity, retrying until the store
+     * takes us back (#272).
+     *
+     * Only ever reached from `#fence()` for a host that registers no
+     * stateful type, and that is exactly what makes reusing the identity
+     * sound: no directory entry anywhere names this host, so there is no
+     * stale claim for a re-registration to resurrect. A host with claims
+     * must still mint a fresh identity, which is what a process restart is
+     * for.
+     *
+     * `leave()` first, always: every provider's `join()` arms a fresh
+     * heartbeat interval, so joining over a live one leaks the old timer and
+     * double-beats. Its FAILURE is ignored, deliberately — a provider tears
+     * its timers down before it touches the store, so the local half is done
+     * either way, and the store write it could not land is a courtesy. The
+     * join is the correctness action, and it is what re-arms the shared
+     * `heartbeatClock` and clears the suspicion latch so a LATER lapse can
+     * be answered again.
+     */
+    async #rejoin(): Promise<void> {
+        if (this.#rejoining) return;
+        this.#rejoining = true;
+        this.#counters.rejoinAttempts++;
+        try {
+            for (let attempt = 0; !this.#stopping; attempt++) {
+                try {
+                    try {
+                        await this.#options.membership.leave();
+                    } catch {
+                        // Courtesy only; see above. The join is what counts.
+                    }
+                    await this.#options.membership.join(this.descriptor());
+                    // Re-earned, not assumed: the absence backstop must see
+                    // us in a fresh view before it is allowed to act on our
+                    // absence from one again.
+                    this.#seenSelf = false;
+                    this.#counters.rejoins++;
+                    return;
+                } catch {
+                    // The store is still unreachable — which is the usual
+                    // reason we are here at all. Keep trying: a worker-only
+                    // host serves its pools throughout, and the alternative
+                    // is a zombie only a restart can clear.
+                }
+                if (this.#stopping) return;
+                await this.#rejoinBackoff(attempt);
+            }
+        } finally {
+            this.#rejoining = false;
+        }
+    }
+
+    /** Capped exponential, 500 ms → 30 s, and interruptible by `stop()`. */
+    #rejoinBackoff(attempt: number): Promise<void> {
+        const ms = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
+        return new Promise<void>((resolve) => {
+            const done = (): void => {
+                clearTimeout(timer);
+                this.#rejoinWake = null;
+                resolve();
+            };
+            const timer = setTimeout(done, ms);
+            // Never the reason a process stays up: this loop can wait 30 s
+            // between tries and it must not hold an exiting host open.
+            (timer as { unref?: () => void }).unref?.();
+            this.#rejoinWake = done;
+        });
+    }
+
     /** Self-fence: membership lost — stop claiming, drop what we hold. */
     async #fence(): Promise<void> {
-        if (this.#fenced) return;
-        this.#fenced = true;
-        this.#counters.selfFences++;
-        // Withdraw, so peers stop routing to a host that refuses every
-        // activation instead of waiting out their own TTL — and so a
-        // provider whose heartbeat re-registers this host cannot keep
-        // advertising it as active forever. Idempotent (every provider
-        // guards on "am I joined"), so `stop()`'s own leave stays fine.
-        //
-        // Deliberately NOT awaited: we fence precisely when the membership
-        // store may be unreachable, and a leave that hangs must not keep us
-        // from dropping the activations. That is the correctness action;
-        // this is a courtesy.
-        void Promise.resolve(this.#options.membership.leave()).catch(() => {});
-        const types = new Set<string>();
-        for (const id of this.#claimed.keys()) {
-            const nul = id.indexOf('\u0000');
-            if (nul > 0) types.add(id.slice(0, nul));
-        }
-        for (const type of types) {
-            await this.#host?.deactivateType(type).catch(() => {});
+        if (this.#fenced || this.#fencing || this.#rejoining) return;
+        this.#fencing = true;
+        try {
+            // Nothing to fence, so nothing to be terminal about (#272). A
+            // host registering only workers holds no claim by construction:
+            // its membership lapse cost the cluster nothing, and the fence
+            // it used to take was permanent — a zombie serving pure compute
+            // outside the view, with a process restart the only cure. It
+            // rejoins instead, and keeps serving throughout.
+            if (!(await this.#registersStateful())) {
+                void this.#rejoin();
+                return;
+            }
+            if (this.#fenced) return;
+            this.#fenced = true;
+            this.#counters.selfFences++;
+            // Withdraw, so peers stop routing to a host that refuses every
+            // activation instead of waiting out their own TTL — and so a
+            // provider whose heartbeat re-registers this host cannot keep
+            // advertising it as active forever. Idempotent (every provider
+            // guards on "am I joined"), so `stop()`'s own leave stays fine.
+            //
+            // Deliberately NOT awaited: we fence precisely when the membership
+            // store may be unreachable, and a leave that hangs must not keep us
+            // from dropping the activations. That is the correctness action;
+            // this is a courtesy.
+            void Promise.resolve(this.#options.membership.leave()).catch(() => {});
+            const types = new Set<string>();
+            for (const id of this.#claimed.keys()) {
+                const nul = id.indexOf('\u0000');
+                if (nul > 0) types.add(id.slice(0, nul));
+            }
+            for (const type of types) {
+                await this.#host?.deactivateType(type).catch(() => {});
+            }
+        } finally {
+            this.#fencing = false;
         }
     }
 
     /** Resolve who should serve `ref` right now: us, or a peer. */
     async #resolveTarget(ref: ActorRef): Promise<'local' | HostDescriptor> {
+        // A fenced host may not be the answer to a placement question, and
+        // 'local' is the only answer this method can give about itself.
+        // Without this, every branch below that resolves to self — the
+        // `hosts.length === 0` solo path a lost view produces, a policy
+        // answering self, a stale directory entry naming us — degraded a
+        // dispatch into a LOCAL activation attempt. On a host that does not
+        // register the type (the split web/engine tier of #272) the caller
+        // then got `unknown actor type "X" — is it registered with
+        // createHost({ actors })?`: a registration bug's error for a
+        // membership event, with the claim-point fence guard never reached
+        // because the registry throws before `beforeActivate` runs.
+        //
+        // Stateless workers never arrive here (`dispatcherFor` and
+        // `locate()` answer them local before any resolution), which is
+        // what keeps a fenced host serving pure compute.
+        if (this.#fenced) throw new ActorFencedError(this.identity.hostId);
         const id = actorId(ref);
         if (this.#claimed.has(id)) return 'local';
 

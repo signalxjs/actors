@@ -6,7 +6,13 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor, defineWorker } from '@sigx/actors';
-import { createCluster, type ClusterHarness } from './harness';
+import { createHost } from '@sigx/actors/host';
+import {
+    clusterPlacement,
+    memoryClusterHub,
+    type ClusterMembership
+} from '@sigx/actors/cluster';
+import { createCluster, quiet, type ClusterHarness } from './harness';
 
 const NUL = String.fromCharCode(0);
 
@@ -94,6 +100,103 @@ describe('stateless workers in a cluster', () => {
         // pools and fresh keys alike.
         await expect(fenced.actor(Work, 'k').double(3)).resolves.toBe(6);
         await expect(fenced.actor(Work, 'fresh').double(4)).resolves.toBe(8);
+    });
+
+    it('a WORKER-ONLY host rejoins instead of fencing forever (#272)', async () => {
+        // The split web/engine deployment: the web tier joins the cluster
+        // registering nothing but workers. It holds no directory claim by
+        // construction, so its membership lapse cost the cluster nothing —
+        // and the fence it used to take was permanent, leaving a zombie pod
+        // that only a process restart could clear.
+        cluster = await createCluster(2, {
+            actors: [Work, Counter],
+            actorsFor: (i) => (i === 1 ? [Work] : [Work, Counter])
+        });
+        const placement = cluster.placements[1]!;
+        const hostId = placement.identity.hostId;
+        cluster.hub.kill(hostId); // membership drops it → onSelfSuspect
+
+        await vi.waitFor(() => expect(placement.counters().rejoins).toBe(1));
+        // Same identity, deliberately: no directory entry anywhere names a
+        // host that never claims, so nothing stale can be resurrected by
+        // re-registering it.
+        expect(placement.identity.hostId).toBe(hostId);
+        expect(placement.counters().status).not.toBe('fenced');
+        expect(placement.view().hosts.map((h) => h.hostId)).toContain(hostId);
+        // It served pure compute throughout, and is addressable again.
+        await expect(cluster.hosts[1]!.actor(Work, 'k').double(21)).resolves.toBe(42);
+        await expect(
+            cluster.placements[0]!.dispatchOn!(hostId, { type: 'Work', key: 'k' }, 'double', [4])
+        ).resolves.toBe(8);
+    });
+
+    it('the rejoin keeps retrying while the store is down, and stops at stop()', async () => {
+        // The lapse and the outage are the same event: the store that
+        // dropped us is the store we have to re-register with. A single
+        // attempt would fence-by-another-name.
+        const hub = memoryClusterHub();
+        const providers = hub.providers();
+        let down = false;
+        const attempts: string[] = [];
+        const membership: ClusterMembership = {
+            ...providers.membership,
+            leave: async () => {
+                if (down) {
+                    attempts.push('leave');
+                    throw new Error('store unreachable');
+                }
+                return providers.membership.leave();
+            },
+            join: async (descriptor) => {
+                if (down) {
+                    attempts.push('join');
+                    throw new Error('store unreachable');
+                }
+                return providers.membership.join(descriptor);
+            }
+        };
+        const placement = clusterPlacement({
+            membership,
+            directory: providers.directory,
+            advertise: 'http://worker.test',
+            retryBackoffMs: 1
+        });
+        const host = createHost({ actors: [Work], placement, defaults: quiet });
+        await host.start();
+        try {
+            down = true;
+            hub.kill(placement.identity.hostId);
+            await vi.waitFor(() => expect(attempts.length).toBeGreaterThan(0));
+            expect(placement.counters().rejoinAttempts).toBe(1);
+            expect(placement.counters().rejoins).toBe(0);
+            expect(placement.counters().status).not.toBe('fenced');
+            // Pure compute never stopped, which is the whole point of not
+            // fencing a host that has nothing to fence.
+            await expect(host.actor(Work, 'k').double(3)).resolves.toBe(6);
+
+            down = false;
+            await vi.waitFor(() => expect(placement.counters().rejoins).toBe(1), {
+                timeout: 5000
+            });
+            expect(placement.view().hosts.map((h) => h.hostId)).toContain(
+                placement.identity.hostId
+            );
+        } finally {
+            await host.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    it('a host registering ANY stateful type still fences — the invariant it defends', async () => {
+        // The contrast that makes the rule readable: the rejoin is not "a
+        // fence is survivable", it is "there was nothing to fence". One
+        // stateful registration is enough to bring the terminal fence back,
+        // whether or not that type is currently activated here.
+        cluster = await createCluster(2, { actors: [Work, Counter] });
+        const placement = cluster.placements[1]!;
+        cluster.hub.kill(placement.identity.hostId);
+        await vi.waitFor(() => expect(placement.counters().status).toBe('fenced'));
+        expect(placement.counters().rejoinAttempts).toBe(0);
+        expect(placement.counters().selfFences).toBe(1);
     });
 
     it('rebalance() never moves workers — a pool holds no claims', async () => {
