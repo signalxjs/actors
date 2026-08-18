@@ -186,6 +186,50 @@ describe('stateless workers in a cluster', () => {
         }
     });
 
+    it('a join that lands AFTER stop() is undone, not counted', async () => {
+        // `stop()` sets the flag and wakes the backoff sleep, but the loop
+        // may be parked inside `join()` at that moment — and `stop()`'s own
+        // `leave()` can run first. Without the check after the await, that
+        // join re-registers a host that is shutting down, heartbeat and all,
+        // and leaves a stale entry behind forever.
+        const hub = memoryClusterHub();
+        const providers = hub.providers();
+        // A pass-through membership whose `join` is swapped for a GATED one
+        // once the host is up, so only the rejoin parks.
+        const membership: ClusterMembership = { ...providers.membership };
+        const placement = clusterPlacement({
+            membership,
+            directory: providers.directory,
+            advertise: 'http://worker.test'
+        });
+        const host = createHost({ actors: [Work], placement, defaults: quiet });
+        await host.start();
+        const hostId = placement.identity.hostId;
+        let releaseJoin: (() => void) | null = null;
+        let joining: Promise<void> | null = null;
+        membership.join = (descriptor) => {
+            joining = new Promise<void>((resolve) => {
+                releaseJoin = () => void providers.membership.join(descriptor).then(resolve);
+            });
+            return joining;
+        };
+
+        hub.kill(hostId);
+        await vi.waitFor(() => expect(releaseJoin).not.toBeNull());
+        // Shutdown overtakes the in-flight join.
+        await host.stop({ timeoutMs: 1000 });
+        releaseJoin!();
+        await joining;
+
+        await vi.waitFor(() =>
+            expect(hub.providers().membership.view().hosts.map((h) => h.hostId)).not.toContain(
+                hostId
+            )
+        );
+        // Never back, so never counted.
+        expect(placement.counters().rejoins).toBe(0);
+    });
+
     it('a host registering ANY stateful type still fences — the invariant it defends', async () => {
         // The contrast that makes the rule readable: the rejoin is not "a
         // fence is survivable", it is "there was nothing to fence". One

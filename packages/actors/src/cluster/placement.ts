@@ -1818,6 +1818,20 @@ class ClusterPlacementImpl implements ClusterPlacement {
                         // Courtesy only; see above. The join is what counts.
                     }
                     await this.#options.membership.join(this.descriptor());
+                    if (this.#stopping) {
+                        // `stop()` began while that join was in flight, so
+                        // its own `leave()` may already have run — this join
+                        // would then re-register a host that is shutting
+                        // down, heartbeat and all. Undo it, and do NOT count
+                        // it: we were never back.
+                        try {
+                            await this.#options.membership.leave();
+                        } catch {
+                            // Same courtesy as above; the timers are gone
+                            // either way.
+                        }
+                        return;
+                    }
                     // Re-earned, not assumed: the absence backstop must see
                     // us in a fresh view before it is allowed to act on our
                     // absence from one again.
