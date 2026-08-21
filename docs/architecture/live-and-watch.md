@@ -298,7 +298,7 @@ of each other, and they compose. The measured 2×2 — same image, one variable
 per axis — lives in `benchmarks/BASELINES.md`
 § "2026-08-13 · Tier 3 — TCP does not remove the streams, it makes them
 free", which is the single source for the figures; this table carries the
-shape of the result, not the numbers.
+shape of the result, not the numbers (quoting them here is how they drift).
 
 | approach | remote streams | ladder | applies to |
 |---|---|---|---|
