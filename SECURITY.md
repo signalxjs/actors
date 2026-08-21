@@ -171,8 +171,11 @@ and metrics cardinality.
 
 ## A CPU-bound turn can fence its own host
 
-A host is one Node process with one JS thread, so actor turns, health probes
-and the cluster **membership heartbeat all share one event loop**. A turn
+This concerns clustered Node deployments — the hosts that run a membership
+provider (`redisCluster`, `pgCluster`, `surrealCluster`, `k8sMembership`).
+Such a host is one Node process with one JS thread, so actor turns, health
+probes and the cluster **membership heartbeat all share one event loop**.
+(The Cloudflare backend has no membership heartbeat to starve.) A turn
 that computes synchronously past the membership TTL (`redisCluster`
 defaults: `heartbeatMs: 5000`, `ttlMs: 15000`) starves the host's own
 liveness signal. While the loop is held, peers age the host out and release
