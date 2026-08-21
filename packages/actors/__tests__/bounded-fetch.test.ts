@@ -139,6 +139,20 @@ describe('boundedFetch', () => {
         await expect(fetch('http://peer.internal/x')).rejects.toBe(broken);
     });
 
+    it('does not blame undici for a DIFFERENT missing module', async () => {
+        // A broken install can fail resolution one level deeper — same code,
+        // different missing specifier. "Install undici" would be a lie there.
+        const transitive = Object.assign(
+            new Error(
+                "Cannot find package 'fast-querystring' imported from " +
+                    '/app/node_modules/undici/lib/core/util.js'
+            ),
+            { code: 'ERR_MODULE_NOT_FOUND' }
+        );
+        const fetch = createBoundedFetch({ connections: 1 }, () => Promise.reject(transitive));
+        await expect(fetch('http://peer.internal/x')).rejects.toBe(transitive);
+    });
+
     describe('against real undici and real sockets', () => {
         let server: Server | undefined;
         afterEach(async () => {

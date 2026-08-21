@@ -92,7 +92,16 @@ export function createBoundedFetch(
                 // ever pinned as this helper's permanent answer.
                 ready = undefined;
                 const code = (error as { code?: string } | null)?.code;
-                if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+                const message = error instanceof Error ? error.message : '';
+                // Guidance only when the missing specifier IS undici — the
+                // same code with a different specifier (a broken install
+                // failing one level deeper) passes through untranslated,
+                // because "install undici" would be a lie there. ESM says
+                // "Cannot find package", CJS "Cannot find module".
+                const missingUndici =
+                    (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') &&
+                    /Cannot find (?:package|module) 'undici'/.test(message);
+                if (missingUndici) {
                     throw new Error(
                         `[sigx actors] boundedFetch needs the optional peer dependency ` +
                             `"undici" — install it next to @sigx/actors (e.g. \`pnpm add undici\`). ` +
