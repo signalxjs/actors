@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServerFnError } from '@sigx/server';
+import { stubServerApp } from '@sigx/server/testing';
 import { defineActor, type Host } from '@sigx/actors';
 import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
@@ -15,6 +16,10 @@ import { DEFAULT_LIVE_PING_MS, subscribeAll } from '../src/server/live-endpoint'
 
 const ENDPOINT = 'http://actors.test/_sigx/actor';
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
+
+/** `Cart#slow` parks on one of these; afterEach releases them so a turn in
+ *  flight never outlives its test (a sleep would hang `host.stop()`). */
+const gates: Array<() => void> = [];
 
 const Cart = defineActor({
     type: 'Cart',
@@ -28,6 +33,10 @@ const Cart = defineActor({
             ctx.state.items.push(item);
             await ctx.save();
             return ctx.state.items.length;
+        },
+        async slow() {
+            await new Promise<void>((resolve) => gates.push(resolve));
+            return 'released';
         }
     })
 });
@@ -96,7 +105,16 @@ async function readFrames(response: Response, want: number): Promise<unknown[]> 
 }
 
 afterEach(async () => {
-    for (const s of running.splice(0)) await s.stop({ timeoutMs: 1000 });
+    // Drain WHILE stopping: a `slow` turn may not have parked on its gate
+    // yet when this hook runs, so a single splice would strand it.
+    const drain = setInterval(() => {
+        for (const release of gates.splice(0)) release();
+    }, 5);
+    try {
+        for (const s of running.splice(0)) await s.stop({ timeoutMs: 1000 });
+    } finally {
+        clearInterval(drain);
+    }
 });
 
 describe('$live over the wire', () => {
@@ -446,5 +464,82 @@ describe('$live: context bag edge capture', () => {
         expect(response.status).toBe(200);
         const frames = await readFrames(response, 1);
         expect(frames).toEqual([{ i: 0, v: { user: 'ada' } }]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The establishment deadline (#192): the same posture bound the socket
+// session arms per subscription (#180), mirrored onto the `$live` mount. A
+// watch read is a normal turn on a single-threaded actor, so on a busy one
+// the seed can queue arbitrarily long — and the watch path deliberately has
+// no runtime deadline, so before this a starved seed held its subscription
+// (watch loop, change subscription and keep-alive included) open silently,
+// forever.
+
+describe('$live: watch establishment deadline (#192)', () => {
+    let restore: (() => void) | undefined;
+
+    afterEach(() => {
+        restore?.();
+        restore = undefined;
+    });
+
+    it('a subscription whose seed starves answers a per-subscription 504 frame', async () => {
+        // Identity so the mount's own gate passes; per-subscription
+        // authorization still runs against each actor's own policy.
+        restore = stubServerApp({
+            authenticate: () => ({ id: 'u1' }),
+            posture: { timeoutMs: 50 }
+        });
+        const s = host();
+        await s.start();
+
+        // Wedge 'w': `slow` parks its turn on a gate the afterEach releases,
+        // so the seed read for the same key queues behind it and cannot run.
+        const wedged = s.actor(Cart, 'w').slow();
+        await vi.waitFor(() => expect(gates.length).toBe(1));
+
+        const response = await subscribe(s, [
+            { t: 'Cart', k: 'w', m: 'total' }, // starves behind the parked turn
+            { t: 'Cart', k: 'free', m: 'total' } // must still seed and stream
+        ]);
+        const frames = (await readFrames(response, 2)) as Array<{
+            i: number;
+            e?: { status: number; message: string };
+            v?: unknown;
+        }>;
+
+        // The failure is the starved subscription's alone — its sibling on
+        // the SAME connection delivered its seed untouched.
+        expect(frames).toContainEqual({ i: 1, v: 0 });
+        const starved = frames.find((f) => f.i === 0);
+        expect(starved?.e?.status).toBe(504);
+        expect(starved?.e?.message).toMatch(/timed out before its first value/);
+
+        for (const release of gates.splice(0)) release();
+        await wedged.catch(() => {});
+    });
+
+    it('the deadline covers only establishment — a seeded subscription is never timed out', async () => {
+        restore = stubServerApp({
+            authenticate: () => ({ id: 'u1' }),
+            posture: { timeoutMs: 50 }
+        });
+        const s = host();
+        await s.start();
+
+        const response = await subscribe(s, [{ t: 'Cart', k: 'calm', m: 'total' }]);
+        const reading = readFrames(response, 2);
+        // Outlive the timeout with the subscription seeded and idle, then
+        // prove the watch still pushes rather than having been aborted.
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        await s.actor(Cart, 'calm').add('x');
+
+        const frames = (await reading) as Array<Record<string, unknown>>;
+        expect(frames).toEqual([
+            { i: 0, v: 0 },
+            { i: 0, v: 1 }
+        ]);
+        expect(frames.every((f) => !('e' in f))).toBe(true);
     });
 });

@@ -19,7 +19,7 @@
 import { ServerFnError, type ServerFnContext } from '@sigx/server';
 import { mintCallId } from '../call-id';
 import { takeCallBag } from '../call-context-bag';
-import { authorizeActorCall, encodePrincipal } from '../guards';
+import { actorPosture, authorizeActorCall, encodePrincipal } from '../guards';
 import { isTraceparent } from '../traceparent';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, type LiveFrame, type LiveSubscription } from '../wire-shared';
@@ -313,7 +313,43 @@ export function subscribeAll(
         wake?.();
     };
 
+    // The app's posture, read once per connection — the same bound the
+    // socket session arms (#180), repaid here per subscription below.
+    const timeoutMs = actorPosture().timeoutMs;
+
     const start = async (sub: LiveSubscription, index: number): Promise<void> => {
+        // The deadline covers ESTABLISHMENT only: pipeline + authorization +
+        // dispatch + the FIRST value. A watch read is a normal turn on a
+        // single-threaded actor, so on a busy one the seed can queue
+        // arbitrarily long — and the watch path deliberately has no runtime
+        // deadline (the loop lives forever), so before this timer a starved
+        // seed held its subscription, watch loop and keep-alive open
+        // SILENTLY, forever (#192; the socket half was #180). A seeded
+        // subscription is never timed out — pushes are the loop's cadence.
+        //
+        // The timer aborts a PER-SUBSCRIPTION controller, never the shared
+        // request signal: the starved seed is this subscription's failure,
+        // and its siblings on the same connection keep streaming.
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        let timedOut: ServerFnError | null = null;
+        const disarmDeadline = (): void => {
+            if (deadline !== undefined) clearTimeout(deadline);
+            deadline = undefined;
+        };
+        let abortSignal = rq.abortSignal;
+        if (timeoutMs !== undefined && timeoutMs > 0) {
+            const ctrl = new AbortController();
+            abortSignal = AbortSignal.any([rq.abortSignal, ctrl.signal]);
+            deadline = setTimeout(() => {
+                timedOut = new ServerFnError(
+                    504,
+                    `[sigx actors] subscription "${sub.t}#${sub.m}" timed out before its first value`
+                );
+                // The abort releases everything the starved seed held —
+                // fan-out subscriber, shared loop when last-out, keep-alive.
+                ctrl.abort(timedOut);
+            }, timeoutMs);
+        }
         try {
             const def = await host.definition(sub.t);
             if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
@@ -342,7 +378,7 @@ export function subscribeAll(
                     ...(isTraceparent(traceparent) ? { traceparent } : {}),
                     ...(bag !== undefined ? { bag } : {}),
                     ...(principal !== undefined ? { principal } : {}),
-                    abortSignal: rq.abortSignal
+                    abortSignal
                 },
                 // Omitted when the client asked for nothing, so the watch key
                 // is the one it has always been (#247).
@@ -354,11 +390,18 @@ export function subscribeAll(
             for (;;) {
                 const { value, done } = await iterator.next();
                 if (done || closed) break;
+                // Established: the deadline covered exactly the first value.
+                disarmDeadline();
                 emit({ i: index, v: value });
             }
+            // A fired deadline ends the aborted subscriber CLEANLY (`done`),
+            // so the starvation must be re-raised to become the frame the
+            // client is owed — silence is the failure mode this fixes.
+            if (timedOut !== null) throw timedOut;
         } catch (error) {
             if (!closed) emit({ i: index, e: toFrameError(error) });
         } finally {
+            disarmDeadline();
             live--;
             wake?.();
         }
