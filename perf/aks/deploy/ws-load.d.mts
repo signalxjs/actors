@@ -40,6 +40,18 @@ export interface WsLoadRow {
     deliveriesPerPublish: number;
     /** Present only when the run did not complete cleanly. */
     partial?: boolean;
+    /**
+     * Present when a pod re-ran this rung after its first attempt's
+     * connect-failure rate crossed the generator's threshold (#222). The
+     * counts above are the RETRY's; the discarded attempt's live only in
+     * the raw per-pod rows, under `firstAttempt`.
+     */
+    retried?: boolean;
+    /**
+     * Present on the rung that ended the ladder: the generator's reason for
+     * stopping. Absent everywhere ⇒ the ladder completed.
+     */
+    ladderStopped?: string;
 }
 
 export interface WsLoadResult {

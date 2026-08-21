@@ -32,6 +32,13 @@
  *                     stalling outright                         default 0
  *   CONNECT_BATCH     dials issued concurrently              default 250
  *   CONNECT_TIMEOUT_S per-connection dial+seed deadline      default 30
+ *   MAX_CONNECT_FAILURE_PCT ladder stop threshold, percent   default 1
+ *                     a rung whose connect-failure RATE stays
+ *                     within it continues; over it, the rung is
+ *                     retried ONCE (`retried: true`), and only a
+ *                     failed retry stops the ladder — with the
+ *                     reason as `ladderStopped` on its summary
+ *                     line (#222)
  *   KEY_PREFIX        actor key prefix                       default fan
  *   PUBLISHER         1 = this pod publishes and probes      default 1
  *   REPORT_INTERVAL_S progress cadence (stderr)              default 10
@@ -71,6 +78,7 @@ import { createHmac } from 'node:crypto';
 import WebSocket from 'ws';
 import { socketTransport } from '@sigx/actors-ws/client';
 import { Samples } from './src/loadgen/histogram.ts';
+import { decideLadder } from './src/loadgen/ladder.ts';
 
 const need = (name) => {
     const value = process.env[name];
@@ -111,6 +119,7 @@ const SLOW_AFTER_S = num('SLOW_AFTER_S', 5);
 const SLOW_RESUME_MS = num('SLOW_RESUME_MS', 0);
 const CONNECT_BATCH = Math.max(1, num('CONNECT_BATCH', 250));
 const CONNECT_TIMEOUT_S = num('CONNECT_TIMEOUT_S', 30);
+const MAX_CONNECT_FAILURE_PCT = num('MAX_CONNECT_FAILURE_PCT', 1);
 const KEY_PREFIX = process.env.KEY_PREFIX ?? 'fan';
 // Indexed Job: pod 0 publishes and carries the probes, everyone else is
 // pure subscriber capacity. Exactly ONE publisher is a correctness
@@ -163,6 +172,16 @@ if (!(Number.isFinite(SLOW_AFTER_S) && SLOW_AFTER_S >= 0)) {
 }
 if (!(Number.isFinite(SLOW_RESUME_MS) && SLOW_RESUME_MS >= 0)) {
     console.error(`[ws-loadgen] SLOW_RESUME_MS must be >= 0, got '${SLOW_RESUME_MS}'`);
+    process.exit(1);
+}
+
+// Validated like the SLOW_* knobs: a negative threshold stops the ladder at
+// the first rung whatever happens, which silently reinstates the exact
+// behaviour #222 removed.
+if (!(Number.isFinite(MAX_CONNECT_FAILURE_PCT) && MAX_CONNECT_FAILURE_PCT >= 0)) {
+    console.error(
+        `[ws-loadgen] MAX_CONNECT_FAILURE_PCT must be >= 0, got '${MAX_CONNECT_FAILURE_PCT}'`
+    );
     process.exit(1);
 }
 
@@ -700,13 +719,36 @@ log(
         `persist=${PERSIST} publisher=${PUBLISHER}`
 );
 
+// A rung that could not hold its connections is the ceiling; climbing past
+// it measures nothing but the failure mode. But the old `> 0` rule turned a
+// TRANSIENT into a recorded ceiling (#222): 4 failures at n=100 against a
+// cluster still converging aborted a ladder whose re-run was clean at every
+// rung. So the verdict is `decideLadder`'s — within the threshold continues,
+// over it earns one retry, and only a failed retry stops the ladder. The
+// output contract holds at ONE JSON line per rung: a retried rung emits the
+// retry's summary (marked `retried: true`, with the discarded attempt's
+// counts under `firstAttempt`), and the first attempt's full line goes to
+// stderr for the record.
+const maxFailureRate = MAX_CONNECT_FAILURE_PCT / 100;
 for (const rung of rungs) {
-    const summary = await runRung(rung);
+    let summary = await runRung(rung);
+    let decision = decideLadder(summary, { maxFailureRate });
+    if (decision.action === 'retry') {
+        log(`retrying rung n=${rung} once before believing it: ${decision.reason}`);
+        log(`discarded first attempt: ${JSON.stringify(summary)}`);
+        const firstAttempt = {
+            connected: summary.connected,
+            connectFailures: summary.connectFailures
+        };
+        summary = await runRung(rung);
+        summary.retried = true;
+        summary.firstAttempt = firstAttempt;
+        decision = decideLadder(summary, { maxFailureRate, retried: true });
+    }
+    if (decision.action === 'stop') summary.ladderStopped = decision.reason;
     console.log(JSON.stringify(summary));
-    // A rung that could not hold its connections is the ceiling; climbing
-    // past it measures nothing but the failure mode.
-    if (summary.connectFailures > 0) {
-        log(`stopping the ladder: ${summary.connectFailures} connect failures at n=${rung}`);
+    if (decision.action === 'stop') {
+        log(`stopping the ladder: ${decision.reason}`);
         break;
     }
 }
