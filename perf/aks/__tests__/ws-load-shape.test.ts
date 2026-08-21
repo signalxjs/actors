@@ -95,7 +95,14 @@ function runWsLoad(args: string[]) {
     ].join(delimiter);
     const base: Record<string, string> = {
         PATH: path,
-        Path: path,
+        // `spawnable` resolves a Windows shim via `where`, which matches
+        // executable extensions off PATHEXT — strip it and the fake
+        // `kubectl.cmd` stops being found. ComSpec/SystemRoot are what
+        // cmd.exe itself needs; node is invoked by absolute path.
+        ...(process.platform === 'win32' && process.env.PATHEXT
+            ? { PATHEXT: process.env.PATHEXT }
+            : {}),
+        ...(process.env.ComSpec ? { ComSpec: process.env.ComSpec } : {}),
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         RG: 'rg',
         CLUSTER: 'testctx',
