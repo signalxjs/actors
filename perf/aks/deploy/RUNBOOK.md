@@ -568,6 +568,24 @@ rung rather than how many were up at once.
 
 Pass/fail, and what to record:
 
+- **Every run prints the deployment's shape and the resolved image —
+  record the shape with the numbers, and pin a multi-run comparison with
+  `expect-shape` (#224).** The shape line is the same `INFRA_SHAPE` string
+  `ws-bench` records, read off the LIVE Deployment; the image line makes
+  the `image.tag` default (`git` HEAD of the runner's checkout) visible
+  instead of silent. When two hand-runs are arms of one comparison, take
+  the first run's shape line and pass it to the second verbatim:
+
+  ```sh
+  node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000 \
+    'expect-shape=ws replicas=3 nodes=3 image=<tag> knobs=…'
+  ```
+
+  A mismatch refuses before anything runs — the same contract
+  `ws-bench --compare` enforces — and a rollout landing mid-run fails the
+  run afterwards, because rows spanning two shapes compare with nothing.
+  This guard is what catches the near-miss that motivated it: two arms
+  taken a session apart, with ~320 runtime lines merged in between.
 - **`connected` must equal the hosts' own `ops.sockets.open`** (plus one
   for the publisher's connection — the merged row states the expected
   total). The verb prints the summed `ops.sockets` delta after every run;
