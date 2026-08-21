@@ -108,6 +108,31 @@ describe('boundedFetch', () => {
         await expect(fetch('http://peer.internal/x')).rejects.toThrow(/pnpm add undici/);
     });
 
+    it('does not cache a failure from the Agent constructor either', async () => {
+        // The rejection can come from AFTER the load — undici resolving but
+        // its Agent throwing — and must not pin `ready` to a permanently
+        // rejected promise: the next call retries from the loader.
+        let attempts = 0;
+        class FlakyAgent {
+            constructor() {
+                attempts += 1;
+                if (attempts === 1) throw new Error('agent init failed');
+            }
+        }
+        const undici: UndiciLike = {
+            Agent: FlakyAgent as unknown as UndiciLike['Agent'],
+            fetch: () => Promise.resolve(new Response('ok'))
+        };
+        const load = vi.fn(() => Promise.resolve(undici));
+        const fetch = createBoundedFetch({ connections: 2 }, load);
+
+        await expect(fetch('http://peer.internal/x')).rejects.toThrow('agent init failed');
+        const res = await fetch('http://peer.internal/x');
+        expect(await res.text()).toBe('ok');
+        expect(load).toHaveBeenCalledTimes(2);
+        expect(attempts).toBe(2);
+    });
+
     it('lets a non-resolution load failure through untranslated', async () => {
         const broken = Object.assign(new Error('undici blew up at init'), { code: 'EWHATEVER' });
         const fetch = createBoundedFetch({ connections: 1 }, () => Promise.reject(broken));

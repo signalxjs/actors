@@ -84,9 +84,12 @@ export function createBoundedFetch(
     // one-shot, without caching the failure forever.
     let ready: Promise<{ undici: UndiciLike; agent: object }> | undefined;
     function agentReady() {
-        ready ??= load().then(
-            (undici) => ({ undici, agent: new undici.Agent({ connections }) }),
-            (error) => {
+        ready ??= load()
+            .then((undici) => ({ undici, agent: new undici.Agent({ connections }) }))
+            .catch((error: unknown) => {
+                // The whole chain — a throwing Agent constructor included,
+                // not just the load — clears the cache, so no rejection is
+                // ever pinned as this helper's permanent answer.
                 ready = undefined;
                 const code = (error as { code?: string } | null)?.code;
                 if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
@@ -98,8 +101,7 @@ export function createBoundedFetch(
                     );
                 }
                 throw error;
-            }
-        );
+            });
         return ready;
     }
 
