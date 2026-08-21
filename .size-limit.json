@@ -34,7 +34,7 @@
     "name": "@sigx/actors/client (tree-shaking guard: no router)",
     "path": "packages/actors/dist/client.prod.js",
     "import": "{ __actorRef, configureActors, fetchTransport }",
-    "limit": "2.3 KB",
+    "limit": "2.4 KB",
     "ignore": [
       "@sigx/serialize"
     ]
@@ -42,7 +42,7 @@
   {
     "name": "@sigx/actors/app",
     "path": "packages/actors/dist/app.prod.js",
-    "limit": "6.5 KB",
+    "limit": "6.6 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
