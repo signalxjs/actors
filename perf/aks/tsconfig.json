@@ -1,0 +1,54 @@
+{
+    // Its own program, chained from the repo-root `typecheck` script — the
+    // same mechanism `examples/cf-workers` uses. The gate was deliberately
+    // left off when this tree moved out of `examples/`; #89 turns it on.
+    //
+    // `deploy/*.mjs`, `loadgen.mjs`, `ws-loadgen.mjs` and `server.mjs` are
+    // plain scripts run without a build step and stay outside this program,
+    // matching the repo convention that `.mjs` entries stay out of the
+    // gates (`verify.mjs` in cf-workers is not linted either).
+    "compilerOptions": {
+        "target": "ES2023",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true,
+        // The server app and the loadgen loop import `./actors.app.ts` WITH
+        // the extension, because Node runs them directly on its own type
+        // stripping.
+        "allowImportingTsExtensions": true,
+        // `@sigx/actors*` resolve from SOURCE, as the root config and
+        // `examples/cf-workers` do, so a clean checkout typechecks before
+        // anything is built. Without this the packages' own `exports` maps
+        // send every one of them at `dist/`, and the root `typecheck`
+        // script would depend on a prior `pnpm build` — which CI runs
+        // AFTER it.
+        "paths": {
+            "@sigx/actors": ["../../packages/actors/src/index.ts"],
+            "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/job": ["../../packages/actors/src/job/index.ts"],
+            "@sigx/actors/cluster": [
+                "../../packages/actors/src/cluster/index.ts"
+            ],
+            "@sigx/actors/client": [
+                "../../packages/actors/src/client/index.ts"
+            ],
+            "@sigx/actors-redis": [
+                "../../packages/actors-redis/src/index.ts"
+            ]
+        }
+    },
+    // `env.d.ts` declares `__DEV__`, the runtime's compile-time flag, pulled
+    // in because `paths` above compiles that source as part of this program.
+    // `__tests__` is included too: `infra.test.ts` and friends are TypeScript
+    // vitest never typechecks (`post-fn.mjs` ships a `.d.mts` beside it, so
+    // the cross-tree import resolves without `allowJs`).
+    "include": [
+        "src/**/*.ts",
+        "__tests__/**/*.ts",
+        "../../packages/actors/src/env.d.ts"
+    ]
+}

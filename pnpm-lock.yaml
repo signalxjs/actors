@@ -538,6 +538,9 @@ importers:
       '@sigx/cli':
         specifier: ^0.9.0
         version: 0.9.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   perf/app:
     dependencies:
@@ -572,6 +575,9 @@ importers:
       '@sigx/vite':
         specifier: 'catalog:'
         version: 0.15.2(@sigx/server-renderer@0.15.2)(@sigx/server@0.15.2)(sigx@0.15.2)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0))
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
       vite:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
