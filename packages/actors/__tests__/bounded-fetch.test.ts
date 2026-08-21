@@ -117,7 +117,14 @@ describe('boundedFetch', () => {
     describe('against real undici and real sockets', () => {
         let server: Server | undefined;
         afterEach(async () => {
-            if (server) await new Promise((resolve) => server!.close(resolve));
+            if (server) {
+                // The agent keeps its pooled sockets alive after the
+                // responses land, and `server.close()` waits for them —
+                // drop them first so teardown never rides a keep-alive
+                // timeout.
+                server.closeAllConnections();
+                await new Promise((resolve) => server!.close(resolve));
+            }
             server = undefined;
         });
 
