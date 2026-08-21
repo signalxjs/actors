@@ -133,24 +133,44 @@ describe('per-actor stream keepalive', () => {
         // The ping marks SILENCE, not wall clock. A stream sending values
         // faster than the interval is demonstrably alive, so pinging it too
         // would be payload and parse work for nothing.
-        const s = createHost({ actors: [Room], defaults: quiet });
-        running.push(s);
-        await s.start();
+        //
+        // Driven on FAKE timers (#108): under real time, "yields every 5 ms
+        // against a 25 ms interval" is only a 5× margin over the scheduler,
+        // and one routine stall on a loaded runner produces 25 ms of genuine
+        // silence — the keepalive then fires exactly as specified and the
+        // assertion, not the behaviour, breaks. Faking `setTimeout` makes
+        // "faster than the interval" true by construction: both the actor's
+        // 5 ms yields and the keepalive clock live on the same faked heap,
+        // which is every timer this path arms (`quiet` disables call
+        // deadlines, and the 60 s sweep/reminder intervals are out of reach).
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+            const s = createHost({ actors: [Room], defaults: quiet });
+            running.push(s);
+            await s.start();
 
-        const response = await handleActorRequest(
-            new Request(`${ENDPOINT}/${encodeURIComponent('Room#chatter')}`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ args: ['r2'] })
-            }),
-            { host: s, origin: false, streamPingMs: 25 }
-        );
-        // `chatter` yields every 5 ms, so eight lines span ~40 ms — well past
-        // the interval a wall-clock ping would have fired on.
-        const lines = await readLines(response, 8);
+            const response = await handleActorRequest(
+                new Request(`${ENDPOINT}/${encodeURIComponent('Room#chatter')}`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args: ['r2'] })
+                }),
+                { host: s, origin: false, streamPingMs: 25 }
+            );
+            const reading = readLines(response, 8);
+            // Eight lines need 35 fake-ms of 5 ms yields; walk 45 in 1 ms
+            // steps so every yield's microtask chain (generator → NDJSON →
+            // keepalive wrapper → reader) drains before the clock moves on.
+            // A wall-clock keepalive — one that ignored the writes — would
+            // fire at 25 and land a ping among these lines.
+            for (let tick = 0; tick < 45; tick++) await vi.advanceTimersByTimeAsync(1);
+            const lines = await reading;
 
-        expect(lines).toHaveLength(8);
-        expect(lines.filter((line) => line.includes('ping'))).toEqual([]);
+            expect(lines).toHaveLength(8);
+            expect(lines.filter((line) => line.includes('ping'))).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('does not pile up pings behind a consumer that stopped reading', async () => {
