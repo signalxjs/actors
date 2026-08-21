@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`fetchTransport` retries a pre-response connection failure once** (#55).
+  A rolling restart leaves an irreducible residue of connection-level errors
+  at the edge: the client writes onto a pooled keep-alive socket in the same
+  instant the exiting server retires it, and no server-side drain can win
+  that race alone. When the `fetch()` await itself rejects — before any
+  `Response` existed — with a connection-level failure (`UND_ERR_SOCKET`,
+  `ECONNRESET`, `ECONNREFUSED`, `EPIPE`, or the opaque browser `TypeError`),
+  the transport now re-sends the request exactly once. Pre-response is
+  provably pre-dispatch, so the retry cannot double-execute a turn; a call
+  is never retried after a status has arrived, on a mid-body NDJSON failure,
+  or on an abort. ON by default; opt out with
+  `configureActors({ retryConnectionErrors: false })`. Socket transports are
+  unaffected — on a multiplexed connection a drop still fails in-flight
+  calls un-retried (#99).
+
 ### Fixed
 
 - **A fenced host says it is fenced** (#272). Dispatch on a self-fenced host

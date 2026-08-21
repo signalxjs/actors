@@ -13,6 +13,13 @@
  * both must deliver: values round-trip the codec, errors arrive branded
  * with the endpoint's classification, a failed or cancelled call costs
  * nothing else, and fire-and-forget lands.
+ *
+ * The pre-response connection retry (#55) is deliberately NOT a case here:
+ * it is `fetchTransport`-only behaviour, not part of this contract. A
+ * per-call fetch that rejects provably never dispatched, so a retry is
+ * safe; on a multiplexed socket a dropped connection fails every in-flight
+ * call UN-retried (#99) — the transport cannot know which frames the server
+ * consumed before the drop.
  */
 import { defineActor } from '../define';
 import type { ActorTransport } from '../client/index';

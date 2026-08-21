@@ -21,7 +21,9 @@
  *
  * Policy — retries, caching, invalidation, live subscriptions — deliberately
  * lives in `@sigx/actors/app`, not here: this entry's byte budget rides
- * every client bundle whether or not the app uses any of it.
+ * every client bundle whether or not the app uses any of it. The ONE
+ * exception is the single pre-response connection retry (#55), which is a
+ * wire-level fact (the fetch never reached a server), not app policy.
  */
 import {
     ACTOR_ONEWAY_HEADER,
@@ -202,10 +204,47 @@ export interface ActorTransportConfig {
      * upstream routes on it, and the server ignores it either way.
      */
     route?: ActorRouteToken;
+    /**
+     * Retry a call whose `fetch()` await itself rejected — before any
+     * `Response` existed — exactly once (#55). ON by default: the failure it
+     * heals is the rolling-restart race (the client writes onto a pooled
+     * keep-alive socket in the instant the exiting server retires it), which
+     * is invisible to the app author and bites exactly during deploys. A
+     * pre-response rejection is provably pre-dispatch, so the retry cannot
+     * double-execute a turn.
+     *
+     * Never fires after a status has arrived or on a mid-body stream
+     * failure — the call may have executed — and never on an abort, whatever
+     * the abort reason looks like. Set `false` to opt out.
+     */
+    retryConnectionErrors?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // The default transport
+
+/**
+ * A connection-level failure the fetch rejected with BEFORE any response
+ * headers arrived: the codes Node's undici surfaces (on the rejection
+ * itself, or on its `cause`), or a browser fetch's opaque `TypeError`. An
+ * abort never matches: its rejection is a DOMException named
+ * AbortError/TimeoutError — and a custom abort reason that DOES look like a
+ * connection error is excluded by the `signal.aborted` check at the call
+ * site.
+ */
+function isConnectionError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code =
+        (error as { code?: unknown }).code ??
+        (error.cause as { code?: unknown } | undefined | null)?.code;
+    // A coded error is judged by its code ALONE — Node's `TypeError: fetch
+    // failed` puts the real verdict on `cause`, so a DNS miss or TLS error
+    // must not slip through the opaque-TypeError branch below.
+    if (typeof code === 'string') {
+        return ['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE'].includes(code);
+    }
+    return error.name === 'TypeError';
+}
 
 function endpointOf(config: ActorTransportConfig, init: ActorCallInit | undefined): string {
     // `init.route` FIRST: it is the only source that was told, rather than
@@ -273,7 +312,22 @@ async function send(
             ...signal
         };
     }
-    return config.fetch ? config.fetch(url, request) : fetch(url, request);
+    const run = (): Promise<Response> =>
+        config.fetch ? config.fetch(url, request) : fetch(url, request);
+    if (config.retryConnectionErrors === false) return run();
+    try {
+        return await run();
+    } catch (error) {
+        // Retry EXACTLY once, and only a rejection of the fetch itself: no
+        // Response ever existed, so the server provably never answered this
+        // dispatch. Anything after a status arrives (an HTTP error, a
+        // mid-body NDJSON failure in `readNdjson`) may have executed a turn
+        // and is never retried. An abort is the caller's decision — checked
+        // on the signal, not the error shape, so a custom abort reason
+        // cannot masquerade as a connection failure.
+        if (init?.signal?.aborted || !isConnectionError(error)) throw error;
+        return run();
+    }
 }
 
 function skewHint(symbol: string, status: number): string {
@@ -284,8 +338,10 @@ function skewHint(symbol: string, status: number): string {
 }
 
 /**
- * The default transport: one POST per call, NDJSON for streams. Its
- * behaviour is exactly what shipped before the seam existed.
+ * The default transport: one POST per call, NDJSON for streams — plus one
+ * retry of a pre-response connection failure (#55, opt out with
+ * `retryConnectionErrors: false`). Otherwise its behaviour is exactly what
+ * shipped before the seam existed.
  */
 export function fetchTransport(config: ActorTransportConfig = {}): ActorTransport {
     const dispatch = (symbol: string, args: unknown[], init?: ActorCallInit) =>
