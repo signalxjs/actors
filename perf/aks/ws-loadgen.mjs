@@ -175,12 +175,21 @@ if (!(Number.isFinite(SLOW_RESUME_MS) && SLOW_RESUME_MS >= 0)) {
     process.exit(1);
 }
 
-// Validated like the SLOW_* knobs: a negative threshold stops the ladder at
-// the first rung whatever happens, which silently reinstates the exact
-// behaviour #222 removed.
-if (!(Number.isFinite(MAX_CONNECT_FAILURE_PCT) && MAX_CONNECT_FAILURE_PCT >= 0)) {
+// Validated like the SLOW_* knobs, and BOUNDED at both ends: a negative
+// threshold stops the ladder at the first rung whatever happens, which
+// silently reinstates the exact behaviour #222 removed — and one over 100
+// (a typo like `1000`) can never trigger, which silently disables the stop
+// and would let a real ceiling climb on. 100 itself is the deliberate
+// opt-out: a rate can reach exactly 100% but never exceed it.
+if (
+    !(
+        Number.isFinite(MAX_CONNECT_FAILURE_PCT) &&
+        MAX_CONNECT_FAILURE_PCT >= 0 &&
+        MAX_CONNECT_FAILURE_PCT <= 100
+    )
+) {
     console.error(
-        `[ws-loadgen] MAX_CONNECT_FAILURE_PCT must be >= 0, got '${MAX_CONNECT_FAILURE_PCT}'`
+        `[ws-loadgen] MAX_CONNECT_FAILURE_PCT must be between 0 and 100, got '${MAX_CONNECT_FAILURE_PCT}'`
     );
     process.exit(1);
 }
