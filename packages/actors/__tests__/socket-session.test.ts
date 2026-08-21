@@ -11,7 +11,7 @@
  * does not, and identity resolves once per connection while middleware runs
  * per message.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServerFnError } from '@sigx/server';
 import { stubServerApp } from '@sigx/server/testing';
 import { defineActor } from '@sigx/actors';
@@ -476,32 +476,57 @@ describe('keepalive', () => {
         expect(link.sent[0]).toEqual({ p: 1 });
     });
 
+    /**
+     * The two burst cases run on FAKE timers (#108): under real time, "one
+     * frame every 15 ms against a 40 ms window" is only a small margin over
+     * the scheduler, and one routine stall on a loaded runner opens a
+     * genuine 40 ms gap — the ping then fires exactly as specified and the
+     * assertion, not the behaviour, breaks. `performance` is faked alongside
+     * `setTimeout` because the deadline is a `performance.now()` stamp the
+     * timer consults (#250) — mixing a fake timer with the real clock would
+     * make `idle` nonsense. Both must be faked BEFORE `connect`, which arms
+     * the ping timer and takes the first stamp.
+     */
     it('does not ping a connection that keeps sending', async () => {
         // The deadline is measured from the last outbound frame, so traffic
         // must keep pushing it out. Since #250 `reply()` only stamps a
         // timestamp — it no longer re-arms the timer — so this is the test
         // that the timer still consults that stamp instead of firing blind.
-        const s = await start();
-        const { session, link } = await connect(s, { pingMs: 40 });
-        for (let i = 1; i <= 12; i++) {
-            session.handle(JSON.stringify({ i, s: 'Cart#total', a: ['busy'] }));
-            await new Promise((resolve) => setTimeout(resolve, 15));
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+        try {
+            const s = await start();
+            const { session, link } = await connect(s, { pingMs: 40 });
+            for (let i = 1; i <= 12; i++) {
+                session.handle(JSON.stringify({ i, s: 'Cart#total', a: ['busy'] }));
+                await vi.advanceTimersByTimeAsync(15);
+            }
+            // 180 fake-ms of traffic, never 40 quiet — a timer firing blind
+            // (or a `reply()` that stopped stamping) pings at 40.
+            expect(link.sent.some((f) => 'p' in f)).toBe(false);
+        } finally {
+            vi.useRealTimers();
         }
-        expect(link.sent.some((f) => 'p' in f)).toBe(false);
     });
 
     it('pings once the burst stops', async () => {
         // …and the other half: the same connection, gone quiet, is pinged
         // within about one window rather than never — the failure mode a
         // stamp-only `reply()` would have if nothing rescheduled.
-        const s = await start();
-        const { session, link } = await connect(s, { pingMs: 40 });
-        for (let i = 1; i <= 5; i++) {
-            session.handle(JSON.stringify({ i, s: 'Cart#total', a: ['burst'] }));
-            await new Promise((resolve) => setTimeout(resolve, 10));
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+        try {
+            const s = await start();
+            const { session, link } = await connect(s, { pingMs: 40 });
+            for (let i = 1; i <= 5; i++) {
+                session.handle(JSON.stringify({ i, s: 'Cart#total', a: ['burst'] }));
+                await vi.advanceTimersByTimeAsync(10);
+            }
+            expect(link.sent.some((f) => 'p' in f)).toBe(false);
+            // Quiet from here: one full window later the ping must be out.
+            await vi.advanceTimersByTimeAsync(80);
+            expect(link.sent.some((f) => 'p' in f)).toBe(true);
+        } finally {
+            vi.useRealTimers();
         }
-        expect(link.sent.some((f) => 'p' in f)).toBe(false);
-        await until(() => link.sent.some((f) => 'p' in f));
     });
 });
 
