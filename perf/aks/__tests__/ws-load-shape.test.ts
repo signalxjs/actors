@@ -130,6 +130,10 @@ describe('ws-load shape guard', () => {
         const defaulted = runWsLoad([`expect-shape=${LIVE_SHAPE}`]);
         expect(defaulted.stdout).toContain('image: example.azurecr.io/sigx-actors-test:fakehead');
         expect(defaulted.stdout).toContain('defaulted');
+        // An EMPTY tag is unset, not a pin — `repo:` is not an image.
+        const empty = runWsLoad(['image.tag=', `expect-shape=${LIVE_SHAPE}`]);
+        expect(empty.stdout).toContain('image: example.azurecr.io/sigx-actors-test:fakehead');
+        expect(empty.stdout).toContain('defaulted');
         // An explicit tag is not flagged.
         const explicit = runWsLoad(['image.tag=tag123', `expect-shape=${LIVE_SHAPE}`]);
         expect(explicit.stdout).toContain('image: example.azurecr.io/sigx-actors-test:tag123');

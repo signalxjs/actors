@@ -493,10 +493,12 @@ async function wsLoad(args) {
     // moves on every merge while the deployed image does not — but it is
     // lifted OUT of the values so it cannot also arrive as a chart value
     // and quietly win over the explicit one.
-    const tagDefaulted = values['image.tag'] === undefined;
-    const imageTag = values['image.tag'] ?? gitSha();
+    // An EMPTY value counts as unset, not as a pin: `image.tag=` would
+    // otherwise become the invalid image `repo:` while claiming explicitness.
+    const tagDefaulted = !values['image.tag'];
+    const imageTag = values['image.tag'] || gitSha();
     const imageRepository = values['image.repository']
-        ?? `${cfg.acr}.azurecr.io/sigx-actors-test`;
+        || `${cfg.acr}.azurecr.io/sigx-actors-test`;
     delete values['image.tag'];
     delete values['image.repository'];
 
@@ -510,7 +512,7 @@ async function wsLoad(args) {
     // whatever the runner had checked out, which is how a hand-run A/B came
     // to span two images with nothing objecting (#224).
     step(`image: ${imageRepository}:${imageTag}` +
-        (tagDefaulted ? ' (defaulted to git HEAD — pass image.tag= to pin)' : ''));
+        (tagDefaulted ? ' (defaulted to git HEAD — pass image.tag=<tag> to pin)' : ''));
     // The Job's image is what the GENERATOR runs; the shape's `image=` is
     // what the HOSTS run. Both are named because they can differ, and a
     // comparison is only as good as the one that moved unnoticed.
