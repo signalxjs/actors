@@ -292,7 +292,10 @@ reaches 1000). The durable sizing rule, cheapest option first:
    existing rather than being budgeted for.
 2. Otherwise size the host-to-host pool for the signed-in watcher population:
    per-principal cross-host streams each hold a pooled connection for the
-   life of the subscription.
+   life of the subscription. The shipped way to size it is
+   `boundedFetch({ connections })` on `@sigx/actors/node` (#118), handed to
+   `cluster({ fetch })` — scoped to that seam, never the process's global
+   dispatcher.
 3. Or use `@sigx/actors-tcp` (one multiplexed connection per peer), which
    makes the pool arithmetic moot whatever the reads do.
 

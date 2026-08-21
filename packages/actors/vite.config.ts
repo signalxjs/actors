@@ -25,7 +25,10 @@ const base = defineLibConfig({
     // drag `@sigx/runtime-dom` in behind it, which is wrong for a terminal or
     // a Lynx consumer. If an import ever reappears, this keeps it external
     // rather than silently bundled.
-    external: [/@sigx\/.*/, /^sigx(\/|$)/, /^node:/, 'vite'],
+    // `undici` is the OPTIONAL peer behind `boundedFetch` on `./node` —
+    // loaded lazily at the first call, so it must stay external, never
+    // bundled (a consumer without it must still load the entry).
+    external: [/@sigx\/.*/, /^sigx(\/|$)/, /^node:/, 'vite', 'undici'],
     root: import.meta.url
 }) as (env: ConfigEnv) => UserConfig;
 

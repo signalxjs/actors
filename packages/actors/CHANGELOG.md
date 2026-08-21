@@ -26,6 +26,21 @@
 
 ### Added
 
+- **`boundedFetch({ connections })` on `@sigx/actors/node`** (#118). The
+  bounded-pool recipe is now code: a `fetch` that forwards every call through
+  one undici `Agent({ connections })` as its `dispatcher`, built for the
+  cluster's `fetch` seam —
+  `cluster({ …, fetch: boundedFetch({ connections: 64 }) })`. Node's default
+  pool is unbounded and measured at two sockets per in-flight request
+  (`benchmarks/BASELINES.md`, Tier 2); capping it *at* the concurrency halves
+  the socket count and is marginally faster (+6%). `connections` is required
+  and deliberately has no default — match your host's outbound concurrency:
+  the sweet spot moves across undici majors, and capping far below the
+  concurrency collapses throughput. `undici` becomes an optional peer
+  (`>=6`), loaded lazily on the first call, with install guidance when it is
+  absent. Scoped on purpose: only the returned fetch is re-tuned, never the
+  process's global dispatcher.
+
 - **A host with nothing to fence rejoins instead** (#272). A host that
   registers no stateful actor type — a `defineWorker`-only tier — holds no
   directory claim by construction, so its membership lapse costs the cluster
