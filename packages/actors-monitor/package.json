@@ -55,7 +55,7 @@
         "@sigx/actors": "workspace:*",
         "@sigx/reactivity": "catalog:",
         "@sigx/vite": "catalog:",
-        "@types/node": "^25.9.1",
+        "@types/node": "^26.2.0",
         "typescript": "^6.0.3",
         "vite": "^8.0.3"
     },
