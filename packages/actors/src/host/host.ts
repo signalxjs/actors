@@ -45,7 +45,13 @@ import type {
     TopicPublishReport
 } from '../types';
 import { actorId } from '../types';
-import { mintCallId, REMINDER_METHOD, type Activation, type ActivationHost } from './activation';
+import {
+    createWatchDeclarationHints,
+    mintCallId,
+    REMINDER_METHOD,
+    type Activation,
+    type ActivationHost
+} from './activation';
 import { LocalHost } from './local-host';
 import { shardedReminders } from './reminders';
 import { taskLedger } from './tasks';
@@ -348,6 +354,10 @@ class HostImpl implements Host {
             onIdleRequest: (activation: Activation) => {
                 void this.#local.deactivateOne(activation, 'explicit');
             },
+            // The #221 declaration hint. HOST-owned so the per-(type, method)
+            // tally survives re-activation; installed only in dev builds, so
+            // production watch reads never make the call at all.
+            ...(__DEV__ ? { onWatchRead: createWatchDeclarationHints() } : {}),
             ...(options.extendContext ? { extendContext: options.extendContext } : {})
         };
         if (options.onTurn) this.observeTurns(options.onTurn);

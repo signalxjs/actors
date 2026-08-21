@@ -98,6 +98,64 @@ interface WatchInvokeCall extends ActorCallContext {
     [kWatchDeclared]?: { method: string; violated: Error | null };
 }
 
+/**
+ * Completed identity-blind reads of an UNDECLARED method before the
+ * declaration hint fires (#221). Several observations, not one: a read can
+ * be conditionally identity-dependent and simply not have taken the branch
+ * yet, so a single blind invocation proves nothing.
+ */
+export const WATCH_DECLARATION_HINT_READS = 25;
+
+/**
+ * The `__DEV__` authoring hint of #221, tallied per (type, method).
+ *
+ * An identity-blind watch read that is not declared `principalIndependent`
+ * costs exactly what a genuinely identity-dependent read costs — one
+ * cross-host stream per identity instead of one shared stream — and the
+ * only signal the author gets today is the scaling wall. The runtime
+ * already observes both inputs (whether a read consulted `ctx.principal`,
+ * #121, and whether the method was declared, #138), so after
+ * `WATCH_DECLARATION_HINT_READS` completed reads with no consultation it
+ * says so, once.
+ *
+ * A hint, never an automatic optimization: inferring the declaration from
+ * observed blindness would be the same class of bug
+ * `ActorWatchDeclarationError` exists to prevent. One consultation kills
+ * the tally for good — including across re-activations, which is why the
+ * host owns the returned memo rather than the activation (`ActivationHost.
+ * onWatchRead`): a fresh activation rediscovers identity-dependence only
+ * on its first consulting read, and the reads before it must not restart
+ * the count toward a warning the method already disproved.
+ */
+export function createWatchDeclarationHints(
+    threshold = WATCH_DECLARATION_HINT_READS
+): (type: string, method: string, consultedPrincipal: boolean) => void {
+    /** Blind-read tally per `type.method`; -1 = suppressed or already warned. */
+    const tallies = new Map<string, number>();
+    return (type, method, consultedPrincipal) => {
+        const key = `${type}.${method}`;
+        const count = tallies.get(key) ?? 0;
+        if (count === -1) return;
+        if (consultedPrincipal) {
+            tallies.set(key, -1);
+            return;
+        }
+        const next = count + 1;
+        if (next < threshold) {
+            tallies.set(key, next);
+            return;
+        }
+        tallies.set(key, -1);
+        console.warn(
+            `[sigx actors] "${type}.${method}" served ${next} watch reads without consulting ` +
+                `ctx.principal. Declaring watches: { ${method}: { principalIndependent: true } } ` +
+                'would let distinct identities share one cross-host stream. Ignore this if the ' +
+                'read is only conditionally identity-dependent; if it reads ctx.principal only ' +
+                'to authorize, move that check to authorize/methodAuthorize and then declare.'
+        );
+    };
+}
+
 /** One shared watch loop plus its live subscriber handles — the set the
  * discovery sweep walks to evict mismatched principals (#121). */
 interface WatchEntry {
@@ -196,6 +254,16 @@ export interface ActivationHost {
         call: ActorCallContext | null,
         publisher: ActorRef
     ): Promise<TopicPublishReport>;
+    /**
+     * `__DEV__` only (#221) — absent from production hosts, so the hot path
+     * never pays for it. Called after every COMPLETED shared-watch read of a
+     * method that is NOT declared `principalIndependent`;
+     * `consultedPrincipal` reports whether that read (or an earlier read of
+     * the same entry) was observed consulting `ctx.principal`. The host owns
+     * the per-(type, method) tally so it survives re-activation — see
+     * `createWatchDeclarationHints`.
+     */
+    onWatchRead?(type: string, method: string, consultedPrincipal: boolean): void;
     /** A save hit a conflict: forget this activation after the current turn. */
     onFault(activation: Activation): void;
     /** `ctx.deactivate()` was requested and the queue just emptied. */
@@ -917,6 +985,20 @@ export class Activation {
                         // outlives the invoke, so a later read of the same
                         // entry fails the same way.
                         if (declared?.violated) throw declared.violated;
+                        // #221: a completed read of an UNDECLARED method —
+                        // report whether it stayed identity-blind so the
+                        // host can hint at the missing declaration. After
+                        // the value is in hand (a failed read proves
+                        // nothing), and gated on the getter's discovery
+                        // set, which the read populated synchronously if it
+                        // consulted the principal.
+                        if (__DEV__ && declared === undefined) {
+                            this.#host.onWatchRead?.(
+                                this.ref.type,
+                                method,
+                                this.#watchPrincipalDependent.has(base)
+                            );
+                        }
                         return value;
                     } finally {
                         // Discovery sweep (#121): the read consulted the

@@ -272,6 +272,17 @@ shared stream carries no principal at all, so the worst case is everyone
 seeing the anonymous view rather than one user seeing another's. Deploy the
 declaration before relying on it.
 
+**Dev builds hint at the missing declaration (#221).** The runtime already
+holds both inputs — whether a shared read has been observed consulting
+`ctx.principal` (#121's discovery) and whether the method is declared (#138)
+— so after 25 completed watch reads of an undeclared method with no
+consultation, the host warns once per (type, method) with the exact
+`watches:` line to add. A hint, never an inference (a conditionally
+identity-dependent read must keep its per-principal split, which is why one
+consulting read silences the tally for good), tallied on the HOST
+(`ActivationHost.onWatchRead`, installed only under `__DEV__`) so
+re-activation does not restart the count.
+
 The exact-count invariants are gated by the `cluster/live-fanout` benchmark:
 `declared=P/*` (one stream for P identities) beside `undeclared=P/*` (P
 streams), both `exact`, so a change that starts sharing an *undeclared* read
