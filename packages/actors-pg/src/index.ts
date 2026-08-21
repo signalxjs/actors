@@ -337,6 +337,9 @@ export function pgMembership(
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let listener: PgListenClient | null = null;
+    /** Once per membership, not per refresh — the prune rides every poll
+     *  tick, and a permanently failing one would warn forever (#268). */
+    let pruneWarned = false;
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Set<() => void>();
     const clock = heartbeatClock({
@@ -377,13 +380,21 @@ export function pgMembership(
         // Lazy prune, best-effort: rows a TTL already excluded, kept only so
         // the table does not accumulate dead hosts forever. The grace keeps
         // a slow-beating-but-alive host's row from being deleted under it.
+        // Best-effort is not silent, though — a PERMANENTLY failing prune
+        // (permissions, schema drift) accumulates dead rows forever, so the
+        // first failure warns under dev, matching the reminders tick (#268).
         void pool
             .query(
                 `DELETE FROM ${s}.hosts
                  WHERE expires_at < now() - make_interval(secs => $1::float8 / 1000.0)`,
                 [ttlMs * 4]
             )
-            .catch(noop);
+            .catch((error: unknown) => {
+                if (__DEV__ && !pruneWarned) {
+                    pruneWarned = true;
+                    console.warn('[sigx actors-pg] membership prune failed:', error);
+                }
+            });
         const hosts = live.rows.map((row) => JSON.parse(row['descriptor'] as string) as HostDescriptor);
         const next: MembershipView = {
             version: Number(versionRow.rows[0]?.['version'] ?? 0),
