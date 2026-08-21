@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { createHmac } from 'node:crypto';
 import { postMessageFnId } from '../../app/deploy/post-fn.mjs';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
+import { shapeMismatch } from '../../../benchmarks/src/shape.mjs';
 import { runWsLoad } from './ws-load.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -462,6 +463,15 @@ async function wsUp(args) {
  * Commas are escaped for `--set` here rather than by the caller: `helm
  * --set` splits values on commas, so an unescaped ladder fails with
  * `key "5000" has no value` — a confusing error a long way from its cause.
+ *
+ * Every run prints the live deployment's shape — the same `INFRA_SHAPE`
+ * string the recorded `ws-bench` path builds — and the image it resolved,
+ * because a hand-run number without its shape is exactly how an A/B came
+ * to span two images unnoticed (#224). `expect-shape='<string>'` (quoted —
+ * a shape contains spaces) turns that into the guard `--compare` has:
+ * refuse BEFORE the run when the live deployment is not the shape the
+ * operator thinks they are measuring, and again after it if a rollout
+ * changed the deployment mid-run.
  */
 async function wsLoad(args) {
     // Values arrive as `key=value`, unprefixed (`mode=hot`). A token
@@ -483,11 +493,38 @@ async function wsLoad(args) {
     // moves on every merge while the deployed image does not — but it is
     // lifted OUT of the values so it cannot also arrive as a chart value
     // and quietly win over the explicit one.
+    const tagDefaulted = values['image.tag'] === undefined;
     const imageTag = values['image.tag'] ?? gitSha();
     const imageRepository = values['image.repository']
         ?? `${cfg.acr}.azurecr.io/sigx-actors-test`;
     delete values['image.tag'];
     delete values['image.repository'];
+
+    // Lifted out like the image keys: `expect-shape` is an instruction to
+    // this verb, and left in `values` it would arrive at helm as a broken
+    // `wsLoadgen.expect-shape` chart value.
+    const expectShape = values['expect-shape'];
+    delete values['expect-shape'];
+
+    // ALWAYS visible, defaulted or not: the tag was silently `gitSha()` of
+    // whatever the runner had checked out, which is how a hand-run A/B came
+    // to span two images with nothing objecting (#224).
+    step(`image: ${imageRepository}:${imageTag}` +
+        (tagDefaulted ? ' (defaulted to git HEAD — pass image.tag= to pin)' : ''));
+    // The Job's image is what the GENERATOR runs; the shape's `image=` is
+    // what the HOSTS run. Both are named because they can differ, and a
+    // comparison is only as good as the one that moved unnoticed.
+    const shape = actorsShape();
+    step(`shape: ${shape}`);
+    if (expectShape !== undefined) {
+        const mismatch = shapeMismatch(expectShape, shape);
+        if (mismatch) {
+            console.error(`✗ ${mismatch}`);
+            console.error('  the live deployment is not the shape this run expects — nothing was run.');
+            process.exit(1);
+        }
+        log('  expect-shape matches the live deployment');
+    }
 
     let result;
     try {
@@ -531,6 +568,18 @@ async function wsLoad(args) {
 
     step('ops.sockets, summed across hosts');
     log(JSON.stringify({ hosts: result.hosts, delta: result.delta }));
+
+    // The shape again, WITH the numbers it belongs to — so a pasted result
+    // carries it — and re-read rather than reprinted: a rollout landing
+    // mid-run means the rows above span two deployments, which is the
+    // silent-A/B failure this guard exists for (#224).
+    const shapeAfter = actorsShape();
+    step(`shape: ${shapeAfter}`);
+    if (shapeAfter !== shape) {
+        console.error(`✗ the deployment changed mid-run — it was: ${shape}`);
+        console.error('  the rows above span two shapes; the run is not valid');
+        process.exitCode = 1;
+    }
 
     // A partial run that exits 0 is a number nobody knows to distrust.
     if (result.partial) process.exitCode = 1;

@@ -6,6 +6,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { arch, cpus, platform, totalmem } from 'node:os';
+import { shapeMismatch } from './shape.mjs';
 
 export interface BenchEnv {
     node: string;
@@ -75,8 +76,10 @@ export function captureEnv(): BenchEnv {
 }
 
 /** Fields that must match for two results to be worth comparing. */
-/** Marks a mismatch that must ABORT a comparison rather than warn. */
-export const INFRA_SHAPE_MISMATCH = 'deployment shape:';
+// The shape half of the contract lives in `shape.mjs` so `testenv.mjs` can
+// apply the SAME refusal to a hand-run `ws-load` (#224); re-exported here
+// because this module is where every in-tree comparer already looks.
+export { INFRA_SHAPE_MISMATCH } from './shape.mjs';
 
 export function envMismatch(a: BenchEnv, b: BenchEnv): string[] {
     const differing: string[] = [];
@@ -87,15 +90,9 @@ export function envMismatch(a: BenchEnv, b: BenchEnv): string[] {
     if (a.conditions !== b.conditions) {
         differing.push(`conditions ${a.conditions} vs ${b.conditions}`);
     }
-    // Normalize: a baseline recorded before this field existed has it
-    // undefined, which must read as "no shape", not as a mismatch against
-    // an empty one — otherwise Tier 1/2 comparisons start refusing.
-    if ((a.infraShape ?? '') !== (b.infraShape ?? '')) {
-        // Prefixed so the comparer can tell this apart from the advisory
-        // mismatches above and refuse outright.
-        differing.push(
-            `${INFRA_SHAPE_MISMATCH} ${a.infraShape || '(none)'} vs ${b.infraShape || '(none)'}`
-        );
-    }
+    // Prefixed (see shape.mjs) so the comparer can tell this apart from the
+    // advisory mismatches above and refuse outright.
+    const shape = shapeMismatch(a.infraShape, b.infraShape);
+    if (shape) differing.push(shape);
     return differing;
 }
