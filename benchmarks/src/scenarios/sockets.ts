@@ -85,6 +85,10 @@ interface Row {
     maxBufferedBytes: number;
     latencyMs: { p50: number; p90: number; p99: number; max: number } | null;
     partial?: boolean;
+    /** A pod re-ran this rung after a transient over-threshold first attempt (#222). */
+    retried?: boolean;
+    /** The generator's reason for ending the ladder here; absent ⇒ it completed. */
+    ladderStopped?: string;
 }
 
 export interface RunResult {
@@ -395,9 +399,12 @@ const hotFanout: Scenario = {
  * of this scenario: a ratio at a safe rung would read ~1.0 and say
  * nothing.
  *
- * The generator stops its ladder at the first rung with connect failures,
- * so the cost is bounded — and `connectTimeoutS` is deliberately short here
- * so the failing rung fails fast instead of hanging for its full window.
+ * The generator stops its ladder at the first rung whose connect-failure
+ * RATE survives a retry over its threshold (#222 — one transient no longer
+ * ends the climb, but a real ceiling still stops it after at most one
+ * repeat), so the cost is bounded — and `connectTimeoutS` is deliberately
+ * short here so a failing rung fails fast instead of hanging for its full
+ * window.
  */
 const principalCliff: Scenario = {
     name: 'sockets/principal-cliff',

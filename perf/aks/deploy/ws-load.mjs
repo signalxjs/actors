@@ -225,6 +225,14 @@ export function mergeRows(rows, { partial = false } = {}) {
             merged.latencyMs = row.latencyMs;
             merged.latencyFromPods++;
         }
+        // The ladder verdict (#222) survives the merge, or a truncated
+        // ladder is indistinguishable from a completed one in the artifact.
+        // Stamped only when a pod said so — mirroring `partial` — because a
+        // key that is always present reads as a claim about every run.
+        if (row.retried) merged.retried = true;
+        if (row.ladderStopped !== undefined && merged.ladderStopped === undefined) {
+            merged.ladderStopped = row.ladderStopped;
+        }
         byRung.set(row.n, merged);
     }
     return [...byRung.values()]

@@ -100,6 +100,25 @@ describe('mergeRows', () => {
         expect(merged!.deliveriesPerSec).toBe(0);
     });
 
+    it('carries the ladder verdict through the merge (#222)', () => {
+        // A truncated ladder is only distinguishable from a completed one in
+        // the artifact if the generator's verdict survives the merge — the
+        // merged rows are what the sockets/* scenarios read.
+        const [merged] = mergeRows([
+            row(),
+            row({
+                retried: true,
+                ladderStopped: 'connect failures 34/250 (13.6%) over the 1% threshold'
+            })
+        ]);
+        expect(merged!.retried).toBe(true);
+        expect(merged!.ladderStopped).toContain('34/250');
+        // …and absent when no pod said so, or every row would carry it.
+        const [clean] = mergeRows([row()]);
+        expect(clean).not.toHaveProperty('retried');
+        expect(clean).not.toHaveProperty('ladderStopped');
+    });
+
     it('sums connect failures, which is how the identity cliff is detected', () => {
         // `sockets/principal-cliff` reads `max_healthy_identities` off the
         // highest rung with ZERO failures, so a failure on any pod has to
