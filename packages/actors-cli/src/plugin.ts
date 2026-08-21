@@ -40,13 +40,32 @@ const actorsArgs = {
 };
 
 /**
- * True when this project uses `@sigx/actors`.
+ * Permissive on purpose (#116): the command group registers wherever the
+ * plugin is installed, and the project requirement moved to the verb path.
+ *
+ * Only EMBEDDED mode needs a project that depends on `@sigx/actors` — it
+ * imports the app module in-process. HTTP mode (`--url`) loads no user code
+ * and holds no host; it is the mode built for an ops box, a control plane
+ * watching tenants' clusters, or a CI probe — places that are not actor
+ * apps. Gating registration on the manifest made those say
+ * `Unknown command 'actors'`, which reads as a broken install, and pushed
+ * users into declaring a dependency they never load just to satisfy the
+ * check. Registering always keeps discovery honest and lets the verb say
+ * which mode needs what.
+ */
+export function detect(_cwd: string): boolean {
+    return true;
+}
+
+/**
+ * True when this project declares `@sigx/actors` — the embedded-mode
+ * requirement.
  *
  * Reads the manifest rather than probing `node_modules`: a dependency the
  * author DECLARED is the signal, and a transitively-installed copy is not
  * this project's business.
  */
-export function detect(cwd: string): boolean {
+export function projectDependsOnActors(cwd: string): boolean {
     const manifest = join(cwd, 'package.json');
     if (!existsSync(manifest)) return false;
     try {
@@ -59,8 +78,8 @@ export function detect(cwd: string): boolean {
         );
     } catch {
         // A malformed package.json is the project's problem, not a reason
-        // for the CLI to crash while merely deciding whether to offer a
-        // command.
+        // for the CLI to crash while merely deciding whether a mode is
+        // available.
         return false;
     }
 }
@@ -75,6 +94,20 @@ async function runActors(ctx: ActorsCommandContext): Promise<void> {
         );
         // 2 rather than 1: a usage error is not a failing probe, and
         // `actors health` uses 1 to mean "not ready".
+        process.exitCode = 2;
+        return;
+    }
+    // With --url, HTTP mode runs unconditionally — the URL is an
+    // unambiguous statement of intent, and HTTP mode has no project
+    // requirement to check. Without it we are about to import the project's
+    // app module in-process, and THAT needs the dependency.
+    if (!ctx.args.url && !projectDependsOnActors(ctx.cwd)) {
+        ctx.logger.error(
+            '[sigx actors] embedded mode needs a project that depends on @sigx/actors; ' +
+                'pass --url <origin> to watch a running host instead.'
+        );
+        // A configuration/usage error, like the unknown-subcommand case —
+        // not 1, which `actors health` uses to mean "not ready".
         process.exitCode = 2;
         return;
     }
