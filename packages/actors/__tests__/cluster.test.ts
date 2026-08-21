@@ -816,16 +816,27 @@ describe('cluster: milestone 4 — rebalancing & graceful handoff', () => {
         // A turn in flight holds the drain open…
         const napping = cluster.hosts[0]!.actor(slow, 'z').nap(150);
         await new Promise((r) => setTimeout(r, 20));
+
+        // Observe the transition rather than sample for it (#263): under load
+        // the whole drain can finish before a `vi.waitFor` poll ever runs, so
+        // record the leaver's status on every view change instead. The hub
+        // fires `onChange` synchronously per bump, so no window can be missed.
+        const statuses: string[] = [];
+        const unsubscribe = viewer.onChange((view) => {
+            statuses.push(view.hosts.find((m) => m.hostId === leaverId)?.status ?? 'gone');
+        });
         const stopping = cluster.hosts[0]!.stop({ timeoutMs: 2000 });
 
-        // …and while it drains, the view already says leaving — peers'
-        // placement policies (which filter on 'active') skip it.
-        await vi.waitFor(() => {
-            const member = viewer.view().hosts.find((m) => m.hostId === leaverId);
-            expect(member?.status).toBe('leaving');
-        });
         await expect(napping).resolves.toBe('rested'); // in-flight turn completed
         await stopping;
+        unsubscribe();
+
+        // While it drained, the view already said leaving — peers' placement
+        // policies (which filter on 'active') skip it — and only AFTER the
+        // drain did the member leave the view entirely.
+        expect(statuses).toContain('leaving');
+        expect(statuses).toContain('gone');
+        expect(statuses.indexOf('leaving')).toBeLessThan(statuses.indexOf('gone'));
         // Fully left after the drain.
         expect(viewer.view().hosts.find((m) => m.hostId === leaverId)).toBeUndefined();
     });
