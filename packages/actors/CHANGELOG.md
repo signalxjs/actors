@@ -40,6 +40,19 @@
   way back. Two counters make the difference visible — `rejoinAttempts` (the
   decision) and `rejoins` (got back in) — beside the existing `selfFences`.
 
+### Changed
+
+- **`defineWorker`'s default `maxLocal` now floors at 4** (#147). The default
+  pool cap is `navigator.hardwareConcurrency` clamped to **[4, 16]** (was
+  [1, 16]; the no-navigator fallback stays 4). Under a cgroup CPU quota
+  `hardwareConcurrency` reports the quota, not the machine — inside a
+  container with `resources.limits.cpu: 1` it is 1, which silently
+  degenerated every default-capped pool to a single activation, making
+  `defineWorker` a no-op in the normal production shape. Pool members are
+  activations that overlap at `await` points, not threads, so they need no
+  second core. An explicit `maxLocal` — including `maxLocal: 1` — is
+  untouched.
+
 ## [0.9.2] - 2026-08-17
 
 ### Added

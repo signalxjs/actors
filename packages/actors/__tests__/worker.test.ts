@@ -250,6 +250,52 @@ describe('worker pool runtime', () => {
         await Promise.all([busy, quick]);
     });
 
+    it('the default cap floors at 4 when hardwareConcurrency reports 1 (#147)', async () => {
+        // A CPU-limited container (cgroup quota 1) makes navigator.
+        // hardwareConcurrency report 1 — the normal production shape. Members
+        // overlap at await points and need no second core, so the DEFAULT must
+        // not degenerate the pool to a single activation.
+        vi.stubGlobal('navigator', { hardwareConcurrency: 1 });
+        try {
+            const gate = deferred();
+            const entered: string[] = [];
+            const def = poolWorker({ gate: () => gate.promise, entered }); // no maxLocal
+            const host = track(createHost({ actors: [def], defaults: quiet }));
+            const client = host.actor(def, 'any');
+            const calls = Array.from({ length: 8 }, (_, i) => client.enter(`c${i}`));
+            // A burst must activate MORE than one member — the floor is 4.
+            await vi.waitFor(() => expect(entered.length).toBe(4));
+            expect(host.stats().perType['Pool']).toBe(4);
+            await new Promise((r) => setTimeout(r, 20));
+            expect(entered.length).toBe(4); // the floor, not one more
+            gate.resolve();
+            const tokens = await Promise.all(calls);
+            expect(new Set(tokens).size).toBe(4); // distinct members served the burst
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('the default cap still clamps a many-core host to 16', async () => {
+        vi.stubGlobal('navigator', { hardwareConcurrency: 64 });
+        try {
+            const gate = deferred();
+            const entered: string[] = [];
+            const def = poolWorker({ gate: () => gate.promise, entered }); // no maxLocal
+            const host = track(createHost({ actors: [def], defaults: quiet }));
+            const client = host.actor(def, 'any');
+            const calls = Array.from({ length: 20 }, (_, i) => client.enter(`c${i}`));
+            await vi.waitFor(() => expect(entered.length).toBe(16));
+            expect(host.stats().perType['Pool']).toBe(16);
+            await new Promise((r) => setTimeout(r, 20));
+            expect(entered.length).toBe(16); // the cap holds
+            gate.resolve();
+            await Promise.all(calls);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('ctx.key is the addressed key on every member', async () => {
         const gate = deferred();
         const entered: string[] = [];

@@ -1167,7 +1167,11 @@ export interface WorkerOptions<
     /**
      * Pool cap: max concurrent activations per (type, key) on one host.
      * Positive integer. Default: `navigator.hardwareConcurrency` clamped to
-     * [1, 16], falling back to 4 where that global does not exist.
+     * [4, 16], falling back to 4 where that global does not exist. The floor
+     * exists because a cgroup CPU quota makes `hardwareConcurrency` report
+     * the quota rather than the machine — inside a CPU-limited container it
+     * is typically 1, and members are activations that overlap at `await`
+     * points, not threads, so a single core still benefits from a pool.
      */
     maxLocal?: number;
     /** Idle collection age per pool member; overrides the host default. */
