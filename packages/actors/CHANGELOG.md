@@ -72,6 +72,20 @@
   way back. Two counters make the difference visible — `rejoinAttempts` (the
   decision) and `rejoins` (got back in) — beside the existing `selfFences`.
 
+- **Dev builds hint at a missing `principalIndependent` declaration** (#221).
+  An identity-blind watch read that is not declared costs exactly what a
+  genuinely identity-dependent one costs — one cross-host stream per signed-in
+  identity instead of one shared stream — and the only signal used to be the
+  scaling wall. After 25 completed watch reads of an undeclared method that
+  never consulted `ctx.principal`, the host now emits one `__DEV__`
+  `console.warn` per (type, method) naming the exact
+  `watches: { m: { principalIndependent: true } }` declaration to add, and the
+  `authorize`/`methodAuthorize` escape hatch for reads that touch identity
+  only to authorize. A hint, never an inference: the declaration stays yours
+  to make, one consulting read silences the tally for good (conditional reads
+  stay quiet), and the tally lives with the host so re-activation does not
+  reset it. Production builds are untouched — the hook is absent, not inert.
+
 ### Changed
 
 - **`defineWorker`'s default `maxLocal` now floors at 4** (#147). The default
