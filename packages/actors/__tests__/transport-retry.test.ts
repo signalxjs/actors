@@ -86,6 +86,20 @@ describe('pre-response connection retry (#55)', () => {
         expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
+    it('a coded rejection outside the allowlist is not retried, even as a TypeError', async () => {
+        // Node's `TypeError: fetch failed` carries its real code on `cause` —
+        // when that code exists but is NOT a listed connection failure
+        // (a DNS miss, a TLS error), the code is the verdict: the opaque-
+        // TypeError branch is only for errors with no code anywhere.
+        const fetchSpy = vi
+            .fn<typeof globalThis.fetch>()
+            .mockRejectedValue(undiciError('ENOTFOUND'));
+        const transport = fetchTransport({ endpoint: ENDPOINT, fetch: fetchSpy });
+
+        await expect(transport.call('Cart#add', ['c1'])).rejects.toThrow('fetch failed');
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
     it('a non-connection rejection is not retried', async () => {
         const fetchSpy = vi
             .fn<typeof globalThis.fetch>()

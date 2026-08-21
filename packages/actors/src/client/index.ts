@@ -237,10 +237,13 @@ function isConnectionError(error: unknown): boolean {
     const code =
         (error as { code?: unknown }).code ??
         (error.cause as { code?: unknown } | undefined | null)?.code;
-    return typeof code === 'string' &&
-        ['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE'].includes(code)
-        ? true
-        : error.name === 'TypeError';
+    // A coded error is judged by its code ALONE — Node's `TypeError: fetch
+    // failed` puts the real verdict on `cause`, so a DNS miss or TLS error
+    // must not slip through the opaque-TypeError branch below.
+    if (typeof code === 'string') {
+        return ['UND_ERR_SOCKET', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE'].includes(code);
+    }
+    return error.name === 'TypeError';
 }
 
 function endpointOf(config: ActorTransportConfig, init: ActorCallInit | undefined): string {
