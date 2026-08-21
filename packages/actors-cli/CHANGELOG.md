@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **HTTP mode no longer requires the cwd project to depend on
+  `@sigx/actors` (#116).** The plugin's `detect` is now permissive — the
+  `sigx actors` command group registers wherever `@sigx/actors-cli` is
+  installed — and the project requirement moved to the verb path, where it
+  belongs to the one mode that has it: without `--url` and without
+  `@sigx/actors` in the cwd manifest, the command fails with
+  "embedded mode needs a project that depends on `@sigx/actors`; pass
+  `--url <origin>` to watch a running host instead" (exit code 2). With
+  `--url`, HTTP mode runs unconditionally — it loads no user code and holds
+  no host, so an ops box, a control plane watching tenant clusters, or a CI
+  probe no longer needs a decoy dependency (or gets the misleading
+  `Unknown command 'actors'`) to use it.
+
 ## [0.9.1] - 2026-08-16
 
 ### Changed

@@ -17,7 +17,10 @@ sigx actors health --url http://host:7311       # exit code by readiness
 
 Two ways to reach a host: **embedded** (loads your app module in-process — note
 it *starts a real host*, so keep it off production) and **HTTP** (`--url`,
-polling a running host's `ops()` endpoint, no user code loaded).
+polling a running host's `ops()` endpoint, no user code loaded). Only embedded
+mode needs a project that depends on `@sigx/actors` — with `--url`, any
+directory with this plugin installed will do: an ops box, a control plane, a CI
+probe.
 
 The `sigx` binary discovers plugins from the dependencies of the project you run
 it in, so run it where the host lives — in a monorepo,
