@@ -288,6 +288,56 @@ The exact-count invariants are gated by the `cluster/live-fanout` benchmark:
 streams), both `exact`, so a change that starts sharing an *undeclared* read
 fails the check.
 
+## Choosing the fix — the fan-out decision table (#225)
+
+Two Tier-3 sessions (#210 and the TCP follow-on, #203) established that there
+are **two independent fixes** for the signed-in live fan-out ceiling, working
+by opposite mechanisms: **declaring removes the per-identity streams; TCP
+keeps every stream and removes its per-stream cost.** They are not variants
+of each other, and they compose. The measured 2×2 — same image, one variable
+per axis — lives in `benchmarks/BASELINES.md`
+§ "2026-08-13 · Tier 3 — TCP does not remove the streams, it makes them
+free", which is the single source for the figures; this table carries the
+shape of the result, not the numbers.
+
+| approach | remote streams | ladder | applies to |
+|---|---|---|---|
+| undeclared, HTTP | one per remote subscriber, each pinning a pooled connection | shelves at the pool arithmetic (#194) | — |
+| **declared** `principalIndependent`, HTTP | a handful for the whole population | clean | identity-blind reads only |
+| undeclared, **TCP** | one per remote subscriber, all multiplexed on one connection per peer | clean | any read, incl. identity-dependent |
+| declared **+** TCP | a handful | clean | composes |
+
+Which row you can reach depends on what the read does with `ctx.principal`,
+and there are **three cases, not two**:
+
+- **The read is identity-blind** — it never consults `ctx.principal` and the
+  result is the same for every subscriber. Declare it
+  (`watches: { m: { principalIndependent: true } }`, #138). Cheapest fix, no
+  infrastructure change: the per-identity stream, and the connection it pins,
+  stop existing rather than being budgeted for.
+- **The read touches `ctx.principal` only to AUTHORIZE** — the check gates
+  access but the value returned is the same for everyone. This is not an
+  identity-dependent read; it is authorization in the wrong place. Move the
+  check to `authorize`/`methodAuthorize`, which run per subscriber at the
+  entry point outside any turn, then declare the read. This is likely the
+  common case in real apps, and it converts an identity-dependent cost into
+  an identity-blind one. `ActorWatchDeclarationError`'s message already says
+  this — but only to an author who declared and then tripped the check; this
+  branch exists for the author who never declared and so never sees the
+  error.
+- **The read is genuinely identity-dependent** — the *result* differs per
+  user. Declaring is forbidden and enforced (`ActorWatchDeclarationError`,
+  above), and the per-identity cross-host stream is not a defect to remove.
+  `@sigx/actors-tcp` is the structural answer: every stream still exists,
+  multiplexed onto one connection per peer, so the pool arithmetic is moot.
+  Sizing the host-to-host fetch pool to the watcher population (#194) is the
+  HTTP fallback.
+
+This also scopes #194's sizing rule, which otherwise reads as general:
+**pool ≥ watchers per hop applies only to reads that genuinely depend on
+identity.** A declared read opens no per-identity stream, so there is
+nothing to budget for; an authorize-only read should become one.
+
 ## Sizing guidance, and the guardrails that pin it
 
 The old ceiling was **~100 distinct principals** on one hot actor — and
@@ -301,12 +351,14 @@ reaches 1000). The durable sizing rule, cheapest option first:
 1. **Declare the read** `principalIndependent` if it really is identity-blind
    (#138) — the per-identity stream, and the connection it pins, stop
    existing rather than being budgeted for.
-2. Otherwise size the host-to-host pool for the signed-in watcher population:
+2. Otherwise — the read is genuinely identity-dependent and stays on HTTP —
+   size the host-to-host pool for the signed-in watcher population:
    per-principal cross-host streams each hold a pooled connection for the
    life of the subscription. The shipped way to size it is
    `boundedFetch({ connections })` on `@sigx/actors/node` (#118), handed to
    `cluster({ fetch })` — scoped to that seam, never the process's global
-   dispatcher.
+   dispatcher. This rule applies *only* to that case (see the decision
+   table above); a declared read has no per-identity streams to budget for.
 3. Or use `@sigx/actors-tcp` (one multiplexed connection per peer), which
    makes the pool arithmetic moot whatever the reads do.
 
