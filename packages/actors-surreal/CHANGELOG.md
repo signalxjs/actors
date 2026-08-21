@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **A failing membership prune is no longer silent** (#268). The lazy
+  expiry prune in `surrealMembership` swallowed every failure — a
+  permanently failing `DELETE` (permissions, schema drift) accumulated
+  expired `sigx_host` rows forever with no signal. Under dev it now warns
+  once per membership, matching the reminders tick's posture. The prune
+  stays best-effort: a failure never affects the refresh itself.
 - **The connection this package owns reconnects without limit** (#272).
   `surrealCluster({ url })` and friends now connect with
   `reconnect: { enabled: true, attempts: -1 }`. The SDK's default is five

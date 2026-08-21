@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failing membership prune is no longer silent** (#268). The lazy
+  expiry prune in `pgMembership` swallowed every failure — a permanently
+  failing `DELETE` (permissions, schema drift) accumulated expired
+  `hosts` rows forever with no signal. Under dev it now warns once per
+  membership, matching the reminders tick's posture. The prune stays
+  best-effort: a failure never affects the refresh itself.
+
 ## [0.9.2] - 2026-08-17
 
 ### Added

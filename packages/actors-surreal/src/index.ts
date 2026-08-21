@@ -280,6 +280,9 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let live: LiveHandle | null = null;
+    /** Once per membership, not per refresh — the prune rides every poll
+     *  tick, and a permanently failing one would warn forever (#268). */
+    let pruneWarned = false;
     const changeCbs = new Set<(view: MembershipView) => void>();
     const suspectCbs = new Set<() => void>();
     const clock = heartbeatClock({
@@ -313,7 +316,15 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
         // Lazy prune, best-effort: rows a TTL already excluded, kept only so
         // the table does not accumulate dead hosts forever. The grace keeps a
         // slow-beating-but-alive host's row from being deleted under it.
-        void Promise.resolve(db.query(PRUNE, { grace: ttlMs * 4 })).catch(noop);
+        // Best-effort is not silent, though — a PERMANENTLY failing prune
+        // (permissions, schema drift) accumulates dead rows forever, so the
+        // first failure warns under dev, matching the reminders tick (#268).
+        void Promise.resolve(db.query(PRUNE, { grace: ttlMs * 4 })).catch((error: unknown) => {
+            if (__DEV__ && !pruneWarned) {
+                pruneWarned = true;
+                console.warn('[sigx actors-surreal] membership prune failed:', error);
+            }
+        });
         const hosts = descriptors.map((row) => JSON.parse(row) as HostDescriptor);
         const next: MembershipView = { version: Number(version ?? 0), hosts };
         const nextSignature = hosts
