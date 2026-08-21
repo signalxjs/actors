@@ -46,14 +46,20 @@ const baseIdOf = (mid: string): string => mid.slice(1, mid.lastIndexOf(NUL));
 
 /**
  * Default pool cap, WinterCG-safe: `navigator.hardwareConcurrency` exists in
- * browsers, Deno, Bun and Node ≥ 21; workerd may omit it. Clamped to 16 — a
- * 128-core host should not default to 128 members of one worker key. No
- * `node:os` anywhere on this path: this class runs on workerd too.
+ * browsers, Deno, Bun and Node ≥ 21; workerd may omit it. Clamped to
+ * [4, 16]: a 128-core host should not default to 128 members of one worker
+ * key, and — the floor (#147) — a CPU-limited container should not default to
+ * a single member. Under a cgroup CPU quota `hardwareConcurrency` is the
+ * QUOTA, not the machine (Node derives it from `os.availableParallelism()`),
+ * so `resources.limits.cpu: 1` reports 1 — and members are activations
+ * overlapping at `await` points, not threads, so they need no second core.
+ * The floor matches the no-navigator fallback of 4. No `node:os` anywhere on
+ * this path: this class runs on workerd too.
  */
 function defaultMaxLocal(): number {
     const n = (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator
         ?.hardwareConcurrency;
-    return typeof n === 'number' && n >= 1 ? Math.min(Math.trunc(n), 16) : 4;
+    return typeof n === 'number' && n >= 1 ? Math.min(Math.max(Math.trunc(n), 4), 16) : 4;
 }
 
 type Slot =
