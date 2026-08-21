@@ -47,7 +47,7 @@ describe('membership prune failure (#268)', () => {
         // best-effort, not load-bearing.
         expect(view.version).toBe(1);
         await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
-        expect(String(warn.mock.calls[0])).toContain('prune failed');
+        expect(String(warn.mock.calls[0])).toContain('[sigx actors-surreal] membership prune failed');
 
         // A second failing prune does not warn again — once per membership.
         await membership.refresh();
