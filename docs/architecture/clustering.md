@@ -46,6 +46,14 @@ peers dropped the host and released its claims, and a survivor may already be
 serving those actors. Without the gap check the host looks healthy again and
 two hosts believe they own the same actor.
 
+The commonest way to hit the second case is not infrastructure — it is a
+**CPU-bound actor turn**. The heartbeat is a timer on the same event loop
+that runs turns, so a method that computes synchronously past the TTL
+starves its host's own liveness signal and fences it, taking every other
+actor on the host along. The authoring-side account — why that is a
+denial-of-service surface, and the chunk-and-yield mitigation — is in
+[SECURITY.md](../../SECURITY.md#a-cpu-bound-turn-can-fence-its-own-host).
+
 TTL expiry is judged on the **database** clock wherever there is one
 (`pgMembership`, `surrealMembership`), so host clock skew cannot fake a death
 or a survival. The Kubernetes provider compares `renewTime` across hosts and

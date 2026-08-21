@@ -169,6 +169,50 @@ frame size (8 MiB, checked before a single payload byte is buffered), `$live`
 subscriptions per connection (256), redirect hops, `$live` frame queue depth,
 and metrics cardinality.
 
+## A CPU-bound turn can fence its own host
+
+This concerns clustered Node deployments — the hosts that run a membership
+provider (`redisCluster`, `pgCluster`, `surrealCluster`, `k8sMembership`).
+Such a host is one Node process with one JS thread, so actor turns, health
+probes and the cluster **membership heartbeat all share one event loop**.
+(The Cloudflare backend has no membership heartbeat to starve.) A turn
+that computes synchronously past the membership TTL (`redisCluster`
+defaults: `heartbeatMs: 5000`, `ttlMs: 15000`) starves the host's own
+liveness signal. While the loop is held, peers age the host out and release
+its directory claims; when the loop resumes, the host sees that its beat
+landed past the TTL, cannot prove its own membership, and
+[self-fences](docs/architecture/clustering.md#self-fencing) — fatal by
+design, because a survivor may already be serving its actors. (The
+pre-fencing behaviour — evicted yet still serving — was measured on a live
+cluster and closed as #45; the fence is what makes the stall *loud* instead
+of a split-brain.)
+
+So a method that blocks long enough does not merely go slow: **it removes
+its host from the cluster, and takes every other actor on that host down
+with it.** Treat any method whose CPU cost scales with client input as a
+denial-of-service primitive — a guard keeps anonymous callers out, but it
+does not stop a signed-in one from wedging the host — and cap the work a
+single call may ask for.
+
+Mitigations, in the order to reach for them:
+
+- **Chunk the work and yield between slices** — every few hundred
+  iterations, `await new Promise((resolve) => setImmediate(resolve))`. The
+  yield is the load-bearing detail: it is what lets the heartbeat, the
+  probes and every other actor's turns run between slices.
+  `perf/app/src/digest.actor.ts` is the worked example.
+- **Move long work off the request turn with `ctx.tasks`**, so the caller is
+  not held while it runs. A detached task still runs on the same loop,
+  though — it must chunk and yield too.
+- **Move genuinely heavy compute onto `worker_threads`**
+  (`perf/app/src/digest-pool.ts`). A `defineWorker` pool does *not* do this:
+  it multiplies activations — concurrency at `await` points — not threads,
+  so a pool of synchronous hashers blocks exactly like one.
+
+Development flags offenders: a turn that holds the loop longer than
+`slowTurnMs` (default 5 s) gets a `__DEV__` console warning naming the actor
+and method.
+
 ## `reads.public` and shared caches
 
 `reads: { method: { maxAge, public: true } }` emits `public, s-maxage=…` and
