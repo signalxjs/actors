@@ -148,7 +148,7 @@ export function createWatchDeclarationHints(
         tallies.set(key, -1);
         console.warn(
             `[sigx actors] "${type}.${method}" served ${next} watch reads without consulting ` +
-                `ctx.principal. Declaring watches: { ${method}: { principalIndependent: true } } ` +
+                `ctx.principal. Declaring watches: { '${method}': { principalIndependent: true } } ` +
                 'would let distinct identities share one cross-host stream. Ignore this if the ' +
                 'read is only conditionally identity-dependent; if it reads ctx.principal only ' +
                 'to authorize, move that check to authorize/methodAuthorize and then declare.'

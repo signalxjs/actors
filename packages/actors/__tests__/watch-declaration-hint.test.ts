@@ -140,7 +140,9 @@ describe('watch declaration hint (#221)', () => {
         await drive(client, it, 1); // read N — the threshold
         expect(hints()).toHaveLength(1);
         expect(hints()[0]).toContain('"Board.current"');
-        expect(hints()[0]).toContain('watches: { current: { principalIndependent: true } }');
+        // The key is quoted, matching `ActorWatchDeclarationError` — a method
+        // name is a string and may not be a valid unquoted identifier.
+        expect(hints()[0]).toContain("watches: { 'current': { principalIndependent: true } }");
 
         await drive(client, it, 5); // well past the threshold — still once
         expect(hints()).toHaveLength(1);
