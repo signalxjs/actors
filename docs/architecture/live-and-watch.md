@@ -299,6 +299,9 @@ per axis — lives in `benchmarks/BASELINES.md`
 § "2026-08-13 · Tier 3 — TCP does not remove the streams, it makes them
 free", which is the single source for the figures; this table carries the
 shape of the result, not the numbers (quoting them here is how they drift).
+All four rows were measured at the chart-default pool
+(`FETCH_CONNECTIONS=64`) — sizing the pool moves row 1's shelf (#194, and
+the sizing rule below), it does not change the shape.
 
 | approach | remote streams | ladder | applies to |
 |---|---|---|---|
@@ -319,8 +322,11 @@ and there are **three cases, not two**:
   access but the value returned is the same for everyone. This is not an
   identity-dependent read; it is authorization in the wrong place. Move the
   check to `authorize`/`methodAuthorize`, which run per subscriber at the
-  entry point outside any turn, then declare the read. This is likely the
-  common case in real apps, and it converts an identity-dependent cost into
+  entry point outside any turn, then declare the read — provided the check
+  needs only the principal and the request: those policies are entry-point
+  `ServerPolicy`s and cannot see the actor's state, so a membership test
+  against `ctx.state` cannot leave the turn and belongs in the third case
+  below. Where it applies, it converts an identity-dependent cost into
   an identity-blind one. `ActorWatchDeclarationError`'s message already says
   this — but only to an author who declared and then tripped the check; this
   branch exists for the author who never declared and so never sees the
@@ -328,7 +334,7 @@ and there are **three cases, not two**:
 - **The read is genuinely identity-dependent** — the *result* differs per
   user. Declaring is forbidden and enforced (`ActorWatchDeclarationError`,
   above), and the per-identity cross-host stream is not a defect to remove.
-  `@sigx/actors-tcp` is the structural answer: every stream still exists,
+  `@sigx/actors-tcp` (Node-only) is the structural answer: every stream still exists,
   multiplexed onto one connection per peer, so the pool arithmetic is moot.
   Sizing the host-to-host fetch pool to the watcher population (#194) is the
   HTTP fallback.
@@ -348,17 +354,17 @@ the 50 ms throttle floor; the recorded `max_healthy_identities: 500` was
 the ceiling of the ladder as it stood that day — the default ladder now
 reaches 1000). The durable sizing rule, cheapest option first:
 
-1. **Declare the read** `principalIndependent` if it really is identity-blind
-   (#138) — the per-identity stream, and the connection it pins, stop
-   existing rather than being budgeted for.
+1. **Declare the read** `principalIndependent` if it really is identity-blind,
+   or make it so by moving an authorize-only `ctx.principal` check to
+   `authorize`/`methodAuthorize` (#138 — the first two cases of the decision
+   table above).
 2. Otherwise — the read is genuinely identity-dependent and stays on HTTP —
    size the host-to-host pool for the signed-in watcher population:
    per-principal cross-host streams each hold a pooled connection for the
    life of the subscription. The shipped way to size it is
    `boundedFetch({ connections })` on `@sigx/actors/node` (#118), handed to
    `cluster({ fetch })` — scoped to that seam, never the process's global
-   dispatcher. This rule applies *only* to that case (see the decision
-   table above); a declared read has no per-identity streams to budget for.
+   dispatcher.
 3. Or use `@sigx/actors-tcp` (one multiplexed connection per peer), which
    makes the pool arithmetic moot whatever the reads do.
 
