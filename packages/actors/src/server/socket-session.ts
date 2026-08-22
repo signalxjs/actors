@@ -673,6 +673,12 @@ export async function createActorSocketSession(
         const disarmDeadline = (): void => {
             if (deadline !== undefined) clearTimeout(deadline);
             deadline = undefined;
+            // A fired deadline is STALE once a value lands. The abort can
+            // race the seed — the fan-out replays its cached `last` to a
+            // subscriber whose signal is already aborted — and re-raising
+            // `timedOut` after that value would 504 a subscription that DID
+            // seed, killing a healthy widget.
+            timedOut = null;
         };
         if (posture.timeoutMs !== undefined && posture.timeoutMs > 0) {
             deadline = setTimeout(() => {

@@ -13,6 +13,7 @@ import { defineActor, type Host } from '@sigx/actors';
 import { createHost } from '@sigx/actors/host';
 import { handleActorRequest } from '@sigx/actors/server';
 import { DEFAULT_LIVE_PING_MS, subscribeAll } from '../src/server/live-endpoint';
+import { createFanOut } from '../src/watch-core';
 
 const ENDPOINT = 'http://actors.test/_sigx/actor';
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
@@ -476,6 +477,42 @@ describe('$live: context bag edge capture', () => {
 // (watch loop, change subscription and keep-alive included) open silently,
 // forever.
 
+/** Incremental NDJSON reading: `take(n)` more frames off the SAME response,
+ *  so a test can assert what arrives AFTER an earlier batch. */
+function frameStream(response: Response): {
+    take: (want: number) => Promise<unknown[]>;
+    close: () => Promise<void>;
+} {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const queue: unknown[] = [];
+    let buffer = '';
+    return {
+        async take(want: number): Promise<unknown[]> {
+            const out: unknown[] = [];
+            while (out.length < want) {
+                if (queue.length > 0) {
+                    out.push(queue.shift());
+                    continue;
+                }
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let nl: number;
+                while ((nl = buffer.indexOf('\n')) >= 0) {
+                    const line = buffer.slice(0, nl).trim();
+                    buffer = buffer.slice(nl + 1);
+                    if (!line) continue;
+                    const parsed = JSON.parse(line) as { chunk?: unknown };
+                    if (parsed.chunk !== undefined) queue.push(parsed.chunk);
+                }
+            }
+            return out;
+        },
+        close: () => reader.cancel().catch(() => {}) as Promise<void>
+    };
+}
+
 describe('$live: watch establishment deadline (#192)', () => {
     let restore: (() => void) | undefined;
 
@@ -484,12 +521,24 @@ describe('$live: watch establishment deadline (#192)', () => {
         restore = undefined;
     });
 
+    /** The direct-seam context the ping test uses — a fake `ServerFnContext`
+     *  with exactly what `subscribeAll` reads off it. */
+    const fakeRq = (): Parameters<typeof subscribeAll>[1] =>
+        ({
+            abortSignal: new AbortController().signal,
+            request: new Request('http://test.local/_sigx/live'),
+            locals: {}
+        }) as unknown as Parameters<typeof subscribeAll>[1];
+
     it('a subscription whose seed starves answers a per-subscription 504 frame', async () => {
         // Identity so the mount's own gate passes; per-subscription
-        // authorization still runs against each actor's own policy.
+        // authorization still runs against each actor's own policy. 250 ms
+        // rather than a tight 50: the deadline is the STARVED index's bound,
+        // and the sibling's cold activation gets real-time headroom so a
+        // loaded CI machine cannot 504 the control arm of the test.
         restore = stubServerApp({
             authenticate: () => ({ id: 'u1' }),
-            posture: { timeoutMs: 50 }
+            posture: { timeoutMs: 250 }
         });
         const s = host();
         await s.start();
@@ -503,7 +552,8 @@ describe('$live: watch establishment deadline (#192)', () => {
             { t: 'Cart', k: 'w', m: 'total' }, // starves behind the parked turn
             { t: 'Cart', k: 'free', m: 'total' } // must still seed and stream
         ]);
-        const frames = (await readFrames(response, 2)) as Array<{
+        const stream = frameStream(response);
+        const frames = (await stream.take(2)) as Array<{
             i: number;
             e?: { status: number; message: string };
             v?: unknown;
@@ -516,8 +566,166 @@ describe('$live: watch establishment deadline (#192)', () => {
         expect(starved?.e?.status).toBe(504);
         expect(starved?.e?.message).toMatch(/timed out before its first value/);
 
+        // The 504 released everything the starved seed held: its fan-out
+        // subscriber is gone, so the wedged activation's keep-alive is free
+        // again (the socket twin's `subscriptions === 0` in `$live` terms).
+        await vi.waitFor(() => {
+            const starvedActivation = s.activations().find((a) => a.key === 'w');
+            expect(starvedActivation?.keptAlive).toBe(false);
+            expect(starvedActivation?.watchSubscribers).toBe(0);
+        });
+
+        // And the connection is still LIVE, not merely un-aborted at the
+        // instant the sibling seeded: a later mutation must still arrive on
+        // this same response. A regression that aborted anything shared —
+        // one controller for all subscriptions, or the stream they hang
+        // off — passes the two-frame read above and fails only here.
+        await s.actor(Cart, 'free').add('x');
+        const later = await stream.take(1);
+        expect(later).toEqual([{ i: 1, v: 1 }]);
+
+        await stream.close();
         for (const release of gates.splice(0)) release();
         await wedged.catch(() => {});
+    });
+
+    it('a client that disconnects while its seed starves unwinds: nothing emitted, no armed timer', async () => {
+        // The leak path #192 worries about, at the `subscribeAll` seam under
+        // fake timers (a real host under fake timers is the deadlock trap
+        // #290 documents, so the host here is a scripted stand-in): the
+        // client goes away BEFORE the deadline, and the teardown must both
+        // unwind the parked seed and disarm the timer it left behind.
+        restore = stubServerApp({ posture: { timeoutMs: 50 } });
+        vi.useFakeTimers();
+        try {
+            const fanOut = createFanOut(() => {});
+            const fake = {
+                definition: async () => Cart,
+                dispatchWatch: (
+                    _target: unknown,
+                    _method: unknown,
+                    _args: unknown,
+                    call: { abortSignal?: AbortSignal }
+                ) => fanOut.subscribe(call.abortSignal) // no `last` — the seed starves
+            } as unknown as Host;
+
+            const frames = subscribeAll(fake, fakeRq(), [{ t: 'Cart', k: 'w', m: 'total' }], {
+                pingMs: 0
+            });
+            const first = frames.next();
+            // Let establishment park on the starving seed, then verify the
+            // deadline is armed — the ONLY timer in this scripted world.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fanOut.size).toBe(1);
+            expect(vi.getTimerCount()).toBe(1);
+
+            await vi.advanceTimersByTimeAsync(25); // t=25ms — before the deadline
+            await frames.return(undefined); // the client is gone
+
+            // Nothing was ever emitted, the subscriber unwound, and no timer
+            // is left armed to fire into the torn-down connection.
+            await expect(first).resolves.toEqual({ done: true, value: undefined });
+            expect(fanOut.size).toBe(0);
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a value the abort races out of the fan-out still counts as seeding — no 504 after it', async () => {
+        // The deterministic replay path: the fan-out hands a subscriber
+        // whose signal is ALREADY aborted its cached `last` before `done`
+        // (`watch-core.ts` checks the queue first). So when everything
+        // between arming the timer and `fanOut.subscribe` is slow — a
+        // directory round-trip, a busy prelude — the sequence is: deadline
+        // fires → abort → subscribe → replayed value → done. The value made
+        // it to the client; re-raising the stale `timedOut` after it would
+        // tell a healthy widget its subscription failed.
+        restore = stubServerApp({ posture: { timeoutMs: 5 } });
+        const fanOut = createFanOut(() => {});
+        fanOut.push(7); // a sibling seeded this shared entry earlier
+        const fake = {
+            definition: async () => {
+                // Parked past the deadline: this 30 ms timer is armed after
+                // the 5 ms deadline and is longer, so the deadline callback
+                // runs first — deterministic by timer ordering, not a race.
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                return Cart;
+            },
+            dispatchWatch: (
+                _target: unknown,
+                _method: unknown,
+                _args: unknown,
+                call: { abortSignal?: AbortSignal }
+            ) => fanOut.subscribe(call.abortSignal)
+        } as unknown as Host;
+
+        const frames = subscribeAll(fake, fakeRq(), [{ t: 'Cart', k: 'w', m: 'total' }], {
+            pingMs: 0
+        });
+        const seen: unknown[] = [];
+        for await (const frame of frames) seen.push(frame);
+        expect(seen).toEqual([{ i: 0, v: 7 }]);
+    });
+
+    it('the deadline signal reaches the prelude — a starving hook that honors rq.abortSignal answers 504', async () => {
+        // The socket precedent runs authorization under the per-watch
+        // signal (`callContext(watch.ctrl.signal)`); the `$live` mount must
+        // match, or an app whose middleware/policy waits on an overloaded
+        // store holds establishment open PAST the deadline — the #192
+        // symptom one stage earlier. Core's pipeline never races the signal
+        // itself, so the contract is exactly this: a hook that honors
+        // `rq.abortSignal` observes the deadline.
+        let sawAbort = false;
+        const Gated = defineActor({
+            type: 'GatedLive',
+            authorize: [
+                async (_principal, rq) => {
+                    await new Promise<void>((resolve) => {
+                        const unblock = (): void => {
+                            sawAbort = true;
+                            clearTimeout(fallback);
+                            resolve();
+                        };
+                        if (rq.abortSignal.aborted) return unblock();
+                        rq.abortSignal.addEventListener('abort', unblock, { once: true });
+                        // Bounded fallback so an unfixed runtime fails the
+                        // assertion below rather than hanging the suite.
+                        const fallback = setTimeout(resolve, 1500);
+                    });
+                    return true;
+                }
+            ],
+            state: () => ({}),
+            methods: () => ({
+                async peek() {
+                    return 0;
+                }
+            })
+        });
+        restore = stubServerApp({
+            authenticate: () => ({ id: 'u1' }),
+            posture: { timeoutMs: 50 }
+        });
+        const s = createHost({ actors: [Gated, Cart], defaults: quiet });
+        running.push(s);
+        await s.start();
+
+        const response = await subscribe(s, [
+            { t: 'GatedLive', k: 'g', m: 'peek' }, // starves in its own prelude
+            { t: 'Cart', k: 'free', m: 'total' } // must still seed and stream
+        ]);
+        const frames = (await readFrames(response, 2)) as Array<{
+            i: number;
+            e?: { status: number };
+            v?: unknown;
+        }>;
+
+        expect(frames).toContainEqual({ i: 1, v: 0 });
+        expect(frames.find((f) => f.i === 0)?.e?.status).toBe(504);
+        // The hook was released BY the deadline's abort, not by its own
+        // fallback — the prelude genuinely sees the composed signal.
+        expect(sawAbort).toBe(true);
     });
 
     it('the deadline covers only establishment — a seeded subscription is never timed out', async () => {

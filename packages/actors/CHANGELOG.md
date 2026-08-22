@@ -32,8 +32,20 @@
   starves. The timeout aborts only the starved subscription's own seed —
   sibling subscriptions on the same connection keep streaming, and a SEEDED
   subscription is never timed out (pushes are the watch loop's cadence, and
-  the deadline disarms on the first value). No posture `timeoutMs` configured
-  means no deadline, exactly as before.
+  the deadline disarms on the first value; a deadline that fired is stale
+  once a value lands, so a value the abort races out of the fan-out's
+  replay is still a seed, never a late 504 — the socket session's
+  establishment deadline carried that stale-`timedOut` flaw since #180 and
+  is fixed here too). The prelude and authorization run under the composed
+  signal (the socket session's `callContext` shape), so app middleware and
+  policies that honor `rq.abortSignal` observe the deadline instead of
+  holding establishment open past it. One coverage nuance: core's endpoint
+  arms the same `timeoutMs` over the request up to the stream's first
+  chunk, so on a connection where NO subscription seeds in time the
+  request-level 504 answers first — the per-subscription frame is what
+  bites the multiplex case, where a sibling seeded and kept the response
+  alive. No posture `timeoutMs` configured means no deadline, exactly as
+  before.
 
 - **A fenced host says it is fenced** (#272). Dispatch on a self-fenced host
   no longer degrades to a LOCAL activation attempt. Every branch of placement

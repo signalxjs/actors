@@ -327,30 +327,52 @@ export function subscribeAll(
         // SILENTLY, forever (#192; the socket half was #180). A seeded
         // subscription is never timed out — pushes are the loop's cadence.
         //
+        // Coverage nuance: core's endpoint already arms this same
+        // `timeoutMs` over the request up to the stream's FIRST chunk, so on
+        // a connection where NO subscription seeds in time the request-level
+        // 504 answers first. The per-subscription frame is what bites the
+        // multiplex case, where a sibling seeded and kept the response alive.
+        //
         // The timer aborts a PER-SUBSCRIPTION controller, never the shared
         // request signal: the starved seed is this subscription's failure,
-        // and its siblings on the same connection keep streaming.
+        // and its siblings on the same connection keep streaming. (The
+        // isolation is per CONNECTION, not per subscriber: the shared watch
+        // loop invokes under the CREATING subscriber's context, abortSignal
+        // included — the known quirk at `#createWatchEntry` in
+        // `host/activation.ts` — so a later connection joining the entry a
+        // timed-out creator opened can observe its aborted signal.)
         let deadline: ReturnType<typeof setTimeout> | undefined;
         let timedOut: ServerFnError | null = null;
         const disarmDeadline = (): void => {
             if (deadline !== undefined) clearTimeout(deadline);
             deadline = undefined;
+            // A fired deadline is STALE once a value lands. The abort can
+            // race the seed — the fan-out replays its cached `last` to a
+            // subscriber whose signal is already aborted — and re-raising
+            // `timedOut` after that value would 504 a subscription that DID
+            // seed, killing a healthy widget.
+            timedOut = null;
         };
-        let abortSignal = rq.abortSignal;
-        if (timeoutMs !== undefined && timeoutMs > 0) {
-            const ctrl = new AbortController();
-            abortSignal = AbortSignal.any([rq.abortSignal, ctrl.signal]);
-            deadline = setTimeout(() => {
-                timedOut = new ServerFnError(
-                    504,
-                    `[sigx actors] subscription "${sub.t}#${sub.m}" timed out before its first value`
-                );
-                // The abort releases everything the starved seed held —
-                // fan-out subscriber, shared loop when last-out, keep-alive.
-                ctrl.abort(timedOut);
-            }, timeoutMs);
-        }
+        // The per-subscription context view (the socket session's
+        // `callContext` shape): the prelude and authorization run under the
+        // COMPOSED signal, so app middleware that honors `rq.abortSignal` —
+        // a rate limiter against an overloaded store — observes the deadline
+        // instead of holding the establishment open past it.
+        let rqSub = rq;
         try {
+            if (timeoutMs !== undefined && timeoutMs > 0) {
+                const ctrl = new AbortController();
+                rqSub = { ...rq, abortSignal: AbortSignal.any([rq.abortSignal, ctrl.signal]) };
+                deadline = setTimeout(() => {
+                    timedOut = new ServerFnError(
+                        504,
+                        `[sigx actors] subscription "${sub.t}#${sub.m}" timed out before its first value`
+                    );
+                    // The abort releases everything the starved seed held —
+                    // fan-out subscriber, shared loop when last-out, keep-alive.
+                    ctrl.abort(timedOut);
+                }, timeoutMs);
+            }
             const def = await host.definition(sub.t);
             if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
             // The SAME pipeline a unary call runs, against this request and
@@ -360,14 +382,15 @@ export function subscribeAll(
             // many subscriptions, each authorized on its own), so unlike the
             // unary wire path it runs the prelude itself: core's endpoint
             // ran it once for `$live#subscribe`, not for each subscription.
-            await authorizeActorCall(def as AnyActorDefinition, sub.m, sub.k, rq, 'wire');
+            await authorizeActorCall(def as AnyActorDefinition, sub.m, sub.k, rqSub, 'wire');
 
             const traceparent = rq.request.headers.get('traceparent');
             // Same edge rule as the unary endpoint: the bag comes only from
             // what this request stamped, never from a header — and identity
-            // rides its own slot.
-            const bag = takeCallBag(rq.locals);
-            const principal = await encodePrincipal(rq);
+            // rides its own slot. (`rqSub` shares the connection's `locals`,
+            // so a policy's stamp lands where it always did.)
+            const bag = takeCallBag(rqSub.locals);
+            const principal = await encodePrincipal(rqSub);
             const iterable = host.dispatchWatch!(
                 { type: sub.t, key: sub.k },
                 sub.m,
@@ -378,7 +401,7 @@ export function subscribeAll(
                     ...(isTraceparent(traceparent) ? { traceparent } : {}),
                     ...(bag !== undefined ? { bag } : {}),
                     ...(principal !== undefined ? { principal } : {}),
-                    abortSignal
+                    abortSignal: rqSub.abortSignal
                 },
                 // Omitted when the client asked for nothing, so the watch key
                 // is the one it has always been (#247).
