@@ -186,12 +186,21 @@ as measured (pre-pump):
 Two changes moved the local mechanism (#180). The **watch read pump**
 (above) removed both FIFO costs: the watch population now holds one queue
 slot, and seeds drain first — Tier 1's `live/principal-fanout` gates the
-counts. And the **socket session arms the posture's `timeoutMs` on
-establishment** (pipeline + authorization + dispatch + first value): a
-seed that still cannot run in time answers a per-subscription 504 frame
-and releases the loop and keep-alive it held, instead of hanging forever.
-A seeded subscription is never timed out; the `$live` endpoint still has
-the hang-forever gap (#192).
+counts. And **both wire mounts arm the posture's `timeoutMs` on
+establishment** (pipeline + authorization + dispatch + first value — the
+socket session since #180, the `$live` endpoint since #192): a seed that
+still cannot run in time answers a per-subscription 504 frame and releases
+the loop and keep-alive it held, instead of hanging forever. A seeded
+subscription is never timed out — the deadline disarms on the first value,
+and a deadline that already fired is stale once a value lands (the fan-out
+replays its cached `last` even to a subscriber whose signal the deadline
+aborted, and that replayed value IS the seed, never followed by a late
+504). One coverage nuance on `$live`: core's endpoint arms the same
+`timeoutMs` over the whole request up to the stream's FIRST chunk, so on a
+connection where NO subscription seeds in time, the request-level 504
+answers first and the client sees a connection failure plus backoff. The
+per-subscription frame is what bites the multiplex case — a sibling
+seeded, the response stayed alive, and only the starved index fails.
 
 **On the cluster, the shelf turned out to be a different mechanism** — and
 the 504s are what made it diagnosable (#194). Every per-principal

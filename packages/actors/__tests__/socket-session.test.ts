@@ -18,6 +18,7 @@ import { defineActor } from '@sigx/actors';
 import { createHost, type Host } from '@sigx/actors/host';
 import { createActorSocketSession, type ActorSocketSession } from '@sigx/actors/server';
 import { encodeWire, reviveWire, type SocketReply } from '@sigx/actors/socket-wire';
+import { createFanOut } from '../src/watch-core';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -458,6 +459,43 @@ describe('live subscriptions', () => {
         session.handle(JSON.stringify({ i: 2, s: 'Cart#add', a: ['w', 'x'] }));
         await until(() => framesFor(link, 1).some((f) => 'v' in f && f.v === 1));
         expect(framesFor(link, 1).every((f) => !('e' in f))).toBe(true);
+    });
+
+    it('a value the abort races out of the fan-out still counts as seeding — no 504 after it', async () => {
+        // The deterministic replay path (the same latent flaw as the `$live`
+        // mount, found fixing #192): the fan-out hands a subscriber whose
+        // signal is ALREADY aborted its cached `last` before `done`
+        // (`watch-core.ts` checks the queue first). When the prelude is slow
+        // enough that the deadline fires before `dispatchWatch` attaches,
+        // the sequence is: deadline → abort → subscribe → replayed value →
+        // done — and re-raising the stale `timedOut` after that value told a
+        // healthy widget its subscription failed.
+        restore = stubServerApp({ posture: { timeoutMs: 5 } });
+        const fanOut = createFanOut(() => {});
+        fanOut.push(7); // a sibling seeded this shared entry earlier
+        const fake = {
+            definition: async () => {
+                // Parked past the deadline: this 30 ms timer is armed after
+                // the 5 ms deadline and is longer, so the deadline callback
+                // runs first — deterministic by timer ordering, not a race.
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                return Cart;
+            },
+            dispatchWatch: (
+                _target: unknown,
+                _method: unknown,
+                _args: unknown,
+                call: { abortSignal?: AbortSignal }
+            ) => fanOut.subscribe(call.abortSignal)
+        };
+        const { session, link } = await connect(fake as unknown as Host);
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'w', m: 'total' } }));
+        await until(() => framesFor(link, 1).length >= 1);
+        // Give a (buggy) trailing 504 every chance to arrive before the
+        // assertion — the unwind after the value is pure microtasks.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(framesFor(link, 1)).toEqual([{ i: 1, v: 7 }]);
+        expect(session.stats().subscriptions).toBe(0);
     });
 });
 
