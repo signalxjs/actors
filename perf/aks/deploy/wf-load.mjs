@@ -394,9 +394,13 @@ export async function runWfLoad(options) {
         }
     }
 
-    // Both ends complete, or no delta at all — the error direction of a
-    // partial snapshot depends on which end lost a host.
-    const countersTrustworthy = before.hostsComplete && after.hostsComplete;
+    // Both ends complete AND the same pods, or no delta at all — the error
+    // direction of a partial snapshot depends on which end lost a host, and
+    // a pod replaced mid-run (a rollout's surge pod retiring, a restart)
+    // takes its counters with it, so the delta comes out short or negative.
+    const samePods =
+        Object.keys(before.queued).sort().join() === Object.keys(after.queued).sort().join();
+    const countersTrustworthy = before.hostsComplete && after.hostsComplete && samePods;
     const delta = {};
     if (countersTrustworthy) {
         for (const [key, value] of Object.entries(after.totals)) {
