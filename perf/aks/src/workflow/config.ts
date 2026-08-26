@@ -37,7 +37,7 @@
  *                           (default 50 000 — ~1000 s of history at 50/s).
  *   WF_NOTIFY_RETRY_MS      how long a finished child waits for its detached
  *                           `childDone` to land before sending it again.
- *                           Default 15 s.
+ *                           Default 15 s, floor 100 ms.
  *   WF_COMPUTE_MAX_LOCAL    pool size of the compute worker; unset = the
  *   WF_IO_MAX_LOCAL         runtime default (cores, clamped 4..16).
  */
@@ -67,7 +67,8 @@ export const config = {
     childStaleMs: num('WF_CHILD_STALE_MS', 120_000),
     statsSaveEvery: Math.max(1, num('WF_STATS_SAVE_EVERY', 25)),
     statsRing: num('WF_STATS_RING', 50_000),
-    notifyRetryMs: num('WF_NOTIFY_RETRY_MS', 15_000),
+    // Floored: 0 would be an immediate re-send loop (wake → notify → wake).
+    notifyRetryMs: Math.max(100, num('WF_NOTIFY_RETRY_MS', 15_000)),
     computeMaxLocal: optional('WF_COMPUTE_MAX_LOCAL'),
     ioMaxLocal: optional('WF_IO_MAX_LOCAL'),
     /** Reminder mutations throw after 3 CAS conflicts; the engine's own
