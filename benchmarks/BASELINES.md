@@ -2647,3 +2647,54 @@ fired, and all of it was needed:
 4. A 30 s call deadline lets an overloaded host hold a request for 30 s
    before failing it; per-call deadlines (#75) would let the generator fail
    fast and the fleet shed instead of queue.
+
+### The recorded run — after the engine stopped waiting on other hosts (#302, #303, #304)
+
+The hand-run ladder above was followed by two recorded runs that never
+produced a number: the 100 runs/s rung wedged the fleet both times — three
+idle hosts on 50 000 queued turns — and every later scenario died at its
+first call. The mechanism is #302: a turn that awaits a cross-host call
+holds its actor's queue AND a pooled connection, and once the pool held
+only calls whose targets were waiting on the pool, nothing drained and
+nothing timed out. The engine was changed to never await another host
+inside a turn (child starts, `childDone`, the completion publish, the
+definition read, the watchdog's calls — all detached, with the join
+watchdog and the wake protocol as the retry), compute tasks now yield to
+the loop every 2 ms, and the harness refuses to start a Job on a
+backlogged fleet. This is the first recorded run on that engine, image
+`c6d1b15` (the #304 branch), same shape otherwise.
+
+| runs/s offered | finished | stuck | errors | start p50 | order p50 / p99 | etl p50 (8 children) | saga p50 | approval p50 | task p50 | wake lag p50 | transitions/s |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 606 | **0** | 0 | 8 ms | 2.08 s / 2.28 s | 261 ms | 78 ms | 2.35 s | 28 ms | 0 | 53 |
+| 25 | 1 469 | **0** | 0 | 43 ms | 2.13 s / 2.60 s | 490 ms | 116 ms | 2.25 s | 35 ms | 1 ms | 171 |
+| 50 | 2 998 | **0** | 0 | 120 ms | 6.58 s / 14.3 s | 20.8 s | 188 ms | 35.0 s | 55 ms | 5 ms | 358 |
+
+Over the whole ladder: 8 096 child starts, **0 join repairs, 0 lost
+wakes, 0 publish failures, 0 reminder-set failures**; 83% of dispatches
+crossed hosts; peak 1 237 activations.
+
+### ✅ 50 runs/s is now a slow rung, not a collapse
+
+The same rung that produced 973 deadline failures, 131 lost wakes and a
+274 s drain on the first engine now finishes every run with no errors:
+start p50 120 ms (was 26 s), 358 transitions/s sustained, and the fleet
+idle within the drain. It is still past the knee — orders take 6.6 s for
+2 s of delay and an eight-child etl 20 s — because 50 runs/s of this mix
+is ~2.9 vCPU-seconds of sha256 per second on a 3 vCPU fleet before a
+single save; but queueing is now a curve, not a cliff. `task_p50_ms`
+tells the same story from inside: a 20 ms task measures 28 → 35 → 55 ms
+as the loop fills.
+
+### Two rungs that were not what they claimed, and why the harness changed
+
+`def_reads` came out negative over this ladder: the rollout's surge pod
+retired mid-run and took its counters with it. A pod set that changes
+between the two snapshots now voids the counter delta (#304).
+
+And every scenario after the first in this run seeded its definitions
+under version 1 — `WorkflowDefinition.put` is idempotent by version, so
+the sleeping-runs rung ran 2 s delays while its Job said 90 s, and every
+fan-out width ran width 8. Only the throughput ladder above is valid from
+that run; the seed version is now derived from the knob bag, and the
+other scenarios were re-run under versions of their own (next section).
