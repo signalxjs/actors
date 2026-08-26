@@ -746,9 +746,9 @@ export const WorkflowRun = defineActor({
                 .childDone(ctx.key, s.status)
                 .then(
                     () => ctx.timer('notified', () => markNotified(), { due: 0 }),
-                    () => {
-                        C.childDoneRetries++;
-                    }
+                    // A rejection is not a retry: the notify-retry wake
+                    // counts the re-send when it actually fires.
+                    () => {}
                 );
         };
 
