@@ -822,3 +822,60 @@ az aks nodepool scale -g $RG --cluster-name $CLUSTER \
 # kubectl delete namespace $NS
 # az aks nodepool delete -g $RG --cluster-name $CLUSTER --name sigxactors
 ```
+
+### (t) The workflow engine under scale-out (#297 — the #85 workload)
+
+An ENGINE on the cluster rather than a call pattern: runs of four
+realistic templates (`order`, `approval`, `etl`, `saga`) arrive open-loop
+at a rate, and every one of them exercises timers, durable reminders, a
+worker pool, cross-host child runs with a durable join, topics to a
+singleton aggregator and one Redis CAS per node. In-cluster like (q) —
+no ingress, no TLS, no load VM — and like (q) never read as another rung
+of the HTTP ladder.
+
+```sh
+# 0. the engine needs the reminder tick low enough to be a wake-lag floor
+#    worth measuring; unset, a durable delay wakes ~30 s late by design.
+node perf/aks/deploy/testenv.mjs ws-up workflow.env.WF_REMINDER_TICK_MS=1000
+#    (ws-up is the "roll the actors release with these values" verb; the
+#     socket stays enabled or not as it was)
+
+# 1. the throughput ladder — short delays ride volatile timers
+node perf/aks/deploy/testenv.mjs wf-load sweep=10,25,50,100,200 WF_DELAY_MS=2000
+
+# 2. THE REMINDER AXIS — every order sleeps 90 s on a durable reminder and
+#    leaves memory; the fleet holds rate × 90 sleeping runs
+node perf/aks/deploy/testenv.mjs wf-load sweep=50,100,200 WF_MIX=order:100 \
+  WF_DELAY_MS=90000 durationS=60
+
+# 3. fan-out width — child runs and the idempotent join, cross-host
+node perf/aks/deploy/testenv.mjs wf-load WF_MIX=etl:100 WF_START_RATE=10 \
+  WF_FANOUT_WIDTH=64 WF_FANOUT_MODE=children
+
+# 4. signals — before, during, never
+node perf/aks/deploy/testenv.mjs wf-load WF_MIX=approval:100 WF_START_RATE=50 \
+  WF_SIGNAL_DELAY_MS=2000 WF_SIGNAL_TIMEOUT_MS=15000
+
+# 5. the recorded run — every scenario, shape attached
+node perf/aks/deploy/testenv.mjs wf-bench --save-baseline
+```
+
+**Pass criteria.** `stuck.total` is 0 on every row (the verb exits 1
+otherwise); `completedUnreported` is 0 (a topic delivery to the aggregator
+was lost); `wakesLost` is 0 — reminder firing is at-most-once, so a lost
+wake is a runtime finding, recovered by the sweep's `status()` touch but
+counted. Kill a host mid-run (scenario (f)) and all three must still hold.
+
+**What to record.** `runsCompletedPerSec` against `rate` (where they part
+is the ceiling), `wakeLagMs` (its floor is the tick; its growth is the
+reminder-shard CAS backlog — `reminderSetFailures` in the ops delta says
+when arming started losing the race), `peakActivations` under (2) with
+`WF_DEACTIVATE_ON_SLEEP=1` versus `0`, and `remote_dispatch_ratio`, which
+prices the definition hot key and every child hop.
+
+**Expected findings, by construction.** The reminder table is 16 shard
+records rewritten on every `set`/`clear` with a 3-attempt CAS — at
+hundreds of durable sleeps per second across N hosts that is the first
+thing to go. The `WorkflowStats` singleton is on the completion path
+(`ctx.publish` waits for its turn) and is the second. Both are why this
+workload exists; record them in `BASELINES.md` and file the runtime issue.

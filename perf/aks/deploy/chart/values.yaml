@@ -155,7 +155,7 @@ loadgen:
   nameSuffix: ""
   parallelism: 1
   backoffLimit: 0
-  # counter | crunch | mixed | verify
+  # counter | crunch | mixed | verify | jobs | workflow
   mode: counter
   concurrency: 32
   durationS: 60
@@ -167,6 +167,30 @@ loadgen:
   crunchPayload: 1024
   # Default: the host service in-namespace.
   targetUrl: ""
+  # The workflow-engine workload (#297), `mode: workflow`. Every value is a
+  # `WF_*` env on the generator; EMPTY omits the variable (the generator's
+  # own default applies), exactly as `socket.env` does on the host. Two of
+  # them shape the whole run: `startRate` is runs/s of OPEN-LOOP arrivals
+  # (`sweep` above becomes a list of rate rungs in this mode), and `mix` is
+  # the template weighting.
+  wf:
+    WF_START_RATE: ""
+    WF_ARRIVAL: ""
+    WF_MIX: ""
+    WF_MAX_INFLIGHT: ""
+    WF_POLL_MS: ""
+    WF_DRAIN_S: ""
+    WF_TASK_MS: ""
+    WF_DELAY_MS: ""
+    WF_FANOUT_WIDTH: ""
+    WF_FANOUT_MODE: ""
+    WF_FAILURE_RATE: ""
+    WF_SIGNAL_TIMEOUT_MS: ""
+    WF_SIGNAL_DELAY_MS: ""
+    WF_SIGNAL_SKIP_RATIO: ""
+    WF_RETRY_MAX: ""
+    WF_RETRY_BACKOFF_MS: ""
+    WF_SEED_VERSION: ""
   resources:
     requests:
       cpu: 250m
@@ -174,6 +198,24 @@ loadgen:
     limits:
       cpu: 1000m
       memory: 256Mi
+
+# The workflow engine's HOST knobs (#297) — `src/workflow/config.ts` and
+# `src/actors.app.ts` document each. EMPTY omits the variable, so a
+# deployment setting none of these is byte-identical to one that predates
+# the engine; every one that IS set reaches INFRA_SHAPE.
+workflow:
+  env:
+    WF_TIMER_THRESHOLD_MS: ""
+    WF_REMINDER_TICK_MS: ""
+    WF_IDLE_AFTER_MS: ""
+    WF_DEACTIVATE_ON_SLEEP: ""
+    WF_STALE_WAKE_MS: ""
+    WF_CHILD_STALE_MS: ""
+    WF_STATS_SAVE_EVERY: ""
+    WF_STATS_RING: ""
+    WF_COMPUTE_MAX_LOCAL: ""
+    WF_IO_MAX_LOCAL: ""
+    WF_CALL_TIMEOUT_MS: ""
 
 # The WebSocket load generator (#172) — connections held and messages
 # delivered, rather than ops/s. Rendered per run exactly like `loadgen`.

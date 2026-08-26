@@ -4,7 +4,8 @@
  * locally. Everything is env-driven:
  *
  *   TARGET_URL        http://host-service:7311                REQUIRED
- *   MODE              counter | crunch | mixed | verify       default counter
+ *   MODE              counter | crunch | mixed | verify |
+ *                     jobs | workflow                        default counter
  *   CONCURRENCY       closed-loop workers                     default 32
  *   DURATION_S        run length per rung                     default 60
  *   KEY_COUNT         distinct keys k-0..k-(N-1)              default 1000
@@ -22,11 +23,20 @@
  * counter runs (state loss = actual < acked; actual > acked is legal — an
  * increment can commit after its response was lost).
  *
+ * MODE=workflow (#297) is the workflow-engine workload: open-loop run
+ * arrivals at WF_START_RATE (or one rung per SWEEP entry), a template mix
+ * (WF_MIX), the engine knobs (WF_TASK_MS, WF_DELAY_MS, WF_FANOUT_WIDTH,
+ * WF_FANOUT_MODE, WF_FAILURE_RATE, WF_SIGNAL_TIMEOUT_MS, WF_SIGNAL_DELAY_MS,
+ * WF_SIGNAL_SKIP_RATIO, WF_RETRY_MAX, WF_RETRY_BACKOFF_MS, WF_SEED_VERSION)
+ * and the generator's own (WF_ARRIVAL, WF_MAX_INFLIGHT, WF_POLL_MS,
+ * WF_DRAIN_S). See `src/loadgen/workflow-mode.ts`.
+ *
  * Wire protocol: POST {TARGET_URL}/_sigx/actor/{Type}/{method} with
  * {"args":[key, ...args]} — the actor key is the first wire argument.
  */
 import { hostname } from 'node:os';
 import { closedLoop } from './src/loadgen/loop.ts';
+import { runWorkflowMode } from './src/loadgen/workflow-mode.ts';
 
 const need = (name) => {
     const value = process.env[name];
@@ -89,6 +99,30 @@ async function wireCall(type, method, args, attempt = 0) {
         }
         return `fetch:${code}`;
     }
+}
+
+/** The same call, returning the payload — for the modes that read. */
+async function wireData(type, method, args) {
+    const symbol = `${type.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(method)}`;
+    try {
+        const res = await fetch(`${TARGET_URL}/_sigx/actor/${symbol}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ args })
+        });
+        if (!res.ok) {
+            await res.text().catch(() => {});
+            return { error: String(res.status) };
+        }
+        const body = await res.json();
+        return body.error ? { error: `app:${body.error.status ?? 'error'}` } : { data: body.data };
+    } catch (error) {
+        return { error: `fetch:${error?.cause?.code ?? error?.name ?? 'unknown'}` };
+    }
+}
+
+if (MODE === 'workflow') {
+    await runWorkflowMode({ call: wireData, log, target: TARGET_URL, runId: RUN_ID });
 }
 
 const keyFor = (i) =>
@@ -234,7 +268,7 @@ const callers = {
 
 const caller = callers[MODE];
 if (!caller) {
-    console.error(`[loadgen] MODE must be counter|crunch|mixed|verify|jobs, got '${MODE}'`);
+    console.error(`[loadgen] MODE must be counter|crunch|mixed|verify|jobs|workflow, got '${MODE}'`);
     process.exit(1);
 }
 

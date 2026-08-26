@@ -30,6 +30,7 @@
             "@sigx/actors": ["../../packages/actors/src/index.ts"],
             "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
             "@sigx/actors/job": ["../../packages/actors/src/job/index.ts"],
+            "@sigx/actors/node": ["../../packages/actors/src/node/index.ts"],
             "@sigx/actors/cluster": [
                 "../../packages/actors/src/cluster/index.ts"
             ],

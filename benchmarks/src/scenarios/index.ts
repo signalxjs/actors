@@ -13,6 +13,7 @@ import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
 import { livePrincipalScenarios } from './live-principal.ts';
 import { WS_ENABLED, wsHint as wsReason, socketScenarios } from './sockets.ts';
+import { WF_ENABLED, wfHint as wfReason, workflowScenarios } from './workflow.ts';
 import { topicScenarios } from './topics.ts';
 import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
@@ -64,7 +65,10 @@ export const ALL_SCENARIOS: Scenario[] = [
     // And `sockets/*` is a different axis again WITHIN Tier 3: connections
     // held and messages delivered, driven from inside the cluster with no
     // ingress in the path. Never read as another rung of `infra/*`.
-    ...(WS_ENABLED ? socketScenarios : [])
+    ...(WS_ENABLED ? socketScenarios : []),
+    // And `workflow/*` a third: an ENGINE on the cluster — runs per second,
+    // wake lag, joins — driven from inside like `sockets/*` (#297).
+    ...(WF_ENABLED ? workflowScenarios : [])
 ];
 
 const TIER2_NAMES = tier2Scenarios.map((s) => s.name);
@@ -103,6 +107,7 @@ export function tier2Hint(filters: readonly string[]): string | null {
  */
 const TIER3_NAMES = tier3Scenarios.map((s) => s.name);
 const WS_NAMES = socketScenarios.map((s) => s.name);
+const WF_NAMES = workflowScenarios.map((s) => s.name);
 
 export function threadsHint(filters: readonly string[]): string | null {
     if (THREADS_ENABLED || filters.length === 0) return null;
@@ -131,4 +136,12 @@ export function wsHint(filters: readonly string[]): string | null {
     if (!filters.some((f) => WS_NAMES.some((name) => name.includes(f)))) return null;
     const reason = wsReason();
     return reason === null ? null : `sockets/* are opt-in — ${reason}`;
+}
+
+/** `workflow/*` — gated exactly like `sockets/*`, on its own env (#297). */
+export function wfHint(filters: readonly string[]): string | null {
+    if (WF_ENABLED || filters.length === 0) return null;
+    if (!filters.some((f) => WF_NAMES.some((name) => name.includes(f)))) return null;
+    const reason = wfReason();
+    return reason === null ? null : `workflow/* are opt-in — ${reason}`;
 }
