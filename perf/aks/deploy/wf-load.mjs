@@ -140,7 +140,7 @@ export function workflowTotals(kube, namespace) {
 
 const SUMMED = [
     'started', 'startFailures', 'startsDeferred', 'completed', 'failed', 'compensated',
-    'cancelled', 'childRuns', 'completedUnreported', 'droppedEvents', 'unknownEvents',
+    'cancelled', 'childRuns', 'completedUnreported', 'droppedEvents', 'unknownEvents', 'startFailedButRan',
     'sweepUnpollable', 'signalsSent', 'signalsSkipped', 'signalFailures'
 ];
 /** Engine sums arrive from the aggregator, which every pod reads in full —
@@ -168,6 +168,7 @@ export function mergeWfRows(rows, { partial = false } = {}) {
             drainMs: 0,
             stuck: { sleeping: 0, waiting: 0, blocked: 0, running: 0, other: 0, total: 0 },
             byTemplate: {},
+            failedByError: {},
             latencyMs: null,
             observedMs: null,
             startMs: null,
@@ -179,6 +180,9 @@ export function mergeWfRows(rows, { partial = false } = {}) {
         for (const key of SUMMED) merged[key] = (merged[key] ?? 0) + (row[key] ?? 0);
         for (const key of FROM_ONE) if (merged[key] === undefined && row[key] !== undefined) merged[key] = row[key];
         for (const key of Object.keys(merged.stuck)) merged.stuck[key] += row.stuck?.[key] ?? 0;
+        for (const [reason, count] of Object.entries(row.failedByError ?? {})) {
+            merged.failedByError[reason] = (merged.failedByError[reason] ?? 0) + count;
+        }
         for (const [template, statuses] of Object.entries(row.byTemplate ?? {})) {
             const t = (merged.byTemplate[template] ??= {});
             for (const [status, count] of Object.entries(statuses)) t[status] = (t[status] ?? 0) + count;

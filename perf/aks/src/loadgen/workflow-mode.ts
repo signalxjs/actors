@@ -68,6 +68,7 @@ interface DrainedEvent {
     startedAt: number;
     endedAt: number;
     parent: boolean;
+    error?: string;
 }
 
 const num = (name: string, fallback: number): number => {
@@ -139,13 +140,17 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
     }
     log(`seeded ${allDefinitions(knobs).length} definitions @v${knobs.version}; mix=${mix}`);
 
-    let allOk = true;
     for (const rate of rungs) {
         const result = await oneRung(rate);
         console.log(JSON.stringify(result));
-        if ((result.stuck.total ?? 0) > 0 || (result.startFailures ?? 0) > 0) allOk = false;
     }
-    process.exit(allOk ? 0 : 1);
+    // Always 0 once the rows are out. A start that 504s under overload
+    // and a run left stuck are MEASUREMENTS — the row carries them and
+    // `testenv.mjs wf-load` exits 1 on `stuck` — whereas a non-zero exit
+    // here marks the k8s Job failed and the whole run PARTIAL, which is
+    // what a generator pod DYING means, and is how an overloaded rung came
+    // to be refused as a harness fault rather than reported as a ceiling.
+    process.exit(0);
 
     // ---- one rung -----------------------------------------------------
     async function oneRung(rate: number) {
@@ -154,6 +159,11 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         const tally = (kind: string) => errors.set(kind, (errors.get(kind) ?? 0) + 1);
         /** runId → { template, startedAtClient } */
         const inflight = new Map<string, { template: string; startedAtClient: number }>();
+        /** Runs whose start() errored at the client — the run may still
+         *  have started (a 504 is the deadline, not the outcome). */
+        const startFailed = new Set<string>();
+        /** Failed runs by (normalised) reason. */
+        const failedByError: Record<string, number> = {};
         const latency = new Map<string, Samples>(); // template → host-side
         const observed = new Map<string, Samples>(); // template → client-side
         const startLatency = new Samples();
@@ -201,6 +211,7 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
                 counts.startFailures++;
                 counts.started--;
                 inflight.delete(id);
+                startFailed.add(id);
                 tally(`start:${r.error}`);
                 return;
             }
@@ -231,6 +242,11 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         let lastReport = started;
 
         const applyEvent = (e: DrainedEvent) => {
+            if (e.status === 'failed' && e.error) {
+                // Strip the run/node ids so the same cause buckets together.
+                const key = e.error.replace(/[A-Za-z0-9_.-]*-r\d+-[A-Za-z0-9_.-]+/g, '<run>').slice(0, 80);
+                failedByError[key] = (failedByError[key] ?? 0) + 1;
+            }
             const rec = inflight.get(e.runId);
             if (rec) {
                 inflight.delete(e.runId);
@@ -240,6 +256,16 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
                 samplesFor(observed, e.template).record(Date.now() - rec.startedAtClient);
             } else if (e.parent) {
                 counts.childEvents++;
+                bump(e.template, e.status);
+                samplesFor(latency, e.template).record(e.endedAt - e.startedAt);
+            } else if (startFailed.has(e.runId)) {
+                // The deadline expired at the client but the run ran: the
+                // engine did the work, the caller only lost the ack. Its
+                // latency is real and recorded; it stays OUT of `completed`
+                // so `completed / started` keeps describing acknowledged
+                // starts, and `byTemplate` carries its terminal status.
+                startFailed.delete(e.runId);
+                counts.startFailedButRan = (counts.startFailedButRan ?? 0) + 1;
                 bump(e.template, e.status);
                 samplesFor(latency, e.template).record(e.endedAt - e.startedAt);
             } else {
@@ -397,6 +423,8 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             startMs: pct(startLatency.percentiles()),
             completed: counts.completed,
             failed: counts.failed,
+            failedByError,
+            startFailedButRan: counts.startFailedButRan ?? 0,
             compensated: counts.compensated,
             cancelled: counts.cancelled,
             childRuns: counts.childEvents,
