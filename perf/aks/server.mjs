@@ -32,7 +32,7 @@
  * The workflow engine (#297) is always registered; its host-side knobs
  * (WF_TIMER_THRESHOLD_MS, WF_REMINDER_TICK_MS, WF_IDLE_AFTER_MS,
  * WF_DEACTIVATE_ON_SLEEP, WF_STALE_WAKE_MS, WF_CHILD_STALE_MS,
- * WF_STATS_SAVE_EVERY, WF_COMPUTE_MAX_LOCAL, WF_IO_MAX_LOCAL,
+ * WF_STATS_SAVE_EVERY, WF_STATS_RING, WF_NOTIFY_RETRY_MS, WF_COMPUTE_MAX_LOCAL, WF_IO_MAX_LOCAL,
  * WF_CALL_TIMEOUT_MS) are documented in `src/workflow/config.ts` and
  * `src/actors.app.ts`, all optional, and all part of INFRA_SHAPE. Its
  * counters ride ops() as the `workflow` section.

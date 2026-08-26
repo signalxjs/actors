@@ -48,6 +48,20 @@
  *
  * Both are findings the rig exists to produce, so both are counted rather
  * than designed around.
+ *
+ * ## A turn never waits on another host
+ *
+ * The first cluster run wedged the fleet (#302): a parent's turn awaited
+ * `child.start()` on other hosts, each child's last turn awaited
+ * `parent.childDone()`, every finishing run awaited `ctx.publish()` to the
+ * singleton aggregator — all through a bounded per-peer fetch pool, with
+ * no deadline on a call made from a tick. Once the pool held only calls
+ * whose target turns were waiting on the pool, three idle hosts sat on
+ * 50 000 queued turns for forty minutes. So the rule here is the one every
+ * real engine follows: a turn RECORDS the intent (children to start, an
+ * event to publish, a parent to notify), saves, and lets the call go out
+ * detached; a lost call is repaired by the join watchdog, the sweep, or the
+ * notify-retry wake — never by a turn that holds a connection open.
  */
 import { topic } from '@sigx/actors';
 import type { TimerHandle } from '@sigx/actors';
@@ -290,7 +304,12 @@ export const WorkflowRun = defineActor({
                 token: ++s.seq,
                 nodeId,
                 due: Date.now() + ms,
-                kind: ms < config.timerThresholdMs ? 'timer' : 'reminder',
+                // A notify-retry is ALWAYS volatile: if the host dies with
+                // it, the parent's join watchdog touches the child, and the
+                // touch re-arms it. Making it durable would cost every child
+                // completion two shard CASes for a guarantee the watchdog
+                // already gives.
+                kind: reason === 'notify-retry' || ms < config.timerThresholdMs ? 'timer' : 'reminder',
                 reason
             };
             s.wake = w;
@@ -477,10 +496,14 @@ export const WorkflowRun = defineActor({
             // Recorded BEFORE any child starts: a crash between here and
             // the starts leaves records the join watchdog can repair.
             await save();
-            const results = await Promise.allSettled(expected.map((childId) => startChild(childId)));
-            for (const r of results) {
-                if (r.status === 'fulfilled') C.childStarts++;
-                else C.childStartFailures++;
+            // DETACHED (#302): the turn ends here; the starts go out without
+            // holding it, and a start that never lands is re-issued by the
+            // join watchdog. `start()` is idempotent, so a duplicate is free.
+            for (const childId of expected) {
+                void startChild(childId).then(
+                    () => C.childStarts++,
+                    () => C.childStartFailures++
+                );
             }
             await setReminder(REMINDER_JOIN_CHECK, {
                 due: config.childStaleMs,
@@ -682,7 +705,9 @@ export const WorkflowRun = defineActor({
 
         // ---- completion ------------------------------------------------
 
-        const publishEvent = async (): Promise<void> => {
+        /** Detached (#302): the completion event leaves without holding
+         *  the turn; a failure is counted, never awaited. */
+        const publishEvent = (): void => {
             const event: CompletionEvent = {
                 runId: ctx.key,
                 workflow: s.workflow,
@@ -696,27 +721,47 @@ export const WorkflowRun = defineActor({
                 error: s.error,
                 stats: ctx.snapshot(s.stats)
             };
-            try {
-                const report = await ctx.publish(workflowEvents(ctx.key), event);
-                C.publishes++;
-                if (report.failures.length > 0) C.publishFailures++;
-            } catch {
-                C.publishFailures++;
-            }
+            void ctx.publish(workflowEvents(ctx.key), event).then(
+                (report) => {
+                    C.publishes++;
+                    if (report.failures.length > 0) C.publishFailures++;
+                },
+                () => {
+                    C.publishFailures++;
+                }
+            );
         };
 
+        /**
+         * The parent is told through a detached call (#302). The turn
+         * arms a notify-retry wake FIRST and lets the call go; success
+         * clears the wake, and if the wake fires the call is simply made
+         * again — `childDone` is idempotent on the parent's side.
+         */
         const notifyParent = async (): Promise<void> => {
             const parent = s.parent;
             if (!parent || s.notifyParent !== 'pending') return;
-            try {
-                await ctx.actor(WorkflowRun, parent.runId).childDone(ctx.key, s.status);
-                s.notifyParent = 'sent';
-                await save();
-            } catch {
-                C.childDoneRetries++;
-                // Terminal status is untouched by a notify-retry sleep.
-                await sleep(s.cursor ?? 'end', 1_000, 'notify-retry');
-            }
+            await sleep(s.cursor ?? 'end', config.notifyRetryMs, 'notify-retry');
+            void ctx.actor(WorkflowRun, parent.runId)
+                .childDone(ctx.key, s.status)
+                .then(
+                    () => ctx.timer('notified', () => markNotified(), { due: 0 }),
+                    // A rejection is not a retry: the notify-retry wake
+                    // counts the re-send when it actually fires.
+                    () => {}
+                );
+        };
+
+        /** A turn of its own: the detached call may settle after the
+         *  notifying turn has long returned. */
+        const markNotified = async (): Promise<void> => {
+            if (s.notifyParent !== 'pending') return;
+            // Whichever attempt landed, the parent knows: any notify-retry
+            // wake still armed is now redundant.
+            if (s.wake?.reason === 'notify-retry') cancelWake();
+            s.notifyParent = 'sent';
+            await save();
+            if (config.deactivateOnSleep) ctx.deactivate();
         };
 
         const finish = async (status: RunStatus): Promise<void> => {
@@ -728,7 +773,7 @@ export const WorkflowRun = defineActor({
             if (s.parent) s.notifyParent = 'pending';
             await save();
             C.runsFinished++;
-            await publishEvent();
+            publishEvent();
             await notifyParent();
             if (config.deactivateOnSleep && s.notifyParent !== 'pending') ctx.deactivate();
         };
@@ -762,6 +807,7 @@ export const WorkflowRun = defineActor({
                     return;
                 }
                 case 'notify-retry':
+                    C.childDoneRetries++;
                     await notifyParent();
                     return;
             }
