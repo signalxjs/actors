@@ -66,7 +66,24 @@ const ladder = (name: string, fallback: string): number[] =>
 /** Seconds of arrivals per rung; the drain is bounded by the generator. */
 const DURATION_S = process.env.INFRA_WF_DURATION_S ?? '60';
 
+/** FNV-1a of the scenario's values — the seed version it runs under. */
+function seedVersion(values: Record<string, unknown>): string {
+    const text = JSON.stringify(values, Object.keys(values).sort());
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return String(2_000_000 + ((h >>> 0) % 1_000_000_000));
+}
+
 async function drive(values: Record<string, unknown>): Promise<WfLoadResult> {
+    // `WorkflowDefinition.put` is idempotent by version: without a version
+    // of its own per scenario, every scenario after the first ran the
+    // FIRST one's definitions — 2 s delays in the sleeping-runs rung, width
+    // 8 in every fan-out rung. The generator derives one from its knobs
+    // too; this is the harness-side belt to that suspender, and it lets a
+    // deployed generator that predates the derivation still seed correctly.
     return await runWfLoad({
         context: CONTEXT,
         namespace: NAMESPACE,
@@ -75,7 +92,7 @@ async function drive(values: Record<string, unknown>): Promise<WfLoadResult> {
         imageRepository: IMAGE,
         imageTag: IMAGE_TAG,
         workload: WORKLOAD,
-        values: { durationS: DURATION_S, ...values }
+        values: { durationS: DURATION_S, WF_SEED_VERSION: seedVersion(values), ...values }
     });
 }
 
@@ -248,6 +265,7 @@ function mechanismMetrics(result: WfLoadResult): Metric[] {
         count('join_repairs', 'joinRepairs', 'lower'),
         count('publish_failures', 'publishFailures', 'lower'),
         count('def_reads', 'defReads', 'higher'),
+        count('def_cache_hits', 'defCacheHits', 'higher'),
         {
             name: 'remote_dispatch_ratio',
             value: ratio(remote, remote + local),
@@ -277,9 +295,10 @@ const throughputLadder: Scenario = {
         'Open-loop run arrivals at rising rates over the default template mix, short delays (volatile timers)',
     async run(ctx) {
         // The first measured run put the knee of this mix at ~25 runs/s on 3 x 1
-        // vCPU and collapse by 50 (30 s deadlines, lost wakes); 100 exists to
-        // show what overload looks like, not to be a number anyone quotes.
-        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '10,25', '10,25,50,100'));
+        // vCPU and collapse at 50 (30 s deadlines, lost wakes). 100 is not in
+        // the default: it wedged the fleet (#302) and every later scenario
+        // in the run started on that backlog. INFRA_WF_RATE_LADDER reaches it.
+        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '10,25', '10,25,50'));
         const result = await drive({
             sweep: rates.join(','),
             WF_DELAY_MS: '2000'
@@ -300,7 +319,7 @@ const sleepingRuns: Scenario = {
         // Orders only, and asleep for most of their life: cheap per run, so
         // this ladder reaches past the mixed knee on purpose — the question is
         // the reminder shards, not the CPU.
-        const rates = ladder('INFRA_WF_SLEEP_RATE_LADDER', quickOr(ctx, '25', '25,50,100'));
+        const rates = ladder('INFRA_WF_SLEEP_RATE_LADDER', quickOr(ctx, '25', '25,50'));
         const result = await drive({
             sweep: rates.join(','),
             WF_MIX: 'order:100',
@@ -487,7 +506,7 @@ const definitionHotKey: Scenario = {
         'A high start rate over the default mix: every start reads one of five shared definition keys — the locality axis',
     async run() {
         const result = await drive({
-            WF_START_RATE: process.env.INFRA_WF_HOT_RATE ?? '50',
+            WF_START_RATE: process.env.INFRA_WF_HOT_RATE ?? '25',
             WF_DELAY_MS: '1000'
         });
         refusePartial(result, this.name);

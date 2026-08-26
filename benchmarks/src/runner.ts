@@ -99,6 +99,8 @@ function aggregate(perRun: readonly Metric[][]): AggregatedMetric[] {
 }
 
 export interface RunnerOptions extends RunContext {
+    /** Run the discarded warmup pass (default true). */
+    warmup?: boolean;
     runs: number;
     /** Add a dedicated GC-profiling pass. On by default. */
     gcProfile: boolean;
@@ -129,7 +131,7 @@ export async function runSuite(
     scenarios: readonly Scenario[],
     options: RunnerOptions
 ): Promise<SuiteOutcome> {
-    const { runs, gcProfile, probe, onProgress, ...ctx } = options;
+    const { runs, gcProfile, probe, onProgress, warmup = true, ...ctx } = options;
     const calibrationSamples: number[] = [];
     const log = onProgress ?? ((): void => {});
 
@@ -137,13 +139,15 @@ export async function runSuite(
 
     // Warmup pass — discarded. Also surfaces a broken scenario before we
     // spend the whole measurement budget on it.
-    for (const entry of collected) {
-        try {
-            await entry.scenario.run(ctx);
-        } catch (error) {
-            entry.error = describeError(error);
+    if (warmup) {
+        for (const entry of collected) {
+            try {
+                await entry.scenario.run(ctx);
+            } catch (error) {
+                entry.error = describeError(error);
+            }
+            log(`warmup ${entry.scenario.name}`);
         }
-        log(`warmup ${entry.scenario.name}`);
     }
 
     for (let round = 1; round <= runs; round++) {

@@ -794,6 +794,7 @@ async function wfLoad(args) {
     log(JSON.stringify({
         hosts: result.hosts,
         peakActivations: result.peakActivations,
+        queuedAfter: result.queuedAfter,
         samples: result.samples,
         note: 'gauge sampled every ~5s while the job ran; a true peak between samples is missed'
     }));
@@ -842,7 +843,10 @@ async function wfBench(args) {
         INFRA_WF_WORKLOAD: cfg.workload,
         INFRA_SHAPE: shape
     };
-    const code = spawnInherit('pnpm', ['bench:run', 'workflow/', '--runs=1', ...args], env);
+    // One pass, no warmup, no GC-profile re-run: each of those is a whole
+    // extra ladder on a paid cluster, and the two extra passes are how the
+    // first recorded run spent an hour measuring its own backlog (#302).
+    const code = spawnInherit('pnpm', ['bench:run', 'workflow/', '--runs=1', '--no-warmup', '--no-gc-profile', ...args], env);
     process.exitCode = code;
 }
 

@@ -44,6 +44,7 @@ import {
     allDefinitions,
     DEFAULT_KNOBS,
     pickTemplate,
+    seedVersionFor,
     templateWeights
 } from '../workflow/templates.ts';
 
@@ -103,8 +104,11 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         signalTimeoutMs: num('WF_SIGNAL_TIMEOUT_MS', DEFAULT_KNOBS.signalTimeoutMs),
         retryMax: num('WF_RETRY_MAX', DEFAULT_KNOBS.retryMax),
         retryBackoffMs: num('WF_RETRY_BACKOFF_MS', DEFAULT_KNOBS.retryBackoffMs),
-        version: num('WF_SEED_VERSION', 1)
+        version: 0
     };
+    // Derived from the knobs unless pinned: `put` is idempotent by version,
+    // so a fixed default made every later run reuse the first run's knobs.
+    knobs.version = num('WF_SEED_VERSION', seedVersionFor(knobs));
     const mix = process.env.WF_MIX ?? 'order:50,approval:20,etl:20,saga:10';
     const weights = templateWeights(mix);
     const arrival = process.env.WF_ARRIVAL === 'fixed' ? 'fixed' : 'poisson';

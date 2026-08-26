@@ -46,6 +46,7 @@ interface Options {
     threshold: number;
     list: boolean;
     gcProfile: boolean;
+    warmup: boolean;
     json?: string;
 }
 
@@ -59,11 +60,15 @@ function parseArgs(argv: readonly string[]): Options {
         doCompare: false,
         threshold: DEFAULT_THRESHOLD,
         list: false,
-        gcProfile: true
+        gcProfile: true,
+        warmup: true
     };
     for (const arg of argv) {
         if (arg === '--quick') options.quick = true;
         else if (arg === '--no-gc-profile') options.gcProfile = false;
+        // Tier 3 only: a warmup there is a whole extra ladder on a paid
+        // cluster, and the JIT it exists to settle lives in the pods.
+        else if (arg === '--no-warmup') options.warmup = false;
         else if (arg === '--save-baseline') options.saveBaseline = true;
         else if (arg === '--compare') options.doCompare = true;
         else if (arg === '--list') options.list = true;
@@ -126,7 +131,8 @@ async function main(): Promise<void> {
         quick: options.quick,
         gcProfile: options.gcProfile,
         probe: calibrationScore,
-        onProgress: (message) => console.log(`  ${message}`)
+        onProgress: (message) => console.log(`  ${message}`),
+        warmup: options.warmup
     });
 
     const result: BenchResult = {

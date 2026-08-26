@@ -89,6 +89,8 @@ export interface WfLoadResult {
     hosts: number;
     /** Sampled during the run; `null` when no host reported a gauge. */
     peakActivations: number | null;
+    /** Queued turns per host pod after the Job finished. */
+    queuedAfter: Record<string, number>;
     samples: number;
     /** `ops.workflow` + `cluster/*` deltas; empty unless `countersTrustworthy`. */
     delta: Record<string, number>;
@@ -108,6 +110,10 @@ export interface WfLoadOptions {
     onLog?: (line: string) => void;
     sampleIntervalMs?: number;
     timeoutMs?: number;
+    /** A run starts only once the fleet's queued turns are at or under this. */
+    quietQueued?: number;
+    /** How long to wait for that before refusing. */
+    quietTimeoutMs?: number;
 }
 
 export function runWfLoad(options: WfLoadOptions): Promise<WfLoadResult>;
@@ -121,4 +127,5 @@ export function workflowTotals(
     totals: Record<string, number>;
     hostsComplete: boolean;
     activations: number | null;
+    queued: Record<string, number>;
 };
