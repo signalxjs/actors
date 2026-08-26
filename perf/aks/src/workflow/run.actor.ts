@@ -191,7 +191,9 @@ interface Engine {
  * Definitions are immutable per version, so one read per host per
  * `name@version` is all the runtime ever needs — and the read is the last
  * cross-host call a run's turn used to await (#302, second occurrence).
- * `start()` without a version still asks the actor, once, for "latest".
+ * A `start()` WITHOUT a version asks the actor for "latest" every time —
+ * the loadgen always pins one, and an unpinned start is the one case that
+ * must see a newly `put` version.
  */
 const definitionCache = new Map<string, WorkflowDef>();
 

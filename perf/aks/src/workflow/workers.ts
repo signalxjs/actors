@@ -68,7 +68,6 @@ const SLICE_MS = 2;
  * same; only its fairness changes.
  */
 async function burn(ms: number, seed: string): Promise<string> {
-    const started = performance.now();
     let digest = createHash('sha256').update(seed).digest();
     let spent = 0;
     while (spent < ms) {
@@ -79,7 +78,6 @@ async function burn(ms: number, seed: string): Promise<string> {
         spent += performance.now() - sliceStart;
         if (spent < ms) await new Promise((resolve) => setImmediate(resolve));
     }
-    void started;
     return digest.toString('hex').slice(0, 16);
 }
 
