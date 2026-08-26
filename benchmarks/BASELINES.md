@@ -2698,3 +2698,86 @@ the sleeping-runs rung ran 2 s delays while its Job said 90 s, and every
 fan-out width ran width 8. Only the throughput ladder above is valid from
 that run; the seed version is now derived from the knob bag, and the
 other scenarios were re-run under versions of their own (next section).
+
+### The other six scenarios, re-run under versions of their own (image `c6d1b15`)
+
+Every rung below: **0 stuck, 0 errors, 0 lost wakes, 0 join repairs,
+0 publish failures, 0 reminder-set failures.** Same shape, 60 s of
+arrivals per rung, one generator pod.
+
+**`workflow/sleeping-runs`** — orders only, a 90 s shipping delay on a
+DURABLE reminder, every run leaving memory and coming back on a tick:
+
+| runs/s | finished | start p50 | order p50 / p99 | wake lag p50 | reminders set / fired | peak activations | completed/s over the window |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 25 | 1 530 | 6.5 ms | 90.54 s / 91.09 s | 507 ms | 4 095 / 4 095 (both rungs) | 36 | 9.0 |
+| 50 | 2 965 | 15.3 ms | 90.55 s / 91.09 s | 509 ms | | 36 | 17.5 |
+
+The number to keep: **~4 500 runs asleep at once on three hosts holding
+36 activations**, every one of them woken by the shard tick within
+half a tick of its due time (the 507 ms is the tick's own quantisation —
+the lag floor the shape names), and not one reminder mutation lost its
+CAS at 50 arms/s + 50 fires/s. The 16-shard ceiling recorded in the
+cluster-scaling section is real, but this rate is well under it; the
+rate at which `reminder_set_failure_ratio` leaves zero is the next thing
+to find, and `INFRA_WF_SLEEP_RATE_LADDER` is how. (`completed/s` is low
+only because the window includes 90 s of sleep — 25/s in, 25/s out.)
+
+**`workflow/fanout-width`** (child RUNS, cross-host) and
+**`workflow/fanout-pool`** (the same width as pool tasks in ONE turn),
+arrival rate scaled so child work stays ~32 units/s:
+
+| width | children/run | runs/s | etl p50 (runs) | join p50 | task p50 (runs) | etl p50 (pool) | task p50 (pool) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 4 | 8 | 169 ms | 93 ms | 41 ms | 175 ms | 86 ms |
+| 16 | 16 | 2 | 502 ms | 278 ms | 105 ms | 558 ms | 239 ms |
+| 64 | 64 | 1 | 3.38 s | 1.81 s | 514 ms | 4.71 s | 1.13 s |
+
+The unit rate is constant, so what grows with width is BURST: 64
+children land on the fleet's worker pools at once, and a 20 ms task
+measures 514 ms behind its siblings. The pool arm is worse at every
+width — 64 × 20 ms of CPU on ONE 1 vCPU host is 1.3 s of wall before
+anything else — which is the honest answer to "fan out locally or
+across hosts?" on this shape: across, and the durable join costs
+93 ms at width 4.
+
+**`workflow/signals`** — approvals at 25 runs/s, the signal sent after
+`d` ms (±50%), a fifth of runs deliberately never signalled:
+
+| signal delay | finished | approval p50 / p99 | delivered | buffered | late | timed out (the 20%) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 500 ms | 1 501 | 604 ms / 15.07 s | 1 184 | 0 | 0 | 317 |
+| 2 000 ms | 1 527 | 2.28 s / 15.08 s | 1 220 | 0 | 0 | 307 |
+| 10 000 ms | 1 488 | 11.23 s / 15.08 s | 1 190 | 0 | 0 | 298 |
+
+p50 is the signal delay plus ~100 ms; p99 is the 15 s timeout edge, as
+designed. No signal arrived late, and none had to be buffered (the wait
+node is reached within 30 ms of start) — the buffered path is exercised
+by the unit suite, not by this shape.
+
+**`workflow/saga-failure`** — sagas at 25 runs/s:
+
+| failure rate | finished | compensated | failed | task attempts / run | saga p50 / p99 |
+|---:|---:|---:|---:|---:|---:|
+| 5% | 1 532 | 8.2% | **0** | 3.18 | 63 ms / 1.61 s |
+| 20% | 1 490 | 35.1% | **0** | 3.72 | 64 ms / 1.61 s |
+| 50% | 1 512 | 74.6% | **0** | 4.50 | 118 ms / 1.61 s |
+
+Compensation never failed to complete; the p99 is the retry backoff
+(3 × 500 ms) of a hotel booking that fails twice.
+
+**`workflow/definition-hotkey`** — the default mix at 25 runs/s: start
+p50 39 ms, 3 definition reads for 8 587 cache hits across the fleet. The
+"hot key" is not hot any more: definitions are immutable per version and
+cached per host (#304), so the scenario now prices the first read per
+host and nothing else. It stays as the arm that would notice a cache
+that stopped working.
+
+### What this rig has found so far, and where each went
+
+| finding | evidence | where |
+|---|---|---|
+| Awaiting a cross-host call inside a turn can wedge a fleet through the fetch pool, with no deadline to break it | three idle hosts, 50 000 queued turns, 40 min, twice | **#302** (runtime); the engine no longer does it (#303, #304) |
+| Reminder firing is at-most-once: a delivered wake whose dispatch times out is gone | 131 lost wakes at the collapsed 50/s rung, recovered by the sweep's touch | filed alongside this section |
+| A singleton subscriber on the completion path is the first thing to time out under overload | 91 / 2 496 / 2 671 publish failures per host in the wedged runs | #49 (one-way delivery) is the fix; noted there |
+| The knee of the default mix on 3 × 1 vCPU is ~25 runs/s, set by sha256 on the loop, not by the runtime | task p50 28 → 35 → 55 ms; `transitions_per_sec` 358 at 50/s | the shape; `WF_TASK_MS` moves it |
