@@ -24,13 +24,17 @@ import { redisStorage } from '@sigx/actors-redis';
 
 const url = process.env.REDIS_URL;
 
-/** A host default knob: absent means "the runtime's default", never 0. */
+/**
+ * A host default knob: absent means "the runtime's default", and 0 is
+ * refused — `callTimeoutMs: 0` disables deadlines and `reminderTickMs: 0`
+ * is not a cadence, and neither is a shape anyone means to measure.
+ */
 const knob = (name: string): number | undefined => {
     const raw = process.env[name];
     if (raw === undefined || raw === '') return undefined;
     const value = Number(raw);
-    if (!Number.isInteger(value) || value < 0) {
-        throw new Error(`[perf-aks] ${name} must be a non-negative integer, got '${raw}'`);
+    if (!Number.isInteger(value) || value < 1) {
+        throw new Error(`[perf-aks] ${name} must be a positive integer, got '${raw}'`);
     }
     return value;
 };

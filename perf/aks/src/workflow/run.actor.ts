@@ -304,7 +304,10 @@ export const WorkflowRun = defineActor({
                 armTimer(w);
                 return;
             }
-            const armed = await setReminder(REMINDER_WAKE, { due: ms });
+            // Relative to the SAME nominal due the timer kind uses — the save
+            // and any set retry above already spent part of `ms`, and that
+            // must not be read back as reminder lag.
+            const armed = await setReminder(REMINDER_WAKE, { due: Math.max(0, w.due - Date.now()) });
             if (!armed) {
                 w.kind = 'timer-fallback';
                 s.stats.wakes.reminders--;
