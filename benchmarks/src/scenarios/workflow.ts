@@ -66,7 +66,24 @@ const ladder = (name: string, fallback: string): number[] =>
 /** Seconds of arrivals per rung; the drain is bounded by the generator. */
 const DURATION_S = process.env.INFRA_WF_DURATION_S ?? '60';
 
+/** FNV-1a of the scenario's values — the seed version it runs under. */
+function seedVersion(values: Record<string, unknown>): string {
+    const text = JSON.stringify(values, Object.keys(values).sort());
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return String(2_000_000 + ((h >>> 0) % 1_000_000_000));
+}
+
 async function drive(values: Record<string, unknown>): Promise<WfLoadResult> {
+    // `WorkflowDefinition.put` is idempotent by version: without a version
+    // of its own per scenario, every scenario after the first ran the
+    // FIRST one's definitions — 2 s delays in the sleeping-runs rung, width
+    // 8 in every fan-out rung. The generator derives one from its knobs
+    // too; this is the harness-side belt to that suspender, and it lets a
+    // deployed generator that predates the derivation still seed correctly.
     return await runWfLoad({
         context: CONTEXT,
         namespace: NAMESPACE,
@@ -75,7 +92,7 @@ async function drive(values: Record<string, unknown>): Promise<WfLoadResult> {
         imageRepository: IMAGE,
         imageTag: IMAGE_TAG,
         workload: WORKLOAD,
-        values: { durationS: DURATION_S, ...values }
+        values: { durationS: DURATION_S, WF_SEED_VERSION: seedVersion(values), ...values }
     });
 }
 

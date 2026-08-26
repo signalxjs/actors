@@ -495,6 +495,15 @@ describe('WorkflowStats', () => {
 });
 
 describe('templates', () => {
+    it('seeds a version per knob bag, not per run', () => {
+        const a = wf.seedVersionFor({ ...wf.DEFAULT_KNOBS, delayMs: 2_000 });
+        const b = wf.seedVersionFor({ ...wf.DEFAULT_KNOBS, delayMs: 90_000 });
+        const c = wf.seedVersionFor({ ...wf.DEFAULT_KNOBS, delayMs: 2_000, version: 7 });
+        expect(a).not.toBe(b);
+        expect(a).toBe(c); // `version` itself is not part of the hash
+        expect(Number.isInteger(a) && a > 0).toBe(true);
+    });
+
     it('parses a mix and refuses an unknown template', () => {
         expect(wf.templateWeights('order:50,approval:20,etl:20,saga:10')).toEqual({
             order: 50,

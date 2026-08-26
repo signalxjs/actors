@@ -177,6 +177,27 @@ export function saga(k: TemplateKnobs): WorkflowDef {
     };
 }
 
+/**
+ * The definition version a knob bag seeds under: a hash of every knob but
+ * `version` itself. `WorkflowDefinition.put` is idempotent BY VERSION, so
+ * two runs seeding different knobs under the same version share the first
+ * one's definition — which is how a recorded run once measured 2 s delays
+ * while its Job said 90 s. Same knobs → same version → one definition;
+ * any knob moved → a version of its own.
+ */
+export function seedVersionFor(k: Omit<TemplateKnobs, 'version'> & { version?: number }): number {
+    const { version: _ignored, ...rest } = k;
+    void _ignored;
+    const text = JSON.stringify(rest, Object.keys(rest).sort());
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    // Positive, and above any hand-picked small number.
+    return 1_000_000 + ((h >>> 0) % 1_000_000_000);
+}
+
 /** Every definition a load run seeds, `etl-chunk` included. */
 export function allDefinitions(k: TemplateKnobs): WorkflowDef[] {
     return [order(k), approval(k), etl(k), etlChunk(k), saga(k)];
