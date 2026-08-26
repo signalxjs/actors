@@ -32,6 +32,8 @@ process.env.WF_STALE_WAKE_MS = '300';
 process.env.WF_CHILD_STALE_MS = '200';
 process.env.WF_DEACTIVATE_ON_SLEEP = '0';
 process.env.WF_IDLE_AFTER_MS = '600000';
+process.env.WF_STATS_SAVE_EVERY = '1';
+process.env.WF_NOTIFY_RETRY_MS = '300';
 
 type Engine = typeof import('../src/workflow/index.ts');
 let wf: Engine;

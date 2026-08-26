@@ -28,10 +28,16 @@
  *                           gets its idempotent `start()` re-issued and a
  *                           `status()` nudge by the parent's join watchdog.
  *                           Default 120 s.
- *   WF_STATS_SAVE_EVERY     the aggregator saves every N events (default 1,
- *                           one CAS per completion — the visibility-store
- *                           cost on the completion path).
- *   WF_STATS_RING           events the aggregator retains for `drain`.
+ *   WF_STATS_SAVE_EVERY     the aggregator saves every N events (default 25;
+ *                           1 is the "visibility store on the completion
+ *                           path" arm — at 200 000 ring entries a save per
+ *                           event was several MB of JSON per completion,
+ *                           and part of how #302 built up).
+ *   WF_STATS_RING           events the aggregator retains for `drain`
+ *                           (default 50 000 — ~1000 s of history at 50/s).
+ *   WF_NOTIFY_RETRY_MS      how long a finished child waits for its detached
+ *                           `childDone` to land before sending it again.
+ *                           Default 15 s.
  *   WF_COMPUTE_MAX_LOCAL    pool size of the compute worker; unset = the
  *   WF_IO_MAX_LOCAL         runtime default (cores, clamped 4..16).
  */
@@ -59,8 +65,9 @@ export const config = {
     deactivateOnSleep: process.env.WF_DEACTIVATE_ON_SLEEP !== '0',
     staleWakeMs: num('WF_STALE_WAKE_MS', 2 * reminderTickMs + 5_000),
     childStaleMs: num('WF_CHILD_STALE_MS', 120_000),
-    statsSaveEvery: Math.max(1, num('WF_STATS_SAVE_EVERY', 1)),
-    statsRing: num('WF_STATS_RING', 200_000),
+    statsSaveEvery: Math.max(1, num('WF_STATS_SAVE_EVERY', 25)),
+    statsRing: num('WF_STATS_RING', 50_000),
+    notifyRetryMs: num('WF_NOTIFY_RETRY_MS', 15_000),
     computeMaxLocal: optional('WF_COMPUTE_MAX_LOCAL'),
     ioMaxLocal: optional('WF_IO_MAX_LOCAL'),
     /** Reminder mutations throw after 3 CAS conflicts; the engine's own
