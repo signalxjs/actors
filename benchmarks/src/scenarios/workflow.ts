@@ -276,7 +276,10 @@ const throughputLadder: Scenario = {
     description:
         'Open-loop run arrivals at rising rates over the default template mix, short delays (volatile timers)',
     async run(ctx) {
-        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '10,25', '10,25,50,100,200'));
+        // The first measured run put the knee of this mix at ~25 runs/s on 3 x 1
+        // vCPU and collapse by 50 (30 s deadlines, lost wakes); 100 exists to
+        // show what overload looks like, not to be a number anyone quotes.
+        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '10,25', '10,25,50,100'));
         const result = await drive({
             sweep: rates.join(','),
             WF_DELAY_MS: '2000'
@@ -294,7 +297,10 @@ const sleepingRuns: Scenario = {
     description:
         'Orders whose shipping delay is a DURABLE reminder: every run leaves memory and comes back on a tick — the reminder-shard axis',
     async run(ctx) {
-        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '25', '50,100,200'));
+        // Orders only, and asleep for most of their life: cheap per run, so
+        // this ladder reaches past the mixed knee on purpose — the question is
+        // the reminder shards, not the CPU.
+        const rates = ladder('INFRA_WF_SLEEP_RATE_LADDER', quickOr(ctx, '25', '25,50,100'));
         const result = await drive({
             sweep: rates.join(','),
             WF_MIX: 'order:100',
@@ -317,9 +323,11 @@ const fanoutWidth: Scenario = {
         const widths = ladder('INFRA_WF_WIDTH_LADDER', quickOr(ctx, '4', '4,16,64'));
         const metrics: Metric[] = [];
         for (const width of widths) {
+            // Rate scales with width so child runs/s stays ~32 across the
+            // ladder: the variable is the join's width, not the load.
             const result = await drive({
                 WF_MIX: 'etl:100',
-                WF_START_RATE: '10',
+                WF_START_RATE: String(Math.max(1, Math.round(32 / width))),
                 WF_FANOUT_WIDTH: String(width),
                 WF_FANOUT_MODE: 'children'
             });
@@ -360,7 +368,7 @@ const fanoutPool: Scenario = {
         for (const width of widths) {
             const result = await drive({
                 WF_MIX: 'etl:100',
-                WF_START_RATE: '10',
+                WF_START_RATE: String(Math.max(1, Math.round(32 / width))),
                 WF_FANOUT_WIDTH: String(width),
                 WF_FANOUT_MODE: 'tasks'
             });
@@ -381,7 +389,7 @@ const signals: Scenario = {
         for (const delay of delays) {
             const result = await drive({
                 WF_MIX: 'approval:100',
-                WF_START_RATE: '50',
+                WF_START_RATE: '25',
                 WF_SIGNAL_DELAY_MS: String(delay),
                 WF_SIGNAL_TIMEOUT_MS: '15000',
                 WF_SIGNAL_SKIP_RATIO: '0.2'
@@ -479,7 +487,7 @@ const definitionHotKey: Scenario = {
         'A high start rate over the default mix: every start reads one of five shared definition keys — the locality axis',
     async run() {
         const result = await drive({
-            WF_START_RATE: process.env.INFRA_WF_HOT_RATE ?? '200',
+            WF_START_RATE: process.env.INFRA_WF_HOT_RATE ?? '50',
             WF_DELAY_MS: '1000'
         });
         refusePartial(result, this.name);

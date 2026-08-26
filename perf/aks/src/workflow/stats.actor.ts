@@ -27,6 +27,8 @@ export interface StatsEvent {
     startedAt: number;
     endedAt: number;
     parent: boolean;
+    /** The run's failure reason, truncated — absent on success. */
+    error?: string;
 }
 
 export interface StatsSnapshot {
@@ -163,7 +165,8 @@ export const WorkflowStats = defineActor({
                     status: e.status,
                     startedAt: e.startedAt,
                     endedAt: e.endedAt,
-                    parent: e.parentRunId !== null
+                    parent: e.parentRunId !== null,
+                    ...(e.error ? { error: e.error.slice(0, 120) } : {})
                 });
                 if (s.events.length > config.statsRing) {
                     s.events.splice(0, s.events.length - config.statsRing);

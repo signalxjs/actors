@@ -43,12 +43,15 @@ export interface WfLoadRow {
     completedUnreported: number;
     droppedEvents: number;
     unknownEvents: number;
+    /** start() errored at the client but the run's completion arrived. */
+    startFailedButRan: number;
     sweepUnpollable: number;
     signalsSent: number;
     signalsSkipped: number;
     signalFailures: number;
     stuck: WfStuck;
     byTemplate: Record<string, Record<string, number>>;
+    failedByError: Record<string, number>;
     /** From ONE pod — percentiles do not merge. */
     latencyMs: Record<string, Percentile | null> | null;
     observedMs: Record<string, Percentile | null> | null;
