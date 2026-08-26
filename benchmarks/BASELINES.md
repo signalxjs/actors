@@ -2710,8 +2710,8 @@ DURABLE reminder, every run leaving memory and coming back on a tick:
 
 | runs/s | finished | start p50 | order p50 / p99 | wake lag p50 | reminders set / fired | peak activations | completed/s over the window |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 25 | 1 530 | 6.5 ms | 90.54 s / 91.09 s | 507 ms | 4 095 / 4 095 (both rungs) | 36 | 9.0 |
-| 50 | 2 965 | 15.3 ms | 90.55 s / 91.09 s | 509 ms | | 36 | 17.5 |
+| 25 | 1 530 | 6.5 ms | 90.54 s / 91.09 s | 507 ms | 4 095 / 4 095 (summed over both rungs) | 36 | 9.0 |
+| 50 | 2 965 | 15.3 ms | 90.55 s / 91.09 s | 509 ms | (in the 4 095 above) | 36 | 17.5 |
 
 The number to keep: **~4 500 runs asleep at once on three hosts holding
 36 activations**, every one of them woken by the shard tick within
@@ -2778,6 +2778,6 @@ that stopped working.
 | finding | evidence | where |
 |---|---|---|
 | Awaiting a cross-host call inside a turn can wedge a fleet through the fetch pool, with no deadline to break it | three idle hosts, 50 000 queued turns, 40 min, twice | **#302** (runtime); the engine no longer does it (#303, #304) |
-| Reminder firing is at-most-once: a delivered wake whose dispatch times out is gone | 131 lost wakes at the collapsed 50/s rung, recovered by the sweep's touch | filed alongside this section |
+| Reminder firing is at-most-once: a delivered wake whose dispatch times out is gone | 131 lost wakes at the collapsed 50/s rung, recovered by the sweep's touch | **#306** (runtime) |
 | A singleton subscriber on the completion path is the first thing to time out under overload | 91 / 2 496 / 2 671 publish failures per host in the wedged runs | #49 (one-way delivery) is the fix; noted there |
 | The knee of the default mix on 3 × 1 vCPU is ~25 runs/s, set by sha256 on the loop, not by the runtime | task p50 28 → 35 → 55 ms; `transitions_per_sec` 358 at 50/s | the shape; `WF_TASK_MS` moves it |
