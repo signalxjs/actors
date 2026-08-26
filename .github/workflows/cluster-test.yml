@@ -156,6 +156,8 @@ jobs:
             # holding state.
             ws-bench) node perf/aks/deploy/testenv.mjs ws-bench \
                      --json="$RUNNER_TEMP/sockets.json" $EXTRA_ARGS ;;
+            wf-bench) node perf/aks/deploy/testenv.mjs wf-bench \
+                     --json="$RUNNER_TEMP/workflow.json" $EXTRA_ARGS ;;
             *)     node perf/aks/deploy/testenv.mjs "$VERB" $EXTRA_ARGS ;;
           esac 2>&1 | tee "$RUNNER_TEMP/testenv.log"
 
@@ -171,7 +173,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Every verb uploads its (post-masking) log; the JSON results exist
-      # only for the verbs that MEASURE — `bench` and `ws-bench` — carrying
+      # only for the verbs that MEASURE — `bench`, `ws-bench` and `wf-bench` — carrying
       # metric names, values and the deployment shape (replicas/nodes/tag/
       # knobs), no hostnames. On an ephemeral runner these artifacts are the
       # ONLY durable output of a measured run, which is why `ws-bench` gets
@@ -185,5 +187,6 @@ jobs:
           path: |
             ${{ runner.temp }}/infra.json
             ${{ runner.temp }}/sockets.json
+            ${{ runner.temp }}/workflow.json
             ${{ runner.temp }}/testenv.log
           if-no-files-found: ignore
