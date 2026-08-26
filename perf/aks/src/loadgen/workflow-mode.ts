@@ -260,9 +260,14 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
                 samplesFor(latency, e.template).record(e.endedAt - e.startedAt);
             } else if (startFailed.has(e.runId)) {
                 // The deadline expired at the client but the run ran: the
-                // engine did the work, the caller only lost the ack.
+                // engine did the work, the caller only lost the ack. Its
+                // latency is real and recorded; it stays OUT of `completed`
+                // so `completed / started` keeps describing acknowledged
+                // starts, and `byTemplate` carries its terminal status.
+                startFailed.delete(e.runId);
                 counts.startFailedButRan = (counts.startFailedButRan ?? 0) + 1;
                 bump(e.template, e.status);
+                samplesFor(latency, e.template).record(e.endedAt - e.startedAt);
             } else {
                 counts.unknownEvents++;
             }
