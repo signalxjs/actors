@@ -29,6 +29,14 @@
  *   ENABLE_SESSIONS     verify signed session cookies      default off
  *   SESSION_SECRET      HMAC secret (required if enabled in prod)
  *
+ * The workflow engine (#297) is always registered; its host-side knobs
+ * (WF_TIMER_THRESHOLD_MS, WF_REMINDER_TICK_MS, WF_IDLE_AFTER_MS,
+ * WF_DEACTIVATE_ON_SLEEP, WF_STALE_WAKE_MS, WF_CHILD_STALE_MS,
+ * WF_STATS_SAVE_EVERY, WF_COMPUTE_MAX_LOCAL, WF_IO_MAX_LOCAL,
+ * WF_CALL_TIMEOUT_MS) are documented in `src/workflow/config.ts` and
+ * `src/actors.app.ts`, all optional, and all part of INFRA_SHAPE. Its
+ * counters ride ops() as the `workflow` section.
+ *
  * MEMBERSHIP=k8s swaps host liveness onto coordination.k8s.io Leases
  * (@sigx/actors-k8s) while the actor directory stays in Redis — the two
  * seams are independent by design, and this toggle is how the same chart
@@ -60,6 +68,7 @@ import { Counter } from './src/counter.actor.ts';
 import { Crunch } from './src/crunch.actor.ts';
 import { Fanout } from './src/fanout.actor.ts';
 import { SweepJob } from './src/sweep.job.ts';
+import { workflowActors, snapshotCounters as workflowSnapshot } from './src/workflow/index.ts';
 
 const need = (name) => {
     const value = process.env[name];
@@ -191,7 +200,7 @@ const plugin = cluster({
 const sockets = ENABLE_SOCKET ? socketStats() : null;
 
 const composed = app
-    .withActors([Counter, Crunch, Fanout, SweepJob])
+    .withActors([Counter, Crunch, Fanout, SweepJob, ...workflowActors])
     .use(plugin)
     .use(metrics())
     .use(health())
@@ -204,6 +213,17 @@ const composed = app
                 cluster: (signal, query) => clusterStats(plugin.placement, { signal, ...query })
         })
     );
+
+// The workflow engine's mechanism counters (#297): one more ops section,
+// summed across pods by `deploy/wf-load.mjs` exactly as the socket ones
+// are. Always on — the counters exist whether or not a load run drives
+// them, and reading a zero section costs nothing.
+composed.use({
+    name: 'workflow-counters',
+    setup: (registry) => {
+        registry.reportOps('workflow', () => workflowSnapshot());
+    }
+});
 
 // The socket counters ride the EXISTING ops endpoint as one more section —
 // no endpoint change, and the bearer posture is already there. `.use()`

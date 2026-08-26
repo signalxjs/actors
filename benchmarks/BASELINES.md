@@ -46,6 +46,15 @@ treat them as the first measurement. The 2026-08-10 section is the first
 one produced BY the harness, and is what a later run should be compared
 against.
 
+A THIRD axis joined in #297: `workflow/*`, the workflow engine (the
+headless workload #85 asked for). Driven in-cluster like `sockets/*`, and
+measuring an engine's nouns — runs started and completed per second,
+end-to-end latency per template, the delay-node wake lag, what a fan-out
+join and a lost wake cost — over real reminder shards, a real worker pool,
+real cross-host child runs and one Redis CAS per node. `testenv.mjs
+wf-bench [--save-baseline|--compare]`, shape prefixed `wf` and carrying
+every `WF_*` host knob. Not comparable with either of the other two.
+
 Opt-in (`BENCH_INFRA=1` plus an `INFRA_URL`, a signed-cookie secret, and a
 load VM), and the load is driven FROM A VM IN THE CLUSTER'S REGION: the
 same ladder run from a laptop across an ocean varies 50-80% run to run and

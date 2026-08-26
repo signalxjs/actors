@@ -12,7 +12,7 @@ broken on purpose.
 
 | | |
 |---|---|
-| [`aks/`](aks/) | The AKS estate: `deploy/testenv.mjs` (one command per verb — up / status / test / baseline / bench / load / migrate-check / down), the Helm chart, the runbook, an in-cluster load generator, and the env-gated deployment suite |
+| [`aks/`](aks/) | The AKS estate: `deploy/testenv.mjs` (one command per verb — up / status / test / baseline / bench / load / ws-up / ws-load / ws-bench / wf-load / wf-bench / migrate-check / down), the Helm chart, the runbook, an in-cluster load generator, and the env-gated deployment suite |
 
 ## Where the numbers go
 

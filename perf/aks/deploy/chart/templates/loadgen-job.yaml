@@ -66,6 +66,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- /* The workflow knobs (#297): empty omits, so the
+                   generator's own default applies — see values.yaml. */}}
+            {{- range $name, $value := .Values.loadgen.wf }}
+            {{- if ne (toString $value) "" }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.loadgen.resources | nindent 12 }}
 {{- end }}

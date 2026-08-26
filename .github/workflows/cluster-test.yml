@@ -33,11 +33,13 @@ on:
           - ws-up
           - ws-load
           - ws-bench
+          - wf-load
+          - wf-bench
           - migrate-check
           - vm-up
           - down
       args:
-        description: 'extra args for the verb (e.g. LADDER=64,128 for load, mode=hot ladder=1000,5000 for ws-load, --runs=3 for bench, -t sealed for test)'
+        description: 'extra args for the verb (e.g. LADDER=64,128 for load, mode=hot ladder=1000,5000 for ws-load, WF_START_RATE=50 sweep=25,50,100 for wf-load, --runs=3 for bench, -t sealed for test)'
         type: string
         default: ''
       confirm:

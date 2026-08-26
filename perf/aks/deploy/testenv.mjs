@@ -39,6 +39,7 @@ import { postMessageFnId } from '../../app/deploy/post-fn.mjs';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
 import { shapeMismatch } from '../../../benchmarks/src/shape.mjs';
 import { runWsLoad } from './ws-load.mjs';
+import { runWfLoad } from './wf-load.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -647,20 +648,51 @@ const SOCKET_KNOBS = [
     'SOCKET_MAX_CONNECTION_MS'
 ];
 
-function liveSocketKnobs() {
+function liveSocketKnobs(names = SOCKET_KNOBS) {
     const raw = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host', '-o',
         'jsonpath={range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\\n"}{end}'],
         { quiet: true, allowFail: true }) ?? '';
     const found = {};
     for (const line of raw.split('\n')) {
         const [name, ...rest] = line.split('=');
-        if (SOCKET_KNOBS.includes(name) && rest.length > 0) found[name] = rest.join('=');
+        if (names.includes(name) && rest.length > 0) found[name] = rest.join('=');
     }
     return found;
 }
 
-/** `INFRA_SHAPE` for a socket run — the ACTORS release, not chat. */
-function actorsShape() {
+/**
+ * The workflow engine's host knobs (#297), for the `wf` shape. Every one
+ * moves the curve: the timer threshold decides which sleeps ride the
+ * reminder shards at all, the tick is the wake-lag floor, and the
+ * deactivate toggle is the difference between a fleet holding a million
+ * sleeping runs and one holding a million activations. `FETCH_CONNECTIONS`
+ * and `TRANSPORT` are here for the reason they are in `SOCKET_KNOBS`:
+ * every child start and `childDone` is a cross-host call.
+ */
+const WORKFLOW_KNOBS = [
+    'FETCH_CONNECTIONS',
+    'TRANSPORT',
+    'WF_TIMER_THRESHOLD_MS',
+    'WF_REMINDER_TICK_MS',
+    'WF_IDLE_AFTER_MS',
+    'WF_DEACTIVATE_ON_SLEEP',
+    'WF_STALE_WAKE_MS',
+    'WF_CHILD_STALE_MS',
+    'WF_STATS_SAVE_EVERY',
+    'WF_STATS_RING',
+    'WF_COMPUTE_MAX_LOCAL',
+    'WF_IO_MAX_LOCAL',
+    'WF_CALL_TIMEOUT_MS'
+];
+
+/**
+ * `INFRA_SHAPE` for a run against the ACTORS release (not chat): `ws` for
+ * a socket run over `SOCKET_KNOBS`, `wf` for a workflow run over
+ * `WORKFLOW_KNOBS`. The prefix is part of the string on purpose — the two
+ * axes measure different nouns, and a socket baseline compared against a
+ * workflow run must be refused as a shape mismatch, not read as a delta.
+ */
+function actorsShape(prefix = 'ws', knobNames = SOCKET_KNOBS) {
     const replicas = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host',
         '-o', 'jsonpath={.spec.replicas}'], { quiet: true, allowFail: true }) ?? '?';
     const nodes = kube(['-n', cfg.actorsNs, 'get', 'pods', '-l',
@@ -670,14 +702,147 @@ function actorsShape() {
     const distinct = new Set(nodes.split('\n').filter(Boolean)).size;
     const image = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host',
         '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
-    const knobs = Object.entries(liveSocketKnobs())
+    const knobs = Object.entries(liveSocketKnobs(knobNames))
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([k, v]) => `${k}=${v}`)
         .join(',');
     return (
-        `ws replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}` +
+        `${prefix} replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}` +
         (knobs ? ` knobs=${knobs}` : '')
     );
+}
+
+/**
+ * Run the workflow-engine load Job and report the merged rows (#297).
+ *
+ * Extra args are `loadgen.*` chart values without the prefix — `sweep`,
+ * `durationS`, `parallelism` — and the generator's `WF_*` knobs bare:
+ *   wf-load WF_START_RATE=50 WF_MIX=order:100 WF_DELAY_MS=90000 durationS=60
+ *   wf-load sweep=25,50,100 WF_DELAY_MS=2000
+ *
+ * Same discipline as `ws-load`: the image is named once, the live shape is
+ * printed before and after (a rollout mid-run invalidates the rows), and
+ * `expect-shape='…'` refuses a run against a deployment of another shape.
+ */
+async function wfLoad(args) {
+    const values = {};
+    for (const kv of args) {
+        const at = kv.indexOf('=');
+        if (at <= 0) {
+            console.error(`wf-load takes key=value arguments — got '${kv}'`);
+            console.error('e.g. wf-load WF_START_RATE=50 WF_MIX=order:100 durationS=60');
+            process.exit(1);
+        }
+        values[kv.slice(0, at)] = kv.slice(at + 1);
+    }
+    const tagDefaulted = !values['image.tag'];
+    const imageTag = values['image.tag'] || gitSha();
+    const imageRepository = values['image.repository']
+        || `${cfg.acr}.azurecr.io/sigx-actors-test`;
+    delete values['image.tag'];
+    delete values['image.repository'];
+    const expectShape = values['expect-shape'];
+    delete values['expect-shape'];
+
+    step(`image: ${imageRepository}:${imageTag}` +
+        (tagDefaulted ? ' (defaulted to git HEAD — pass image.tag=<tag> to pin)' : ''));
+    const shape = actorsShape('wf', WORKFLOW_KNOBS);
+    step(`shape: ${shape}`);
+    if (expectShape !== undefined) {
+        const mismatch = shapeMismatch(expectShape, shape);
+        if (mismatch) {
+            console.error(`✗ ${mismatch}`);
+            console.error('  the live deployment is not the shape this run expects — nothing was run.');
+            process.exit(1);
+        }
+        log('  expect-shape matches the live deployment');
+    }
+
+    let result;
+    try {
+        result = await runWfLoad({
+            context: cfg.cluster,
+            namespace: cfg.actorsNs,
+            chartDir: join(here, 'chart'),
+            imageRepository,
+            imageTag,
+            workload: cfg.workload,
+            values,
+            onLog: (message) => step(message)
+        });
+    } catch (error) {
+        console.error(error.message);
+        process.exit(1);
+    }
+
+    if (result.rows.length === 0) {
+        for (const pod of result.pods.slice(0, 2)) {
+            log(`--- ${pod} ---`);
+            log(kube(['-n', cfg.actorsNs, 'logs', pod, '--tail=40'],
+                { quiet: true, allowFail: true }) ?? '(no logs)');
+        }
+        console.error(`${result.job} produced no result rows`);
+        process.exitCode = 1;
+        return;
+    }
+
+    step(result.partial ? 'merged rows (PARTIAL — see the failure above)' : 'merged rows');
+    for (const row of result.merged) log(JSON.stringify(row));
+
+    step('peak activations, observed on the HOSTS');
+    log(JSON.stringify({
+        hosts: result.hosts,
+        peakActivations: result.peakActivations,
+        samples: result.samples,
+        note: 'gauge sampled every ~5s while the job ran; a true peak between samples is missed'
+    }));
+
+    step(result.countersTrustworthy
+        ? 'ops.workflow + cluster counters, summed across hosts'
+        : 'ops.workflow: a snapshot missed a host — no delta reported');
+    log(JSON.stringify({ hosts: result.hosts, delta: result.delta }));
+
+    const shapeAfter = actorsShape('wf', WORKFLOW_KNOBS);
+    step(`shape: ${shapeAfter}`);
+    if (shapeAfter !== shape) {
+        console.error(`✗ the deployment changed mid-run — it was: ${shape}`);
+        console.error('  the rows above span two shapes; the run is not valid');
+        process.exitCode = 1;
+    }
+    if (result.partial) process.exitCode = 1;
+    const stuck = result.merged.reduce((a, row) => a + (row.stuck?.total ?? 0), 0);
+    if (stuck > 0) {
+        log(`  ✗ ${stuck} run(s) stuck at the end of the drain — see the rows' \`stuck\` breakdown`);
+        process.exitCode = 1;
+    }
+}
+
+/**
+ * The recorded workflow run (#297): the `workflow/*` scenarios with the
+ * live release's `wf` shape attached.
+ *
+ *   wf-bench                       # raw run
+ *   wf-bench --save-baseline       # record THIS shape
+ *   wf-bench --compare             # against the recorded one
+ */
+async function wfBench(args) {
+    const image = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host', '-o',
+        'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
+    const [repository, tag] = [image.slice(0, image.lastIndexOf(':')), image.split(':').pop()];
+    const shape = actorsShape('wf', WORKFLOW_KNOBS);
+    step(`shape: ${shape}`);
+    const env = {
+        ...process.env,
+        BENCH_WF: '1',
+        INFRA_WF_CONTEXT: cfg.cluster,
+        INFRA_WF_NS: cfg.actorsNs,
+        INFRA_WF_IMAGE: repository,
+        INFRA_WF_IMAGE_TAG: tag,
+        INFRA_WF_WORKLOAD: cfg.workload,
+        INFRA_SHAPE: shape
+    };
+    const code = spawnInherit('pnpm', ['bench:run', 'workflow/', '--runs=1', ...args], env);
+    process.exitCode = code;
 }
 
 /**
@@ -1051,6 +1216,8 @@ const verbs = {
     load: () => load(rest),
     'ws-up': () => wsUp(rest),
     'ws-load': () => wsLoad(rest),
+    'wf-load': () => wfLoad(rest),
+    'wf-bench': () => wfBench(rest),
     'ws-bench': () => wsBench(rest),
     'migrate-check': () => migrateCheck(rest),
     'vm-up': loadVmUp
@@ -1078,12 +1245,15 @@ const NEEDS = {
     'ws-up': ['RG', 'CLUSTER'],
     'ws-load': ['RG', 'CLUSTER', 'ACR'],
     'ws-bench': ['RG', 'CLUSTER'],
+    // The workflow Job is in-cluster too (#297).
+    'wf-load': ['RG', 'CLUSTER', 'ACR'],
+    'wf-bench': ['RG', 'CLUSTER'],
     'migrate-check': ['RG', 'CLUSTER', 'ACR', 'CHAT_HOST'],
     down: ['RG', 'CLUSTER', 'CHAT_HOST', 'DNS_ZONE', 'DNS_RG', 'LOAD_RG'],
     'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM']
 };
 /** Verbs that reach kubectl/helm, and so need a kubeconfig first. */
-const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'ws-bench', 'migrate-check', 'down']);
+const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'ws-bench', 'wf-load', 'wf-bench', 'migrate-check', 'down']);
 
 if (!verbs[verb]) {
     log(`usage: node testenv.mjs <${Object.keys(verbs).join('|')}>`);

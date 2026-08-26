@@ -2,8 +2,9 @@
 
 A production-shaped `@sigx/actors` deployment: N identical host pods on
 Kubernetes, cluster state in Redis, one container image that runs the host
-(`server.mjs`), the closed-loop HTTP load generator (`loadgen.mjs`) and the
-WebSocket connection-scale generator (`ws-loadgen.mjs`).
+(`server.mjs`), the closed-loop HTTP load generator (`loadgen.mjs` — which
+also carries the open-loop **workflow-engine** workload, `MODE=workflow`)
+and the WebSocket connection-scale generator (`ws-loadgen.mjs`).
 This is the app half of the AKS scale-out/perf test; the Helm chart lives
 in [`deploy/chart/`](deploy/chart/) and the Azure setup plus the full
 scenario runbook in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
@@ -71,6 +72,40 @@ arm that matters most — a read consulting `ctx.principal` gets one watch
 loop per identity, which at 200 subscribers is 6200 actor turns instead of
 31. See scenario (q) in the runbook.
 
+### The workflow engine, with no Redis at all (#297)
+
+`src/workflow/` is a small but realistic workflow engine built on the
+runtime — the headless Tier-3 workload #85 asked for. One `WorkflowRun`
+actor per run, event-driven (no `tasks:`): every event — start, signal,
+child done, timer, reminder — is a turn that records, saves and arms an
+`advance` tick, which drives the run from its cursor until it blocks.
+Node types: `task` (on a `defineWorker` pool, compute or io), `delay`
+(a volatile timer under `WF_TIMER_THRESHOLD_MS`, a durable reminder above
+it — the run leaves memory and comes back on a tick), `branch`, `parallel`,
+`fanout`/`subworkflow` (child RUNS with an idempotent durable join, or pool
+tasks), `wait` (an external signal with a timeout edge), `end`; retries
+with backoff; saga compensation walked backwards; every completion
+published on a topic to a singleton `WorkflowStats` aggregator. Four
+templates (`order`, `approval`, `etl`, `saga`) exercise one axis each.
+
+```sh
+node perf/aks/wf-dev.mjs                # single host, memory storage, :7311
+
+# second terminal — 20 runs/s of open-loop arrivals for 20 s
+TARGET_URL=http://127.0.0.1:7311 MODE=workflow WF_START_RATE=20 \
+  DURATION_S=20 WF_DELAY_MS=1500 node perf/aks/loadgen.mjs
+```
+
+One JSON line per rate rung: runs started/completed per second, per-
+template latency percentiles (host-stamped), per-node-type durations, the
+delay-node **wake lag**, timers vs reminders fired, lost wakes, signals
+delivered/buffered/late, child runs, compensations — and `stuck`, which
+must be all zero for the exit code to be 0. The engine's mechanism
+counters ride `ops()` as the `workflow` section; `deploy/wf-load.mjs`
+sums them across pods. Every host knob (`WF_*`) is documented in
+`src/workflow/config.ts` and is part of the `wf` INFRA_SHAPE. See scenario
+(t) in the runbook.
+
 Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each
 other through Redis exactly as the pods do.
@@ -132,9 +167,10 @@ which fix is worth building; the thresholds are recorded in the
 ## Load generator
 
 `MODE=counter` (state churn — every call is a Redis CAS), `crunch`
-(CPU-bound sha256 chains), `mixed`, or `verify` (reads every counter back;
+(CPU-bound sha256 chains), `mixed`, `verify` (reads every counter back;
 compare against the `acked` counts of earlier runs — state loss shows as
-`actual < acked`). `SWEEP=1,2,4,8,...` walks a concurrency ladder and
+`actual < acked`), `jobs` (durable `SweepJob`s to kill hosts under) or
+`workflow` (the engine above — open-loop, `SWEEP` is a list of RATE rungs). `SWEEP=1,2,4,8,...` walks a concurrency ladder and
 emits one JSON line per rung. Progress and error windows go to stderr;
 stdout carries only the JSON summaries, so
 `kubectl logs job/<name> | jq -s` is the whole result pipeline.

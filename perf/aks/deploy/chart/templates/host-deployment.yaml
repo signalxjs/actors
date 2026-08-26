@@ -150,6 +150,13 @@ spec:
               value: {{ $value | quote }}
             {{- end }}
             {{- end }}
+            {{- /* The workflow engine's host knobs (#297), same rule. */}}
+            {{- range $name, $value := .Values.workflow.env }}
+            {{- if ne (toString $value) "" }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:

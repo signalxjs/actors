@@ -163,6 +163,9 @@ pnpm bench:profile <s>    # same, under --cpu-prof (writes benchmarks/profiles/)
 pnpm bench:ws             # sockets/*: connection scale on a live cluster (opt-in)
 pnpm bench:ws:baseline    # record this deployment SHAPE's socket baseline
 pnpm bench:ws:compare     # run again and diff against it
+pnpm bench:wf             # workflow/*: the workflow engine on a live cluster (opt-in)
+pnpm bench:wf:baseline    # record this deployment SHAPE's workflow baseline
+pnpm bench:wf:compare     # run again and diff against it
 pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
 pnpm bench:threads        # compute/: worker_threads vs the event loop (opt-in, needs cores)
 ```
@@ -527,6 +530,23 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   and hands off to the `sockets/*` scenarios in
   `benchmarks/src/scenarios/sockets.ts` (#184). The orchestration itself
   lives in `deploy/ws-load.mjs` so both callers share it.
+  The third axis (#297, answering #85) is a **workflow engine** in
+  `src/workflow/`: one event-driven `WorkflowRun` actor per run (no
+  `tasks:` — a task ledger would double the reminder-shard traffic the
+  workload exists to measure), `delay` nodes on a volatile timer under
+  `WF_TIMER_THRESHOLD_MS` and a durable reminder above it (the run leaves
+  memory and comes back on a tick), `fanout`/`subworkflow` child runs with
+  an idempotent durable join, `wait` for external signals with a timeout
+  edge, retries, saga compensation, and completions published to a
+  singleton `WorkflowStats` aggregator. `MODE=workflow` in `loadgen.mjs`
+  starts runs OPEN-LOOP at a rate and tracks them by draining the
+  aggregator, never by polling runs (a poll re-activates a run that
+  deliberately deactivated). `wf-load`/`wf-bench` mirror `ws-load`/
+  `ws-bench` over `deploy/wf-load.mjs`; the shape is prefixed `wf` and
+  carries every `WF_*` host knob. `wf-dev.mjs` runs it single-host with no
+  Redis. Reminder firing is AT-MOST-ONCE and arming one can lose its CAS,
+  so the engine counts `wakesLost` and `reminderSetFailures` rather than
+  designing around them — those are findings.
   Two facts bound every number it produces: client subscriptions cannot
   set `throttleMs`, so all of them run at the fixed 50 ms watch throttle;
   and a live read that consults `ctx.principal` gets one watch loop per
