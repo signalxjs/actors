@@ -2557,3 +2557,227 @@ nothing, as before.
   raw table — an artifact of the head side running two extra arms in the same
   scenario, not of the save path allocating more; the shared arms above are
   the like-for-like comparison.
+
+## 2026-08-26 · Tier 3 — the workflow engine, first measurement (#297, the #85 workload)
+
+The third Tier-3 axis: an ENGINE on the cluster. Every run is an
+event-driven `WorkflowRun` actor — one Redis CAS per node, a volatile timer
+or a durable reminder per delay, a `defineWorker` pool per task, child
+runs with a durable join, a signal with a timeout edge, and a completion
+published to one singleton aggregator. Nothing else in the suite makes the
+runtime do all of those in one request, which is why an engine is the
+workload. Read the tier legend before comparing this with `infra/*` or
+`sockets/*`: it is driven in-cluster and measures runs, not requests.
+
+**Shape:** `wf replicas=3 nodes=3 image=fccf287 knobs=FETCH_CONNECTIONS=64,TRANSPORT=http,WF_REMINDER_TICK_MS=1000`
+— three 1 vCPU host pods on three nodes, HTTP host-to-host, the reminder
+tick lowered from the runtime's 30 s to 1 s so a durable wake's lag is a
+number rather than a design constant. Every other engine knob at its
+default: 30 s timer threshold, deactivate-on-sleep on, 20 ms tasks, 10%
+failure rate, 8-wide fan-out to child runs. Generator: one pod, Poisson
+arrivals, 60 s per rung, the default mix `order:50,approval:20,etl:20,saga:10`.
+
+### The hand-run ladder (`wf-load sweep=10,25,50 WF_DELAY_MS=2000`)
+
+Recorded from `testenv.mjs wf-load`, run 32957835456, before the recorded
+`wf-bench` path existed for this axis — so treat it as the first
+measurement, exactly as the 2026-08-09 socket section is treated.
+
+| runs/s offered | started | stuck | start p50 / p90 | order p50 | etl p50 (8 children) | join p50 / p90 | approval p50 | saga p50 | wake lag p50 / p99 | lost wakes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 587 | **0** | 12 ms / 96 ms | 2.08 s | 260 ms | 184 ms / 311 ms | 2.37 s | 74 ms | 0 / 57 ms | 0 |
+| 25 | 1 576 | **0** | 169 ms / 3.2 s | 2.20 s | 5.9 s | 2.7 s / 16.8 s | 4.5 s | 169 ms | 1 / 117 ms | 0 |
+| 50 | 2 115 (+973 starts 504'd) | **0** | 26 s / 107 s | 2.23 s | 204 s | 107 s / 240 s | 57 s | 234 ms | 1 / 117 ms | **131** |
+
+(`order` carries a 2 s delay and `approval` a 2 s signal, so their floors
+are 2 s; a fifth of approvals deliberately get no signal and take the 30 s
+timeout edge, which is the p90 in that column.)
+
+### ✅ At 10 runs/s the engine is invisible
+
+Start p50 12 ms, every node's cost is its own work (task p50 20 ms — the
+task IS 20 ms), a delay wakes with **0 ms median lag** on a volatile timer,
+a child fan-out of eight completes in 260 ms, and nothing is left behind.
+4 436 transitions and ~100 saves/s across the fleet at ~5 vCPU-seconds
+per second of load.
+
+### ❌ The knee is ~25 runs/s of this mix, and the JOIN is what bends first
+
+At 25 runs/s children still finish in 217 ms (p50) but the parent resolves
+the join **2.7 s** later (p90 16.8 s) — so `etl` goes from 260 ms to 5.9 s
+while every other template barely moves. The join is a `childDone` call
+from each child INTO the parent, cross-host 88% of the time
+(`remoteDispatches` 35 134 vs `routedLocal` 4 931 over the ladder), and
+those calls queue behind the parent's own turns and behind every other
+inbound dispatch on the host. Start latency shows the same queueing from
+the outside: p50 169 ms, p90 3.2 s. The CPU arithmetic says why the knee
+is here — the mix costs ~1.45 vCPU-seconds of sha256 per second at 25/s on
+a fleet of 3 vCPU, before a single save.
+
+### ❌ At 50 runs/s the cluster does not shed load, it drowns — and recovers
+
+973 of 3 088 starts hit the 30 s call deadline (504 at the Service), yet
+`unknownEvents: 1018` says most of those runs RAN — the caller lost the
+ack, the engine did the work. Start p50 26 s. The recovery machinery all
+fired, and all of it was needed:
+
+- **131 lost wakes** — a reminder tick delivered a wake whose dispatch then
+  timed out; the shard entry was already gone (at-most-once), and the run
+  was recovered by the sweep's `status()` touch. `wakesLost` is the
+  runtime finding this axis was built to produce, and it appeared at the
+  first overloaded rung.
+- **194 child starts failed and 194 were repaired** by the parent's
+  `join-check` reminder — the idempotent re-start did exactly its job.
+- **91 publish failures / 45 completions the aggregator never saw** — the
+  singleton `WorkflowStats` turn timing out under the completion storm.
+- **0 stuck** after a 274 s drain. Slow, but nothing was lost.
+
+### What to do about it (each its own issue)
+
+1. The reminder path is at-most-once by construction: the entry is deleted
+   before dispatch, so a dispatch that times out loses the wake. A
+   deliver-then-delete (or a redelivery-on-failure) would turn `wakesLost`
+   into a retry count.
+2. Inbound cross-host calls and the local turn queue share one fate under
+   overload; `childDone` from many children into one parent is the hot
+   case. Coalescing child completions per parent, or one-way delivery for
+   them (#49), takes the join off the critical path.
+3. The singleton subscriber on the completion path: batching or a one-way
+   publish (#49 again) — `WF_STATS_SAVE_EVERY` is the knob to price it.
+4. A 30 s call deadline lets an overloaded host hold a request for 30 s
+   before failing it; per-call deadlines (#75) would let the generator fail
+   fast and the fleet shed instead of queue.
+
+### The recorded run — after the engine stopped waiting on other hosts (#302, #303, #304)
+
+The hand-run ladder above was followed by two recorded runs that never
+produced a number: the 100 runs/s rung wedged the fleet both times — three
+idle hosts on 50 000 queued turns — and every later scenario died at its
+first call. The mechanism is #302: a turn that awaits a cross-host call
+holds its actor's queue AND a pooled connection, and once the pool held
+only calls whose targets were waiting on the pool, nothing drained and
+nothing timed out. The engine was changed to never await another host
+inside a turn (child starts, `childDone`, the completion publish, the
+definition read, the watchdog's calls — all detached, with the join
+watchdog and the wake protocol as the retry), compute tasks now yield to
+the loop every 2 ms, and the harness refuses to start a Job on a
+backlogged fleet. This is the first recorded run on that engine, image
+`c6d1b15` (the #304 branch), same shape otherwise.
+
+| runs/s offered | finished | stuck | errors | start p50 | order p50 / p99 | etl p50 (8 children) | saga p50 | approval p50 | task p50 | wake lag p50 | transitions/s |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 606 | **0** | 0 | 8 ms | 2.08 s / 2.28 s | 261 ms | 78 ms | 2.35 s | 28 ms | 0 | 53 |
+| 25 | 1 469 | **0** | 0 | 43 ms | 2.13 s / 2.60 s | 490 ms | 116 ms | 2.25 s | 35 ms | 1 ms | 171 |
+| 50 | 2 998 | **0** | 0 | 120 ms | 6.58 s / 14.3 s | 20.8 s | 188 ms | 35.0 s | 55 ms | 5 ms | 358 |
+
+Over the whole ladder: 8 096 child starts, **0 join repairs, 0 lost
+wakes, 0 publish failures, 0 reminder-set failures**; 83% of dispatches
+crossed hosts; peak 1 237 activations.
+
+### ✅ 50 runs/s is now a slow rung, not a collapse
+
+The same rung that produced 973 deadline failures, 131 lost wakes and a
+274 s drain on the first engine now finishes every run with no errors:
+start p50 120 ms (was 26 s), 358 transitions/s sustained, and the fleet
+idle within the drain. It is still past the knee — orders take 6.6 s for
+2 s of delay and an eight-child etl 20 s — because 50 runs/s of this mix
+is ~2.9 vCPU-seconds of sha256 per second on a 3 vCPU fleet before a
+single save; but queueing is now a curve, not a cliff. `task_p50_ms`
+tells the same story from inside: a 20 ms task measures 28 → 35 → 55 ms
+as the loop fills.
+
+### Two rungs that were not what they claimed, and why the harness changed
+
+`def_reads` came out negative over this ladder: the rollout's surge pod
+retired mid-run and took its counters with it. A pod set that changes
+between the two snapshots now voids the counter delta (#304).
+
+And every scenario after the first in this run seeded its definitions
+under version 1 — `WorkflowDefinition.put` is idempotent by version, so
+the sleeping-runs rung ran 2 s delays while its Job said 90 s, and every
+fan-out width ran width 8. Only the throughput ladder above is valid from
+that run; the seed version is now derived from the knob bag, and the
+other scenarios were re-run under versions of their own (next section).
+
+### The other six scenarios, re-run under versions of their own (image `c6d1b15`)
+
+Every rung below: **0 stuck, 0 errors, 0 lost wakes, 0 join repairs,
+0 publish failures, 0 reminder-set failures.** Same shape, 60 s of
+arrivals per rung, one generator pod.
+
+**`workflow/sleeping-runs`** — orders only, a 90 s shipping delay on a
+DURABLE reminder, every run leaving memory and coming back on a tick:
+
+| runs/s | finished | start p50 | order p50 / p99 | wake lag p50 | reminders set / fired | peak activations | completed/s over the window |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 25 | 1 530 | 6.5 ms | 90.54 s / 91.09 s | 507 ms | 4 095 / 4 095 (summed over both rungs) | 36 | 9.0 |
+| 50 | 2 965 | 15.3 ms | 90.55 s / 91.09 s | 509 ms | (in the 4 095 above) | 36 | 17.5 |
+
+The number to keep: **~4 500 runs asleep at once on three hosts holding
+36 activations**, every one of them woken by the shard tick within
+half a tick of its due time (the 507 ms is the tick's own quantisation —
+the lag floor the shape names), and not one reminder mutation lost its
+CAS at 50 arms/s + 50 fires/s. The 16-shard ceiling recorded in the
+cluster-scaling section is real, but this rate is well under it; the
+rate at which `reminder_set_failure_ratio` leaves zero is the next thing
+to find, and `INFRA_WF_SLEEP_RATE_LADDER` is how. (`completed/s` is low
+only because the window includes 90 s of sleep — 25/s in, 25/s out.)
+
+**`workflow/fanout-width`** (child RUNS, cross-host) and
+**`workflow/fanout-pool`** (the same width as pool tasks in ONE turn),
+arrival rate scaled so child work stays ~32 units/s:
+
+| width | children/run | runs/s | etl p50 (runs) | join p50 | task p50 (runs) | etl p50 (pool) | task p50 (pool) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 4 | 8 | 169 ms | 93 ms | 41 ms | 175 ms | 86 ms |
+| 16 | 16 | 2 | 502 ms | 278 ms | 105 ms | 558 ms | 239 ms |
+| 64 | 64 | 1 | 3.38 s | 1.81 s | 514 ms | 4.71 s | 1.13 s |
+
+The unit rate is constant, so what grows with width is BURST: 64
+children land on the fleet's worker pools at once, and a 20 ms task
+measures 514 ms behind its siblings. The pool arm is worse at every
+width — 64 × 20 ms of CPU on ONE 1 vCPU host is 1.3 s of wall before
+anything else — which is the honest answer to "fan out locally or
+across hosts?" on this shape: across, and the durable join costs
+93 ms at width 4.
+
+**`workflow/signals`** — approvals at 25 runs/s, the signal sent after
+`d` ms (±50%), a fifth of runs deliberately never signalled:
+
+| signal delay | finished | approval p50 / p99 | delivered | buffered | late | timed out (the 20%) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 500 ms | 1 501 | 604 ms / 15.07 s | 1 184 | 0 | 0 | 317 |
+| 2 000 ms | 1 527 | 2.28 s / 15.08 s | 1 220 | 0 | 0 | 307 |
+| 10 000 ms | 1 488 | 11.23 s / 15.08 s | 1 190 | 0 | 0 | 298 |
+
+p50 is the signal delay plus ~100 ms; p99 is the 15 s timeout edge, as
+designed. No signal arrived late, and none had to be buffered (the wait
+node is reached within 30 ms of start) — the buffered path is exercised
+by the unit suite, not by this shape.
+
+**`workflow/saga-failure`** — sagas at 25 runs/s:
+
+| failure rate | finished | compensated | failed | task attempts / run | saga p50 / p99 |
+|---:|---:|---:|---:|---:|---:|
+| 5% | 1 532 | 8.2% | **0** | 3.18 | 63 ms / 1.61 s |
+| 20% | 1 490 | 35.1% | **0** | 3.72 | 64 ms / 1.61 s |
+| 50% | 1 512 | 74.6% | **0** | 4.50 | 118 ms / 1.61 s |
+
+Compensation never failed to complete; the p99 is the retry backoff
+(3 × 500 ms) of a hotel booking that fails twice.
+
+**`workflow/definition-hotkey`** — the default mix at 25 runs/s: start
+p50 39 ms, 3 definition reads for 8 587 cache hits across the fleet. The
+"hot key" is not hot any more: definitions are immutable per version and
+cached per host (#304), so the scenario now prices the first read per
+host and nothing else. It stays as the arm that would notice a cache
+that stopped working.
+
+### What this rig has found so far, and where each went
+
+| finding | evidence | where |
+|---|---|---|
+| Awaiting a cross-host call inside a turn can wedge a fleet through the fetch pool, with no deadline to break it | three idle hosts, 50 000 queued turns, 40 min, twice | **#302** (runtime); the engine no longer does it (#303, #304) |
+| Reminder firing is at-most-once: a delivered wake whose dispatch times out is gone | 131 lost wakes at the collapsed 50/s rung, recovered by the sweep's touch | **#306** (runtime) |
+| A singleton subscriber on the completion path is the first thing to time out under overload | 91 / 2 496 / 2 671 publish failures per host in the wedged runs | #49 (one-way delivery) is the fix; noted there |
+| The knee of the default mix on 3 × 1 vCPU is ~25 runs/s, set by sha256 on the loop, not by the runtime | task p50 28 → 35 → 55 ms; `transitions_per_sec` 358 at 50/s | the shape; `WF_TASK_MS` moves it |
