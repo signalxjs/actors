@@ -56,15 +56,30 @@ function failIfRolled(call: TaskCall): void {
     }
 }
 
-/** Hash until `ms` has elapsed. Checks the clock every few rounds — one
- *  sha256 of 32 bytes is well under a microsecond, so the overshoot is
- *  bounded by that batch, not by the hash. */
-function burn(ms: number, seed: string): string {
+/** One slice of hashing before the loop is yielded to. */
+const SLICE_MS = 2;
+
+/**
+ * Hash until `ms` of CPU has been spent, yielding to the event loop every
+ * `SLICE_MS`. The yield is what keeps an overloaded host answering its
+ * health probes and its peers' calls between tasks: without it a rung past
+ * the CPU knee starved the loop for seconds at a time, liveness failed, and
+ * the restart moved every activation on that host. The CPU cost is the
+ * same; only its fairness changes.
+ */
+async function burn(ms: number, seed: string): Promise<string> {
     const started = performance.now();
     let digest = createHash('sha256').update(seed).digest();
-    do {
-        for (let i = 0; i < 64; i++) digest = createHash('sha256').update(digest).digest();
-    } while (performance.now() - started < ms);
+    let spent = 0;
+    while (spent < ms) {
+        const sliceStart = performance.now();
+        do {
+            for (let i = 0; i < 64; i++) digest = createHash('sha256').update(digest).digest();
+        } while (performance.now() - sliceStart < SLICE_MS && spent + (performance.now() - sliceStart) < ms);
+        spent += performance.now() - sliceStart;
+        if (spent < ms) await new Promise((resolve) => setImmediate(resolve));
+    }
+    void started;
     return digest.toString('hex').slice(0, 16);
 }
 
@@ -74,7 +89,7 @@ export const ComputeWorker = defineWorker({
     methods: () => ({
         async run(call: TaskCall): Promise<TaskResult> {
             const started = performance.now();
-            const digest = burn(call.ms, call.seed);
+            const digest = await burn(call.ms, call.seed);
             failIfRolled(call);
             return { ms: Math.round(performance.now() - started), digest };
         }

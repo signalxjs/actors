@@ -90,6 +90,8 @@ export function workflowTotals(kube, namespace) {
     let clusterHosts = 0;
     let activations = 0;
     let activationsHosts = 0;
+    /** Queued turns per host — the backlog a new run must not start on. */
+    const queued = {};
     for (const pod of pods) {
         const out = kube(['-n', namespace, 'exec', pod, '--', 'node', '-e',
             "fetch('http://127.0.0.1:' + (process.env.PORT || 7311) + '/_sigx/ops', " +
@@ -122,6 +124,8 @@ export function workflowTotals(kube, namespace) {
             activations += live;
             activationsHosts++;
         }
+        const q = body?.stats?.queued ?? ops?.metrics?.gauges?.queued;
+        if (typeof q === 'number') queued[pod] = q;
         const section = ops?.workflow;
         if (!section || section.error) continue;
         hosts++;
@@ -134,8 +138,40 @@ export function workflowTotals(kube, namespace) {
         pods: pods.length,
         totals,
         hostsComplete: pods.length > 0 && hosts === pods.length && clusterHosts === pods.length,
-        activations: activationsHosts > 0 ? activations : null
+        activations: activationsHosts > 0 ? activations : null,
+        queued
     };
+}
+
+const sumQueued = (snapshot) => Object.values(snapshot.queued).reduce((a, b) => a + b, 0);
+
+/**
+ * A run started on a backlogged fleet measures the backlog. After the first
+ * overloaded rung wedged the hosts (#302), every later Job in the same bench
+ * run died at its first call and was reported PARTIAL — a label for "a pod
+ * died", not for "the cluster was still choking on the previous scenario".
+ * So a run waits for the fleet's queued turns to fall under `quietQueued`
+ * (bounded by `quietTimeoutMs`) and otherwise refuses with the depth per
+ * host in the message.
+ */
+async function waitForQuietFleet(kube, namespace, { quietQueued, quietTimeoutMs, onLog }) {
+    const deadline = Date.now() + quietTimeoutMs;
+    let last = workflowTotals(kube, namespace);
+    if (sumQueued(last) <= quietQueued) return last;
+    onLog(`fleet has ${sumQueued(last)} queued turn(s) — waiting for it to quiet (<= ${quietQueued})`);
+    for (;;) {
+        await sleep(5000);
+        last = workflowTotals(kube, namespace);
+        const total = sumQueued(last);
+        if (total <= quietQueued) return last;
+        if (Date.now() > deadline) {
+            throw new Error(
+                `[wf-load] fleet backlogged: ${total} queued turn(s) after ${Math.round(quietTimeoutMs / 1000)}s ` +
+                    `(${Object.entries(last.queued).map(([p, q]) => `${p}=${q}`).join(', ')}) — ` +
+                    'refusing to start a run that would measure the previous one\'s backlog (#302)'
+            );
+        }
+    }
 }
 
 const SUMMED = [
@@ -247,7 +283,9 @@ export async function runWfLoad(options) {
         values = {},
         onLog = () => {},
         sampleIntervalMs = 5000,
-        timeoutMs = 3_600_000
+        timeoutMs = 3_600_000,
+        quietQueued = 50,
+        quietTimeoutMs = 600_000
     } = options;
 
     const smuggled = Object.keys(values).filter((key) => key.startsWith('image.'));
@@ -291,7 +329,7 @@ export async function runWfLoad(options) {
         '--set', `nodeSelector.workload=${workload}`,
         ...sets]);
 
-    const before = workflowTotals(kube, namespace);
+    const before = await waitForQuietFleet(kube, namespace, { quietQueued, quietTimeoutMs, onLog });
 
     const dir = mkdtempSync(join(tmpdir(), 'sigx-wfload-'));
     try {
@@ -373,6 +411,8 @@ export async function runWfLoad(options) {
         merged: mergeWfRows(rows, { partial }),
         hosts: after.hosts,
         peakActivations,
+        /** Queued turns per host at the END — a backlog the drain did not clear. */
+        queuedAfter: after.queued,
         samples,
         delta,
         countersTrustworthy,

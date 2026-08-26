@@ -64,7 +64,7 @@
  * notify-retry wake — never by a turn that holds a connection open.
  */
 import { topic } from '@sigx/actors';
-import type { TimerHandle } from '@sigx/actors';
+import type { ActorClientWith, AnyActorDefinition, TimerHandle } from '@sigx/actors';
 import { defineActor } from '../actors.app.ts';
 import { config, REMINDER_JOIN_CHECK, REMINDER_WAKE } from './config.ts';
 import { workflowCounters as C } from './counters.ts';
@@ -187,6 +187,31 @@ interface Engine {
     nudge(): void;
 }
 
+/**
+ * Definitions are immutable per version, so one read per host per
+ * `name@version` is all the runtime ever needs — and the read is the last
+ * cross-host call a run's turn used to await (#302, second occurrence).
+ * `start()` without a version still asks the actor, once, for "latest".
+ */
+const definitionCache = new Map<string, WorkflowDef>();
+
+async function readDefinition(
+    ctx: { actor: <D extends AnyActorDefinition>(def: D, key: string) => ActorClientWith<D> },
+    name: string,
+    version: number | undefined
+): Promise<{ version: number; def: WorkflowDef }> {
+    if (version !== undefined) {
+        const hit = definitionCache.get(`${name}@${version}`);
+        if (hit) {
+            C.defCacheHits++;
+            return { version, def: hit };
+        }
+    }
+    const got = await ctx.actor(WorkflowDefinition, name).get(version);
+    definitionCache.set(`${name}@${got.version}`, got.def);
+    return got;
+}
+
 // `methods`, `onActivate` and `onReminder` all receive the SAME ctx object
 // for an activation, so this is how the hooks reach the closure that owns
 // the timer handles and the cached definition.
@@ -212,7 +237,7 @@ export const WorkflowRun = defineActor({
 
         const loadDef = async (): Promise<WorkflowDef> => {
             if (def) return def;
-            const got = await ctx.actor(WorkflowDefinition, s.workflow).get(s.version);
+            const got = await readDefinition(ctx, s.workflow, s.version);
             def = got.def;
             return def;
         };
@@ -843,12 +868,12 @@ export const WorkflowRun = defineActor({
                     // Idempotent: a child that did start ignores this; one
                     // whose start was lost gets it now. The status() call is
                     // the nudge that recovers a child stuck on a lost wake.
-                    try {
-                        await startChild(childId);
-                        await ctx.actor(WorkflowRun, childId).status();
-                    } catch {
+                    // Both DETACHED (#302): the watchdog's turn must not
+                    // wait on another host either.
+                    void startChild(childId).catch(() => {
                         C.childStartFailures++;
-                    }
+                    });
+                    void ctx.actor(WorkflowRun, childId).status().catch(() => {});
                 }
                 armAdvance();
             },
@@ -896,7 +921,7 @@ export const WorkflowRun = defineActor({
                 s.input = spec.input ?? {};
                 s.parent = spec.parent ?? null;
                 s.startedAt = Date.now();
-                const got = await ctx.actor(WorkflowDefinition, spec.workflow).get(spec.version);
+                const got = await readDefinition(ctx, spec.workflow, spec.version);
                 def = got.def;
                 s.version = got.version;
                 s.cursor = def.start;

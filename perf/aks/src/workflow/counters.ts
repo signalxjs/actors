@@ -16,6 +16,7 @@ export const workflowCounters = {
     transitions: 0,
     saves: 0,
     defReads: 0,
+    defCacheHits: 0,
     taskAttempts: 0,
     taskFailures: 0,
     timersArmed: 0,

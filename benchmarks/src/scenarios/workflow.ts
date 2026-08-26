@@ -248,6 +248,7 @@ function mechanismMetrics(result: WfLoadResult): Metric[] {
         count('join_repairs', 'joinRepairs', 'lower'),
         count('publish_failures', 'publishFailures', 'lower'),
         count('def_reads', 'defReads', 'higher'),
+        count('def_cache_hits', 'defCacheHits', 'higher'),
         {
             name: 'remote_dispatch_ratio',
             value: ratio(remote, remote + local),
@@ -277,9 +278,10 @@ const throughputLadder: Scenario = {
         'Open-loop run arrivals at rising rates over the default template mix, short delays (volatile timers)',
     async run(ctx) {
         // The first measured run put the knee of this mix at ~25 runs/s on 3 x 1
-        // vCPU and collapse by 50 (30 s deadlines, lost wakes); 100 exists to
-        // show what overload looks like, not to be a number anyone quotes.
-        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '10,25', '10,25,50,100'));
+        // vCPU and collapse at 50 (30 s deadlines, lost wakes). 100 is not in
+        // the default: it wedged the fleet (#302) and every later scenario
+        // in the run started on that backlog. INFRA_WF_RATE_LADDER reaches it.
+        const rates = ladder('INFRA_WF_RATE_LADDER', quickOr(ctx, '10,25', '10,25,50'));
         const result = await drive({
             sweep: rates.join(','),
             WF_DELAY_MS: '2000'
@@ -300,7 +302,7 @@ const sleepingRuns: Scenario = {
         // Orders only, and asleep for most of their life: cheap per run, so
         // this ladder reaches past the mixed knee on purpose — the question is
         // the reminder shards, not the CPU.
-        const rates = ladder('INFRA_WF_SLEEP_RATE_LADDER', quickOr(ctx, '25', '25,50,100'));
+        const rates = ladder('INFRA_WF_SLEEP_RATE_LADDER', quickOr(ctx, '25', '25,50'));
         const result = await drive({
             sweep: rates.join(','),
             WF_MIX: 'order:100',
@@ -487,7 +489,7 @@ const definitionHotKey: Scenario = {
         'A high start rate over the default mix: every start reads one of five shared definition keys — the locality axis',
     async run() {
         const result = await drive({
-            WF_START_RATE: process.env.INFRA_WF_HOT_RATE ?? '50',
+            WF_START_RATE: process.env.INFRA_WF_HOT_RATE ?? '25',
             WF_DELAY_MS: '1000'
         });
         refusePartial(result, this.name);
