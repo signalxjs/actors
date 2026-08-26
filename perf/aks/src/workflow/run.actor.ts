@@ -742,11 +742,10 @@ export const WorkflowRun = defineActor({
             const parent = s.parent;
             if (!parent || s.notifyParent !== 'pending') return;
             await sleep(s.cursor ?? 'end', config.notifyRetryMs, 'notify-retry');
-            const token = s.wake?.token;
             void ctx.actor(WorkflowRun, parent.runId)
                 .childDone(ctx.key, s.status)
                 .then(
-                    () => ctx.timer('notified', () => markNotified(token), { due: 0 }),
+                    () => ctx.timer('notified', () => markNotified(), { due: 0 }),
                     () => {
                         C.childDoneRetries++;
                     }
@@ -755,9 +754,11 @@ export const WorkflowRun = defineActor({
 
         /** A turn of its own: the detached call may settle after the
          *  notifying turn has long returned. */
-        const markNotified = async (token: number | undefined): Promise<void> => {
+        const markNotified = async (): Promise<void> => {
             if (s.notifyParent !== 'pending') return;
-            if (s.wake && s.wake.token === token) cancelWake();
+            // Whichever attempt landed, the parent knows: any notify-retry
+            // wake still armed is now redundant.
+            if (s.wake?.reason === 'notify-retry') cancelWake();
             s.notifyParent = 'sent';
             await save();
             if (config.deactivateOnSleep) ctx.deactivate();
