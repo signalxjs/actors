@@ -7,7 +7,7 @@ settings:
 catalogs:
   default:
     '@sigx/reactivity':
-      specifier: ^0.15.3
+      specifier: ^0.15.0
       version: 0.15.3
     '@sigx/runtime-core':
       specifier: ^0.15.0
@@ -16,7 +16,7 @@ catalogs:
       specifier: ^0.15.0
       version: 0.15.2
     '@sigx/serialize':
-      specifier: ^0.15.6
+      specifier: ^0.15.0
       version: 0.15.6
     '@sigx/server':
       specifier: ^0.15.0
@@ -1483,9 +1483,6 @@ packages:
   '@sigx/serialize@0.14.0':
     resolution: {integrity: sha512-wFzjmQLHS+Vo7Afa0Mw9nqPgXgHQRNrb8kqQUxPqR+2Q7TZG03Lem7QaU4OCbZ9C1OYKsudccVFLiM1qJdzx5w==}
 
-  '@sigx/serialize@0.15.5':
-    resolution: {integrity: sha512-oWGVFN2g9ec9J1URR+vPQIQC1XIsX7mxafZnAxbf2pBKAF6gSnC/gh4zDCk+ydTYbpSeNS1+G946DVEvIxvTnA==}
-
   '@sigx/serialize@0.15.6':
     resolution: {integrity: sha512-bO5fbcdtAQ9GE9v2YSYqX3eln5zcVSXjVfqKupXMEn/nsR5Ol/9i0hNNsQmZLgBQYIHASBErfr9W+roI0iDqIg==}
 
@@ -2853,7 +2850,7 @@ snapshots:
   '@sigx/runtime-core@0.15.2':
     dependencies:
       '@sigx/reactivity': 0.15.3
-      '@sigx/serialize': 0.15.5
+      '@sigx/serialize': 0.15.6
 
   '@sigx/runtime-dom@0.15.2':
     dependencies:
@@ -2871,8 +2868,6 @@ snapshots:
       '@sigx/runtime-core': 0.15.2
 
   '@sigx/serialize@0.14.0': {}
-
-  '@sigx/serialize@0.15.5': {}
 
   '@sigx/serialize@0.15.6': {}
 
