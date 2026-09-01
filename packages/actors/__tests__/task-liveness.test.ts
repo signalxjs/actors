@@ -120,6 +120,9 @@ describe('task liveness: the per-host roster', () => {
         const storage = memoryStorage();
         const Job = parkingJob(attempts);
         const hostA = createHost({ actors: [Job], storage, defaults: quiet });
+        // Tracked from birth: if an assertion below throws, afterEach still
+        // tears it down (a second stop() is a no-op on the happy path).
+        running.push(hostA);
         await hostA.start();
         await hostA.actor(Job, 'run-1').start({ n: 7 });
         await until(() => attempts.length === 1);
