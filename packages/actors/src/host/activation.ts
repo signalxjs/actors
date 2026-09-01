@@ -50,7 +50,8 @@ import {
     TASK_REMINDER,
     TASK_REMINDER_MS,
     type TaskLedgerApi,
-    type TaskLedgerEntry
+    type TaskLedgerEntry,
+    type TaskLedger
 } from './tasks';
 import { TOPIC_METHOD, subscriptionFor, subscriptionHandler } from './topics';
 import {
@@ -630,7 +631,7 @@ export class Activation {
             // byte for byte as before. A liveness-reminder delivery lands
             // here too — activating the actor is the delivery's real work.
             if (opts.tasks) {
-                const ledger = await a.#ledger.load();
+                const ledger = await a.#loadLedger();
                 for (const [name, entry] of Object.entries(ledger)) {
                     await a.#resumeTask(name, entry);
                 }
@@ -1358,7 +1359,7 @@ export class Activation {
                 // actor and `create` resumed the ledgered runs. Here, only
                 // self-heal: restart an entry that somehow has no run, and
                 // disarm a reminder whose ledger is gone.
-                const ledger = await this.#ledger.load();
+                const ledger = await this.#loadLedger();
                 const entries = Object.entries(ledger);
                 if (entries.length === 0) {
                     if (this.#tasks.size === 0) {
@@ -1763,6 +1764,34 @@ export class Activation {
     }
 
     /**
+     * The ledger DERIVED from state, for a definition that declares
+     * `resumeTasks` (`defineJob`, #309) — or `null` for one that keeps the
+     * stored `$sigx:tasks` record. Inputs are cloned through the codec so a
+     * resumed body holds no reference into live state, exactly as a revived
+     * ledger record gave it none.
+     */
+    #derivedLedger(): TaskLedger | null {
+        const derive = this.def.__sigxActor.resumeTasks;
+        if (!derive) return null;
+        const ledger: TaskLedger = {};
+        for (const [name, entry] of Object.entries(derive(toRaw(this.#state)))) {
+            ledger[name] = {
+                ...(entry.input !== undefined
+                    ? { input: this.#host.cloneState(entry.input) }
+                    : {}),
+                startedAt: entry.startedAt,
+                restarts: entry.restarts
+            };
+        }
+        return ledger;
+    }
+
+    /** Whichever ledger this definition keeps — derived, or the stored record. */
+    async #loadLedger(): Promise<TaskLedger> {
+        return this.#derivedLedger() ?? (await this.#ledger.load());
+    }
+
+    /**
      * Start one detached task run, DURABLY: the ledger entry is written and
      * the liveness reminder armed before the body launches, so a crash any
      * time after `start` resolves still resumes the run. Resolves once the
@@ -1799,13 +1828,18 @@ export class Activation {
         // durable half fails.
         this.#reserve(run);
         try {
-            await this.#ledger.mutate((ledger) => {
-                ledger[name] = {
-                    ...(input !== undefined ? { input } : {}),
-                    startedAt: run.startedAt,
-                    restarts: 0
-                };
-            });
+            // A derived ledger has nothing to write: the definition's own
+            // state, saved by the caller before it started the task, is
+            // what the next activation will read.
+            if (!this.def.__sigxActor.resumeTasks) {
+                await this.#ledger.mutate((ledger) => {
+                    ledger[name] = {
+                        ...(input !== undefined ? { input } : {}),
+                        startedAt: run.startedAt,
+                        restarts: 0
+                    };
+                });
+            }
             await this.#host
                 .reminders(this.ref)
                 .set(TASK_REMINDER, { due: TASK_REMINDER_MS, period: TASK_REMINDER_MS });
@@ -1846,10 +1880,14 @@ export class Activation {
         // the reminder self-heal can race for one name.
         this.#reserve(run);
         try {
-            await this.#ledger.mutate((ledger) => {
-                const persisted = ledger[name];
-                if (persisted) persisted.restarts = run.restarts;
-            });
+            // Derived: the restart count lives in the definition's state
+            // (`attempts`, persisted by the run's own first turn).
+            if (!this.def.__sigxActor.resumeTasks) {
+                await this.#ledger.mutate((ledger) => {
+                    const persisted = ledger[name];
+                    if (persisted) persisted.restarts = run.restarts;
+                });
+            }
         } catch (error) {
             this.#release(run);
             throw error;
@@ -1934,9 +1972,15 @@ export class Activation {
 
     /** Drop one entry; when the ledger empties, disarm the reminder too. */
     async #forgetTask(name: string): Promise<void> {
-        const ledger = await this.#ledger.mutate((l) => {
-            delete l[name];
-        });
+        // Derived: the settling run's terminal turn already saved the state
+        // this reads, so the entry is gone without a write — and if a fresh
+        // run of the same name has started since, the state says so and
+        // the reminder stays armed for it.
+        const ledger =
+            this.#derivedLedger() ??
+            (await this.#ledger.mutate((l) => {
+                delete l[name];
+            }));
         if (Object.keys(ledger).length === 0) {
             await this.#host.reminders(this.ref).clear(TASK_REMINDER);
         }

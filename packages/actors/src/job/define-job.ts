@@ -17,7 +17,7 @@
  */
 import { defineActor } from '../define';
 import { decodePrincipal, encodePrincipalValue } from '../guards';
-import type { ActorContext, ActorDefinition, ActorTaskContext } from '../types';
+import type { ActorContext, ActorDefinition, ActorTaskContext, TaskResumeEntry } from '../types';
 import { JobCancelledError, JobFailedError, JobNotDoneError, JobStateError } from './errors';
 import {
     JOB_PAUSED,
@@ -208,6 +208,24 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.placement ? { placement: options.placement } : {}),
         persistence: 'explicit',
+        // The state record IS the ledger (#309): a job is `running` exactly
+        // while its one task should be in flight, `attempts` is what the
+        // ledger's `restarts` counted (attempt = restarts + 1, so the run
+        // that resumes this state has been restarted `attempts` times once
+        // it starts), and `input` is right here. Paused, pending and
+        // terminal jobs have nothing to resume — which also closes the gap
+        // a separate record left open: a crash between the `start()` save
+        // and the ledger write used to leave a job `running` forever.
+        resumeTasks: (s): Record<string, TaskResumeEntry> =>
+            s.status === 'running'
+                ? {
+                      [RUN]: {
+                          input: s.input,
+                          startedAt: s.startedAt ?? Date.now(),
+                          restarts: Math.max(0, s.attempts - 1)
+                      }
+                  }
+                : {},
         state: (key): S => ({
             status: 'pending',
             input: null,

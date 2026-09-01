@@ -519,6 +519,16 @@ export interface ReminderApi {
 }
 
 /** One running detached task, as `ctx.tasks.list()` reports it. */
+/** @internal One in-flight run as `ActorOptions.resumeTasks` derives it. */
+export interface TaskResumeEntry {
+    /** The start input, replayed on resume. */
+    input?: unknown;
+    /** Epoch-ms the run FIRST started (not this attempt). */
+    startedAt: number;
+    /** Times the runtime has re-started the run so far (0 = never). */
+    restarts: number;
+}
+
 export interface TaskInfo {
     name: string;
     /** Epoch-ms this run first started. */
@@ -1116,6 +1126,21 @@ export interface ActorOptions<
      * methods, so the guard chain governs them.
      */
     tasks?: (ctx: ActorTaskContext<S, Ext>) => ActorTaskTable;
+    /**
+     * @internal Set by `defineJob` only, never by hand. Derives the task
+     * ledger — which runs are in flight, and how many times each has been
+     * restarted — from the actor's OWN state record, so the runtime keeps
+     * no `$sigx:tasks` record for this type: no ledger load on activation,
+     * no ledger CAS on start, resume or finish (#309). A job already
+     * persists `status`/`input`/`attempts`; a second record saying the
+     * same thing was two extra round trips per start and per finish.
+     *
+     * Called outside any turn with the live state (read-only); `input` is
+     * passed through the state codec before it reaches the resumed body,
+     * so the body never aliases live state. An empty table means nothing
+     * to resume. The liveness reminder is unchanged by this hook.
+     */
+    resumeTasks?: (state: S) => Record<string, TaskResumeEntry>;
     /**
      * @internal Stateless-worker marker — set by `defineWorker` only, never
      * by hand. Presence flips the runtime to pooled multi-activation

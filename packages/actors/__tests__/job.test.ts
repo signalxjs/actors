@@ -7,7 +7,8 @@ import {
     JobStateError,
     type JobInfo
 } from '@sigx/actors/job';
-import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
+import { createHost, memoryStorage, REMINDER_TYPE, TASKS_TYPE, type Host } from '@sigx/actors/host';
+import { reminderShardOf } from '../src/host/reminder-shards';
 import { actor } from '@sigx/actors';
 import { stubServerApp } from '@sigx/server/testing';
 
@@ -613,5 +614,101 @@ describe('defineJob: onSettled', () => {
         await host.actor(Controlled, 'run-1').start(undefined as never);
         await until(() => seen.length === 1);
         expect(seen).toEqual(['completed:kept']);
+    });
+});
+
+describe('defineJob: the ledger lives in the state record (#309)', () => {
+    const ID = 'Ledgerless\u0000run-1';
+
+    /** Count every storage call — the same probe-counter idea the bench uses. */
+    function countingStorage(inner: ReturnType<typeof memoryStorage>) {
+        const counts = { loads: 0, saves: 0, clears: 0 };
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => (counts.loads++, inner.load(t, k)),
+            save: (t, k, s, e) => (counts.saves++, inner.save(t, k, s, e)),
+            clear: (t, k, e) => (counts.clears++, inner.clear(t, k, e))
+        };
+        return { storage, counts, inner };
+    }
+
+    it('a running job writes NO $sigx:tasks record — its state record is the ledger', async () => {
+        const storage = memoryStorage();
+        const Job = defineJob({
+            type: 'Ledgerless',
+            allowAnonymous: true,
+            run: async (job) => {
+                await aborted(job.signal);
+                return undefined as never;
+            }
+        });
+        const host = createHost({ actors: [Job], storage, defaults: quiet });
+        running = host;
+        await host.actor(Job, 'run-1').start(undefined as never);
+        expect((await host.actor(Job, 'run-1').status()).status).toBe('running');
+        // Durable, but in ONE record: the job's own state carries
+        // status/input/attempts, so a second record would be a second CAS
+        // per start and per finish saying the same thing.
+        expect(await storage.load(TASKS_TYPE, ID)).toBeNull();
+        expect(await storage.load('Ledgerless', 'run-1')).not.toBeNull();
+    });
+
+    it('resumes from the state record alone after a host death, attempts bumped', async () => {
+        const attempts: number[] = [];
+        const storage = memoryStorage();
+        const Job = defineJob({
+            type: 'Ledgerless',
+            allowAnonymous: true,
+            run: async (job, input: { n: number }) => {
+                attempts.push(job.attempt);
+                if (job.attempt === 1) {
+                    await aborted(job.signal);
+                    return undefined as never;
+                }
+                return input.n * 2;
+            }
+        });
+        const hostA = createHost({ actors: [Job], storage, defaults: quiet });
+        await hostA.actor(Job, 'run-1').start({ n: 21 });
+        await until(() => attempts.length === 1);
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
+        expect(await storage.load(TASKS_TYPE, ID)).toBeNull();
+
+        const hostB = createHost({ actors: [Job], storage, defaults: quiet });
+        running = hostB;
+        const client = hostB.actor(Job, 'run-1');
+        await until(async () => (await client.status()).status === 'completed');
+        expect(attempts).toEqual([1, 2]);
+        expect((await client.status()).attempts).toBe(2);
+        expect(await client.result()).toBe(42);
+        expect(await storage.load(TASKS_TYPE, ID)).toBeNull();
+    });
+
+    it('a whole lifecycle costs 3 loads, 4 saves and 0 clears', async () => {
+        // The probe-counter form of `jobs/lifecycle`'s exact metrics: state
+        // load on activation; state CAS + reminder-shard load/CAS on start;
+        // state CAS on finish; reminder-shard load/CAS on forget. The four
+        // ledger operations (load on activation, load + CAS on start, load +
+        // clear on finish) are gone.
+        const { storage, counts, inner } = countingStorage(memoryStorage());
+        const Job = defineJob({
+            type: 'Ledgerless',
+            allowAnonymous: true,
+            run: async () => 1
+        });
+        const host = createHost({ actors: [Job], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(Job, 'run-1');
+        await client.start(undefined as never);
+        await until(async () => (await client.status()).status === 'completed');
+        // The reminder clear is the run's last detached write. Polled on
+        // the INNER store — the poll is not one of the runtime's loads.
+        const shard = reminderShardOf(ID);
+        await until(async () => {
+            const record = await inner.load(REMINDER_TYPE, shard);
+            const table = (record?.state ?? {}) as Record<string, unknown>;
+            return !(ID in table);
+        });
+        // `status()` polls above read live state — no storage.
+        expect(counts).toEqual({ loads: 3, saves: 4, clears: 0 });
     });
 });
