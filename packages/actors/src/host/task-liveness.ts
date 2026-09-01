@@ -161,8 +161,9 @@ class RosterTaskLiveness implements ActorTaskLiveness {
         const key = `${this.#require().hostId}/${reminderShardOf(actorId)}`;
         let shard = this.#shards.get(key);
         if (!shard) {
-            // A host id is minted per process, so its records cannot exist
-            // yet: the cache starts empty with no etag and never loads.
+            // A host id is minted per host INSTANCE and never reused, so its
+            // records cannot exist yet: the cache starts empty with no etag
+            // and never loads.
             shard = { key, table: {}, etag: null, pending: [], flushing: false };
             this.#shards.set(key, shard);
         }
@@ -187,9 +188,14 @@ class RosterTaskLiveness implements ActorTaskLiveness {
                 // the await forms the next batch.
                 const batch = shard.pending;
                 shard.pending = [];
+                // Edits land on a COPY and become the table only once the
+                // write is durable: a caller that sees a rejection must not
+                // find its edit persisted by the next batch's write.
+                const next: Roster = { ...shard.table };
                 try {
-                    for (const p of batch) p.edit(shard.table);
-                    await this.#write(shard);
+                    for (const p of batch) p.edit(next);
+                    await this.#write(shard, next);
+                    shard.table = next;
                     for (const p of batch) p.resolve();
                 } catch (error) {
                     for (const p of batch) p.reject(error);
@@ -205,13 +211,13 @@ class RosterTaskLiveness implements ActorTaskLiveness {
         }
     }
 
-    async #write(shard: Shard): Promise<void> {
+    async #write(shard: Shard, table: Roster): Promise<void> {
         // Nothing stored and nothing to store — a track and its untrack
         // that coalesced into one batch — is not a write.
-        if (shard.etag === null && Object.keys(shard.table).length === 0) return;
+        if (shard.etag === null && Object.keys(table).length === 0) return;
         for (let attempt = 1; ; attempt++) {
             try {
-                shard.etag = await this.#save(shard.key, shard.table, shard.etag);
+                shard.etag = await this.#save(shard.key, table, shard.etag);
                 return;
             } catch (error) {
                 if (!isStorageConflict(error) || attempt >= CAS_ATTEMPTS) throw error;
