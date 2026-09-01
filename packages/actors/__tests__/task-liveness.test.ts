@@ -8,8 +8,10 @@ import { defineJob } from '@sigx/actors/job';
 import {
     createHost,
     memoryStorage,
+    manualScheduler,
     reminderTaskLiveness,
     REMINDER_TYPE,
+    rosterTaskLiveness,
     ROSTER_INDEX_KEY,
     ROSTER_TYPE,
     TASK_REMINDER,
@@ -176,6 +178,27 @@ describe('task liveness: the per-host roster', () => {
         await host.actor(Job, 'run-1').start({ n: 1 });
         expect(await reminderNames(storage)).toContain(TASK_REMINDER);
         expect(await storage.load(ROSTER_TYPE, ROSTER_INDEX_KEY)).toBeNull();
+    });
+
+    it('the roster refuses a host id that would alias its index', () => {
+        const liveness = rosterTaskLiveness();
+        const context = {
+            storage: memoryStorage(),
+            scheduler: manualScheduler(),
+            tickMs: 0,
+            hostId: ROSTER_INDEX_KEY,
+            isHostLive: () => true,
+            ownsShard: () => true,
+            touch: async () => undefined,
+            reminders: () => {
+                throw new Error('unused');
+            }
+        };
+        expect(() => liveness.bind(context)).toThrow(/reserved for the roster index/);
+        expect(() => liveness.bind({ ...context, hostId: '' })).toThrow(/reserved/);
+        // And a second bind of a good one is refused too — one instance per host.
+        liveness.bind({ ...context, hostId: 'h.ok' });
+        expect(() => liveness.bind({ ...context, hostId: 'h.other' })).toThrow(/already bound/);
     });
 
     it('a plain tasks: actor rides the same roster', async () => {
