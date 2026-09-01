@@ -2889,3 +2889,58 @@ reminder clears, because `#release` removes the run from the task table
 before `#forgetTask` runs. The scenario flushes one macrotask before
 stopping for that reason; the totals came up exactly one clear short
 without it.
+
+### Since fixed (#309) — the ledger lives in the state record
+
+| | |
+|---|---|
+| Compared | `5bb4167` (main) → `f0e85d7` (#314), `bench.yml`, **7 interleaved rounds** (re-run of the PR's own 5-round A/B, which called the same rows) |
+| Conditions | Quiet — no `noisy` verdicts on the rows below; every `exact` row bit-identical across rounds |
+
+`defineJob` derives its task ledger from its own state (`status`, `input`,
+`attempts`) instead of keeping a `$sigx:tasks` record. All three exact rows
+moved and read `improved`, as the section above said they would:
+
+| `jobs/lifecycle` | before | after |
+|---|---:|---:|
+| `storage_loads_per_run` | 6 | **3** |
+| `storage_saves_per_run` | 5 | **4** |
+| `storage_clears_per_run` | 1 | **0** |
+| `mem/c=1` runs/s · p50 | 16.3 k · 47.3 µs | **21.4 k · 35.1 µs** (+24–31%, 7/7) |
+| `text/c=1` runs/s · p50 | 20.1 k · 39.4 µs | **24.6 k · 31.5 µs** (+20–23%, 7/7) |
+| `text/c=16` runs/s | 19.4 k | **23.5 k** (+21%, 7/7) |
+
+Twelve round trips per run became **seven**; the four that went were the
+ledger's (its load on activation, load + CAS on start, load + clear on
+finish). The five that remain are the state load, the state CAS on start
+and on finish, and the two reminder-shard rewrites — #310's half.
+`jobs/many-running` `n=0/start_us` 63.6 → 56.3 µs (+10.6%, 7/7) for the
+same reason; the shard rewrite itself is untouched, so its ladder is not.
+
+**One thing this run found that it cannot explain, recorded so it is not
+rediscovered.** Two `text*` HEAD windows read `regressed`, unanimously, in
+both the 5-round and the 7-round A/B:
+
+| row | before | after | 7-round range |
+|---|---:|---:|---|
+| `jobs/checkpoint-growth` `watch=0,text/head_step_us` | 27.97 µs | 33.00 µs | −19.5% … −13.6% |
+| `state/save-growth` `text-scalar/head_turn_us` | 21.43 µs | 24.37 µs | −15.5% … −10.1% |
+
+(`state/save-growth` `text/head_turn_us` moved the same way, −19.8%, but
+`noisy`.) What bounds it: every TAIL of those arms is inside the 3% floor
+(`text-scalar/tail` 84.4 → 85.5 µs, `watch=0,text/tail` 109.2 → 109.2 µs);
+the `mem` and `stringify` heads of the SAME scenarios did not move; GC
+counts are bit-identical on both sides (24/24, 18/18, 16/16 collections);
+and `state/save-growth` is a plain `defineActor` that never executes a line
+this change touched. So it is ~3 µs per small-state `saveText` turn, on
+arms this PR does not reach, in the warm-up window only. The hypothesis
+that fits all of that: `taskLedger.mutate` was a hot caller of the same
+`stringifyWithHandlers` the `saveText` path uses (`host/tasks.ts` `toJson`),
+and jobs no longer call it — so between arms that function's optimization
+state is different, and the `text` heads now pay warm-up they used to
+inherit from the ledger traffic. That is a property of the benchmark
+PROCESS, not a per-save cost; a per-save cost would have moved the tails by
+the same ~3 µs and it did not. It is a hypothesis: settle it with a
+per-turn head profile of `state/save-growth text-scalar` on both sides, or
+by running that scenario ALONE (no `jobs/*` in the process) on both, before
+anyone optimizes against it.
