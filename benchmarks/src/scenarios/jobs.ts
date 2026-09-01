@@ -365,12 +365,13 @@ const manyRunning: Scenario = {
                     );
                     timings.push(performance.now() - t0);
                 }
-                // The last probe's shard write. Its entry count is a pure
-                // function of fixed key strings through FNV-1a — the same
-                // shard, the same neighbours, on any machine — so it gates.
-                // Bytes carry a wall-clock `nextDue` per entry and stay
-                // informational.
-                const write = counted.counts.lastReminderWrite;
+                // The last probe's shard write, decoded HERE — after the
+                // timed loop, so the instrumentation is not in `start_us`.
+                // Its entry count is a pure function of fixed key strings
+                // through FNV-1a — the same shard, the same neighbours, on
+                // any machine — so it gates. Bytes carry a wall-clock
+                // `nextDue` per entry and stay informational.
+                const write = counted.counts.reminderWrite();
                 if (!write) throw new Error('a job start wrote no reminder shard — the liveness reminder is missing.');
                 metrics.push(
                     {

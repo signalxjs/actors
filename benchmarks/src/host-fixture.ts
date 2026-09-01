@@ -236,8 +236,13 @@ export interface StorageCounts {
      * entries the table carried and how many bytes went to the store. The
      * shard table is rewritten WHOLE on every `reminders.set`/`clear`, so
      * `entries` is the O(running-jobs) term a job start pays (#307).
+     *
+     * Computed HERE, on demand — the storage calls only keep a reference to
+     * what was written. Stringifying and parsing the shard inside the call
+     * would put the instrumentation inside the timed section, growing with
+     * exactly the term the scenario is trying to isolate.
      */
-    lastReminderWrite: { entries: number; bytes: number } | null;
+    reminderWrite(): { entries: number; bytes: number } | null;
 }
 
 const REMINDER_TYPE = '$sigx:reminders';
@@ -254,13 +259,23 @@ const REMINDER_TYPE = '$sigx:reminders';
  * always declared it would change what is being measured.
  */
 export function countingStorage(inner: ActorStorage): { storage: ActorStorage; counts: StorageCounts } {
-    const counts: StorageCounts = { loads: 0, saves: 0, clears: 0, lastReminderWrite: null };
-    const noteReminder = (type: string, json: string): void => {
-        if (type !== REMINDER_TYPE) return;
-        counts.lastReminderWrite = {
-            entries: Object.keys(JSON.parse(json) as object).length,
-            bytes: Buffer.byteLength(json)
-        };
+    // Whichever form the last shard write arrived in. Holding the tree by
+    // reference is safe: `save` transfers ownership of its argument to the
+    // store (#25) and `shardedReminders` builds a fresh table per mutation,
+    // so nothing mutates it after the call.
+    let lastReminder: { json: string } | { state: unknown } | null = null;
+    const counts: StorageCounts = {
+        loads: 0,
+        saves: 0,
+        clears: 0,
+        reminderWrite() {
+            if (!lastReminder) return null;
+            const json = 'json' in lastReminder ? lastReminder.json : JSON.stringify(lastReminder.state);
+            return {
+                entries: Object.keys(JSON.parse(json) as object).length,
+                bytes: Buffer.byteLength(json)
+            };
+        }
     };
     const storage: ActorStorage = {
         load(type, key) {
@@ -269,9 +284,7 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         },
         save(type, key, state, expectedEtag) {
             counts.saves++;
-            // Stringified only for the shard, which is JSON-native already;
-            // actor state never takes this branch.
-            if (type === REMINDER_TYPE) noteReminder(type, JSON.stringify(state));
+            if (type === REMINDER_TYPE) lastReminder = { state };
             return inner.save(type, key, state, expectedEtag);
         },
         clear(type, key, expectedEtag) {
@@ -283,7 +296,7 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         const saveText = inner.saveText.bind(inner);
         storage.saveText = (type, key, json, expectedEtag) => {
             counts.saves++;
-            noteReminder(type, json);
+            if (type === REMINDER_TYPE) lastReminder = { json };
             return saveText(type, key, json, expectedEtag);
         };
     }
