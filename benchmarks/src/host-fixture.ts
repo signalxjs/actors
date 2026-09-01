@@ -263,13 +263,13 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
     // tree by reference is safe: `save` transfers ownership of its argument
     // to the store (#25), and the reminder and roster services never mutate
     // a table they have handed over.
-    const lastByType = new Map<string, { json: string } | { state: unknown }>();
+    const lastByType = new Map<string, { key: string; payload: { json: string } | { state: unknown } }>();
     const counts: StorageCounts = {
         loads: 0,
         saves: 0,
         clears: 0,
         lastWrite(type) {
-            const last = lastByType.get(type);
+            const last = lastByType.get(type)?.payload;
             if (!last) return null;
             const json = 'json' in last ? last.json : JSON.stringify(last.state);
             return {
@@ -289,14 +289,15 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         },
         save(type, key, state, expectedEtag) {
             counts.saves++;
-            lastByType.set(type, { state });
+            lastByType.set(type, { key, payload: { state } });
             return inner.save(type, key, state, expectedEtag);
         },
         clear(type, key, expectedEtag) {
             counts.clears++;
-            // The record is gone; a stale "last write" for its type would
-            // report a payload the store no longer holds.
-            lastByType.delete(type);
+            // The record is gone; a stale "last write" for it would report
+            // a payload the store no longer holds. A clear of a DIFFERENT
+            // key must not erase it, so the cache remembers which key wrote.
+            if (lastByType.get(type)?.key === key) lastByType.delete(type);
             return inner.clear(type, key, expectedEtag);
         }
     };
@@ -304,7 +305,7 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         const saveText = inner.saveText.bind(inner);
         storage.saveText = (type, key, json, expectedEtag) => {
             counts.saves++;
-            lastByType.set(type, { json });
+            lastByType.set(type, { key, payload: { json } });
             return saveText(type, key, json, expectedEtag);
         };
     }
