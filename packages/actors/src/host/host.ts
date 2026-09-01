@@ -398,7 +398,7 @@ class HostImpl implements Host {
         // roster's key and what a successor tells its predecessor's by.
         const hostId =
             this.#bindings?.hostId ??
-            `h.${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 12)}`;
+            `h.${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}.${mintCallId()}`}`;
         this.#taskLiveness = options.taskLiveness ?? rosterTaskLiveness();
         this.#taskLiveness.bind({
             storage: this.#storage,
