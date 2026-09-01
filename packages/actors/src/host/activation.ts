@@ -1838,6 +1838,23 @@ export class Activation {
             await this.#host.taskLiveness.track(this.ref);
         } catch (error) {
             this.#release(run);
+            // The ledger write may have landed before the failure. A caller
+            // who sees start() reject must not find the run resumed by the
+            // next activation, so take the entry back — best-effort (a
+            // failure here leaves the documented at-least-once behaviour),
+            // and keyed so a raced replacement run is never deleted.
+            if (!this.def.__sigxActor.resumeTasks) {
+                try {
+                    await this.#ledger.mutate((ledger) => {
+                        const entry = ledger[name];
+                        if (entry && entry.startedAt === run.startedAt && entry.restarts === 0) {
+                            delete ledger[name];
+                        }
+                    });
+                } catch {
+                    // At-least-once: the entry resumes on the next activation.
+                }
+            }
             throw error;
         }
         this.#launch(run, fn, input);

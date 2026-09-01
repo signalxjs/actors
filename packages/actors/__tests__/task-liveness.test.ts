@@ -14,6 +14,7 @@ import {
     rosterTaskLiveness,
     ROSTER_INDEX_KEY,
     ROSTER_TYPE,
+    TASKS_TYPE,
     TASK_REMINDER,
     type Host
 } from '@sigx/actors/host';
@@ -208,6 +209,45 @@ describe('task liveness: the per-host roster', () => {
         await host.actor(Job, 'run-2').start({ n: 1 });
         const ids = await hostIds(inner);
         expect(ids).toHaveLength(1);
+    });
+
+    it('a start whose liveness track fails takes its ledger entry back', async () => {
+        const inner = memoryStorage();
+        let failTracks = 1;
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: (t, k, st, e) => {
+                if (t === ROSTER_TYPE && failTracks-- > 0) {
+                    return Promise.reject(new Error('roster transiently down'));
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const def = defineActor({
+            type: 'Parked',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                begin: () => ctx.tasks.start('run'),
+                running: () => ctx.tasks.list()
+            }),
+            tasks: (ctx) => ({
+                async run() {
+                    await aborted(ctx.abortSignal);
+                }
+            })
+        });
+        const host = createHost({ actors: [def], storage, defaults: quiet });
+        running.push(host);
+        await expect(host.actor(def, 'run-1').begin()).rejects.toThrow(/transiently down/);
+        // The rejected start left NO durable run behind: the ledger entry
+        // was taken back, so a restarted host resumes nothing.
+        const record = await inner.load(TASKS_TYPE, ID);
+        expect(Object.keys((record?.state ?? {}) as object)).toHaveLength(0);
+        // And the same actor can start again once the roster recovers.
+        await host.actor(def, 'run-1').begin();
+        expect(await host.actor(def, 'run-1').running()).toHaveLength(1);
     });
 
     it('the roster refuses a host id that would alias its index', () => {
