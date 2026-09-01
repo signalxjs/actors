@@ -1766,24 +1766,15 @@ export class Activation {
     /**
      * The ledger DERIVED from state, for a definition that declares
      * `resumeTasks` (`defineJob`, #309) — or `null` for one that keeps the
-     * stored `$sigx:tasks` record. Inputs are cloned through the codec so a
-     * resumed body holds no reference into live state, exactly as a revived
-     * ledger record gave it none.
+     * stored `$sigx:tasks` record. Entries reference live state: the
+     * reminder tick and `#forgetTask` only INSPECT them, so nothing is
+     * cloned here — `#resumeTask` clones an input through the codec right
+     * before it launches a body, which is the one place a reference would
+     * otherwise escape.
      */
     #derivedLedger(): TaskLedger | null {
         const derive = this.def.__sigxActor.resumeTasks;
-        if (!derive) return null;
-        const ledger: TaskLedger = {};
-        for (const [name, entry] of Object.entries(derive(toRaw(this.#state)))) {
-            ledger[name] = {
-                ...(entry.input !== undefined
-                    ? { input: this.#host.cloneState(entry.input) }
-                    : {}),
-                startedAt: entry.startedAt,
-                restarts: entry.restarts
-            };
-        }
-        return ledger;
+        return derive ? derive(toRaw(this.#state)) : null;
     }
 
     /** Whichever ledger this definition keeps — derived, or the stored record. */
@@ -1892,7 +1883,13 @@ export class Activation {
             this.#release(run);
             throw error;
         }
-        this.#launch(run, fn, entry.input);
+        // A derived entry's input IS live state; a stored one is already a
+        // revived copy. Either way the body gets no reference into state.
+        const input =
+            this.def.__sigxActor.resumeTasks && entry.input !== undefined
+                ? this.#host.cloneState(entry.input)
+                : entry.input;
+        this.#launch(run, fn, input);
     }
 
     /** The single-flight gate. Synchronous on purpose — see #startTask. */
