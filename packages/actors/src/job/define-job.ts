@@ -219,11 +219,8 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         resumeTasks: (s): Record<string, TaskResumeEntry> =>
             s.status === 'running'
                 ? {
-                      [RUN]: {
-                          input: s.input,
-                          startedAt: s.startedAt ?? Date.now(),
-                          restarts: Math.max(0, s.attempts - 1)
-                      }
+                      // `start()` sets both before it saves `running`.
+                      [RUN]: { input: s.input, startedAt: s.startedAt!, restarts: s.attempts - 1 }
                   }
                 : {},
         state: (key): S => ({

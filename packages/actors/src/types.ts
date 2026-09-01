@@ -1135,10 +1135,12 @@ export interface ActorOptions<
      * persists `status`/`input`/`attempts`; a second record saying the
      * same thing was two extra round trips per start and per finish.
      *
-     * Called outside any turn with the live state (read-only); `input` is
-     * passed through the state codec before it reaches the resumed body,
-     * so the body never aliases live state. An empty table means nothing
-     * to resume. The liveness reminder is unchanged by this hook.
+     * Called with the live state (read-only) wherever the runtime would
+     * have read the record: on activation, inside the liveness reminder's
+     * turn, and after a run settles. `input` is passed through the state
+     * codec before it reaches the resumed body, so the body never aliases
+     * live state. An empty table means nothing to resume. The liveness
+     * reminder is unchanged by this hook.
      */
     resumeTasks?: (state: S) => Record<string, TaskResumeEntry>;
     /**
