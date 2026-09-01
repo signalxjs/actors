@@ -341,7 +341,7 @@ export interface PlacementBindings {
     ownsReminderShard?(shard: string): boolean | Promise<boolean>;
     /**
      * This host's cluster identity, for the task roster's records (#310).
-     * Default: a per-process id.
+     * Default: an id `createHost()` mints per host instance.
      */
     hostId?: string;
     /**
@@ -487,7 +487,12 @@ export interface ActorTaskLivenessContext {
     readonly scheduler: ActorScheduler;
     /** The adoption cadence — `HostDefaults.reminderTickMs`. */
     readonly tickMs: number;
-    /** This host's id: the cluster identity, or a per-process id single-node. */
+    /**
+     * This host's id — the cluster identity when there is one, else an id
+     * `createHost()` mints for this host INSTANCE. Never reused: a restart is
+     * a new host, which is what lets a successor tell its predecessor's
+     * roster from its own.
+     */
     readonly hostId: string;
     /** Is that host still a member? Single-node: only this one is. */
     isHostLive(hostId: string): boolean | Promise<boolean>;

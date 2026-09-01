@@ -243,7 +243,7 @@ export interface StorageCounts {
      * exactly the term the scenario is trying to isolate.
      */
     lastWrite(type: string): { entries: number; bytes: number } | null;
-    /** Zero the counters — e.g. after a warm-up run, for a steady-state figure. */
+    /** Zero the counters and forget the last writes — e.g. after a warm-up run, for a steady-state figure. */
     reset(): void;
 }
 
@@ -279,6 +279,7 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         },
         reset() {
             counts.loads = counts.saves = counts.clears = 0;
+            lastByType.clear();
         }
     };
     const storage: ActorStorage = {
