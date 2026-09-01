@@ -17,7 +17,7 @@
  */
 import { defineActor } from '../define';
 import { decodePrincipal, encodePrincipalValue } from '../guards';
-import type { ActorContext, ActorDefinition, ActorTaskContext } from '../types';
+import type { ActorContext, ActorDefinition, ActorTaskContext, TaskResumeEntry } from '../types';
 import { JobCancelledError, JobFailedError, JobNotDoneError, JobStateError } from './errors';
 import {
     JOB_PAUSED,
@@ -208,6 +208,30 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.placement ? { placement: options.placement } : {}),
         persistence: 'explicit',
+        // The state record IS the ledger (#309): a job is `running` exactly
+        // while its one task should be in flight, `attempts` is what the
+        // ledger's `restarts` counted (attempt = restarts + 1, so the run
+        // that resumes this state has been restarted `attempts` times once
+        // it starts), and `input` is right here. Paused, pending and
+        // terminal jobs have nothing to resume — which also closes the gap
+        // a separate record left open: a crash between the `start()` save
+        // and the ledger write used to leave a job `running` forever.
+        //
+        // The bumped count is made durable by the run's FIRST turn below
+        // (`if (attempt > 1) await c.save()`), before `options.run` is
+        // called — where the ledger did it with its own CAS before launch.
+        // A host death between activation and that turn re-derives the
+        // same count once; no user code runs in that window, and the
+        // contract is at-least-once either way. `maxAttempts` still ends a
+        // crash loop, because every resume that gets as far as running
+        // user code has already saved its attempt.
+        resumeTasks: (s): Record<string, TaskResumeEntry> =>
+            s.status === 'running'
+                ? {
+                      // `start()` sets both before it saves `running`.
+                      [RUN]: { input: s.input, startedAt: s.startedAt!, restarts: s.attempts - 1 }
+                  }
+                : {},
         state: (key): S => ({
             status: 'pending',
             input: null,

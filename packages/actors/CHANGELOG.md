@@ -114,6 +114,18 @@
 
 ### Changed
 
+- **A job's state record is its task ledger** (#309). `defineJob` no longer
+  writes a `$sigx:tasks` record per run: the run to resume, its input and
+  its restart count are derived from the job's own `status`/`input`/
+  `attempts`, which it persists anyway. A run lifecycle drops from 6 loads,
+  5 saves and 1 clear to **3 loads, 4 saves and 0 clears** (`jobs/lifecycle`,
+  exact), and a crash between the `start()` save and the old ledger write —
+  which used to leave a job `running` with nothing to resume it — now
+  resumes like any other. Crash-resume semantics are unchanged: `attempts`
+  still bumps per resume, `maxAttempts` still gives up, pause-resume is
+  still free. Plain `defineActor` + `tasks:` keeps the stored ledger; the
+  liveness reminder is unchanged for both (#310 is that half).
+
 - **`defineWorker`'s default `maxLocal` now floors at 4** (#147). The default
   pool cap is `navigator.hardwareConcurrency` clamped to **[4, 16]** (was
   [1, 16]; the no-navigator fallback stays 4). Under a cgroup CPU quota
