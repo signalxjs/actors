@@ -518,7 +518,6 @@ export interface ReminderApi {
     list(): Promise<string[]>;
 }
 
-/** One running detached task, as `ctx.tasks.list()` reports it. */
 /** @internal One in-flight run as `ActorOptions.resumeTasks` derives it. */
 export interface TaskResumeEntry {
     /** The start input, replayed on resume. */
@@ -529,6 +528,7 @@ export interface TaskResumeEntry {
     restarts: number;
 }
 
+/** One running detached task, as `ctx.tasks.list()` reports it. */
 export interface TaskInfo {
     name: string;
     /** Epoch-ms this run first started. */
