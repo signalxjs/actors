@@ -753,7 +753,22 @@ class HostImpl implements Host {
             // that opens an alarm or a connection must be up before
             // start() resolves.
             await this.#reminders.start();
-            await this.#taskLiveness.start();
+            try {
+                await this.#taskLiveness.start();
+            } catch (error) {
+                // Reminders are up; take them down again so a rejected
+                // start leaves no tick behind, then fall through to the
+                // placement rollback below.
+                await this.#reminders.stop().catch((stopError) => {
+                    if (__DEV__) {
+                        console.error(
+                            '[sigx actors] rolling back a failed start did not stop reminders:',
+                            stopError
+                        );
+                    }
+                });
+                throw error;
+            }
         } catch (error) {
             // The placement already joined — undo that rather than leave
             // this host advertised but not really running.
@@ -806,13 +821,20 @@ class HostImpl implements Host {
         this.#stopSweeper = null;
         // Awaited so an async teardown really finishes, but guarded for the
         // same reason `placement.beginStop()` is: failing to stop reminders
-        // must never cost us the drain.
+        // must never cost us the drain — and each seam is stopped on its
+        // own, so one failing cannot leave the other's tick running.
         try {
             await this.#reminders.stop();
-            await this.#taskLiveness.stop();
         } catch (error) {
             if (__DEV__) {
                 console.error('[sigx actors] reminders.stop() failed:', error);
+            }
+        }
+        try {
+            await this.#taskLiveness.stop();
+        } catch (error) {
+            if (__DEV__) {
+                console.error('[sigx actors] taskLiveness.stop() failed:', error);
             }
         }
         // Announce the departure BEFORE draining, so cluster peers stop

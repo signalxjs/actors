@@ -3,11 +3,13 @@
  *
  * One reserved storage record per actor (`$sigx:tasks` / actorId) listing
  * the runs currently in flight: `{ [name]: { input?, startedAt, restarts } }`.
- * While the ledger is non-empty the actor is on its host's task roster
+ * While any run is in flight the actor is on its host's task roster
  * (`task-liveness.ts`, #310 — before that, a liveness reminder per actor);
- * when the owning host dies a survivor adopts the roster, touches the actor
- * through placement, it re-activates wherever the cluster puts it, and
- * activation restarts every ledgered run. At-least-once by contract: the
+ * this holds for a ledgered run and for a `defineJob` run, whose ledger is
+ * derived from its state (#309) and never written here. When the owning
+ * host dies a survivor adopts the roster, touches the actor through
+ * placement, it re-activates wherever the cluster puts it, and activation
+ * restarts every run — ledgered or derived. At-least-once by contract: the
  * runtime resumes the FUNCTION, user code resumes the WORK from its own
  * checkpointed state.
  *
