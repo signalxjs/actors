@@ -1967,12 +1967,12 @@ export class Activation {
         })();
     }
 
-    /** Drop one entry; when the ledger empties, disarm the reminder too. */
+    /** Drop one entry; when the ledger empties, untrack from task liveness. */
     async #forgetTask(name: string): Promise<void> {
         // Derived: the settling run's terminal turn already saved the state
         // this reads, so the entry is gone without a write — and if a fresh
         // run of the same name has started since, the state says so and
-        // the reminder stays armed for it.
+        // the actor stays on the task roster for it.
         const ledger =
             this.#derivedLedger() ??
             (await this.#ledger.mutate((l) => {
