@@ -758,9 +758,20 @@ class HostImpl implements Host {
             try {
                 await this.#taskLiveness.start();
             } catch (error) {
-                // Reminders are up; take them down again so a rejected
-                // start leaves no tick behind, then fall through to the
-                // placement rollback below.
+                // Reminders are up, and task liveness may be half-started;
+                // take both down again (each on its own, best-effort) so a
+                // rejected start leaves no tick behind, then fall through
+                // to the placement rollback below.
+                try {
+                    await this.#taskLiveness.stop();
+                } catch (stopError) {
+                    if (__DEV__) {
+                        console.error(
+                            '[sigx actors] rolling back a failed start did not stop task liveness:',
+                            stopError
+                        );
+                    }
+                }
                 try {
                     await this.#reminders.stop();
                 } catch (stopError) {
