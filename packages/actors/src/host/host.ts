@@ -394,7 +394,9 @@ class HostImpl implements Host {
             deliver: (ref, name) =>
                 this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall())
         });
-        const hostId = this.#bindings?.hostId ?? `h.${Math.random().toString(36).slice(2, 10)}`;
+        // Single-node: an id for THIS host instance, never reused — the
+        // roster's key and what a successor tells its predecessor's by.
+        const hostId = this.#bindings?.hostId ?? `h.${globalThis.crypto.randomUUID()}`;
         this.#taskLiveness = options.taskLiveness ?? rosterTaskLiveness();
         this.#taskLiveness.bind({
             storage: this.#storage,

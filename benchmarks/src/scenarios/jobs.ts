@@ -373,7 +373,7 @@ const manyRunning: Scenario = {
                     // The cancel's ledger and shard clears run detached
                     // after the method returns; one macrotask drains them
                     // on memory storage (see `jobs/lifecycle`). The last
-                    // probe stays, so `reminderWrite()` below is ITS start.
+                    // probe stays, so `lastWrite(ROSTER_TYPE)` below is ITS start.
                     if (i < RUNNING_PROBES - 1) {
                         await fixture.host.dispatch(probe, 'cancel', [], benchCall());
                         await new Promise((resolve) => setImmediate(resolve));
