@@ -216,6 +216,15 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         // terminal jobs have nothing to resume — which also closes the gap
         // a separate record left open: a crash between the `start()` save
         // and the ledger write used to leave a job `running` forever.
+        //
+        // The bumped count is made durable by the run's FIRST turn below
+        // (`if (attempt > 1) await c.save()`), before `options.run` is
+        // called — where the ledger did it with its own CAS before launch.
+        // A host death between activation and that turn re-derives the
+        // same count once; no user code runs in that window, and the
+        // contract is at-least-once either way. `maxAttempts` still ends a
+        // crash loop, because every resume that gets as far as running
+        // user code has already saved its attempt.
         resumeTasks: (s): Record<string, TaskResumeEntry> =>
             s.status === 'running'
                 ? {
