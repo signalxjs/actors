@@ -289,24 +289,32 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         },
         save(type, key, state, expectedEtag) {
             counts.saves++;
-            lastByType.set(type, { key, payload: { state } });
-            return inner.save(type, key, state, expectedEtag);
+            // Recorded only once the write LANDED: a rejected CAS must not
+            // leave a payload the store never held in the cache.
+            return inner.save(type, key, state, expectedEtag).then((etag) => {
+                lastByType.set(type, { key, payload: { state } });
+                return etag;
+            });
         },
         clear(type, key, expectedEtag) {
             counts.clears++;
-            // The record is gone; a stale "last write" for it would report
-            // a payload the store no longer holds. A clear of a DIFFERENT
-            // key must not erase it, so the cache remembers which key wrote.
-            if (lastByType.get(type)?.key === key) lastByType.delete(type);
-            return inner.clear(type, key, expectedEtag);
+            // The record is gone once the clear LANDS; a stale "last write"
+            // for it would report a payload the store no longer holds. A
+            // clear of a DIFFERENT key (or one that fails its CAS) must not
+            // erase it, so this waits and checks the key.
+            return inner.clear(type, key, expectedEtag).then(() => {
+                if (lastByType.get(type)?.key === key) lastByType.delete(type);
+            });
         }
     };
     if (inner.saveText) {
         const saveText = inner.saveText.bind(inner);
         storage.saveText = (type, key, json, expectedEtag) => {
             counts.saves++;
-            lastByType.set(type, { key, payload: { json } });
-            return saveText(type, key, json, expectedEtag);
+            return saveText(type, key, json, expectedEtag).then((etag) => {
+                lastByType.set(type, { key, payload: { json } });
+                return etag;
+            });
         };
     }
     return { storage, counts };
