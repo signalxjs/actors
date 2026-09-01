@@ -396,7 +396,9 @@ class HostImpl implements Host {
         });
         // Single-node: an id for THIS host instance, never reused — the
         // roster's key and what a successor tells its predecessor's by.
-        const hostId = this.#bindings?.hostId ?? `h.${globalThis.crypto.randomUUID()}`;
+        const hostId =
+            this.#bindings?.hostId ??
+            `h.${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 12)}`;
         this.#taskLiveness = options.taskLiveness ?? rosterTaskLiveness();
         this.#taskLiveness.bind({
             storage: this.#storage,

@@ -294,6 +294,9 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         },
         clear(type, key, expectedEtag) {
             counts.clears++;
+            // The record is gone; a stale "last write" for its type would
+            // report a payload the store no longer holds.
+            lastByType.delete(type);
             return inner.clear(type, key, expectedEtag);
         }
     };
