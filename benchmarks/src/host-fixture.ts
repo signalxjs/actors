@@ -225,3 +225,67 @@ export async function warmActivations(
         await host.dispatch(ref, method, [], call);
     }
 }
+
+/** Per-operation counts of everything the host asked a storage for. */
+export interface StorageCounts {
+    loads: number;
+    saves: number;
+    clears: number;
+    /**
+     * The LAST write to a reminder shard (`$sigx:reminders`): how many actor
+     * entries the table carried and how many bytes went to the store. The
+     * shard table is rewritten WHOLE on every `reminders.set`/`clear`, so
+     * `entries` is the O(running-jobs) term a job start pays (#307).
+     */
+    lastReminderWrite: { entries: number; bytes: number } | null;
+}
+
+const REMINDER_TYPE = '$sigx:reminders';
+
+/**
+ * Wrap a storage so every call is counted — the same idea as
+ * `cluster-harness.ts`'s counted providers, for the persistence seam. The
+ * counts are invariants under serial dispatch on one host: the runtime asks
+ * the store for exactly the same things on any machine, so a scenario may
+ * report them `exact` (#307 pins the job lifecycle with them).
+ *
+ * `saveText` is forwarded ONLY when the inner storage has one — its presence
+ * is what routes the host onto the single-walk path, so a wrapper that
+ * always declared it would change what is being measured.
+ */
+export function countingStorage(inner: ActorStorage): { storage: ActorStorage; counts: StorageCounts } {
+    const counts: StorageCounts = { loads: 0, saves: 0, clears: 0, lastReminderWrite: null };
+    const noteReminder = (type: string, json: string): void => {
+        if (type !== REMINDER_TYPE) return;
+        counts.lastReminderWrite = {
+            entries: Object.keys(JSON.parse(json) as object).length,
+            bytes: Buffer.byteLength(json)
+        };
+    };
+    const storage: ActorStorage = {
+        load(type, key) {
+            counts.loads++;
+            return inner.load(type, key);
+        },
+        save(type, key, state, expectedEtag) {
+            counts.saves++;
+            // Stringified only for the shard, which is JSON-native already;
+            // actor state never takes this branch.
+            if (type === REMINDER_TYPE) noteReminder(type, JSON.stringify(state));
+            return inner.save(type, key, state, expectedEtag);
+        },
+        clear(type, key, expectedEtag) {
+            counts.clears++;
+            return inner.clear(type, key, expectedEtag);
+        }
+    };
+    if (inner.saveText) {
+        const saveText = inner.saveText.bind(inner);
+        storage.saveText = (type, key, json, expectedEtag) => {
+            counts.saves++;
+            noteReminder(type, json);
+            return saveText(type, key, json, expectedEtag);
+        };
+    }
+    return { storage, counts };
+}

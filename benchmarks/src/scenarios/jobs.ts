@@ -15,17 +15,33 @@
  * `watch=0` curve is the save encode alone, to be read against
  * `state/save-growth`'s `mem` arm.
  */
-import { closedLoop, LATENCY_NOISE_FLOOR_MS, meanUs, TURN_NOISE_FLOOR_US } from '../loop.ts';
-import { benchCall, createBenchHost, stringifyStorage, textStorage } from '../host-fixture.ts';
+import {
+    closedLoop,
+    LATENCY_NOISE_FLOOR_MS,
+    meanUs,
+    sweepConcurrency,
+    TURN_NOISE_FLOOR_US
+} from '../loop.ts';
+import {
+    benchCall,
+    countingStorage,
+    createBenchHost,
+    stringifyStorage,
+    textStorage
+} from '../host-fixture.ts';
 import { settleGc } from '../memory.ts';
 import { openSubscribers, type Subscribers } from '../subscribers.ts';
 import {
+    BenchLifecycleJob,
+    BenchParkedJob,
     BenchStatusJob,
     BenchStepJob,
     resetStepChannel,
     sendStep,
-    sendStop
+    sendStop,
+    settledLifecycle
 } from '../job-fixtures.ts';
+import { memoryStorage } from '@sigx/actors/host';
 import type { ActorRef, ActorStorage, Host } from '@sigx/actors/host';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
@@ -201,4 +217,192 @@ const checkpointGrowth: Scenario = {
     }
 };
 
-export const jobScenarios: Scenario[] = [statusRead, checkpointGrowth];
+/**
+ * Runs per exact pass — enough that a per-run integer divides out cleanly
+ * and a one-off (the first activation's cold load) cannot hide in it.
+ */
+const LIFECYCLE_EXACT_RUNS = 25;
+
+/** Keys are minted per fixture per round — a completed job must never be re-started. */
+let lifecycleSeq = 0;
+
+/** One whole lifecycle: `start()` → trivial body → terminal, on a fresh key. */
+async function runLifecycle(host: Host, key: string): Promise<void> {
+    const ref: ActorRef = { type: BenchLifecycleJob.type, key };
+    const settled = settledLifecycle(key);
+    await host.dispatch(ref, 'start', [null], benchCall());
+    await settled;
+}
+
+const lifecycle: Scenario = {
+    name: 'jobs/lifecycle',
+    description: 'start() → terminal on a trivial job, fresh key per run — the bookkeeping a workflow run costs',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        // The exact half first, on its own fixture: N serial runs, then a
+        // stop that waits for the detached ledger/reminder clears, then the
+        // totals divided out. Every term is deterministic under serial
+        // dispatch on one host — the runtime asks the store for the same
+        // things on any machine — so these gate (#307). A fix that folds a
+        // round trip away LOWERS them and reads `improved`.
+        {
+            const counted = countingStorage(memoryStorage());
+            const fixture = await createBenchHost({
+                actors: [BenchLifecycleJob],
+                storage: counted.storage
+            });
+            try {
+                for (let i = 0; i < LIFECYCLE_EXACT_RUNS; i++) {
+                    await runLifecycle(fixture.host, `exact-${lifecycleSeq++}`);
+                }
+                // The ledger and reminder clears run DETACHED after
+                // `onSettled`, and `host.stop()` does not wait for them: the
+                // run leaves the task table before its bookkeeping finishes,
+                // so the deactivation grace has nothing to await. On memory
+                // storage every step is a microtask, so one macrotask turn
+                // drains the last run's tail deterministically — without it
+                // the totals come up exactly one clear short.
+                await new Promise((resolve) => setImmediate(resolve));
+            } finally {
+                await fixture.stop();
+            }
+            const perRun = (n: number): number => n / LIFECYCLE_EXACT_RUNS;
+            metrics.push(
+                {
+                    name: 'storage_loads_per_run',
+                    value: perRun(counted.counts.loads),
+                    unit: 'ops',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: 'storage_saves_per_run',
+                    value: perRun(counted.counts.saves),
+                    unit: 'ops',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: 'storage_clears_per_run',
+                    value: perRun(counted.counts.clears),
+                    unit: 'ops',
+                    direction: 'lower',
+                    exact: true
+                }
+            );
+        }
+        // The timed half. `mem` is the suite's usual floor; `text` is the
+        // shape a real deployment has (pg, redis, surreal all take JSON
+        // text) and what the lifecycle costs there in CPU alone — no
+        // network, so a round trip is a JSON walk, not an RTT.
+        const arms = [
+            { label: 'mem', storage: undefined },
+            { label: 'text', storage: textStorage }
+        ] as { label: string; storage?: () => ActorStorage }[];
+        const concurrencies = ctx.quick ? [1, 16] : [1, 16, 64];
+        for (const arm of arms) {
+            const fixture = await createBenchHost({
+                actors: [BenchLifecycleJob],
+                ...(arm.storage ? { storage: arm.storage() } : {})
+            });
+            try {
+                await settleGc();
+                const swept = await sweepConcurrency({
+                    call: () => runLifecycle(fixture.host, `${arm.label}-${lifecycleSeq++}`),
+                    concurrencies,
+                    durationMs: ctx.durationMs
+                });
+                for (const m of swept) metrics.push({ ...m, name: `${arm.label}/${m.name}` });
+            } finally {
+                await fixture.stop();
+            }
+        }
+        return metrics;
+    }
+};
+
+/**
+ * How many jobs to leave running before probing. Two non-zero rungs are
+ * enough: the term under test is linear in N, and 5 000 already puts ~300
+ * entries into the probe's shard.
+ */
+const RUNNING_LADDER = [0, 1000, 5000] as const;
+/** Probes per rung; only the second half is timed, so the first rung's JIT warm-up is not the number. */
+const RUNNING_PROBES = 40;
+
+const manyRunning: Scenario = {
+    name: 'jobs/many-running',
+    description: 'start() with N jobs already running — the reminder-shard rewrite every start pays',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        const ladder = ctx.quick ? [0, 200] : RUNNING_LADDER;
+        for (const n of ladder) {
+            const counted = countingStorage(memoryStorage());
+            const fixture = await createBenchHost({
+                actors: [BenchParkedJob],
+                storage: counted.storage
+            });
+            try {
+                // Sequential: an activation storm would measure itself, and
+                // every start serializes on the reminder writer chain anyway.
+                for (let i = 0; i < n; i++) {
+                    await fixture.host.dispatch(
+                        { type: BenchParkedJob.type, key: `parked-${i}` },
+                        'start',
+                        [null],
+                        benchCall()
+                    );
+                }
+                await settleGc();
+                const timings: number[] = [];
+                for (let i = 0; i < RUNNING_PROBES; i++) {
+                    const t0 = performance.now();
+                    await fixture.host.dispatch(
+                        { type: BenchParkedJob.type, key: `probe-${i}` },
+                        'start',
+                        [null],
+                        benchCall()
+                    );
+                    timings.push(performance.now() - t0);
+                }
+                // The last probe's shard write. Its entry count is a pure
+                // function of fixed key strings through FNV-1a — the same
+                // shard, the same neighbours, on any machine — so it gates.
+                // Bytes carry a wall-clock `nextDue` per entry and stay
+                // informational.
+                const write = counted.counts.lastReminderWrite;
+                if (!write) throw new Error('a job start wrote no reminder shard — the liveness reminder is missing.');
+                metrics.push(
+                    {
+                        name: `n=${n}/start_us`,
+                        value: meanUs(timings.slice(RUNNING_PROBES / 2)),
+                        unit: 'µs',
+                        direction: 'lower',
+                        noiseFloor: TURN_NOISE_FLOOR_US
+                    },
+                    {
+                        name: `n=${n}/shard_entries_per_start`,
+                        value: write.entries,
+                        unit: 'entries',
+                        direction: 'lower',
+                        exact: true
+                    },
+                    {
+                        name: `n=${n}/shard_bytes_per_start`,
+                        value: write.bytes,
+                        unit: 'B',
+                        direction: 'lower',
+                        informational: true
+                    }
+                );
+            } finally {
+                // Aborts every parked body; each returns on its signal and
+                // the runtime records nothing for a wind-down.
+                await fixture.stop();
+            }
+        }
+        return metrics;
+    }
+};
+
+export const jobScenarios: Scenario[] = [statusRead, checkpointGrowth, lifecycle, manyRunning];
