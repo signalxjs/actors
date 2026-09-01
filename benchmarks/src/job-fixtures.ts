@@ -104,3 +104,52 @@ export const BenchStepJob = defineJob<null, number, StepRow[]>({
         }
     }
 });
+
+/**
+ * The lifecycle fixture (#307): a job whose body does nothing, so a run is
+ * the runtime's own bookkeeping and nothing else — `start` (state save,
+ * task-ledger CAS, liveness reminder), the terminal transition, and the
+ * ledger + reminder clears behind it.
+ *
+ * `onSettled` is the completion signal: it fires inside the terminal turn,
+ * after the save that makes the status durable, which is the moment a
+ * caller polling `status()` would see `completed`. The ledger and reminder
+ * clears run AFTER it, detached — they are part of the run's cost but not
+ * of its latency, exactly as in production.
+ */
+const settleWaiters = new Map<string, () => void>();
+
+/** Resolves when the job under `key` reaches a terminal status. */
+export function settledLifecycle(key: string): Promise<void> {
+    return new Promise((resolve) => settleWaiters.set(key, resolve));
+}
+
+export const BenchLifecycleJob = defineJob<null, number>({
+    type: 'BenchLifecycleJob',
+    allowAnonymous: true,
+    run: async () => 0,
+    onSettled: (_control, info) => {
+        const waiter = settleWaiters.get(info.key);
+        if (waiter) {
+            settleWaiters.delete(info.key);
+            waiter();
+        }
+    }
+});
+
+/**
+ * A job that stays `running` until its host tears it down: the body parks
+ * on the run's abort signal and returns once it fires, which the runtime
+ * treats as a wind-down (no terminal write, ledger entry kept). Parking N
+ * of these puts N entries into the 16 reminder shard tables — the state
+ * `jobs/many-running` measures a fresh `start()` against.
+ */
+export const BenchParkedJob = defineJob<null, number>({
+    type: 'BenchParkedJob',
+    allowAnonymous: true,
+    run: (job) =>
+        new Promise<number>((resolve) => {
+            if (job.signal.aborted) resolve(0);
+            else job.signal.addEventListener('abort', () => resolve(0), { once: true });
+        })
+});

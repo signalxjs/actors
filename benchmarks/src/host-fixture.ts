@@ -225,3 +225,80 @@ export async function warmActivations(
         await host.dispatch(ref, method, [], call);
     }
 }
+
+/** Per-operation counts of everything the host asked a storage for. */
+export interface StorageCounts {
+    loads: number;
+    saves: number;
+    clears: number;
+    /**
+     * The LAST write to a reminder shard (`$sigx:reminders`): how many actor
+     * entries the table carried and how many bytes went to the store. The
+     * shard table is rewritten WHOLE on every `reminders.set`/`clear`, so
+     * `entries` is the O(running-jobs) term a job start pays (#307).
+     *
+     * Computed HERE, on demand — the storage calls only keep a reference to
+     * what was written. Stringifying and parsing the shard inside the call
+     * would put the instrumentation inside the timed section, growing with
+     * exactly the term the scenario is trying to isolate.
+     */
+    reminderWrite(): { entries: number; bytes: number } | null;
+}
+
+const REMINDER_TYPE = '$sigx:reminders';
+
+/**
+ * Wrap a storage so every call is counted — the same idea as
+ * `cluster-harness.ts`'s counted providers, for the persistence seam. The
+ * counts are invariants under serial dispatch on one host: the runtime asks
+ * the store for exactly the same things on any machine, so a scenario may
+ * report them `exact` (#307 pins the job lifecycle with them).
+ *
+ * `saveText` is forwarded ONLY when the inner storage has one — its presence
+ * is what routes the host onto the single-walk path, so a wrapper that
+ * always declared it would change what is being measured.
+ */
+export function countingStorage(inner: ActorStorage): { storage: ActorStorage; counts: StorageCounts } {
+    // Whichever form the last shard write arrived in. Holding the tree by
+    // reference is safe: `save` transfers ownership of its argument to the
+    // store (#25) and `shardedReminders` builds a fresh table per mutation,
+    // so nothing mutates it after the call.
+    let lastReminder: { json: string } | { state: unknown } | null = null;
+    const counts: StorageCounts = {
+        loads: 0,
+        saves: 0,
+        clears: 0,
+        reminderWrite() {
+            if (!lastReminder) return null;
+            const json = 'json' in lastReminder ? lastReminder.json : JSON.stringify(lastReminder.state);
+            return {
+                entries: Object.keys(JSON.parse(json) as object).length,
+                bytes: Buffer.byteLength(json)
+            };
+        }
+    };
+    const storage: ActorStorage = {
+        load(type, key) {
+            counts.loads++;
+            return inner.load(type, key);
+        },
+        save(type, key, state, expectedEtag) {
+            counts.saves++;
+            if (type === REMINDER_TYPE) lastReminder = { state };
+            return inner.save(type, key, state, expectedEtag);
+        },
+        clear(type, key, expectedEtag) {
+            counts.clears++;
+            return inner.clear(type, key, expectedEtag);
+        }
+    };
+    if (inner.saveText) {
+        const saveText = inner.saveText.bind(inner);
+        storage.saveText = (type, key, json, expectedEtag) => {
+            counts.saves++;
+            if (type === REMINDER_TYPE) lastReminder = { json };
+            return saveText(type, key, json, expectedEtag);
+        };
+    }
+    return { storage, counts };
+}

@@ -2781,3 +2781,111 @@ that stopped working.
 | Reminder firing is at-most-once: a delivered wake whose dispatch times out is gone | 131 lost wakes at the collapsed 50/s rung, recovered by the sweep's touch | **#306** (runtime) |
 | A singleton subscriber on the completion path is the first thing to time out under overload | 91 / 2 496 / 2 671 publish failures per host in the wedged runs | #49 (one-way delivery) is the fix; noted there |
 | The knee of the default mix on 3 × 1 vCPU is ~25 runs/s, set by sha256 on the loop, not by the runtime | task p50 28 → 35 → 55 ms; `transitions_per_sec` 358 at 50/s | the shape; `WF_TASK_MS` moves it |
+
+## 2026-09-01 · The job lifecycle, priced — 12 round trips per run and a shard rewrite per start (#307)
+
+| | |
+|---|---|
+| Machine | Dedicated bench VM — AMD EPYC 9V74, 4 vCPU, linux/x64 |
+| Node | v24.18.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Commit | `7c6d4d4` (#308), head side of the PR's own `bench.yml` A/B against `d86b448` |
+| Settings | 5 interleaved rounds × 400 ms |
+| Conditions | Quiet. **No verdicts called across 537 metrics** on the shared rows, and every `exact` figure below is bit-identical across all five rounds. The new scenarios exist only on the head side, so they have no A/B row — these are their first recorded values, read straight off `rounds.json`. |
+
+Everything the suite measured on the `defineJob` path was a STEP
+(`jobs/checkpoint-growth`) or a READ (`jobs/status-read`). Nothing priced a
+RUN — `start()` to terminal — which is the unit a workflow engine
+multiplies. Two scenarios close that, aimed at the "many runs in flight"
+shape rather than the long-run one.
+
+### `jobs/lifecycle` — start() → terminal on a trivial job, fresh key per run
+
+The body does nothing, so a run is the runtime's own bookkeeping. Counted
+through `countingStorage` over 25 serial runs, all three `exact`:
+
+| per run | value |
+|---|---:|
+| `storage_loads_per_run` | **6** |
+| `storage_saves_per_run` | **5** |
+| `storage_clears_per_run` | **1** |
+
+**Twelve storage round trips for a job that does no work.** Traced: the
+activation's state `load` and task-ledger `load`; `start()`'s state CAS,
+ledger `load` + CAS and `reminders.set(TASK_REMINDER)` (a shard-table
+`load` + CAS); the terminal state CAS; then `#forgetTask`'s ledger `load` +
+`clear` and the shard-table `load` + CAS again. On a real store every one
+of those is an RTT, and the four ledger operations are redundant for a job
+— `defineJob` already persists `status`/`input`/`attempts` in the state
+record (#309). The two shard writes are #310.
+
+The timed half, closed-loop, one host, no network:
+
+| arm | c=1 runs/s | c=1 p50 | c=16 runs/s | c=16 p99 | c=64 runs/s | c=64 p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| `mem` | 16.3 k | 47.5 µs | 18.0 k | 6.54 ms | 14.2 k | 10.5 ms |
+| `text` | 20.1 k | 39.0 µs | 19.4 k | 8.09 ms | 16.8 k | 11.6 ms |
+
+- **~16–20 k runs/s per host is the in-process floor** — about 50 µs of
+  one JS thread per run, of which the body is nothing. Throughput does not
+  rise with concurrency (16.3 k → 18.0 k → 14.2 k): every start serializes
+  on the reminder writer chain, and this is one thread. That flatness is the
+  shape to expect; the absolute number is what a real store's twelve RTTs
+  will divide.
+- **`text` beats `mem` by 23%** at c=1, the #265 result again on a
+  different workload: the single-walk save path costs less than storing a
+  tree by reference. A real adapter is not paying a serialize penalty here.
+
+### `jobs/many-running` — start() with N jobs already running
+
+N parked jobs, then a fresh `start()` probed 40 times (only the second half
+timed; each probe cancelled again, outside the timed section, so every
+start sees exactly N running — see the scenario for the flush that makes
+that deterministic). `shard_entries_per_start` is the size of the reminder
+shard table the probe's start REWRITES — a pure function of the key
+strings through FNV-1a, so it gates:
+
+| N running | `start_us` | `shard_entries_per_start` (exact) | `shard_bytes_per_start` |
+|---:|---:|---:|---:|
+| 0 | 63.3 µs | **1** | 89 B |
+| 1 000 | 134.8 µs | **64** | 5 754 B |
+| 5 000 | **462.9 µs** | **317** | 28 777 B |
+
+- **A start costs 7.3× more with 5 000 jobs running than with none — on
+  memory storage, with no network in the path.** The extra ~400 µs is the
+  shard table: `reminders.set` loads it, `JSON.stringify`s it twice (the
+  no-op compare) and writes it back whole, and the table holds an entry
+  for every running job in the CLUSTER ÷ 16. The cost is linear in running
+  jobs (1 000 → 5 000 rows: 5.0× the entries, 4.6× the marginal cost).
+- **On a real store this is also an O(running-jobs) blob per start and per
+  finish**, CAS-contended by every host that shares the shard
+  (`MUTATE_ATTEMPTS = 3`, then it throws) and serialized per host through
+  one `#chain` — so job starts per second per host is bounded by
+  ~1 / (2·RTT) before any of the above. This is the 16-shard ceiling of
+  2026-07-28 ("hosts doing reminder work") showing up as a WRITE ceiling,
+  and it is what #310 exists to remove. `pgReminders` and
+  `surrealReminders` use a due-time table and do not have this shape;
+  `redisStorage` deployments do.
+- `shard_bytes_per_start` stays informational: every entry carries a
+  wall-clock `nextDue`, so the byte count is deterministic only until the
+  digit count changes.
+
+### Why these DO carry `exact` metrics
+
+The 2026-08-13 section kept `jobs/*` out of the gate because a count
+pinned to "today" would fail on the fix. That was written before the
+comparer's `exact` verdict was read closely: it is direction-aware — a
+LOWER count on a `direction: 'lower'` metric reads `improved`, not
+`regressed` — so #309 and #310 will each move a row here and pass. What
+the gate refuses is the other direction: a change that adds a round trip
+to a job run, which is exactly the class of regression a shared runner
+can see and a timing table cannot. Both scenarios are in
+`BENCH_GATE_SCENARIOS`; `benchmarks/__tests__` asserts the list and the
+flags agree.
+
+One runtime observation from writing the exact pass, filed as #313:
+`host.stop()` does not wait for a completed run's detached ledger and
+reminder clears, because `#release` removes the run from the task table
+before `#forgetTask` runs. The scenario flushes one macrotask before
+stopping for that reason; the totals came up exactly one clear short
+without it.
