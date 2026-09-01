@@ -348,6 +348,14 @@ class ReminderTaskLiveness implements ActorTaskLiveness {
     #context: ActorTaskLivenessContext | null = null;
 
     bind(context: ActorTaskLivenessContext): void {
+        if (this.#context) {
+            // Same rule as the roster: one instance per host. Re-binding
+            // would route the previous host's track/untrack to this one.
+            throw new Error(
+                '[sigx actors] this task-liveness instance is already bound to a host — ' +
+                    'construct a new one per host.'
+            );
+        }
         this.#context = context;
     }
 
