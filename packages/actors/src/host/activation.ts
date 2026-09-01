@@ -1785,11 +1785,13 @@ export class Activation {
     }
 
     /**
-     * Start one detached task run, DURABLY: the ledger entry is written and
-     * the liveness reminder armed before the body launches, so a crash any
-     * time after `start` resolves still resumes the run. Resolves once the
-     * body is launched — settlement is the run's own business.
-     * Single-flight per name.
+     * Start one detached task run, DURABLY: the ledger entry (unless the
+     * definition derives it from state, #309) is written and the actor is
+     * tracked by task liveness (#310 — the host roster by default, a
+     * reminder under `reminderTaskLiveness()`) before the body launches,
+     * so a crash any time after `start` resolves still resumes the run.
+     * Resolves once the body is launched — settlement is the run's own
+     * business. Single-flight per name.
      */
     async #startTask(name: string, input: unknown): Promise<void> {
         if (this.#faulted) throw this.#faulted;
