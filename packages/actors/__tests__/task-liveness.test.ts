@@ -180,6 +180,33 @@ describe('task liveness: the per-host roster', () => {
         expect(await storage.load(ROSTER_TYPE, ROSTER_INDEX_KEY)).toBeNull();
     });
 
+    it('a failed index registration is retried — the roster does not wedge', async () => {
+        const inner = memoryStorage();
+        let failures = 1;
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: (t, k, st, e) => {
+                if (t === ROSTER_TYPE && k === ROSTER_INDEX_KEY && failures-- > 0) {
+                    return Promise.reject(new Error('index save transiently down'));
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const Job = parkingJob([]);
+        const host = createHost({ actors: [Job], storage, defaults: quiet });
+        running.push(host);
+        // The first start fails at registration and must surface the error…
+        await expect(host.actor(Job, 'run-1').start({ n: 1 })).rejects.toThrow(
+            /transiently down/
+        );
+        // …and the next one registers and tracks — the memoized rejection
+        // was dropped, not re-awaited.
+        await host.actor(Job, 'run-2').start({ n: 1 });
+        const ids = await hostIds(inner);
+        expect(ids).toHaveLength(1);
+    });
+
     it('the roster refuses a host id that would alias its index', () => {
         const liveness = rosterTaskLiveness();
         const context = {

@@ -194,7 +194,13 @@ class RosterTaskLiveness implements ActorTaskLiveness {
         if (shard.flushing) return;
         shard.flushing = true;
         try {
-            await (this.#registered ??= this.#register());
+            await (this.#registered ??= this.#register().catch((error) => {
+                // A transient index failure must not wedge every later
+                // track(): drop the memo so the next flush retries the
+                // registration instead of re-awaiting a dead promise.
+                this.#registered = null;
+                throw error;
+            }));
             while (shard.pending.length > 0) {
                 // Everything queued so far rides ONE write; what lands during
                 // the await forms the next batch.
