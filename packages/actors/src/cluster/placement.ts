@@ -757,6 +757,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
             },
             strictChainPresence: true,
             ownsReminderShard: (shard) => this.ownsReminderShard(shard),
+            hostId: this.identity.hostId,
+            // A leaving host is still live — it is draining its own runs.
+            isHostLive: (hostId) => this.view().hosts.some((h) => h.hostId === hostId),
             stopReason: 'migrated'
         };
     }

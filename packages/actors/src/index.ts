@@ -67,6 +67,8 @@ export type {
     ActorRef,
     ActorReminders,
     ActorRemindersContext,
+    ActorTaskLiveness,
+    ActorTaskLivenessContext,
     ActorResult,
     ActorStorage,
     ActorStorageRecord,

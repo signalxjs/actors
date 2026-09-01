@@ -158,6 +158,44 @@ is nothing to shard and nothing to poll (and no cadence floor — an alarm fires
 rows from one scan, while `surrealReminders` partitions by it because SurrealDB
 has no lock primitive to make the other approach safe.
 
+## `ActorTaskLiveness`
+
+```ts
+interface ActorTaskLiveness {
+    bind(context: ActorTaskLivenessContext): void;
+    start(): void | Promise<void>;
+    stop(): void | Promise<void>;
+    track(ref: ActorRef): Promise<void>;     // durable before a run launches
+    untrack(ref: ActorRef): Promise<void>;
+}
+```
+
+How a dead host's in-flight detached runs (`ctx.tasks`, and so every
+`defineJob` run) get found again (#310). The run itself is durable in the
+actor's state or its `$sigx:tasks` ledger; this seam only answers *which
+actors to touch* when a host dies with nobody calling.
+
+`bind()` receives the storage and scheduler as the reminders seam does,
+plus `hostId`, `isHostLive(hostId)` and `ownsShard(shard)` from the
+placement bindings (a cluster answers from its membership view; single-node
+is live only to itself and owns every shard), and `touch(ref)` — the
+`$sigx:reminder`/`TASK_REMINDER` delivery that activates an actor and lets
+it resume.
+
+The default `rosterTaskLiveness()` keeps one roster per host under
+`$sigx:tasks-roster` — `{hostId}/p0..p15`, sub-sharded by the reminder hash,
+plus a `$hosts` index written once per host. **The host is the sole writer
+of its own roster**, which is the whole design: the table and etag are
+cached, `track`/`untrack` are one CAS each with no load, and mutations that
+land during a write ride the next one. Adoption runs on the reminder tick:
+the owner of `reminderShardOf(hostId)` touches every actor of a host
+`isHostLive` says is gone, drops what it touched, and deletes the drained
+roster. `reminderTaskLiveness()` is the mechanism this replaced — a durable
+reminder per running task — and remains right where a reminder is the
+platform's own wake-up: `createHostDurableObject` selects it, because a
+Durable Object's alarm re-activates the object and a per-host roster would
+be a roster of one.
+
 ## `ActorPlacement` and `ActorDispatcher`
 
 `ActorDispatcher` is the narrow waist of the entire runtime — the thing every

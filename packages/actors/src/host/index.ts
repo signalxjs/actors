@@ -68,6 +68,12 @@ export { REMINDER_METHOD } from './activation';
 export { TOPIC_METHOD } from './topics';
 export { REMINDER_TYPE, shardedReminders } from './reminders';
 export {
+    ROSTER_INDEX_KEY,
+    ROSTER_TYPE,
+    reminderTaskLiveness,
+    rosterTaskLiveness
+} from './task-liveness';
+export {
     TASKS_TYPE,
     TASK_REMINDER,
     TASK_REMINDER_MS,
@@ -83,6 +89,8 @@ export type {
     ActorRef,
     ActorReminders,
     ActorRemindersContext,
+    ActorTaskLiveness,
+    ActorTaskLivenessContext,
     ActorStorage,
     ActorStorageRecord,
     ActorTurnObserver,

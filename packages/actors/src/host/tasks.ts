@@ -3,12 +3,13 @@
  *
  * One reserved storage record per actor (`$sigx:tasks` / actorId) listing
  * the runs currently in flight: `{ [name]: { input?, startedAt, restarts } }`.
- * A liveness reminder under the same reserved name is armed while the
- * ledger is non-empty; when the owning host dies, the reminder shards are
- * re-owned by the survivors, the next tick delivers through placement, the
- * actor re-activates wherever the cluster puts it, and activation restarts
- * every ledgered run. At-least-once by contract: the runtime resumes the
- * FUNCTION, user code resumes the WORK from its own checkpointed state.
+ * While the ledger is non-empty the actor is on its host's task roster
+ * (`task-liveness.ts`, #310 — before that, a liveness reminder per actor);
+ * when the owning host dies a survivor adopts the roster, touches the actor
+ * through placement, it re-activates wherever the cluster puts it, and
+ * activation restarts every ledgered run. At-least-once by contract: the
+ * runtime resumes the FUNCTION, user code resumes the WORK from its own
+ * checkpointed state.
  *
  * Same CAS recipe as the reminder table (reload-and-reapply on etag
  * conflict, no-op edits write nothing), but per-actor rather than sharded:

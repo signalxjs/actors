@@ -7,7 +7,14 @@ import {
     JobStateError,
     type JobInfo
 } from '@sigx/actors/job';
-import { createHost, memoryStorage, REMINDER_TYPE, TASKS_TYPE, type Host } from '@sigx/actors/host';
+import {
+    createHost,
+    memoryStorage,
+    ROSTER_INDEX_KEY,
+    ROSTER_TYPE,
+    TASKS_TYPE,
+    type Host
+} from '@sigx/actors/host';
 import { reminderShardOf } from '../src/host/reminder-shards';
 import { actor } from '@sigx/actors';
 import { stubServerApp } from '@sigx/server/testing';
@@ -683,12 +690,15 @@ describe('defineJob: the ledger lives in the state record (#309)', () => {
         expect(await storage.load(TASKS_TYPE, ID)).toBeNull();
     });
 
-    it('a whole lifecycle costs 3 loads, 4 saves and 0 clears', async () => {
-        // The probe-counter form of `jobs/lifecycle`'s exact metrics: state
-        // load on activation; state CAS + reminder-shard load/CAS on start;
-        // state CAS on finish; reminder-shard load/CAS on forget. The four
-        // ledger operations (load on activation, load + CAS on start, load +
-        // clear on finish) are gone.
+    it('a whole lifecycle costs 1 load, 4 saves and 0 clears', async () => {
+        // The probe-counter form of `jobs/lifecycle`'s exact metrics, in
+        // steady state: the state load on activation; the state CAS and the
+        // task-roster CAS on start; the state CAS on finish and the roster
+        // CAS on forget. Gone since #309: the ledger's load on activation,
+        // load + CAS on start, load + clear on finish. Gone since #310: the
+        // reminder shard's load + CAS on start and again on forget. The
+        // host's one-time roster registration (an index load + CAS on its
+        // FIRST task) is paid by the warm-up run below, not counted.
         const { storage, counts, inner } = countingStorage(memoryStorage());
         const Job = defineJob({
             type: 'Ledgerless',
@@ -697,18 +707,27 @@ describe('defineJob: the ledger lives in the state record (#309)', () => {
         });
         const host = createHost({ actors: [Job], storage, defaults: quiet });
         running = host;
-        const client = host.actor(Job, 'run-1');
-        await client.start(undefined as never);
-        await until(async () => (await client.status()).status === 'completed');
-        // The reminder clear is the run's last detached write. Polled on
-        // the INNER store — the poll is not one of the runtime's loads.
-        const shard = reminderShardOf(ID);
-        await until(async () => {
-            const record = await inner.load(REMINDER_TYPE, shard);
-            const table = (record?.state ?? {}) as Record<string, unknown>;
-            return !(ID in table);
-        });
-        // `status()` polls above read live state — no storage.
-        expect(counts).toEqual({ loads: 3, saves: 4, clears: 0 });
+        const lifecycle = async (key: string): Promise<void> => {
+            const client = host.actor(Job, key);
+            await client.start(undefined as never);
+            await until(async () => (await client.status()).status === 'completed');
+            // The roster untrack is the run's last detached write. Polled on
+            // the INNER store — the poll is not one of the runtime's ops.
+            const hostId = Object.keys(
+                ((await inner.load(ROSTER_TYPE, ROSTER_INDEX_KEY))?.state ?? {}) as object
+            )[0]!;
+            await until(async () => {
+                const record = await inner.load(ROSTER_TYPE, `${hostId}/${reminderShardOf(`Ledgerless\u0000${key}`)}`);
+                return !(`Ledgerless\u0000${key}` in ((record?.state ?? {}) as object));
+            });
+        };
+        await lifecycle('warm-up');
+        const before = { ...counts };
+        await lifecycle('run-1');
+        expect({
+            loads: counts.loads - before.loads,
+            saves: counts.saves - before.saves,
+            clears: counts.clears - before.clears
+        }).toEqual({ loads: 1, saves: 4, clears: 0 });
     });
 });

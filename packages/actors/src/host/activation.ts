@@ -44,11 +44,11 @@ import {
     type TimerOptions,
     type Topic,
     type TopicEvent,
-    type TopicPublishReport
+    type TopicPublishReport,
+    type ActorTaskLiveness
 } from '../types';
 import {
     TASK_REMINDER,
-    TASK_REMINDER_MS,
     type TaskLedgerApi,
     type TaskLedgerEntry,
     type TaskLedger
@@ -236,6 +236,8 @@ export interface ActivationHost {
      */
     encodeArgs(args: readonly unknown[]): unknown;
     reminders(ref: ActorRef): ReminderApi;
+    /** Task liveness (#310): make a run findable after this host dies, and forget it. */
+    taskLiveness: Pick<ActorTaskLiveness, 'track' | 'untrack'>;
     /** The actor's task ledger — the reserved `$sigx:tasks` record. */
     tasks(ref: ActorRef): TaskLedgerApi;
     actorClient<D extends AnyActorDefinition>(
@@ -1831,9 +1833,7 @@ export class Activation {
                     };
                 });
             }
-            await this.#host
-                .reminders(this.ref)
-                .set(TASK_REMINDER, { due: TASK_REMINDER_MS, period: TASK_REMINDER_MS });
+            await this.#host.taskLiveness.track(this.ref);
         } catch (error) {
             this.#release(run);
             throw error;
@@ -1979,7 +1979,7 @@ export class Activation {
                 delete l[name];
             }));
         if (Object.keys(ledger).length === 0) {
-            await this.#host.reminders(this.ref).clear(TASK_REMINDER);
+            await this.#host.taskLiveness.untrack(this.ref);
         }
     }
 

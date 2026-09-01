@@ -41,7 +41,7 @@ import {
     sendStop,
     settledLifecycle
 } from '../job-fixtures.ts';
-import { memoryStorage } from '@sigx/actors/host';
+import { memoryStorage, ROSTER_TYPE } from '@sigx/actors/host';
 import type { ActorRef, ActorStorage, Host } from '@sigx/actors/host';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
@@ -252,6 +252,13 @@ const lifecycle: Scenario = {
                 storage: counted.storage
             });
             try {
+                // One warm-up run pays the host's one-time costs — the task
+                // roster's index registration (#310) — so the rows below are
+                // the STEADY-STATE cost of a run, exactly as the probe-counter
+                // unit test measures it.
+                await runLifecycle(fixture.host, `exact-warmup-${lifecycleSeq++}`);
+                await new Promise((resolve) => setImmediate(resolve));
+                counted.counts.reset();
                 for (let i = 0; i < LIFECYCLE_EXACT_RUNS; i++) {
                     await runLifecycle(fixture.host, `exact-${lifecycleSeq++}`);
                 }
@@ -332,7 +339,7 @@ const RUNNING_PROBES = 40;
 
 const manyRunning: Scenario = {
     name: 'jobs/many-running',
-    description: 'start() with N jobs already running — the reminder-shard rewrite every start pays',
+    description: 'start() with N jobs already running — the roster write every start pays',
     async run(ctx: RunContext): Promise<Metric[]> {
         const metrics: Metric[] = [];
         const ladder = ctx.quick ? [0, 200] : RUNNING_LADDER;
@@ -372,14 +379,16 @@ const manyRunning: Scenario = {
                         await new Promise((resolve) => setImmediate(resolve));
                     }
                 }
-                // The last probe's shard write, decoded HERE — after the
-                // timed loop, so the instrumentation is not in `start_us`.
-                // Its entry count is a pure function of fixed key strings
-                // through FNV-1a — the same shard, the same neighbours, on
-                // any machine — so it gates. Bytes carry a wall-clock
-                // `nextDue` per entry and stay informational.
-                const write = counted.counts.reminderWrite();
-                if (!write) throw new Error('a job start wrote no reminder shard — the liveness reminder is missing.');
+                // The last probe's task-roster write (#310 — before it, the
+                // reminder shard), decoded HERE, after the timed loop, so the
+                // instrumentation is not in `start_us`. The roster is per
+                // HOST and sub-sharded by the same FNV-1a as the reminders,
+                // so its entry count is a pure function of the fixed key
+                // strings — the running jobs on this host that share the
+                // probe's sub-shard, plus the probe — and gates. Bytes carry
+                // a wall-clock `since` per entry and stay informational.
+                const write = counted.counts.lastWrite(ROSTER_TYPE);
+                if (!write) throw new Error('a job start wrote no task roster — task liveness is missing.');
                 metrics.push(
                     {
                         name: `n=${n}/start_us`,
@@ -389,14 +398,14 @@ const manyRunning: Scenario = {
                         noiseFloor: TURN_NOISE_FLOOR_US
                     },
                     {
-                        name: `n=${n}/shard_entries_per_start`,
+                        name: `n=${n}/roster_entries_per_start`,
                         value: write.entries,
                         unit: 'entries',
                         direction: 'lower',
                         exact: true
                     },
                     {
-                        name: `n=${n}/shard_bytes_per_start`,
+                        name: `n=${n}/roster_bytes_per_start`,
                         value: write.bytes,
                         unit: 'B',
                         direction: 'lower',

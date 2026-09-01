@@ -340,6 +340,16 @@ export interface PlacementBindings {
      */
     ownsReminderShard?(shard: string): boolean | Promise<boolean>;
     /**
+     * This host's cluster identity, for the task roster's records (#310).
+     * Default: a per-process id.
+     */
+    hostId?: string;
+    /**
+     * Is `hostId` still a member of the cluster? Task-roster adoption acts
+     * only on hosts this says are gone. Default: only this host is live.
+     */
+    isHostLive?(hostId: string): boolean | Promise<boolean>;
+    /**
      * The deactivation reason a graceful `host.stop()` uses. A cluster
      * placement answers `'migrated'`: the stop is a HANDOFF — claims are
      * released as activations drain and peers re-place them — not the end
@@ -466,6 +476,47 @@ export interface ActorRemindersContext {
     ownsShard(shard: string): boolean | Promise<boolean>;
     /** Deliver a due reminder to its actor, activating it if idle. */
     deliver(ref: ActorRef, name: string): Promise<unknown>;
+}
+
+/**
+ * What a task-liveness implementation is handed at `bind()` (#310).
+ */
+export interface ActorTaskLivenessContext {
+    /** The host's storage, AFTER any plugin decorators. */
+    readonly storage: ActorStorage;
+    readonly scheduler: ActorScheduler;
+    /** The adoption cadence — `HostDefaults.reminderTickMs`. */
+    readonly tickMs: number;
+    /** This host's id: the cluster identity, or a per-process id single-node. */
+    readonly hostId: string;
+    /** Is that host still a member? Single-node: only this one is. */
+    isHostLive(hostId: string): boolean | Promise<boolean>;
+    /** Reminder-shard ownership, reused to pick ONE adopter per dead host. */
+    ownsShard(shard: string): boolean | Promise<boolean>;
+    /** Re-activate an actor and let it resume its runs — the liveness touch. */
+    touch(ref: ActorRef): Promise<unknown>;
+    /** The per-actor reminder API, for the reminder-based implementation. */
+    reminders(ref: ActorRef): ReminderApi;
+}
+
+/**
+ * Task liveness, as a seam (#310): how the runtime finds a dead host's
+ * in-flight detached runs so a survivor re-activates their actors. The
+ * default `rosterTaskLiveness()` keeps one roster record per host (the
+ * host is its only writer — one CAS per start and per finish, nothing
+ * periodic) and adopts dead hosts' rosters on the reminder tick.
+ * `reminderTaskLiveness()` is the previous mechanism — one durable reminder
+ * per running task — and the right one where a reminder IS the platform's
+ * wake-up, as on a Durable Object.
+ */
+export interface ActorTaskLiveness {
+    bind(context: ActorTaskLivenessContext): void;
+    start(): void | Promise<void>;
+    stop(): void | Promise<void>;
+    /** Make `ref`'s in-flight run findable. Durable before it resolves. */
+    track(ref: ActorRef): Promise<void>;
+    /** `ref` has no run in flight any more. */
+    untrack(ref: ActorRef): Promise<void>;
 }
 
 /**
