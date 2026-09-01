@@ -2944,3 +2944,64 @@ the same ~3 µs and it did not. It is a hypothesis: settle it with a
 per-turn head profile of `state/save-growth text-scalar` on both sides, or
 by running that scenario ALONE (no `jobs/*` in the process) on both, before
 anyone optimizes against it.
+
+### Since fixed (#310) — task liveness is a per-host roster
+
+| | |
+|---|---|
+| Compared | `a313fad` (main, with #309) → `28f502c` (#315), the PR's `bench.yml` A/B, 5 interleaved rounds |
+| Conditions | Quiet — no `regressed` verdict anywhere in the table; the `checkpoint-growth` and `save-growth` rows all read `no change` this time, head windows included |
+
+The `TASK_REMINDER` per running task is gone: a host keeps ONE roster
+(`$sigx:tasks-roster/{hostId}/p0..p15` + a `$hosts` index) that only it
+writes, so a start or finish is one CAS with no load, and a survivor adopts
+a dead host's roster on the reminder tick. `reminderTaskLiveness()` keeps
+the old mechanism where an alarm is the wake-up (Durable Objects).
+
+| `jobs/lifecycle` | before | after |
+|---|---:|---:|
+| `storage_loads_per_run` | 3 | **1** |
+| `storage_saves_per_run` | 4 | 4 (two state CAS, two roster CAS) |
+| `storage_clears_per_run` | 0 | 0 |
+| `mem/c=1` runs/s · p50 | 21.0 k · 35.2 µs | **28.8 k · 24.9 µs** (+36%, 5/5) |
+| `mem/c=16` runs/s · p50 | 22.7 k · 620 µs | **36.7 k · 366 µs** (+61%, 5/5) |
+| `text/c=1` runs/s | 24.7 k | **28.2 k** (+15%, 5/5) |
+| `text/c=64` runs/s · p50 | 19.6 k · 2.77 ms | **31.8 k · 1.57 ms** (+63%, 5/5) |
+
+| `jobs/many-running` `start_us` | before | after |
+|---|---:|---:|
+| n=0 | 55.9 µs | **45.2 µs** |
+| n=1 000 | 127.7 µs | **33.1 µs** (−74%) |
+| n=5 000 | 450.9 µs | **26.1 µs** (−94%, 5/5 at −93.9 … −94.3%) |
+
+**Read the entry counts before the times.** `roster_entries_per_start`
+is **1 → 64 → 317** — the SAME counts the reminder shard had, because this
+is a one-host bench: every parked job is on the probe's own host, so its
+roster sub-shard holds exactly what the cluster shard held. Bytes halved
+(89 → 46, 5 754 → 3 002, 28 777 → 15 146 B — an entry is `"id": since`
+rather than `{ name: { nextDue, period } }`), and the time still fell
+17×, so the bytes were never the cost. What went: the shard LOAD before
+every write, the two `JSON.stringify` passes of the no-op compare, and
+the reload-and-retry a contended CAS can take — the roster is a cached
+table the host alone writes, so a start is one stringify and one CAS.
+What this rig cannot show is the division by hosts: in an H-host cluster
+each roster holds 1/H of the running jobs, where the shard held all of
+them. The gain at c=16 and c=64 over c=1 is the group commit: every start
+that lands while a roster write is in flight rides the next write, so a
+busy host pays one CAS per BATCH of starts rather than one per start.
+
+Together with #309, a job run went from **12 storage round trips
+(6 / 5 / 1)** on 2026-09-01 morning to **5 (1 / 4 / 0)** by the afternoon,
+and the term that grew with the number of running jobs in the CLUSTER now
+grows with the number on one host, from memory, uncontended. What remains
+per run is the state load, two state CAS and two roster CAS — the roster
+pair is the next thing to fold, if it ever matters (a `{ status:
+'running' }` marker in the state CAS itself would do it, at the cost of a
+scan on adoption), and the per-host roster's own O(n/16) write is the
+one after that (a per-host bloom or an append log would make it O(1)).
+
+Also: `jobs/lifecycle` `gc/collections` and `gc/pause_ms` read higher on
+the head side (99 → 126, 1.04 → 1.28 s). Those scenarios are
+duration-bounded, so ~1.4× the throughput is ~1.4× the runs and ~1.4× the
+allocations in the same 400 ms — the same reading the 2026-08-06 section
+gave the `state/dirty-size` counts.
