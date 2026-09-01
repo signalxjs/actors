@@ -356,14 +356,21 @@ const manyRunning: Scenario = {
                 await settleGc();
                 const timings: number[] = [];
                 for (let i = 0; i < RUNNING_PROBES; i++) {
+                    const probe: ActorRef = { type: BenchParkedJob.type, key: `probe-${i}` };
                     const t0 = performance.now();
-                    await fixture.host.dispatch(
-                        { type: BenchParkedJob.type, key: `probe-${i}` },
-                        'start',
-                        [null],
-                        benchCall()
-                    );
+                    await fixture.host.dispatch(probe, 'start', [null], benchCall());
                     timings.push(performance.now() - t0);
+                    // Every probe but the last is cancelled again, outside
+                    // the timed section, so each start sees exactly `n`
+                    // running jobs rather than `n` plus its predecessors.
+                    // The cancel's ledger and shard clears run detached
+                    // after the method returns; one macrotask drains them
+                    // on memory storage (see `jobs/lifecycle`). The last
+                    // probe stays, so `reminderWrite()` below is ITS start.
+                    if (i < RUNNING_PROBES - 1) {
+                        await fixture.host.dispatch(probe, 'cancel', [], benchCall());
+                        await new Promise((resolve) => setImmediate(resolve));
+                    }
                 }
                 // The last probe's shard write, decoded HERE — after the
                 // timed loop, so the instrumentation is not in `start_us`.
