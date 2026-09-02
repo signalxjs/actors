@@ -21,6 +21,25 @@
 
 ### Fixed
 
+- **Timer ticks and task turns now carry the host's `callTimeoutMs`** (#302).
+  A `ctx.timer` tick and a task's `ctx.turn` minted a call context with no
+  `deadline`; `ctx.actor()` relays the deadline verbatim and the dispatcher
+  stamps a default only on an EMPTY chain, so every call made from such a
+  turn — cross-host ones included — was unbounded end to end. On the
+  workflow rig that was the wedge nothing could break: a turn awaiting a
+  cross-host call holds one pooled connection until the peer answers, the
+  peer's turns were awaiting calls back through the same pool, and because
+  the tick-originated legs had no deadline none of them ever timed out
+  (three hosts idle, 50 000 turns queued, `FLUSHALL` + restart the only way
+  out). Both contexts now carry `Date.now() + callTimeoutMs` the way an
+  external call does, so a call from a tick or a task turn to a peer whose
+  turn never answers rejects with `ActorCallTimeoutError`
+  (`kind: 'call-timeout'`) at the deadline instead of hanging — the
+  RECEIVING host races the remaining budget and answers `call-timeout`, so
+  this covers a request that reaches the peer, not a socket that never
+  delivers it. `callTimeoutMs: 0` still means no deadline, exactly as
+  before.
+
 - **The `$live` endpoint's watch establishment now has a deadline** (#192).
   The socket session has armed the app posture's `timeoutMs` on watch
   establishment since #180 — pipeline + authorization + dispatch + the FIRST
