@@ -2,7 +2,7 @@
     "name": "counter-example",
     "private": true,
     "type": "module",
-    "description": "The actor runtime with no framework at all - plain DOM, a 3-host cluster demo and a durable job, both with no infrastructure to install",
+    "description": "The actor runtime with no framework at all - plain DOM, a 3-host cluster demo, a durable job, topics and a worker pool, all with no infrastructure to install",
     "scripts": {
         "dev": "vite",
         "build": "vite build",
@@ -11,7 +11,9 @@
         "cluster": "node cluster-demo.mjs",
         "cluster:serve": "node cluster-demo.mjs --serve",
         "job": "node job-demo.mjs",
-        "runtime-demo": "node runtime-demo.mjs"
+        "runtime-demo": "node runtime-demo.mjs",
+        "topics": "node topics-demo.mjs",
+        "worker": "node worker-demo.mjs"
     },
     "dependencies": {
         "@sigx/actors": "workspace:*",

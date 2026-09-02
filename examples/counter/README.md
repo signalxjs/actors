@@ -245,14 +245,129 @@ cadences), and delivery is coarse — "at or after", at-most-once per tick.
 The demo drops `reminderTickMs` from its 30s default to 250ms so you are not
 watching paint dry.
 
+## Topics, with no framework in the way
+
+```sh
+pnpm --filter counter-example topics
+```
+
+`ctx.publish` and `subscriptions:` appear in `examples/chat` under a sigx
+app, which leaves the wrong impression. Nothing about them needs the app:
+one host, two actors, no broker and nothing stored.
+
+The topic is declared **once** and imported by both sides
+(`src/gate.actor.ts`):
+
+```ts
+export const gatePassed = (gate: string) => topic<{ count: number }>('gate-passed', gate);
+```
+
+The publisher awaits the publish and gets a **report**, not a throw — a
+subscriber that fails lands in `failures`, and the publishing turn never
+sees it as an error:
+
+```
+=== 1. A turn publishes — the report says who heard it ===
+north.pass() → { count: 1, subscribers: 1, delivered: 1, failures: [] }
+```
+
+The subscriber (`src/tally.actor.ts`) maps every gate's key to one
+instance, and the demo never calls it — its state exists because the
+publish **activated** it, exactly as a reminder delivery would:
+
+```
+=== 2. Nothing ever called the subscriber — the publish activated it ===
+activations: { Gate: 2, Tally: 1 }
+Tally "all" → {
+  deliveries: 3,
+  byGate: { north: 2, south: 1 },
+  lastFrom: 'Gate/south'
+}
+```
+
+`lastFrom` is `event.publisher`, the actor whose turn published. Plain
+server code — a script, a serverFn, a cron — rides the same fan-out through
+`host.publish()`, and the handler can see that there was no publishing turn:
+
+```
+=== 3. Publishing from outside any actor ===
+host.publish() → { subscribers: 1, delivered: 1, failures: [] }
+Tally "all" → deliveries=4 lastFrom=outside any actor
+```
+
+The lesson worth copying is what is *not* there: no `subscribe()` call, no
+registration, no topic record in storage. **The subscriber set is a pure
+function of the deploy** — the types the host was started with. The same
+`Gate` on a host started without `Tally` publishes into silence, and that
+is a report, not a failure:
+
+```
+=== 4. No subscriber in the deploy, no delivery — and no error ===
+north.pass() on a host without Tally → { count: 1, subscribers: 0, delivered: 0, failures: [] }
+```
+
+Delivery is best-effort, at-most-once, bounded by the call deadline. For the
+attribution half — `ctx.principal` surviving the publish hop — see the
+activity feed in `examples/chat`.
+
+## A worker pool beside the actor it differs from
+
+```sh
+pnpm --filter counter-example worker
+```
+
+`defineWorker` (`src/resolver.worker.ts`) sits next to a `defineActor` twin
+with the **same** method, so the only variable is what happens when two
+calls reach the same key at once. Each call reports how many others were
+already inside when it entered:
+
+```
+=== 1. defineActor — one activation per key, one turn at a time ===
+  SerialResolver "k": members=[1,1] overlapping=[0,0]  wall=603ms for 2×300ms
+
+=== 2. defineWorker — a pool per key; the second call gets a second member ===
+  Resolver "k": members=[1,2] overlapping=[0,1]  wall=302ms for 2×300ms
+```
+
+That is the whole contract. An actor has state to protect, so its key is
+one activation taking one turn at a time. A worker has none, so its key is
+a **pool** of interchangeable activations: the second concurrent call gets
+a second member, and everything identity-bound — `state`, `save`,
+`reminders`, `tasks`, `subscriptions` — is structurally absent from its
+options. The pool grows only under pressure, and stops at `maxLocal`; past
+the cap, calls queue exactly as they would on an actor:
+
+```
+=== 3. Growth is pressure-driven, and capped at maxLocal ===
+activations so far: { SerialResolver: 1, Resolver: 2 }
+8 concurrent calls on "k" → 4 members, peak 4 in flight
+activations now: { SerialResolver: 1, Resolver: 4 }
+
+=== 4. No pressure, no growth — sequential calls stay on one member ===
+3 sequential calls on "quiet" → members=[5,5,5]
+```
+
+**A pool is not threads.** A host is one Node process with one JS thread,
+so members interleave at `await` points on the same loop. The pool buys
+concurrency for work that *waits* — the simulated upstream here, a real
+one, a model API — and nothing at all for work that *computes*: measured on
+a 1-core host, a pool and a single activation both did 289 ops/s. For CPU
+work, pair it with `worker_threads` as `perf/app/src/digest-pool.ts` does;
+the pool is then what lets several turns be in flight on several cores.
+
+**`methods:` runs once per pool member.** Anything built in that factory —
+a client, a connection, a thread pool — is built per activation, and a
+pool multiplies that by `maxLocal`. Share it at module scope, as the demo's
+in-flight counter is, or it would only ever count itself.
+
 ## Things that will bite you
 
 **Run `pnpm build` first.** The example resolves `@sigx/actors` from the
 built `dist/` through the workspace link, so a fresh checkout that skips it
 fails at import.
 
-**Node >= 22.18.** Both demos import `.ts` actor modules directly, relying on
-native type stripping.
+**Node >= 22.18.** Every scripted demo imports `.ts` actor modules directly,
+relying on native type stripping.
 
 **Ports 5391-5393 and 5394-5396** for the cluster and job demos. Override
 with `CLUSTER_DEMO_PORTS` / `JOB_DEMO_PORTS`.
@@ -276,10 +391,15 @@ state changing is not a source edit anyway.
 | `src/crunch.job.ts` | `defineJob` — progress, checkpoint, resume |
 | `src/importer.actor.ts` | `ctx.tasks` — detached work, mutating through `ctx.turn` |
 | `src/reminder.actor.ts` | `ctx.reminders` — durable, and re-activates the actor |
+| `src/gate.actor.ts` | `ctx.publish` — the publishing side, and the topic declared once for both |
+| `src/tally.actor.ts` | `subscriptions:` — the aggregate subscriber, activated by the delivery |
+| `src/resolver.worker.ts` | `defineWorker` beside a `defineActor` twin — one method, two concurrency contracts |
 | `src/static.ts` | resolve a request target inside `dist/`, or refuse |
 | `server.mjs` | production entry: the app handler, then static, then a graceful drain |
 | `cluster-demo.mjs` | three hosts over real sockets — spread, single activation, cross-host stream, failover, ops |
 | `job-demo.mjs` | the same three hosts, one job, one deliberate crash |
 | `runtime-demo.mjs` | one host: a detached task, then a reminder that survives a restart |
+| `topics-demo.mjs` | one host: publish from a turn, from outside any actor, and to nobody |
+| `worker-demo.mjs` | one host: two calls on one key overlap for the pool, serialize for the actor; the cap holds |
 | `vite.config.ts` | `sigxActors({ app })` — the dev host and the client swap |
 | `index.html` / `package.json` / `tsconfig.json` | the rest |

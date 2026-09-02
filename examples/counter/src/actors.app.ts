@@ -16,5 +16,5 @@ export const app = defineActorApp({
     storage: fileStorage({ dir: '.actors' })
 });
 
-/** Bound to this app's plugin set — actor modules import this. */
-export const { defineActor } = app;
+/** Bound to this app's plugin set — actor modules import these. */
+export const { defineActor, defineWorker } = app;
