@@ -335,12 +335,11 @@ export function subscribeAll(
         //
         // The timer aborts a PER-SUBSCRIPTION controller, never the shared
         // request signal: the starved seed is this subscription's failure,
-        // and its siblings on the same connection keep streaming. (The
-        // isolation is per CONNECTION, not per subscriber: the shared watch
-        // loop invokes under the CREATING subscriber's context, abortSignal
-        // included — the known quirk at `#createWatchEntry` in
-        // `host/activation.ts` — so a later connection joining the entry a
-        // timed-out creator opened can observe its aborted signal.)
+        // and its siblings on the same connection keep streaming. The signal
+        // detaches THIS subscriber from the fan-out; the shared watch loop
+        // itself runs under its own signal (`#createWatchEntry` in
+        // `host/activation.ts`, #137), so a creator timing out here never
+        // fails a re-read another connection is still waiting on.
         let deadline: ReturnType<typeof setTimeout> | undefined;
         let timedOut: ServerFnError | null = null;
         const disarmDeadline = (): void => {
@@ -387,8 +386,12 @@ export function subscribeAll(
             const traceparent = rq.request.headers.get('traceparent');
             // Same edge rule as the unary endpoint: the bag comes only from
             // what this request stamped, never from a header — and identity
-            // rides its own slot. (`rqSub` shares the connection's `locals`,
-            // so a policy's stamp lands where it always did.)
+            // rides its own slot. It is lifted here as on every entry point
+            // (`rqSub` shares the connection's `locals`, so a policy's stamp
+            // lands where it always did), but the watched METHOD never sees
+            // it: a watch turn is shared, and `ctx.bag` inside one is the
+            // empty bag whatever the edge stamped (#137) — the stamp is a
+            // unary-call channel.
             const bag = takeCallBag(rqSub.locals);
             const principal = await encodePrincipal(rqSub);
             const iterable = host.dispatchWatch!(

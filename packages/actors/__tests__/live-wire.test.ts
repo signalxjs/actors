@@ -433,19 +433,22 @@ describe('$live over the wire', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The context bag on the $live edge (#246): the per-subscription guard runs
-// against the request, and its stamp reaches the watched method's ctx.bag.
+// The context bag on the $live edge: the per-subscription guard still runs
+// against the request and may stamp it (#246), but a watch read is a SHARED
+// turn and never sees a bag — not even its own edge stamp (#137). One
+// subscriber or many, `$live` or in-process, `ctx.bag` inside the watched
+// method is the empty bag; the stamp reaches unary calls only.
 
 import { stampCallBag } from '@sigx/actors';
 
 describe('$live: context bag edge capture', () => {
-    it('a guard stamp is visible to the watched method', async () => {
+    it('a guard stamp never reaches the watched method — a watch turn has no bag (#137)', async () => {
+        let stamped = 0;
         const Stamped = defineActor({
             type: 'LiveStamped',
-            // The bag is still the app-DATA channel; only identity moved
-            // out of it. Stamping from a policy keeps working.
             authorize: [
                 (_p, rq) => {
+                    stamped++;
                     stampCallBag(rq, { user: 'ada' });
                     return true;
                 }
@@ -464,7 +467,10 @@ describe('$live: context bag edge capture', () => {
         const response = await subscribe(s, [{ t: 'LiveStamped', k: 'a', m: 'bagOf' }]);
         expect(response.status).toBe(200);
         const frames = await readFrames(response, 1);
-        expect(frames).toEqual([{ i: 0, v: { user: 'ada' } }]);
+        // The guard ran for this subscription (authorization is per
+        // subscriber); the read it admitted ran without its stamp.
+        expect(stamped).toBe(1);
+        expect(frames).toEqual([{ i: 0, v: {} }]);
     });
 });
 

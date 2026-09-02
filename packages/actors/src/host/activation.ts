@@ -952,10 +952,21 @@ export class Activation {
         qualified: boolean
     ): WatchEntry {
         const handles = new Set<WatchHandle>();
-        // The loop invokes under the CREATING subscriber's context — its
-        // bag and abortSignal included, a known quirk tracked separately
-        // from #121. The marker is how the `ctx.principal` getter reports
-        // that this read consulted identity.
+        // The loop invokes under the CREATING subscriber's context (chain,
+        // callId, traceparent, principal) — but NOT its per-request fields
+        // (#137). `bag` is the empty bag: the creator's bag is scratch
+        // stamped for ONE request, and a read serving many subscribers must
+        // not compute — or relay over a `ctx.actor()` hop — a value shaped
+        // by it. `abortSignal` is the WATCH's own, aborted when the last
+        // subscriber leaves: the creator's signal would take every hop the
+        // shared read has in flight down with the creator, failing the loop
+        // for everyone still subscribed. `deadline` is minted per READ from
+        // the host's default (as `selfStartedCall` does for a task or tick):
+        // it is an absolute stamp relayed verbatim by `ctx.actor()`, so the
+        // creator's would lapse with the creator's request and fail every
+        // later hop the shared read makes, for the life of the entry.
+        // The marker is how the `ctx.principal` getter reports that this
+        // read consulted identity.
         // Declared principal-independent (#138)? Then the getter must FAIL
         // the read rather than record discovery — by the time it fires, a
         // relay may already have merged distinct identities onto one
@@ -964,10 +975,21 @@ export class Activation {
         const declared = declaresPrincipalIndependent(this.def.__sigxActor, method)
             ? { method, violated: null as Error | null }
             : undefined;
+        const teardown = new AbortController();
+        const { deadline: _creatorDeadline, ...chain } = call;
         const invokeCall: WatchInvokeCall = {
-            ...call,
+            ...chain,
+            bag: EMPTY_CALL_BAG,
+            abortSignal: teardown.signal,
             [kWatchBase]: base,
             ...(declared ? { [kWatchDeclared]: declared } : {})
+        };
+        // Per-read context: `invokeCall` plus this read's deadline. Spread
+        // only when there is one to add — a host without `callTimeoutMs`
+        // shares the one object, which the single-watch hot path cares about.
+        const readCall = (): WatchInvokeCall => {
+            const deadline = this.#host.defaultDeadline();
+            return deadline === undefined ? invokeCall : { ...invokeCall, deadline };
         };
         const principal = call.principal;
         // Once true, every subscriber on this entry presents `principal`:
@@ -994,10 +1016,11 @@ export class Activation {
                 invoke: async () => {
                     const seed = !seeded;
                     seeded = true;
+                    const turnCall = readCall();
                     try {
                         let value: unknown;
                         if (interleave) {
-                            value = await this.enqueue(method, args, invokeCall);
+                            value = await this.enqueue(method, args, turnCall);
                         } else if (this.turns.depth === 0) {
                             // Uncontended fast path: zero depth means no turn
                             // is queued OR running — so no drain turn either,
@@ -1007,7 +1030,7 @@ export class Activation {
                             // nothing to be fair TO) and skips the pump's
                             // per-job bookkeeping — the single-watch hot path
                             // (`streams/live-watch`) measurably cares.
-                            value = await this.enqueue(method, args, invokeCall);
+                            value = await this.enqueue(method, args, turnCall);
                         } else {
                             this.#watchPump ??= createWatchReadPump({
                                 enqueueTurn: (body) => this.turns.run(body),
@@ -1015,7 +1038,7 @@ export class Activation {
                             });
                             const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
                             value = await this.#watchPump.schedule(
-                                () => this.#turn(method, args, invokeCall, enqueuedAt),
+                                () => this.#turn(method, args, turnCall, enqueuedAt),
                                 seed
                             );
                         }
@@ -1084,7 +1107,12 @@ export class Activation {
                 scheduler: this.#host.scheduler,
                 throttleMs
             },
-            () => void this.#watches.delete(key)
+            () => {
+                this.#watches.delete(key);
+                // The shared loop is gone; release anything still awaiting
+                // on its behalf (a hop parked on a peer, say).
+                teardown.abort();
+            }
         );
         return { shared, handles };
     }
