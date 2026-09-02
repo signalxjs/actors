@@ -25,6 +25,7 @@ import type {
     HostReport
 } from '@sigx/actors/cluster';
 import type { HealthReport } from '@sigx/actors/host';
+import type { SocketStatsSnapshot } from '@sigx/actors/server';
 
 /** One host, however we reached it. */
 export interface HostView {
@@ -70,6 +71,17 @@ export interface HostView {
     health: HealthReport | null;
     /** THIS host's live actors — only present under a detail poll. */
     activations: readonly ActivationInfo[] | null;
+    /**
+     * THIS host's socket sessions (#166), when it published them — the
+     * `sockets` ops section an app registers from `socketStats()`.
+     *
+     * Null is "this host said nothing", the same rule as `metrics`: a host
+     * with no socket mount and one with no open sessions are different
+     * findings. Today only the POLLED host can say anything — the cluster
+     * fan-out carries no socket digest yet — so a peer's is always null,
+     * and a renderer must not read that as "no sockets there".
+     */
+    sockets: SocketStatsSnapshot | null;
 }
 
 export interface ClusterView {
@@ -169,6 +181,26 @@ export function hostViewFromReport(report: HostReport): HostView {
         meta: report.meta ?? null,
         metrics: report.metrics ?? null,
         health: report.health ?? null,
-        activations: report.activations ?? null
+        activations: report.activations ?? null,
+        // The wire shape has no socket digest yet (#166 PR 2 — the
+        // aggregation reads only `'metrics'`); the polled host's own is
+        // attached afterwards by `withSockets`.
+        sockets: null
     };
+}
+
+/**
+ * Attach the polled host's socket section to ITS row in the host list.
+ *
+ * The ops body carries `ops.sockets` for the host that answered, and the
+ * cluster report says which host that was (`from`). Every other row keeps
+ * null. Shared by both sources so the rule — the section belongs to exactly
+ * one host, never summed, never guessed onto another — is made once.
+ */
+export function withSockets(
+    hosts: readonly HostView[],
+    hostId: string,
+    sockets: SocketStatsSnapshot | null
+): HostView[] {
+    return hosts.map((host) => (host.hostId === hostId && sockets ? { ...host, sockets } : host));
 }

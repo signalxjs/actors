@@ -7,8 +7,10 @@
  */
 import type { ActivationInfo, ActorMetricsSnapshot, HealthStatus } from '@sigx/actors/host';
 import type { ClusterStatsReport, HostReport } from '@sigx/actors/cluster';
+import type { SocketStatsSnapshot } from '@sigx/actors/server';
 import {
     hostViewFromReport,
+    withSockets,
     type ClusterView,
     type MonitorSnapshot,
     type MonitorSource,
@@ -139,9 +141,12 @@ export function httpSource(options: HttpSourceOptions): MonitorSource {
             const cluster = await get<ClusterStatsReport>(`${base}/cluster${query}`, signal);
 
             const local = body.ops?.cluster as HostReport | undefined;
+            // The polled host's own socket sessions (#166) — attached to
+            // its row and no other, because the fan-out carries none.
+            const sockets = (body.ops?.sockets as SocketStatsSnapshot | undefined) ?? null;
             const hosts: HostView[] = cluster
-                ? cluster.hosts.map(hostViewFromReport)
-                : [selfView(body, local, origin)];
+                ? withSockets(cluster.hosts.map(hostViewFromReport), cluster.from, sockets)
+                : [selfView(body, local, origin, sockets)];
 
             return {
                 at: body.at,
@@ -161,8 +166,13 @@ export function httpSource(options: HttpSourceOptions): MonitorSource {
 }
 
 /** The polled host alone, for a single-node deployment. */
-function selfView(body: OpsBody, local: HostReport | undefined, origin: string): HostView {
-    if (local) return hostViewFromReport(local);
+function selfView(
+    body: OpsBody,
+    local: HostReport | undefined,
+    origin: string,
+    sockets: SocketStatsSnapshot | null
+): HostView {
+    if (local) return { ...hostViewFromReport(local), sockets };
     return {
         // A host with no cluster() has no host id at all — it is not
         // anonymous by accident, it genuinely has no membership identity.
@@ -178,7 +188,8 @@ function selfView(body: OpsBody, local: HostReport | undefined, origin: string):
         meta: null,
         metrics: null,
         health: body.health ? { ready: body.health.ready, fatal: body.health.fatal, checks: body.health.checks } : null,
-        activations: body.activations ?? null
+        activations: body.activations ?? null,
+        sockets
     };
 }
 

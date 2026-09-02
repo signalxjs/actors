@@ -56,6 +56,8 @@ export const host = (over: Partial<HostView> = {}): HostView => ({
     },
     health: { ready: true, fatal: false, checks: { cluster: { ready: true, detail: 'active' } } },
     activations: null,
+    // A local run has no socket mount; the socket tests set one explicitly.
+    sockets: null,
     ...over
 });
 

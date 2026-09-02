@@ -20,6 +20,7 @@
  */
 export {
     hostViewFromReport,
+    withSockets,
     type ClusterView,
     type HostView,
     type MonitorSnapshot,

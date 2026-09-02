@@ -60,6 +60,25 @@ export function gauge(value: number | null): string {
     return value === null ? '—' : count(value);
 }
 
+/**
+ * Byte counts: 950 B, 12.4 kB, 3.1 MB — or an em dash for a gap.
+ *
+ * Decimal units, because a socket buffer is compared against a bandwidth
+ * figure, not against a page size. `null` is "nobody could tell us": a
+ * session constructed without a `bufferedBytes` callback contributes
+ * nothing to the host's total (#208), and rendering that as `0 B` would
+ * claim the host is not buffering when the truth is that it cannot say.
+ */
+export function bytes(value: number | null): string {
+    if (value === null || !Number.isFinite(value)) return '—';
+    const n = Math.abs(value);
+    const sign = value < 0 ? '-' : '';
+    if (n < 1000) return `${sign}${Math.round(n)} B`;
+    if (n < 1_000_000) return `${sign}${trim(n / 1000)} kB`;
+    if (n < 1_000_000_000) return `${sign}${trim(n / 1_000_000)} MB`;
+    return `${sign}${trim(n / 1_000_000_000)} GB`;
+}
+
 /** A ratio as a whole percent; `null` when the denominator is 0. */
 export function percent(numerator: number, denominator: number): string {
     if (denominator <= 0) return '—';
