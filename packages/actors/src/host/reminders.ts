@@ -260,8 +260,16 @@ export class ReminderService implements ActorReminders {
         const context = this.#require();
         const failed: Due[] = [];
         await Promise.allSettled(
-            due.map((entry) =>
-                context.deliver(entry.ref, entry.name).catch((error) => {
+            due.map(async (entry) => {
+                try {
+                    // Awaited INSIDE the try: the context is pluggable, and a
+                    // custom `deliver` that throws before it returns a
+                    // promise must land here exactly like a rejection.
+                    await context.deliver(entry.ref, entry.name);
+                } catch (error) {
+                    // Collected first — the re-arm never depends on the
+                    // reporter behaving.
+                    failed.push(entry);
                     if (__DEV__) {
                         console.error(
                             `[sigx actors] reminder "${entry.name}" on ` +
@@ -269,10 +277,18 @@ export class ReminderService implements ActorReminders {
                             error
                         );
                     }
-                    context.undelivered?.(entry.ref, entry.name, error);
-                    failed.push(entry);
-                })
-            )
+                    try {
+                        context.undelivered?.(entry.ref, entry.name, error);
+                    } catch (reportError) {
+                        if (__DEV__) {
+                            console.error(
+                                '[sigx actors] ActorRemindersContext.undelivered threw:',
+                                reportError
+                            );
+                        }
+                    }
+                }
+            })
         );
         if (failed.length > 0) await this.#rearm(shard, failed);
     }

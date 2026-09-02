@@ -428,6 +428,55 @@ describe('a failed dispatch is retried, not lost (#306)', () => {
         }
     });
 
+    it('a deliver() that throws synchronously is retried like a rejection, even if undelivered throws', async () => {
+        // The context is pluggable: a custom `ActorRemindersContext.deliver`
+        // need not be an async function, so it can throw BEFORE it returns a
+        // promise. That throw must land in the same place as a rejection —
+        // counted and re-armed — and a misbehaving `undelivered` reporter
+        // must not cost the re-arm either.
+        const storage = memoryStorage();
+        const scheduler = manualScheduler();
+        const attempts: string[] = [];
+        let reported = 0;
+        const service = new ReminderService();
+        service.bind({
+            storage,
+            scheduler,
+            tickMs: TICK,
+            ownsShard: () => true,
+            deliver: (_ref, name) => {
+                attempts.push(name);
+                throw new Error('sync throw'); // not a rejection: thrown before any promise
+            },
+            undelivered: () => {
+                reported++;
+                throw new Error('reporter broke');
+            }
+        });
+        const api = service.apiFor(ref);
+        await api.set('wake', { due: 0 });
+        service.start();
+        try {
+            const before = Date.now();
+            scheduler.advance(TICK); // tick 1: deliver throws synchronously
+            await vi.waitFor(() => expect(attempts).toEqual(['wake']));
+            await vi.waitFor(async () => {
+                const entry = await entryOf(storage, 'wake');
+                expect(entry).toBeDefined();
+                expect(entry!.nextDue).toBeGreaterThanOrEqual(before + TICK);
+            });
+            expect(reported).toBe(1);
+
+            await sleep(TICK * 2);
+            scheduler.advance(TICK); // tick 2: attempted again, still one per tick
+            await vi.waitFor(() => expect(attempts).toEqual(['wake', 'wake']));
+            expect(reported).toBe(2);
+            await expect(api.list()).resolves.toEqual(['wake']);
+        } finally {
+            service.stop();
+        }
+    });
+
     /** A service whose every `deliver()` hangs until `reject()` fails them all. */
     function hanging(storage: ActorStorage) {
         let reject!: (error: Error) => void;
