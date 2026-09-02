@@ -14,40 +14,40 @@ pnpm --filter providers-example surreal    # skips unless SURREAL_URL is set
 ```
 
 ```
-host s.twpios35 listening on :5601  (tcp=tcp://127.0.0.1:56185)
+host s.uv6pnexb listening on :5591  (tcp=tcp://127.0.0.1:57656)
 [sigx actors] a second host was started while one is already running; the new one wins. Stop the old host first unless this is a dev-server restart.
-host s.12d22bep listening on :5602  (tcp=tcp://127.0.0.1:56186)
+host s.2epxqo0h listening on :5592  (tcp=tcp://127.0.0.1:57657)
 [sigx actors] a second host was started while one is already running; the new one wins. Stop the old host first unless this is a dev-server restart.
-host s.8u4xqgjq listening on :5603  (tcp=tcp://127.0.0.1:56187)
+host s.fcfu6ryx listening on :5593  (tcp=tcp://127.0.0.1:57658)
 
 === 1. Placement spread — 9 counters created via host 0 alone ===
-activations per host: s.twpios35=4  s.12d22bep=2  s.8u4xqgjq=3
+activations per host: s.uv6pnexb=3  s.2epxqo0h=4  s.fcfu6ryx=2
 (host 0 took the calls; the placement policy spread the actors)
 
 === 2. Single activation — the same key hammered through ALL hosts ===
 6 concurrent increments via 3 hosts → [ 1, 2, 3, 4, 5, 6 ]
-'cart-mtk7rr70' has exactly one owner: s.twpios35 (:5601)
+'cart-mtk87zvc' has exactly one owner: s.uv6pnexb (:5591)
 
 === 3. Cross-host calls — through a host that does NOT own the actor ===
-increment(10), increment(100) via s.12d22bep → count=116
-(2 remote dispatches left s.12d22bep; the turns ran on s.twpios35)
+increment(10), increment(100) via s.2epxqo0h → count=116
+(2 remote dispatches left s.2epxqo0h; the turns ran on s.uv6pnexb)
 
 === 4. Socket count — 32 concurrent calls into the owner from ONE peer ===
-owner s.twpios35's HTTP listener holds 0 connection(s) after the burst
-(TCP: the calls rode s.12d22bep's single connection to tcp://127.0.0.1:56185; fallbacks to http: 0)
+owner s.uv6pnexb's HTTP listener holds 0 connection(s) after the burst
+(TCP: the calls rode s.2epxqo0h's single connection to tcp://127.0.0.1:57656; fallbacks to http: 0)
 
-=== 5. Owner s.twpios35 leaves — a survivor re-loads from memoryStorage() ===
-survivors' view: s.12d22bep sees 2 host(s), s.8u4xqgjq sees 2 host(s)
-survivor s.12d22bep serves 'cart-mtk7rr70' → count=148
-directory re-claimed by: s.8u4xqgjq
+=== 5. Owner s.uv6pnexb leaves — a survivor re-loads from memoryStorage() ===
+survivors' view: s.2epxqo0h sees 2 host(s), s.fcfu6ryx sees 2 host(s)
+survivor s.2epxqo0h serves 'cart-mtk87zvc' → count=148
+directory re-claimed by: s.fcfu6ryx
 (the activation died with its host; the state came back from memoryStorage())
 
 === 6. Ops surface — clusterStats() from a survivor ===
 view v5: 2 members, 2 active
   host          status  activations  out  in  fallbacks  transports
-  s.12d22bep  active            2   37   4          0  tcp,http
-  s.8u4xqgjq  active            4    3   4          0  tcp,http
-totals: 6 activations { Counter: 6 }
+  s.2epxqo0h  active            4   38   5          0  tcp,http
+  s.fcfu6ryx  active            3    3   5          0  tcp,http
+totals: 7 activations { Counter: 7 }
 partial: false
 
 TCP DEMO COMPLETE — the same cluster over one TCP connection per peer.
@@ -58,8 +58,10 @@ process. It is the demo shape, not a deployment one: `actor()` resolves the
 process's host through a global, and the demos never use that path — every
 call goes through `member.host.actor(...)` explicitly.
 
-Steps 1–3, the failover and the report are `examples/counter`'s cluster demo
-walk, lifted into `src/cluster.ts` with its three seams as options:
+Steps 1–3, the failover and the report are adapted from `examples/counter`'s
+cluster demo walk (step 3 there is a cross-host `watch()` stream, and its
+failover is a crash rather than a graceful leave — see Non-goals), lifted
+into `src/cluster.ts` with its three seams as options:
 
 | seam | default | swapped for |
 |---|---|---|
@@ -118,7 +120,7 @@ rode the one connection the peer already had open. Run the same script with
 
 ```
 === 4. Socket count — 32 concurrent calls into the owner from ONE peer ===
-owner s.otluz4dq's HTTP listener holds 32 connection(s) after the burst
+owner s.w2phapms's HTTP listener holds 32 connection(s) after the burst
 (HTTP: one pooled connection per concurrent call, kept alive for the next one)
 ```
 
@@ -137,23 +139,23 @@ agree to the number:
 ```
 === 4. Prometheus — one scrape per host ===
 GET /_sigx/metrics without a bearer → 401
-s.31anbenm (:5621) → 200 text/plain; version=0.0.4; charset=utf-8: 139 samples; calls_total{type="Counter"}=13 method_calls_total{method="increment"}=13 call_duration_seconds_count=13 activations{type="Counter"}=2
+s.payolfgm (:5591) → 200 text/plain; version=0.0.4; charset=utf-8: 139 samples; calls_total{type="Counter"}=11 method_calls_total{method="increment"}=11 call_duration_seconds_count=11 activations{type="Counter"}=5
   the exposition, excerpted:
-    sigx_actors_calls_total{type="Counter"} 13
+    sigx_actors_calls_total{type="Counter"} 11
     # TYPE sigx_actors_call_duration_seconds histogram
-    sigx_actors_call_duration_seconds_bucket{le="0.001024"} 8
-    sigx_actors_call_duration_seconds_bucket{le="+Inf"} 13
-    sigx_actors_call_duration_seconds_sum 0.029907
-    sigx_actors_call_duration_seconds_count 13
-  curl -H 'Authorization: Bearer demo-ops-secret' http://127.0.0.1:5621/_sigx/metrics
-s.c3iqq70j (:5622) → 200 text/plain; version=0.0.4; charset=utf-8: 139 samples; calls_total{type="Counter"}=2 method_calls_total{method="increment"}=2 call_duration_seconds_count=2 activations{type="Counter"}=2
-s.clmy73c4 (:5623) → 200 text/plain; version=0.0.4; charset=utf-8: 139 samples; calls_total{type="Counter"}=2 method_calls_total{method="increment"}=2 call_duration_seconds_count=2 activations{type="Counter"}=6
+    sigx_actors_call_duration_seconds_bucket{le="0.001024"} 6
+    sigx_actors_call_duration_seconds_bucket{le="+Inf"} 11
+    sigx_actors_call_duration_seconds_sum 0.023508
+    sigx_actors_call_duration_seconds_count 11
+  curl -H 'Authorization: Bearer demo-ops-secret' http://127.0.0.1:5591/_sigx/metrics
+s.lyde53g5 (:5592) → 200 text/plain; version=0.0.4; charset=utf-8: 139 samples; calls_total{type="Counter"}=4 method_calls_total{method="increment"}=4 call_duration_seconds_count=4 activations{type="Counter"}=3
+s.20bszqhj (:5593) → 200 text/plain; version=0.0.4; charset=utf-8: 139 samples; calls_total{type="Counter"}=2 method_calls_total{method="increment"}=2 call_duration_seconds_count=2 activations{type="Counter"}=2
 sum over hosts: 17 calls — a cross-host call is metered where it ENTERED and where it RAN, so this is the out+in rule of clusterStats, not double counting
 
 === 5. OpenTelemetry — one collection per host, same digest ===
-s.31anbenm: sigx.actors.calls{type="Counter"}=13  (Prometheus said 13; scope "@sigx/actors-otel", 22 instruments)
-s.c3iqq70j: sigx.actors.calls{type="Counter"}=2  (Prometheus said 2; scope "@sigx/actors-otel", 22 instruments)
-s.clmy73c4: sigx.actors.calls{type="Counter"}=2  (Prometheus said 2; scope "@sigx/actors-otel", 22 instruments)
+s.payolfgm: sigx.actors.calls{type="Counter"}=11  (Prometheus said 11; scope "@sigx/actors-otel", 22 instruments)
+s.lyde53g5: sigx.actors.calls{type="Counter"}=4  (Prometheus said 4; scope "@sigx/actors-otel", 22 instruments)
+s.20bszqhj: sigx.actors.calls{type="Counter"}=2  (Prometheus said 2; scope "@sigx/actors-otel", 22 instruments)
 (distributions stay with Prometheus: the OTel metrics API cannot ingest pre-bucketed histograms)
 ```
 
@@ -215,7 +217,7 @@ and `reconnect: { attempts: -1 }` as the demo does.
 port `0` and read the bound port back.
 
 **A persistent store remembers the last run.** Every key carries a per-run
-suffix (`cart-mtk7rr70`) so Postgres and SurrealDB start each run fresh
+suffix (`cart-mtk87zvc`) so Postgres and SurrealDB start each run fresh
 without a `TRUNCATE`; the `hosts` table still shows earlier runs' rows until
 their TTL lapses.
 
@@ -240,4 +242,4 @@ the per-host `plugins` factory for that reason.
 | `__tests__/gate.test.ts` | the skip message names the variable, the requirement and every how-to line |
 | `__tests__/prometheus.test.ts` | label unescaping, `+Inf`, timestamps, and null for a missing sample |
 | `tsconfig.json` | `paths` to the packages' *source*, so a clean checkout typechecks before it builds |
-| `package.json` | one script per provider; `pg` and `surrealdb` are the only non-workspace runtime deps |
+| `package.json` | one script per provider; `pg`, `surrealdb` and the two `@opentelemetry/*` packages are the only non-workspace deps |

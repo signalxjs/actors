@@ -192,7 +192,10 @@ export async function startCluster(options: DemoClusterOptions): Promise<DemoClu
     const spreadLine = (): string =>
         members.map((m) => `${hostId(m)}=${m.host.stats().activations}`).join('  ');
     const owned = async (name: string): Promise<Member> => {
-        const entry = await members[0]!.providers.directory.lookup(`Counter${SEP}${key(name)}`);
+        // Resolve through a member that is still up: after `failover` the
+        // leaver's providers may be stopped along with its host.
+        const reader = members.find((m) => m.server.listening) ?? members[0]!;
+        const entry = await reader.providers.directory.lookup(`Counter${SEP}${key(name)}`);
         const owner = entry && members.find((m) => hostId(m) === entry.hostId);
         if (!owner) throw new Error(`'${key(name)}' has no owner in the directory`);
         return owner;

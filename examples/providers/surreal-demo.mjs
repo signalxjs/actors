@@ -92,11 +92,13 @@ const [cart] = await db.query('SELECT * FROM ONLY $id', {
     id: new RecordId('sigx_state', ['Counter', demo.key('cart')])
 });
 console.log(`state record for '${demo.key('cart')}':`, cart);
-const [[{ n }]] = await db.query(
-    'SELECT count() AS n FROM sigx_state WHERE string::ends_with(id[1], $run) GROUP ALL',
+// `record::id(id)` is the id part of the record id — here the `[type, key]`
+// array — so `[1]` is the key; `id[1]` would index the record value itself.
+const [counted] = await db.query(
+    'SELECT count() AS n FROM sigx_state WHERE string::ends_with(record::id(id)[1], $run) GROUP ALL',
     { run: `-${demo.run}` }
 );
-console.log(`${n} actor records from this run`);
+console.log(`${counted[0]?.n ?? 0} actor records from this run`);
 const [hosts] = await db.query('SELECT id, x > time::now() AS live FROM sigx_host ORDER BY id');
 console.log(
     `host records: ${hosts.map((r) => `${r.id.id}${r.live ? '' : ' (expired)'}`).join(', ')}`
