@@ -37,7 +37,13 @@ export type RedisClient = Redis;
 export interface RedisClusterOptions {
     /** An existing ioredis client (shared with the app). */
     client?: RedisClient;
-    /** Or a URL — the package constructs its own client. */
+    /**
+     * Or a URL — the package constructs its own client, with
+     * `enableAutoPipelining: true` (#311). Safe here: the membership
+     * subscriber is a `duplicate()` that only ever subscribes, and ioredis
+     * never auto-pipelines subscription commands. Pass `client` instead to
+     * own the options.
+     */
     url?: string;
     /** Key namespace. Default `sigx`. */
     namespace?: string;
@@ -68,7 +74,9 @@ interface Resolved {
 function resolve(options: RedisClusterOptions): Resolved {
     const client =
         options.client ??
-        (options.url !== undefined ? new Redis(options.url) : undefined);
+        (options.url !== undefined
+            ? new Redis(options.url, { enableAutoPipelining: true })
+            : undefined);
     if (!client) {
         throw new Error('[sigx actors-redis] pass either `client` (ioredis) or `url`.');
     }
