@@ -48,6 +48,7 @@ import {
     coverageNote,
     hostTone,
     nodeCount,
+    nodeLabels,
     polledLabel,
     scopeOf,
     type Alert,
@@ -329,7 +330,11 @@ function percentiles(
     );
 }
 
-const hostColumns: TableColumn<HostView>[] = [
+/**
+ * The host table's columns. A function of the fleet, not a constant,
+ * because the NODE cell is a label derived across every host (below).
+ */
+const hostColumns = (labels: ReadonlyMap<string, string>): TableColumn<HostView>[] => [
     { key: 'id', header: 'HOST', value: (s) => s.hostId, min: 8 },
     { key: 'status', header: 'STATUS', value: (s) => s.status },
     {
@@ -357,12 +362,16 @@ const hostColumns: TableColumn<HostView>[] = [
     {
         // The machine under the pod, from `PlacementOptions.meta.node` —
         // the column that turns `3/3 replicas` into "all three on one
-        // node" (#51). Last, because node names are long and this is the
-        // column that can afford to give up cells: the SAME name repeated
-        // down the column is the finding, and that survives truncation.
+        // node" (#51). Last, because node names are long and `DataTable`
+        // shrinks from the right — which is exactly why the cell is the
+        // monitor's LABEL (`…vmss000001`, the tail that differs) and not
+        // the raw name: real node names differ only in their tail, and two
+        // different nodes truncated to `aks-sigxacto…` would read as one,
+        // the inverse of the finding. The same label repeated down the
+        // column is still the finding; the full name is in the drill-down.
         key: 'node',
         header: 'NODE',
-        value: (s) => s.meta?.node ?? '—'
+        value: (s) => (s.meta?.node ? (labels.get(s.meta.node) ?? s.meta.node) : '—')
     }
 ];
 
@@ -400,7 +409,7 @@ export function HostsScreen(props: { state: DashboardState; cursor?: Model<numbe
         <Col>
             {alerts(props.state, pane)}
             <DataTable
-                columns={hostColumns}
+                columns={hostColumns(nodeLabels(snapshot.hosts))}
                 rows={snapshot.hosts}
                 model={props.cursor}
                 width={pane.width - TABLE_GUTTER}

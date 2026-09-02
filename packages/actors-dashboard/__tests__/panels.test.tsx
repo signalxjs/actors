@@ -554,6 +554,25 @@ describe('the node each host runs on (#51)', () => {
         view.unmount();
     });
 
+    it('keeps two nodes tellable apart in a 28ch cell', () => {
+        // Real node names are long and differ only in their tail (AKS:
+        // `aks-<pool>-<8 digits>-vmss00000N`), and the key cell ellipsises
+        // from the RIGHT — so the raw name would read `aks-sigxactors-…`
+        // in both rows: a spread fleet posing as a packed one. The label
+        // is the monitor's, the same one the terminal shows; the full name
+        // stays in the tooltip.
+        const aks = (n: number) => `aks-sigxactors-12345678-vmss00000${n}`;
+        const spread = snapshotWith({
+            hosts: [host({ meta: { node: aks(0) } }), host({ hostId: 's.b', meta: { node: aks(1) } })]
+        });
+        const view = mount(<HostsPanel state={demoState(spread)} />);
+        const header = view.all('th').findIndex((th) => th.textContent === 'node');
+        const cells = view.all('tbody tr').map((tr) => tr.querySelectorAll('td')[header]!);
+        expect(cells.map((td) => td.textContent)).toEqual(['…vmss000000', '…vmss000001']);
+        expect(cells.map((td) => td.getAttribute('title'))).toEqual([aks(0), aks(1)]);
+        view.unmount();
+    });
+
     it('says how many nodes the hosts span in the overview', () => {
         const view = mount(<OverviewPanel state={demoState(packed)} />);
         const text = view.text();

@@ -43,6 +43,7 @@ export {
     hostSpread,
     hostTone,
     nodeCount,
+    nodeLabels,
     polledLabel,
     scopeOf,
     type Alert,

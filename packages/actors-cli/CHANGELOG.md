@@ -14,7 +14,10 @@
   downward API — so three replicas packed onto one node is visible from the
   ops output instead of `kubectl top pods` joined against `kubectl get pods
   -o wide` by hand. A fleet that reports no node shows `—` in the column and
-  no `nodes` row at all, rather than a count nobody measured.
+  no `nodes` row at all, rather than a count nobody measured. The `NODE` cell
+  is the monitor's label — `…vmss000001`, the tail that differs — because
+  the table shrinks from the right and two different AKS nodes cut to
+  `aks-sigxacto…` would read as one; the full name is in the drill-down.
 
 ### Changed
 

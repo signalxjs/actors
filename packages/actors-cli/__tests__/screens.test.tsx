@@ -392,6 +392,32 @@ describe('the node each host runs on (#51)', () => {
         expect(out[header + 2]).toContain('—');
     });
 
+    it('keeps two nodes tellable apart at the default pane width', () => {
+        // Real node names are long and differ only in their tail (AKS:
+        // `aks-<pool>-<8 digits>-vmss00000N`), and `DataTable` truncates
+        // from the RIGHT — so the raw name would read `aks-sigxacto…` in
+        // both rows: a spread fleet posing as a packed one, on the one
+        // screen with no `nodes` figure beside it. The monitor's label
+        // keeps the distinguishing tail instead.
+        const aks = (n: number) => `aks-sigxactors-12345678-vmss00000${n}`;
+        const spread = stateWith({
+            hosts: [host({ meta: { node: aks(0) } }), host({ hostId: 'host-b', meta: { node: aks(1) } })],
+            cluster: {
+                from: 'host-a',
+                view: { version: 4, size: 2, active: 2 },
+                totals: clusterTotals({ hosts: 2 }),
+                reminderShards: { p0: ['host-a'] },
+                unreachable: []
+            }
+        });
+        const out = rows(<HostsScreen state={spread} cursor={cursorModel(0)} />);
+        const header = out.findIndex((line) => line.includes('HOST') && line.includes('NODE'));
+        expect(out[header + 2]).toContain('…vmss000000');
+        expect(out[header + 3]).toContain('…vmss000001');
+        // The full name is one screen away, in the drill-down.
+        expect(draw(<HostScreen state={spread} hostId="host-b" />)).toContain(aks(1));
+    });
+
     it('says how many nodes the hosts span in the overview', () => {
         const out = draw(<OverviewScreen state={packed()} />);
         // Both in the scope heading and as its own row under `hosts`.

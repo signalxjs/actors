@@ -23,6 +23,13 @@
   other nodes idled, with every replica readout saying `3/3` — is a count two
   renderers must not make differently.
 
+  `nodeLabels(hosts)` is the third helper, for the table cell: full node
+  name → the tail that tells it from the others (`…vmss000001`), with the
+  prefix every reported node shares dropped at a separator. Real node names
+  differ only in their tail and every table truncates from the right, so the
+  raw name would show two different nodes as `aks-sigxacto…` twice — a
+  spread fleet posing as a packed one. A lone node keeps its full name.
+
 ## [0.9.1] - 2026-08-16
 
 ### Fixed

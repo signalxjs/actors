@@ -11,7 +11,11 @@
   where it runs. All of it is `HostView.meta.node`, derived by
   `@sigx/actors-monitor`'s `nodeCount` / `hostSpread` — the same figures the
   terminal shows, by construction. A fleet that reports no node shows `—` in
-  the column and no `nodes` row, rather than a count nobody measured.
+  the column and no `nodes` row, rather than a count nobody measured. The
+  `node` cell is the monitor's label — `…vmss000001`, the tail that differs —
+  because the cell ellipsises from the right at 28ch and two different AKS
+  nodes would otherwise read as one; the full name is the tooltip and the
+  drill-down.
 
 ## [0.9.1] - 2026-08-16
 
