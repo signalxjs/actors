@@ -41,6 +41,15 @@ const columns: readonly Column<HostView>[] = [
         // A disagreement here is a half-rolled transport deploy, which is
         // usually the whole story.
         value: (h) => h.transports?.join(',') ?? '—'
+    },
+    {
+        key: 'node',
+        header: 'node',
+        // The machine under the pod, from `PlacementOptions.meta.node` — the
+        // column that turns `3/3 replicas` into "all three on one node"
+        // (#51). The same name repeated down the column is the finding.
+        value: (h) => h.meta?.node ?? '—',
+        key_: true
     }
 ];
 

@@ -39,6 +39,7 @@ const host = (hostId: string): MonitorSnapshot['hosts'][number] => ({
     reminderShards: [],
     membershipVersion: 1,
     transports: ['http'],
+    meta: null,
     metrics: null,
     health: null,
     activations: null

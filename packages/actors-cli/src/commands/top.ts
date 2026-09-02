@@ -12,7 +12,7 @@ import { createModel, moveCursor, signal, type Model } from '@sigx/terminal';
 import type { ActorsCommandContext } from './context';
 import { out } from './out';
 import { resolveSource } from '../resolve';
-import { DashboardState } from '@sigx/actors-monitor';
+import { DashboardState, hostSpread } from '@sigx/actors-monitor';
 import {
     ClusterScreen,
     GrainsScreen,
@@ -208,7 +208,7 @@ export async function runTop(ctx: ActorsCommandContext): Promise<void> {
         if (view.error) ctx.logger.error(view.error);
         else if (snapshot) {
             out(
-                `${source.label}  ${snapshot.hosts.length} host(s), ` +
+                `${source.label}  ${hostSpread(snapshot.hosts)}, ` +
                     `${count(snapshot.hosts.reduce((n, s) => n + s.stats.activations, 0))} activations`
             );
         }

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The node each host runs on, and how many nodes the fleet spans (#51).**
+  The Hosts table has a `node` column, the host drill-down a `node` row, the
+  Overview a `nodes` row under `hosts`, and the `cluster · N host(s)` scope
+  line now reads `cluster · 3 host(s) / 1 node(s)` once any host reports
+  where it runs. All of it is `HostView.meta.node`, derived by
+  `@sigx/actors-monitor`'s `nodeCount` / `hostSpread` — the same figures the
+  terminal shows, by construction. A fleet that reports no node shows `—` in
+  the column and no `nodes` row, rather than a count nobody measured.
+
 ## [0.9.1] - 2026-08-16
 
 ### Fixed

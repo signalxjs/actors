@@ -87,6 +87,9 @@ function identityRows(host: HostView): DetailRow[] {
     const rows: DetailRow[] = [
         { label: 'status', value: host.status, tone: hostTone(host.status) },
         { label: 'address', value: host.address },
+        // Where it runs, when the chart said (#51) — beside the address,
+        // which is the other half of "where is this host".
+        ...(host.meta?.node ? [{ label: 'node', value: host.meta.node }] : []),
         { label: 'up', value: uptime(host.uptimeMs) }
     ];
     if (host.health) {

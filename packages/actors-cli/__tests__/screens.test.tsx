@@ -19,6 +19,7 @@ import {
     ClusterScreen,
     GrainsScreen,
     HealthScreen,
+    HostScreen,
     OverviewScreen,
     HostsScreen
 } from '../src/dashboard/screens';
@@ -47,6 +48,7 @@ const host = (over: Partial<HostView> = {}): HostView => ({
     reminderShards: ['p0'],
     membershipVersion: 4,
     transports: ['http'],
+    meta: null,
     metrics: null,
     health: { ready: true, fatal: false, checks: {} },
     activations: null,
@@ -352,3 +354,62 @@ describe('screens render', () => {
         expect(out).toContain('etag conflicts');
     });
 });
+
+describe('the node each host runs on (#51)', () => {
+    // Three replicas packed onto one node read as `3/3` in every replica
+    // readout; finding out otherwise meant joining `kubectl top pods`
+    // against `kubectl get pods -o wide` by hand. The chart now publishes
+    // `spec.nodeName` as `meta.node`, and these are the seats it renders in.
+    const packed = () =>
+        stateWith({
+            hosts: [
+                host({ meta: { node: 'node-1' } }),
+                host({ hostId: 'host-b', meta: { node: 'node-1' } }),
+                host({ hostId: 'host-c', meta: { node: 'node-1' } })
+            ],
+            cluster: {
+                from: 'host-a',
+                view: { version: 4, size: 3, active: 3 },
+                totals: clusterTotals({ hosts: 3 }),
+                reminderShards: { p0: ['host-a'] },
+                unreachable: []
+            }
+        });
+
+    it('gives the host table a NODE column', () => {
+        const out = rows(<HostsScreen state={packed()} cursor={cursorModel(0)} />);
+        const header = out.findIndex((line) => line.includes('HOST') && line.includes('NODE'));
+        expect(header).toBeGreaterThan(-1);
+        // The same name down the column IS the finding.
+        expect(out[header + 2]).toContain('node-1');
+        expect(out[header + 3]).toContain('node-1');
+        expect(out[header + 4]).toContain('node-1');
+    });
+
+    it('draws a dash, not a blank, for a host that reports no node', () => {
+        const out = rows(<HostsScreen state={stateWith()} cursor={cursorModel(0)} />);
+        const header = out.findIndex((line) => line.includes('HOST') && line.includes('NODE'));
+        expect(out[header + 2]).toContain('—');
+    });
+
+    it('says how many nodes the hosts span in the overview', () => {
+        const out = draw(<OverviewScreen state={packed()} />);
+        // Both in the scope heading and as its own row under `hosts`.
+        expect(out).toContain('3 host(s) / 1 node(s)');
+        expect(out).toMatch(/nodes\s+1/);
+    });
+
+    it('leaves the nodes row out when no host reports one', () => {
+        // Absent, not `nodes 0` and not `nodes 1`: a fleet outside
+        // Kubernetes has not said where it runs, and either guess is a
+        // claim nobody measured.
+        const out = draw(<OverviewScreen state={stateWith()} />);
+        expect(out).not.toMatch(/nodes\s+\d/);
+    });
+
+    it('names the node in the host drill-down', () => {
+        const out = draw(<HostScreen state={packed()} hostId="host-b" />);
+        expect(out).toMatch(/node\s+node-1/);
+    });
+});
+

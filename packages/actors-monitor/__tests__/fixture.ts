@@ -35,6 +35,8 @@ export const host = (over: Partial<HostView> = {}): HostView => ({
     reminderShards: ['p0'],
     membershipVersion: 5,
     transports: ['http'],
+    // A local run has no node to report; the node tests set one explicitly.
+    meta: null,
     // Every host's own digest and readiness — what milestone 9 put on the
     // wire, and what a drill-down renders.
     metrics: {

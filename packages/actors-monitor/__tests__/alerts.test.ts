@@ -13,7 +13,9 @@ import {
     alertLines,
     coverageNote,
     DashboardState,
+    hostSpread,
     hostTone,
+    nodeCount,
     polledLabel,
     scopeOf,
     type MonitorSnapshot
@@ -138,8 +140,56 @@ describe('scopeOf', () => {
         expect(scopeOf(demoSnapshot)).toBe('cluster · 2 host(s)');
     });
 
+    it('says how many nodes those hosts span, once any host reports one', () => {
+        // The finding behind #51: three replicas on one node read as `3/3`
+        // everywhere. `3 host(s) / 1 node(s)` is that fact at a glance.
+        const packed = snapshotWith({
+            hosts: [
+                host({ meta: { node: 'node-1' } }),
+                host({ hostId: 's.b', meta: { node: 'node-1' } }),
+                host({ hostId: 's.c', meta: { node: 'node-1' } })
+            ]
+        });
+        expect(scopeOf(packed)).toBe('cluster · 3 host(s) / 1 node(s)');
+    });
+
     it('says "this host" when there is no cluster, rather than implying one', () => {
         expect(scopeOf(snapshotWith({ cluster: null }))).toBe('this host');
+    });
+});
+
+describe('nodeCount / hostSpread', () => {
+    it('counts DISTINCT nodes, not hosts', () => {
+        const hosts = [
+            host({ meta: { node: 'node-1' } }),
+            host({ hostId: 's.b', meta: { node: 'node-1' } }),
+            host({ hostId: 's.c', meta: { node: 'node-2' } })
+        ];
+        expect(nodeCount(hosts)).toBe(2);
+        expect(hostSpread(hosts)).toBe('3 host(s) / 2 node(s)');
+    });
+
+    it('is null — and says nothing — when no host reports a node', () => {
+        // A fleet outside Kubernetes has not said where it runs. Guessing
+        // "one node" would claim a packed fleet; guessing "one per host"
+        // would claim a spread one. Neither was measured.
+        expect(nodeCount(demoSnapshot.hosts)).toBeNull();
+        expect(hostSpread(demoSnapshot.hosts)).toBe('2 host(s)');
+    });
+
+    it('does not count a host with no node as a node of its own', () => {
+        // Mid-rollout: one host is on the chart that publishes `node`, the
+        // other is not yet. The node count covers what was reported; the
+        // host count still covers everyone.
+        const hosts = [host({ meta: { node: 'node-1' } }), host({ hostId: 's.b' })];
+        expect(nodeCount(hosts)).toBe(1);
+        expect(hostSpread(hosts)).toBe('2 host(s) / 1 node(s)');
+    });
+
+    it('ignores an empty node string, which the downward API never sets', () => {
+        // `meta` is free-form, so a host could publish `node: ""` — that is
+        // "no node", not a node named nothing.
+        expect(nodeCount([host({ meta: { node: '' } })])).toBeNull();
     });
 });
 

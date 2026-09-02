@@ -522,3 +522,61 @@ function emptyHistograms(): MonitorSnapshot {
         }
     });
 }
+
+describe('the node each host runs on (#51)', () => {
+    // Three replicas packed onto one node read as `3/3` in every replica
+    // readout; finding out otherwise meant joining `kubectl top pods`
+    // against `kubectl get pods -o wide` by hand. The chart now publishes
+    // `spec.nodeName` as `meta.node`, and these are the seats it renders in.
+    const packed = snapshotWith({
+        hosts: [
+            host({ meta: { node: 'node-1' } }),
+            host({ hostId: 's.b', meta: { node: 'node-1' } }),
+            host({ hostId: 's.c', meta: { node: 'node-1' } })
+        ]
+    });
+
+    it('gives the host table a node column', () => {
+        const view = mount(<HostsPanel state={demoState(packed)} />);
+        expect(view.all('th').map((th) => th.textContent)).toContain('node');
+        const cells = view.all('td').map((td) => td.textContent);
+        // The same name down the column IS the finding.
+        expect(cells.filter((c) => c === 'node-1')).toHaveLength(3);
+        view.unmount();
+    });
+
+    it('draws a dash, not a blank, for a host that reports no node', () => {
+        const view = mount(<HostsPanel state={demoState()} />);
+        const header = view.all('th').findIndex((th) => th.textContent === 'node');
+        expect(header).toBeGreaterThan(-1);
+        const firstRow = view.all('tbody tr')[0]!;
+        expect(firstRow.querySelectorAll('td')[header]!.textContent).toBe('—');
+        view.unmount();
+    });
+
+    it('says how many nodes the hosts span in the overview', () => {
+        const view = mount(<OverviewPanel state={demoState(packed)} />);
+        const text = view.text();
+        // Both in the scope heading and as its own row under `hosts`.
+        expect(text).toContain('cluster · 3 host(s) / 1 node(s)');
+        expect(text).toMatch(/nodes\s*1/);
+        view.unmount();
+    });
+
+    it('leaves the nodes row out when no host reports one', () => {
+        // Absent, not `nodes 0` and not `nodes 1`: a fleet outside
+        // Kubernetes has not said where it runs, and either guess is a
+        // claim nobody measured.
+        const view = mount(<OverviewPanel state={demoState()} />);
+        expect(view.text()).toContain('cluster · 2 host(s)');
+        expect(view.text()).not.toMatch(/nodes\s*\d/);
+        view.unmount();
+    });
+
+    it('names the node in the host drill-down', () => {
+        const view = mount(<HostPanel state={demoState(packed)} hostId="s.b" />);
+        expect(view.text()).toMatch(/node\s*node-1/);
+        view.unmount();
+    });
+});
+

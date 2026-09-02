@@ -47,6 +47,18 @@ export interface HostView {
      *  transport deploy, which is usually the whole story. */
     transports: readonly string[] | null;
     /**
+     * The free-form placement hints this host was started with
+     * (`PlacementOptions.meta`), or null when it published none.
+     *
+     * `node` is the key with an agreed meaning: the machine the host runs on,
+     * which a Kubernetes chart fills from `spec.nodeName`. It exists because
+     * `3/3 replicas` reads the same whether the fleet is spread across three
+     * nodes or packed onto one 2-vCPU box — and finding out otherwise meant
+     * joining `kubectl top pods` against `kubectl get pods -o wide` by hand
+     * (#51).
+     */
+    meta: Readonly<Record<string, string>> | null;
+    /**
      * THIS host's own metrics, when it reported them.
      *
      * Null is "this host said nothing", not "this host did nothing" — an
@@ -154,6 +166,7 @@ export function hostViewFromReport(report: HostReport): HostView {
         reminderShards: report.reminderShards,
         membershipVersion,
         transports: report.transports ?? null,
+        meta: report.meta ?? null,
         metrics: report.metrics ?? null,
         health: report.health ?? null,
         activations: report.activations ?? null

@@ -47,6 +47,7 @@ import {
     alertLines,
     coverageNote,
     hostTone,
+    nodeCount,
     polledLabel,
     scopeOf,
     type Alert,
@@ -172,6 +173,10 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     const turnMs = clusterMetrics?.turnMs ?? metrics?.turnMs ?? null;
     const coverage = coverageNote(snapshot);
     const scale = histogramScale([latencyMs, queueMs, turnMs]);
+    // Distinct machines under those hosts, when the chart says. Three hosts
+    // on one node is the finding this row exists for (#51); no row at all
+    // when nothing reported a node, rather than a guess either way.
+    const nodes = nodeCount(snapshot.hosts);
 
     // The series occupy the width the pane has, less the label column and
     // the value that trails each one — but never more than the history
@@ -192,6 +197,7 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
                 labelWidth={LABEL_WIDTH}
                 rows={[
                     { label: 'hosts', value: `${snapshot.hosts.length}` },
+                    ...(nodes !== null ? [{ label: 'nodes', value: `${nodes}` }] : []),
                     { label: 'activations', value: count(activations) },
                     { label: 'queued', value: count(queued) },
                     ...(clusterCalls
@@ -347,7 +353,17 @@ const hostColumns: TableColumn<HostView>[] = [
         value: (s) => (s.membershipVersion === null ? '—' : `#${s.membershipVersion}`),
         align: 'right'
     },
-    { key: 'tx', header: 'TRANSPORTS', value: (s) => s.transports?.join(',') ?? '—' }
+    { key: 'tx', header: 'TRANSPORTS', value: (s) => s.transports?.join(',') ?? '—' },
+    {
+        // The machine under the pod, from `PlacementOptions.meta.node` —
+        // the column that turns `3/3 replicas` into "all three on one
+        // node" (#51). Last, because node names are long and this is the
+        // column that can afford to give up cells: the SAME name repeated
+        // down the column is the finding, and that survives truncation.
+        key: 'node',
+        header: 'NODE',
+        value: (s) => s.meta?.node ?? '—'
+    }
 ];
 
 /**
@@ -507,10 +523,12 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
             `${entry.kind}: ${entry.message}`
     );
     const actors = host.activations ?? [];
+    const node = host.meta?.node;
     const spent =
         alertHeight(props.state, pane) +
         1 +
         (host.health ? 4 : 3) +
+        (node ? 1 : 0) +
         (digest ? 3 : 1) +
         blockHeight(checks) +
         blockHeight(kinds) +
@@ -526,6 +544,7 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
                 rows={[
                     { label: 'status', value: host.status, tone: hostColor(host.status) },
                     { label: 'address', value: host.address },
+                    ...(node ? [{ label: 'node', value: node }] : []),
                     { label: 'up', value: uptime(host.uptimeMs) },
                     ...(host.health
                         ? [

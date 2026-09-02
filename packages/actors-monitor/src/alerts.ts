@@ -101,7 +101,41 @@ export function alertLines(view: DashboardView): Alert[] {
 export function scopeOf(snapshot: MonitorSnapshot): string {
     const cluster = snapshot.cluster;
     if (!cluster) return 'this host';
-    return `cluster · ${cluster.totals.hosts} host(s)`;
+    return `cluster · ${hostSpread(snapshot.hosts)}`;
+}
+
+/**
+ * How many distinct machines the hosts run on, from `meta.node` — or null
+ * when no host reports one.
+ *
+ * Null rather than 0, and null rather than "one per host": a fleet outside
+ * Kubernetes, or on a chart that predates the field, has said nothing about
+ * where it runs, and a dashboard that guessed either way would be claiming a
+ * layout nobody measured. Hosts that report no node do not count as a node.
+ */
+export function nodeCount(hosts: readonly HostView[]): number | null {
+    const nodes = new Set<string>();
+    for (const host of hosts) {
+        const node = host.meta?.node;
+        if (node) nodes.add(node);
+    }
+    return nodes.size > 0 ? nodes.size : null;
+}
+
+/**
+ * `3 host(s) / 1 node(s)` — the packing summary, or just `3 host(s)` when
+ * no host reports a node.
+ *
+ * The whole reason `meta.node` reaches a dashboard (#51): three replicas
+ * on one node capped a real cluster's public endpoint while three other
+ * nodes idled, and every replica readout said `3/3`. This is the one-glance
+ * version of that finding, and it is derived HERE so the terminal and the
+ * browser cannot count nodes differently.
+ */
+export function hostSpread(hosts: readonly HostView[]): string {
+    const nodes = nodeCount(hosts);
+    const base = `${hosts.length} host(s)`;
+    return nodes === null ? base : `${base} / ${nodes} node(s)`;
 }
 
 /** The host whose own numbers these are — the one being polled. */

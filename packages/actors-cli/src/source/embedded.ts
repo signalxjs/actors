@@ -172,6 +172,7 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                         reminderShards: [],
                         membershipVersion: null,
                         transports: null,
+                        meta: null,
                         metrics: null,
                         health: null,
                         activations: null
