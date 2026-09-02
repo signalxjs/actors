@@ -66,7 +66,10 @@ export interface HostDefaults {
     /** Idle collection age, ms. Default 20 min — single-node processes
      *  redeploy often and reactivation is one storage load. */
     idleAfterMs?: number;
-    /** External-call deadline, ms (becomes `ActorCallContext.deadline`).
+    /** Default call deadline, ms (becomes `ActorCallContext.deadline`) for
+     *  external calls and for the turns an actor starts on its own clock —
+     *  timer ticks and a task's `ctx.turn` (#302). Every `ctx.actor()` call
+     *  made from such a turn, same-host or cross-host, is bounded by it.
      *  Default 30s. `0` disables. */
     callTimeoutMs?: number;
     /**

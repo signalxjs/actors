@@ -42,7 +42,11 @@ function outcomeOf(promise: Promise<unknown>, outcomes: unknown[]): Promise<void
 function expectCallTimeout(outcomes: unknown[]): void {
     expect(outcomes).toHaveLength(1);
     const error = outcomes[0];
-    expect(isActorError(error) && error.kind === 'call-timeout').toBe(true);
+    // Over a cluster hop the peer's ActorCallTimeoutError rehydrates as an
+    // ActorError carrying its `kind`, so assert on the kind and let a wrong
+    // outcome (a 'resolved' string, another kind) print itself on failure.
+    expect(isActorError(error)).toBe(true);
+    expect(error).toMatchObject({ kind: 'call-timeout' });
 }
 
 describe('deadlines on self-started turns (#302)', () => {

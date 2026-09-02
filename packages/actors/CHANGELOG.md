@@ -32,10 +32,13 @@
   the tick-originated legs had no deadline none of them ever timed out
   (three hosts idle, 50 000 turns queued, `FLUSHALL` + restart the only way
   out). Both contexts now carry `Date.now() + callTimeoutMs` the way an
-  external call does, so a call from a tick or a task turn to a peer that
-  never answers rejects with `ActorCallTimeoutError` (`kind: 'call-timeout'`)
-  at the deadline instead of hanging. `callTimeoutMs: 0` still means no
-  deadline, exactly as before.
+  external call does, so a call from a tick or a task turn to a peer whose
+  turn never answers rejects with `ActorCallTimeoutError`
+  (`kind: 'call-timeout'`) at the deadline instead of hanging — the
+  RECEIVING host races the remaining budget and answers `call-timeout`, so
+  this covers a request that reaches the peer, not a socket that never
+  delivers it. `callTimeoutMs: 0` still means no deadline, exactly as
+  before.
 
 - **The `$live` endpoint's watch establishment now has a deadline** (#192).
   The socket session has armed the app posture's `timeoutMs` on watch
