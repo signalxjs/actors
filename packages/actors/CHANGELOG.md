@@ -40,6 +40,19 @@
   delivers it. `callTimeoutMs: 0` still means no deadline, exactly as
   before.
 
+- **A job's `start()` / `resume()` whose task launch fails no longer leaves
+  it `running`** (#316). Both saved `status: 'running'` BEFORE
+  `ctx.tasks.start`, so when the launch rejected — task liveness unable to
+  reach storage, a host mid-shutdown — the caller saw the rejection while
+  the durable record still said `running`, and since that record is the
+  ledger (#309) the next activation resumed a run nobody was told had
+  started. The transition is now taken back on a rejected launch: the job
+  reads `pending` (or `paused`, with the rejected resume's data dropped)
+  again, live and on disk, and a retried `start()` / `resume()` goes
+  through. The revert is best-effort — if its own save fails, the previous
+  at-least-once behaviour stands and the run resumes on the next
+  activation. The original rejection is rethrown either way.
+
 - **The `$live` endpoint's watch establishment now has a deadline** (#192).
   The socket session has armed the app posture's `timeoutMs` on watch
   establishment since #180 — pipeline + authorization + dispatch + the FIRST

@@ -731,3 +731,101 @@ describe('defineJob: the ledger lives in the state record (#309)', () => {
         }).toEqual({ loads: 1, saves: 4, clears: 0 });
     });
 });
+
+describe('defineJob: a rejected task start takes the running transition back (#316)', () => {
+    /**
+     * Reject the roster write that TRACKS `id` (the run's liveness), `n`
+     * times. The host's index registration and the untrack never carry the
+     * id, so they pass — this is the `ctx.tasks.start` failure alone.
+     */
+    function trackFailingStorage(id: string) {
+        const inner = memoryStorage();
+        let failures = 0;
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: (t, k, st, e) => {
+                if (t === ROSTER_TYPE && failures > 0 && id in (st as object)) {
+                    failures--;
+                    return Promise.reject(new Error('roster transiently down'));
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        return { storage, inner, fail: (n: number) => void (failures = n) };
+    }
+
+    it('start(): the job reads pending again, no host resumes it, and a retry starts it', async () => {
+        const { storage, inner, fail } = trackFailingStorage('Revert\u0000run-1');
+        const runs: number[] = [];
+        const Job = defineJob({
+            type: 'Revert',
+            allowAnonymous: true,
+            run: async (job, input: { n: number }) => {
+                runs.push(job.attempt);
+                return input.n * 2;
+            }
+        });
+        const hostA = createHost({ actors: [Job], storage, defaults: quiet });
+        running = hostA;
+        const a = hostA.actor(Job, 'run-1');
+        fail(1);
+        await expect(a.start({ n: 21 })).rejects.toThrow(/transiently down/);
+        // The caller saw the rejection, so nothing may say the run exists:
+        // not the live state…
+        expect(await a.status()).toMatchObject({ status: 'pending', attempts: 0, startedAt: null });
+        // …and not the durable record, which is the ledger the next
+        // activation derives its resumes from (#309).
+        const record = (await inner.load('Revert', 'run-1'))?.state as { status: string };
+        expect(record.status).toBe('pending');
+        expect(runs).toEqual([]);
+        // A host that activates the record resumes nothing.
+        await within(hostA.stop({ timeoutMs: 2000 }), 1500);
+        const hostB = createHost({ actors: [Job], storage, defaults: quiet });
+        running = hostB;
+        const b = hostB.actor(Job, 'run-1');
+        expect((await b.status()).status).toBe('pending');
+        await new Promise((r) => setTimeout(r, 50));
+        expect(runs).toEqual([]);
+        // Once the roster is back, the same start goes through.
+        await b.start({ n: 21 });
+        await until(async () => (await b.status()).status === 'completed');
+        expect(await b.result()).toBe(42);
+        expect(runs).toEqual([1]);
+    });
+
+    it('resume(): the job reads paused again, holds no resumeData, and a retry resumes it', async () => {
+        const { storage, inner, fail } = trackFailingStorage('RevertPaused\u0000run-1');
+        const runs: unknown[] = [];
+        const Job = defineJob({
+            type: 'RevertPaused',
+            allowAnonymous: true,
+            run: async (job, input: { doc: string }) => {
+                runs.push(job.resumeData);
+                if (job.resumeData === undefined) return job.pause({ stage: 'awaiting-approval' });
+                return { doc: input.doc, approved: job.resumeData };
+            }
+        });
+        const host = createHost({ actors: [Job], storage, defaults: quiet });
+        running = host;
+        const a = host.actor(Job, 'run-1');
+        await a.start({ doc: 'contract' });
+        await until(async () => (await a.status()).status === 'paused');
+        fail(1);
+        await expect(a.resume({ by: 'alice' })).rejects.toThrow(/transiently down/);
+        expect((await a.status()).status).toBe('paused');
+        const record = (await inner.load('RevertPaused', 'run-1'))?.state as {
+            status: string;
+            resumeData: unknown;
+        };
+        // Paused, with the rejected resume's data taken back too — a later
+        // resume must not find a stale answer waiting.
+        expect(record).toMatchObject({ status: 'paused', resumeData: null });
+        expect(runs).toHaveLength(1);
+        await a.resume({ by: 'bob' });
+        await until(async () => (await a.status()).status === 'completed');
+        expect(await a.result()).toEqual({ doc: 'contract', approved: { by: 'bob' } });
+        expect(runs).toEqual([undefined, { by: 'bob' }]);
+        expect((await a.status()).attempts).toBe(1); // pause-resume stays free
+    });
+});
