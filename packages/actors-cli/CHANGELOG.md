@@ -21,8 +21,6 @@
   `0 B` (#208). The embedded source reads the section from the app's
   `ops()` handle, the HTTP source from the ops body.
 
-### Added
-
 - **`locality` on the cluster screen (#52).** The header now reads
   `locality  80% local  (10 dispatches)`, derived from the placement's new
   per-request pair `dispatchesLocal` / `dispatchesRemote` — the fraction

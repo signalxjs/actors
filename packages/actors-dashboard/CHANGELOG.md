@@ -17,8 +17,6 @@
   to the polled host only because the fan-out carries no socket digest yet.
   Buffered bytes no session could report draw as `—`, not `0 B` (#208).
 
-### Added
-
 - **`locality` on the cluster panel (#52).** The header now shows
   `locality  67% local  (3.84k dispatches)`, derived from the placement's
   new per-request pair `dispatchesLocal` / `dispatchesRemote` — the fraction

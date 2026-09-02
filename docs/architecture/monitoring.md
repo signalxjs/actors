@@ -65,6 +65,18 @@ host and an idle one are different findings. Rendering the first as zeroes
 claims the second. Same rule for an empty histogram: three zeroed bars assert
 "we measured, and it was fast".
 
+**`HostView.sockets` belongs to the polled host, and is attached in one
+place.** The `sockets` ops section (#166) is one host's own: the cluster
+fan-out carries no socket digest, so the host that answered `/_sigx/ops` is
+the only one that can say anything about its sessions. `withSockets(hosts,
+hostId, sockets)` puts it on that row and no other — `httpSource` and the
+CLI's embedded source both call it rather than restating the rule — and every
+other host reads `null`, which is "said nothing", exactly as for `metrics`.
+A renderer that summed the column, or drew a peer's `null` as `0 open`, would
+claim a fleet-wide count that no one measured. Inside the section, a
+`bufferedBytes` of `null` is the same rule one level down: no adapter could
+report its buffers, which is not `0 B` (#208).
+
 **A number needs its scope attached.** `scopeOf`, `polledLabel` and
 `coverageNote` exist because the failure behind #121 was never a wrong number
 — it was a right one under no label, sitting directly beneath one of a

@@ -17,8 +17,6 @@
   host whose sessions could not report their buffers has not said `0 B`
   (#208).
 
-### Added
-
 - **`HostView.meta` — each host's placement hints, and the node count derived
   from them (#51).** A `HostReport` has carried `PlacementOptions.meta` for a
   while; the monitor now keeps it (`null` when the host published none, as
