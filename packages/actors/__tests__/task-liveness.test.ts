@@ -18,6 +18,7 @@ import {
     TASK_REMINDER,
     type Host
 } from '@sigx/actors/host';
+import type { TypeHandler } from '@sigx/serialize';
 import { reminderShardOf } from '../src/host/reminder-shards';
 import { createCluster, selfPolicy, type ClusterHarness } from './harness';
 
@@ -158,6 +159,220 @@ describe('task liveness: the per-host roster', () => {
         await within(stopping!, 2000);
         const [hostId] = await hostIds(inner);
         expect(await rosterOf(inner, hostId!)).toEqual([]);
+    });
+
+    it('host.stop() during a start\'s liveness track waits for the launched body to wind down (#333)', async () => {
+        // A run is RESERVED (in the task table) the moment start is called,
+        // but its body launches only once the ledger write and the liveness
+        // track have landed. A stop in that window aborts the run and must
+        // wait for what it just aborted: the body launches with an aborted
+        // signal and winds down — and deactivation used to have moved on by
+        // then, so its grace never covered that wind-down. Modelled with a
+        // track held for one macrotask and `host.stop()` called the moment
+        // it starts.
+        const inner = rosterTaskLiveness();
+        let stopping: Promise<void> | null = null;
+        let host!: Host;
+        const liveness: typeof inner = {
+            bind: (c) => inner.bind(c),
+            start: () => inner.start(),
+            stop: () => inner.stop(),
+            track: async (ref) => {
+                if (!stopping) {
+                    stopping = host.stop({ timeoutMs: 1000 });
+                    await new Promise((r) => setTimeout(r, 0));
+                }
+                return inner.track(ref);
+            },
+            untrack: (ref) => inner.untrack(ref)
+        };
+        let windDown!: () => void;
+        const wound = new Promise<void>((r) => (windDown = r));
+        const seen: string[] = [];
+        const Worker = defineActor({
+            type: 'Worker',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({ begin: () => ctx.tasks.start('run') }),
+            tasks: (ctx) => ({
+                async run() {
+                    seen.push(ctx.abortSignal.aborted ? 'launched-aborted' : 'launched');
+                    await aborted(ctx.abortSignal);
+                    // A wind-down the test holds open, so "stop waited for it"
+                    // is an ordering fact rather than a race against a timer.
+                    await wound;
+                    seen.push('wound-down');
+                }
+            })
+        });
+        host = createHost({
+            actors: [Worker],
+            storage: memoryStorage(),
+            defaults: quiet,
+            taskLiveness: liveness
+        });
+        running.push(host);
+        const begun = host.actor(Worker, 'w').begin();
+        try {
+            await until(() => seen.length > 0);
+            // Abort-before-launch is guaranteed, not raced: stop() is called
+            // before `track` resolves, and the body launches only after it.
+            expect(seen).toEqual(['launched-aborted']);
+            // The body is parked in its wind-down: stop must still be waiting.
+            const settled = await Promise.race([
+                stopping!.then(() => 'settled' as const),
+                new Promise<'pending'>((r) => setTimeout(() => r('pending'), 30))
+            ]);
+            expect(settled).toBe('pending');
+        } finally {
+            windDown();
+        }
+        await within(stopping!, 2000);
+        expect(seen).toEqual(['launched-aborted', 'wound-down']);
+        await within(begun, 2000);
+    });
+
+    it('a start whose liveness track outruns taskGraceMs is warned as bookkeeping, not as an ignored signal (#333)', async () => {
+        // The other half of the warning split: a run that is RESERVED but
+        // not yet launched has no body to advise — its start's durable half
+        // is what is stuck. Here `track` is held past the grace, so stop()
+        // times out with the run still awaiting its launch.
+        const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const inner = rosterTaskLiveness();
+        let release!: () => void;
+        const held = new Promise<void>((r) => (release = r));
+        let onTrack!: () => void;
+        const trackStarted = new Promise<void>((r) => (onTrack = r));
+        const liveness: typeof inner = {
+            bind: (c) => inner.bind(c),
+            start: () => inner.start(),
+            stop: () => inner.stop(),
+            track: async (ref) => {
+                onTrack();
+                await held;
+                return inner.track(ref);
+            },
+            untrack: (ref) => inner.untrack(ref)
+        };
+        const Worker = defineActor({
+            type: 'Worker',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({ begin: () => ctx.tasks.start('run') }),
+            tasks: (ctx) => ({
+                async run() {
+                    await aborted(ctx.abortSignal);
+                }
+            })
+        });
+        const host = createHost({
+            actors: [Worker],
+            storage: memoryStorage(),
+            defaults: { ...quiet, taskGraceMs: 30 },
+            taskLiveness: liveness
+        });
+        running.push(host);
+        const begun = host.actor(Worker, 'w').begin();
+        await within(trackStarted, 2000);
+        let messages: string[];
+        try {
+            await within(host.stop({ timeoutMs: 1000 }), 2000);
+            messages = warns.mock.calls.map((c) => String(c[0]));
+        } finally {
+            release();
+            // Spies are not restored between tests here: leave none behind
+            // for the next test's negative assertion to trip over.
+            warns.mockRestore();
+        }
+        expect(messages.some((m) => m.includes('still had task bookkeeping in flight'))).toBe(true);
+        expect(messages.some((m) => m.includes('ignored their abort signal'))).toBe(false);
+        await within(begun, 2000);
+    });
+
+    it('a resume whose input the codec rejects is rolled back, not left reserved (#333)', async () => {
+        // `#resumeTask` clones a derived entry's input through the codec
+        // right before launching. A codec that throws there must roll the
+        // reservation back like a failed ledger write: a run that never
+        // launches must not stay in the task table, nor be something every
+        // later deactivation waits a full grace for. Driven through the
+        // liveness reminder's self-heal — the one resume path that runs on
+        // a LIVE activation (activation-time resume fails the activation
+        // outright): a hand-crafted due reminder finds a derived entry with
+        // no run behind it and tries to restart it.
+        const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        class Poison {}
+        let revives = 0;
+        const poison: TypeHandler<Poison, number> = {
+            name: 'poison',
+            tag: '$poison',
+            test: (value) => value instanceof Poison,
+            serialize: () => 1,
+            revive: () => {
+                revives++;
+                throw new Error('unrevivable');
+            }
+        };
+        const bodies: unknown[] = [];
+        const Worker = defineActor({
+            type: 'Parked',
+            allowAnonymous: true,
+            state: () => ({ running: false, input: new Poison() }),
+            // The state says a run is in flight; its body below returns at
+            // once without clearing that, so the entry outlives the run.
+            resumeTasks: (s) => {
+                const entries: Record<string, { input: unknown; startedAt: number; restarts: number }> = {};
+                if (s.running) entries.run = { input: s.input, startedAt: 0, restarts: 0 };
+                return entries;
+            },
+            methods: (ctx) => ({
+                begin() {
+                    ctx.state.running = true;
+                    return ctx.tasks.start('run', ctx.state.input);
+                }
+            }),
+            tasks: () => ({
+                async run(input: unknown) {
+                    bodies.push(input);
+                }
+            })
+        });
+        const storage = memoryStorage();
+        const host = createHost({
+            actors: [Worker],
+            storage,
+            types: [poison],
+            defaults: { ...quiet, reminderTickMs: 25, taskGraceMs: 30 }
+        });
+        running.push(host);
+        await host.start();
+        const client = host.actor(Worker, 'run-1');
+        let messages: string[];
+        try {
+            await client.begin();
+            await until(() => bodies.length === 1);
+            expect(revives).toBe(0);
+            // The due liveness reminder: its tick delivers to the live actor,
+            // whose self-heal finds `run` derived but not running and resumes it.
+            await storage.save(
+                REMINDER_TYPE,
+                reminderShardOf(ID),
+                { [ID]: { [TASK_REMINDER]: { nextDue: Date.now() - 1000, period: 60_000 } } },
+                null
+            );
+            await until(() => revives > 0, 5000);
+            // No second launch — the clone threw first.
+            expect(bodies).toHaveLength(1);
+            // The failed resume left nothing behind: stop() has no reserved
+            // run to wait for, and nothing to warn about past the grace.
+            await within(host.stop({ timeoutMs: 1000 }), 2000);
+            messages = warns.mock.calls.map((c) => String(c[0]));
+        } finally {
+            warns.mockRestore();
+            errors.mockRestore();
+        }
+        expect(messages.some((m) => m.includes('still had task bookkeeping in flight'))).toBe(false);
+        expect(messages.some((m) => m.includes('ignored their abort signal'))).toBe(false);
     });
 
     it('bookkeeping that outruns taskGraceMs is warned as such, not as an ignored signal', async () => {
