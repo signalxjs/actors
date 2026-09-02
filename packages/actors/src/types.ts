@@ -476,6 +476,14 @@ export interface ActorRemindersContext {
     ownsShard(shard: string): boolean | Promise<boolean>;
     /** Deliver a due reminder to its actor, activating it if idle. */
     deliver(ref: ActorRef, name: string): Promise<unknown>;
+    /**
+     * Report a due reminder whose `deliver()` rejected (#306). The host
+     * counts these as `HostStats.remindersUndelivered`, so a fleet that is
+     * missing wakes says so. Called per failed ATTEMPT — an implementation
+     * that retries still reports each one — and optional so a context built
+     * by hand (tests, an older host) need not carry it.
+     */
+    undelivered?(ref: ActorRef, name: string, error: unknown): void;
 }
 
 /**
@@ -1536,6 +1544,16 @@ export interface HostStats {
      * the fan-out cliff of #180 building.
      */
     watchLoops?: number;
+    /**
+     * Due reminders whose dispatch FAILED on this host — a deadline, a host
+     * mid-restart, an `onReminder` that threw — counted per attempt (#306).
+     * The default `shardedReminders()` re-arms a failed one for the next
+     * tick, so this is the rate at which wakes are being missed, not the
+     * number lost for good: a value that keeps climbing is a target that
+     * never comes back. Monotonic for the host's lifetime. OPTIONAL for the
+     * same mixed-fleet reason as `watchLoops`.
+     */
+    remindersUndelivered?: number;
 }
 
 /**
@@ -1568,7 +1586,8 @@ export const emptyHostStats = (): HostStats => ({
     queued: 0,
     perType: {},
     transitional: { activating: 0, deactivating: 0 },
-    watchLoops: 0
+    watchLoops: 0,
+    remindersUndelivered: 0
 });
 
 /** One live activation, as `Host.activations()` reports it. */
