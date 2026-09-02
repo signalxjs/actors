@@ -34,8 +34,14 @@ const createRedisStorage: StorageConformanceFactory =
             saveText: true,
             async stop() {
                 try {
-                    const keys = await client.keys(`${namespace}*`);
-                    if (keys.length) await client.del(...keys);
+                    // SCAN, not KEYS: the latter walks the whole keyspace in
+                    // one blocking call, which a shared instance notices.
+                    let cursor = '0';
+                    do {
+                        const [next, keys] = await client.scan(cursor, 'MATCH', `${namespace}*`, 'COUNT', 500);
+                        cursor = next;
+                        if (keys.length) await client.del(...keys);
+                    } while (cursor !== '0');
                 } finally {
                     await client.quit();
                 }

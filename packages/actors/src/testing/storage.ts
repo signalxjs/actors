@@ -183,18 +183,27 @@ async function mustResolve<T>(op: () => Promise<T>, what: string): Promise<T> {
     }
 }
 
-/** Run `body` against a fresh, bootstrapped harness and always tear it down. */
+/**
+ * Run `body` against a fresh, bootstrapped harness and always tear it down.
+ * A `stop()` that rejects fails a case that would otherwise have passed — a
+ * green suite leaking schemas, namespaces or connections across runs is the
+ * flake nobody can reproduce. When the case itself failed, its error wins.
+ */
 async function withHarness<T>(
     create: StorageConformanceFactory,
     body: (storage: ActorStorage, harness: StorageConformanceHarness) => Promise<T>
 ): Promise<T> {
     const harness = await create();
+    let result: T;
     try {
         await harness.bootstrap?.();
-        return await body(harness.storage(), harness);
-    } finally {
+        result = await body(harness.storage(), harness);
+    } catch (error) {
         await harness.stop().catch(() => {});
+        throw error;
     }
+    await harness.stop();
+    return result;
 }
 
 const T = 'StorageConformance';

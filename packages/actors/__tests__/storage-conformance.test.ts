@@ -367,3 +367,30 @@ describe('a case that cannot fail is decoration — the suite goes red against a
         for (const [, caseName] of broken) expect(names.has(caseName), caseName).toBe(true);
     });
 });
+
+describe('teardown: a failing stop() is not swallowed behind a green case', () => {
+    const passing = storageConformance.find((c) => c.name === 'load of a record that was never saved is null')!;
+
+    it('a case that passed rejects with the stop() error', async () => {
+        const create: StorageConformanceFactory = async () => ({
+            storage: () => memoryStorage(),
+            stop: async () => {
+                throw new Error('namespace cleanup failed');
+            }
+        });
+        await expect(passing.run(create)).rejects.toThrow('namespace cleanup failed');
+    });
+
+    it("a case that failed keeps its own error when stop() fails too", async () => {
+        const create: StorageConformanceFactory = async () => ({
+            storage: () => ({
+                ...memoryStorage(),
+                load: async () => undefined as unknown as null
+            }),
+            stop: async () => {
+                throw new Error('namespace cleanup failed');
+            }
+        });
+        await expect(passing.run(create)).rejects.toThrow(/\[storage conformance\]/);
+    });
+});
