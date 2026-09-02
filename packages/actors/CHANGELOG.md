@@ -17,6 +17,26 @@
   table promises. Stateless workers and `dispatchOn()` count in neither.
   Existing counters are unchanged; `addCounters` sums the pair with `?? 0`,
   so a mixed-version peer's report cannot NaN the `clusterStats` totals.
+- **An `ActorStorage` conformance suite** (#65), for contributors — **not a
+  published import**. `storageConformance` is the set of cases every storage
+  adapter must pass, plus the `StorageConformanceHarness` a package supplies
+  (`storage()`/`stop()`, an optional `bootstrap()`, and a `saveText: true`
+  declaration). It lives beside `bootstrapConformance` at
+  `packages/actors/src/testing/` and is reachable inside this workspace as
+  `@sigx/actors/testing`; the subpath stays out of `package.json` exports.
+  Fourteen cases pin what five adapters had each re-pinned in their own
+  test file: the load-miss shape, the etag chain and the conflict brand,
+  `clear` as compare-and-delete, no resurrection of a cleared record, a
+  refused write changing nothing, loaded records being the caller's to
+  mutate (#25), non-object state and NUL-bearing keys round-tripping, and
+  `saveText` being observably `save(JSON.parse(json))` on one etag chain
+  (#238). A harness declaring `saveText: true` turns a missing text path
+  into a failure rather than a skip, which is the decorator-forwarding rule
+  on `ActorStorage` as a runnable case. `memoryStorage`, `fileStorage`,
+  `metrics()` over a text adapter, `durableObjectStorage`, `pgStorage`,
+  `redisStorage` and `surrealStorage` all run it; a sabotage table of
+  deliberately broken adapters proves every case goes red. See
+  `docs/architecture/conformance-suites.md`.
 
 - **`onStateError` hook for write-behind save failures** (#54). A
   `write-behind` save has no caller to throw to: the debounced flush failed

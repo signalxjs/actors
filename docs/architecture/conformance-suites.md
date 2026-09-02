@@ -12,6 +12,7 @@ Adding a provider or a transport means writing a *harness*, not a test matrix.
 | `@sigx/actors/cluster/testing` | `transportConformance` | `HostTransport` implementations |
 | `@sigx/actors/testing` | `bootstrapConformance` | provider schema bootstrap (`ensure…Schema`) |
 | `@sigx/actors/testing` | `socketTransportConformance` | client `ActorTransport` implementations (#99) |
+| `@sigx/actors/testing` | `storageConformance` | `ActorStorage` implementations and decorators (#65) |
 
 All are **workspace-only**: wired by the tsconfig and vitest path aliases, and
 deliberately **absent from `package.json` exports**. They cannot be imported
@@ -28,6 +29,62 @@ one seam up: it runs against `fetchTransport()` — which shipped first, and
 whose behaviour *is* the client contract — as well as `socketTransport()`.
 The incumbent legitimately skips exactly the live case (it has no `live()`);
 a skip is a reported outcome, never a silent pass.
+
+## The storage suite
+
+`storageConformance` is what "this is a storage the host can run on" means,
+as fourteen cases over the four methods of `ActorStorage`: the load-miss
+shape (`null`, never `undefined`), create/round-trip, the etag chain and
+its staleness, create-over-existing and update-of-missing as conflicts,
+`clear` as compare-and-delete with `null` asserting absence, no resurrection
+of a cleared record by a stale writer, a refused write leaving the record
+byte-identical (the precondition the host's corrupt-state handling rests
+on), loaded records being the caller's to mutate (#25), non-object state
+(arrays, scalars, `null`) staying distinct from absent, and keys being
+opaque — NUL, separators, whitespace and escape-lookalikes are all distinct
+records. The last three cases pin the optional `saveText` path (#238):
+`saveText(json)` is `save(JSON.parse(json))`, it honours the same CAS and
+brand, and the two paths share one etag chain.
+
+Three things it deliberately does NOT assert, and why:
+
+- **Concurrent writers.** Whether two racing saves produce exactly one
+  winner is a property of the *backend's* atomicity — a Lua script, a
+  commit-time conflict plus retry, a Durable Object's per-object
+  serialisation. Each provider pins that with its own mechanism in its own
+  test file; the suite asserts only what a single caller observes.
+- **The save-side ownership rule.** `save` takes the tree at the call and
+  the *caller* must not touch it afterwards — an obligation on the host,
+  not an observable of the store. The load side is asserted.
+- **The host's corrupt-state handling** — that is `runtime.test.ts`.
+
+The incumbent is `memoryStorage`: its behaviour is the contract, and that it
+passes is what proves the suite describes the seam rather than a newcomer's
+habits. `fileStorage`, `durableObjectStorage` (over a Map), and — env-gated
+like everything else against a live server — `pgStorage`, `redisStorage`
+and `surrealStorage` all run the same list.
+
+**Skips are for the text path only, and a harness can forbid them.**
+`saveText` is optional on the seam, so a storage without it reports a skip
+on the three text cases — `memoryStorage` wants the tree, and that is a
+legitimate answer. But absence is also exactly what a *decorator* produces
+when it returns a fixed three-method literal (the decorator rule on
+`ActorStorage`): the host quietly falls back to the two-walk save path and
+nothing says so. A harness sets `saveText: true` to declare the storage
+implements it, and the text cases then FAIL when it is missing rather than
+skip. The in-package run drives `metrics()` over a text-capable adapter
+with that flag set, so a decorator dropping the member is a red case, not a
+green skip.
+
+The sabotage table in `packages/actors/__tests__/storage-conformance.test.ts`
+is rule 2 made permanent: fourteen deliberately broken adapters — a miss
+that loads as `undefined`, a save that ignores the etag, an unbranded
+conflict, an upsert, a load that hands out the stored tree by reference, a
+key-trimming layer, a non-injective NUL escape, a three-method decorator
+over a text adapter, a `saveText` with its own etag chain — each named
+against the case that must catch it, and the test asserts that case goes
+red with a `[storage conformance]` message. A case added without an entry
+there has not been shown to fail.
 
 ## The two rules
 
@@ -69,9 +126,14 @@ every future provider false confidence.
 2. Run `bootstrapConformance` if the provider has a schema bootstrap. Concurrent
    boots from independent connections must converge; that is issues #76 and #78
    as a runnable assertion rather than a comment.
-3. Run the `ActorStorage` suite if it implements storage. `storage()`/`stop()`
+3. Run `storageConformance` if it implements storage. `storage()`/`stop()`
    are the shared intersection with the bootstrap suite and `bootstrap?()` is
-   optional, so the two compose.
+   optional in both, so the harness you wrote for step 2 is the one this
+   step wants. Each harness must hand out a storage over an EMPTY namespace
+   (a fresh schema, key prefix, directory or Map) and `stop()` drops it —
+   cases never clean up after themselves. Declare `saveText: true` if the
+   adapter implements the text path, so a dropped member fails instead of
+   skipping.
 4. Gate the live-server tests on an env var (`REDIS_URL`, `PG_URL`,
    `SURREAL_URL`, `KUBECONFIG`) so the rest of the matrix skips cleanly, and
    add the CI job that provides it.

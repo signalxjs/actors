@@ -5,10 +5,10 @@
  * Alias-only inside this workspace (no `package.json` exports entry), the same
  * standing policy as `@sigx/actors/cluster/testing`.
  *
- * The storage suite of #65 belongs here too, and composes rather than
- * duplicates: `BootstrapConformanceHarness.storage()`/`stop()` are the shared
- * intersection, and `bootstrap?()` is optional, so the harness a provider
- * writes for this suite is already the one that suite will want.
+ * The storage suite (#65) composes with the bootstrap suite rather than
+ * duplicating it: `storage()`/`stop()` are the shared intersection and
+ * `bootstrap?()` is optional in both, so the harness a provider writes for
+ * one is already the one the other wants.
  */
 export {
     bootstrapConformance,
@@ -16,6 +16,11 @@ export {
     type BootstrapConformanceFactory,
     type BootstrapConformanceHarness
 } from './bootstrap';
+export {
+    storageConformance,
+    type StorageConformanceFactory,
+    type StorageConformanceHarness
+} from './storage';
 export {
     socketTransportConformance,
     type SocketTransportFactory,
