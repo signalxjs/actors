@@ -19,6 +19,19 @@
   unaffected — on a multiplexed connection a drop still fails in-flight
   calls un-retried (#99).
 
+- **`membersMemo()` and `ClusterPlacement.onChange`** (#269). Every consumer
+  that wanted "members, cheaply, on a hot path" hand-rolled a cache and had
+  to guess the invalidation key — and the obvious guess, `view().version`,
+  is wrong: a provider that expires a peer on the store's TTL clock
+  re-allocates the view without necessarily bumping the version (#267), so a
+  memo keyed on it latched a stale member count. `membersMemo(placement,
+  filter?)` returns a thunk that answers `members(filter)` memoized per view
+  OBJECT — the key placement's own derived-data caches have always used —
+  recomputing exactly when `view()` hands back a new object. For anything
+  else derived from the view, `placement.onChange(cb)` passes the provider's
+  membership change stream straight through; it is optional on the
+  interface, so a hand-rolled `ClusterPlacement` keeps compiling.
+
 ### Fixed
 
 - **Timer ticks and task turns now carry the host's `callTimeoutMs`** (#302).

@@ -74,7 +74,12 @@ export interface HostDescriptor extends HostIdentity {
 }
 
 export interface MembershipView {
-    /** Monotonic per cluster; bumps on any join/leave/status change. */
+    /**
+     * Monotonic per cluster; bumps on any join/leave/status change a host
+     * WRITES. A peer expiring on the store's TTL clock is observed, not
+     * written, so it need not bump this (#267) — derive from the view
+     * OBJECT (`membersMemo()`, `onChange`), never from `version` (#269).
+     */
     readonly version: number;
     /** Hosts currently believed live. */
     readonly hosts: readonly HostDescriptor[];
