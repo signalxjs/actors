@@ -356,9 +356,10 @@ function liveView(
 
     // The WIDE producer shape (`AsyncStateImpl`), cast to the union at the
     // seam below. `AsyncState` became a discriminated union in core 0.15
-    // (#485's presence pair), and a stable getter object cannot satisfy a
-    // union structurally — core documents this cast as the pack contract and
-    // dev-checks the invariants it asserts inside `matchAsyncState`.
+    // (signalxjs/core#485's presence pair), and a stable getter object
+    // cannot satisfy a union structurally — core documents this cast as the
+    // pack contract and dev-checks the invariants it asserts inside
+    // `matchAsyncState`.
     const view: AsyncStateImpl<unknown> = {
         get state() {
             if (pushed.has) return 'ready';
@@ -371,7 +372,7 @@ function liveView(
         get hasValue() {
             // A pushed value is as present as a fetched one; otherwise defer
             // to the cell, which discriminates on state rather than a null
-            // test (core #485).
+            // test (signalxjs/core#485).
             return pushed.has || state.hasValue;
         },
         get error() {
@@ -388,10 +389,10 @@ function liveView(
                     // The surviving last-good the error arm reads. Core 0.15
                     // replaced the old `stale` field with the value/presence
                     // PAIR, so a legitimately-null last-good is still a value
-                    // (#485) rather than "nothing to show" — which is the
-                    // whole reason `hasValue` has to travel beside it. Both
-                    // come off `view`, whose getters already fold the pushed
-                    // value over the cell's.
+                    // (signalxjs/core#485) rather than "nothing to show" —
+                    // which is the whole reason `hasValue` has to travel
+                    // beside it. Both come off `view`, whose getters already
+                    // fold the pushed value over the cell's.
                     value: view.value,
                     hasValue: view.hasValue,
                     error: view.error,

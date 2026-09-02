@@ -1,7 +1,7 @@
 /**
  * How an actor call becomes a URL — the WRITING half (rfc-server §4/§4.1,
- * core #355). `./wire-symbol` is the mirror; the two are one grammar, and a
- * change to either that forgets the other is a silent 404.
+ * signalxjs/core#355). `./wire-symbol` is the mirror; the two are one
+ * grammar, and a change to either that forgets the other is a silent 404.
  *
  * ## The path
  *
