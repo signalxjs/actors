@@ -16,4 +16,8 @@
   NUL-bearing string whole and then truncates it on every read. Runs the
   shared `storageConformance` suite. Requires **Node >= 22.13** — the
   package's `engines` says so, and its tests skip where `node:sqlite` is
-  unavailable.
+  unavailable. `node:sqlite` is unflagged there but still experimental, so
+  the host prints one `ExperimentalWarning: SQLite is an experimental
+  feature` line on first import; `node --disable-warning=ExperimentalWarning`
+  silences it. Passing both `path` and `database` throws (neither silently
+  wins), and `close()` is idempotent.

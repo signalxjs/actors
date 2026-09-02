@@ -59,10 +59,11 @@ export interface SqliteStorage extends ActorStorage {
     /** Always present here: this adapter stores the serialized form (#238). */
     saveText(type: string, key: string, json: string, expectedEtag: string | null): Promise<string>;
     /**
-     * Close the underlying database. Every later call rejects. A storage
-     * opened by `path` should be closed when its host stops; one over a
-     * caller's `database` closes that database, so call it only if the
-     * storage is its last user.
+     * Close the underlying database. Every later call rejects; a second
+     * `close()` is a no-op, so a `finally` and an explicit stop path can
+     * both call it. A storage opened by `path` should be closed when its
+     * host stops; one over a caller's `database` closes that database, so
+     * call it only if the storage is its last user.
      */
     close(): void;
 }
@@ -105,7 +106,11 @@ function versionOf(etag: string): number | null {
 export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
     const table = checkTable(options.table ?? 'sigx_state');
     let db: DatabaseSync;
-    if (options.database) {
+    if (options.database && options.path !== undefined) {
+        // Not "database wins": a `path` that opened nothing would surface
+        // later as an empty file nobody can explain.
+        throw new Error('[sigx actors-sqlite] pass either `path` or `database` (DatabaseSync), not both.');
+    } else if (options.database) {
         db = options.database;
     } else if (options.path !== undefined) {
         db = new DatabaseSync(options.path);
@@ -172,6 +177,7 @@ export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
         return String(version + 1);
     };
 
+    let closed = false;
     return {
         async load(type, key) {
             const row = selectStmt.get(sqliteText(type), sqliteText(key)) as
@@ -199,6 +205,8 @@ export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
             }
         },
         close() {
+            if (closed) return;
+            closed = true;
             db.close();
         }
     };

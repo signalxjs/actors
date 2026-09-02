@@ -41,9 +41,10 @@ the cost is a rejected save (`ActorStorageConflict`, which the runtime turns
 into fault-and-reload) rather than corruption. Do not add a code path that
 writes state without passing through it.
 
-Etags are opaque and implementation-minted — the network providers use a
-UUID, `fileStorage` and `sqliteStorage` a per-record version counter. The
-runtime only ever compares them for equality.
+Etags are opaque and implementation-minted — `redisStorage`, `pgStorage` and
+`surrealStorage` use a UUID; the rest an integer counter (`memoryStorage`
+store-wide, `fileStorage`, `sqliteStorage` and `durableObjectStorage`
+per-record). The runtime only ever compares them for equality.
 
 Implementers: `memoryStorage` (`./host`), `fileStorage` (`./node`, dev only),
 `redisStorage`, `pgStorage`, `surrealStorage`, `sqliteStorage` (embedded,

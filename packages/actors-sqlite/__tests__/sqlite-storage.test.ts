@@ -17,11 +17,11 @@ import { join } from 'node:path';
 import { defineActor, isStorageConflict } from '@sigx/actors';
 import { createHost } from '@sigx/actors/host';
 
-const hasSqlite = await import('node:sqlite').then(
-    () => true,
-    () => false
+const nodeSqlite = await import('node:sqlite').then(
+    (m) => m,
+    () => null
 );
-const nodeSqlite = hasSqlite ? await import('node:sqlite') : null;
+const hasSqlite = nodeSqlite !== null;
 const sqlite = hasSqlite ? await import('@sigx/actors-sqlite') : null;
 
 describe.skipIf(!hasSqlite)('sqliteStorage', () => {
@@ -42,6 +42,14 @@ describe.skipIf(!hasSqlite)('sqliteStorage', () => {
             expect(() => sqlite!.sqliteStorage({})).toThrow(/pass either `path` or `database`/);
         });
 
+        it('refuses both path and database — one would be silently ignored', () => {
+            const db = new nodeSqlite!.DatabaseSync(':memory:');
+            expect(() => sqlite!.sqliteStorage({ path: ':memory:', database: db })).toThrow(
+                /pass either `path` or `database`/
+            );
+            db.close();
+        });
+
         it('refuses a table name that is not a plain identifier', () => {
             expect(() => sqlite!.sqliteStorage({ path: ':memory:', table: 'state; DROP' })).toThrow(
                 /must match/
@@ -54,7 +62,14 @@ describe.skipIf(!hasSqlite)('sqliteStorage', () => {
             s.close();
             await expect(s.load('T', 'k')).rejects.toThrow();
             await expect(s.save('T', 'k2', { n: 1 }, null)).rejects.toThrow();
+            await expect(s.saveText('T', 'k3', '{"n":1}', null)).rejects.toThrow();
             await expect(s.clear('T', 'k', null)).rejects.toThrow();
+        });
+
+        it('close() is idempotent — a finally plus an explicit stop path must not throw', () => {
+            const s = sqlite!.sqliteStorage({ path: ':memory:' });
+            s.close();
+            expect(() => s.close()).not.toThrow();
         });
 
         it('a caller-supplied database is used as-is and shares its rows', async () => {

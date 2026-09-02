@@ -307,7 +307,10 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   SQLite stores a NUL-bearing bound string whole and then truncates it in
   every text function and read — the row is distinct in the index and
   unreadable everywhere else. Zero runtime deps. **Node ≥ 22.13 only**
-  (`node:sqlite` is unflagged from there) while the repo's floor is 20.19:
+  (`node:sqlite` is unflagged from there but still Stability 1.1 — every
+  host process prints one `ExperimentalWarning: SQLite is an experimental
+  feature` to stderr on first import; `--disable-warning=ExperimentalWarning`
+  silences it) while the repo's floor is 20.19:
   the package's `engines` says `>=22.13.0`, and both test files probe
   `import('node:sqlite')` and `describe.skipIf` on failure — importing the
   package DYNAMICALLY after the probe, since its static `node:sqlite`

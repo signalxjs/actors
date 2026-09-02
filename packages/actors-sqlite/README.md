@@ -17,8 +17,11 @@ your own open `DatabaseSync`. `close()` closes it.
 pnpm add @sigx/actors-sqlite
 ```
 
-Node-only and **Node ≥ 22.13** (`node:sqlite` is unflagged from there); no
-runtime dependencies beyond the `@sigx/actors` peer. Single-node by design: two
+Node-only and **Node ≥ 22.13** (`node:sqlite` is unflagged from there, but
+still marked experimental: the process prints one `ExperimentalWarning: SQLite
+is an experimental feature` line to stderr on first import — harmless, and
+`node --disable-warning=ExperimentalWarning` silences it); no runtime
+dependencies beyond the `@sigx/actors` peer. Single-node by design: two
 hosts sharing one file serialize on SQLite's write lock — for a cluster, use
 [`@sigx/actors-redis`](https://www.npmjs.com/package/@sigx/actors-redis) or
 [`@sigx/actors-pg`](https://www.npmjs.com/package/@sigx/actors-pg).
