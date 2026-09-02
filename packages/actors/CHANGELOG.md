@@ -90,6 +90,22 @@
 
 ### Fixed
 
+- **`host.stop()` now waits for a task run it interrupts mid-start** (#333).
+  A run entered the activation's task table the moment `tasks.start` was
+  called, but only joined the set deactivation awaits once its body launched
+  — after the ledger write and the task-liveness `track` had landed. A stop
+  in that window aborted the run and, with nothing yet to await, moved on;
+  the body then launched with an already-aborted signal and wound down
+  while the host was tearing down around it (or after `stop()` had already
+  resolved). The outcome was the documented at-least-once one — the entry
+  stays and the run resumes on the next activation — but the wind-down went
+  uncovered. A run is now awaited from its reservation on: deactivation's
+  `taskGraceMs` covers a launch that lands during the stop, its body's
+  wind-down and its bookkeeping, and the rollback of a start whose durable
+  half failed. The grace-timeout warning keeps its split — a body that
+  ignored its signal vs. a storage round trip still in flight — with a
+  not-yet-launched start counted as the latter. Closes the gap #313 left.
+
 - **A `defineWorker` call no longer carries a routing token** (#148). The
   client minted a token for a worker call exactly as for an actor call, so
   an edge that hashes on it (`upstream-hash-by`, the k8s chart's Ingress)

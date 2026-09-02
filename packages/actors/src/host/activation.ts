@@ -466,9 +466,30 @@ interface TaskRun {
     startedAt: number;
     /** Times the runtime re-started this run (0 on a fresh start). */
     restarts: number;
-    /** Settles when the body AND its ledger bookkeeping settle; never
-     *  rejects. Deactivation's grace wait covers both. */
+    /** Set by `#launch`: the body is running (or has run). False while the
+     *  run is only RESERVED — its start's durable writes still in flight. */
+    launched: boolean;
+    /** Settles when the run is over: the body AND its ledger bookkeeping,
+     *  or the rollback of a start whose durable half failed. Never
+     *  rejects. Deactivation's grace wait covers all of it (#313, #333). */
     settled: Promise<void>;
+    /** Resolves `settled` — `#settle` is its only caller. */
+    settle: () => void;
+}
+
+function newTaskRun(name: string, startedAt: number, restarts: number): TaskRun {
+    let settle!: () => void;
+    const settled = new Promise<void>((r) => (settle = r));
+    return {
+        name,
+        controller: new AbortController(),
+        callId: mintCallId(),
+        startedAt,
+        restarts,
+        launched: false,
+        settled,
+        settle
+    };
 }
 
 export class Activation {
@@ -524,17 +545,17 @@ export class Activation {
     /** Running detached tasks, by name (single-flight per name). */
     #tasks = new Map<string, TaskRun>();
     /**
-     * Every LAUNCHED run until its `settled` resolves — a superset of
-     * `#tasks` from `#launch` on, which a run leaves the moment its body
-     * returns (`#release`), BEFORE its ledger / liveness bookkeeping.
-     * Deactivation awaits this set, not the reservation table: a stop
-     * landing between the two would otherwise leave that bookkeeping
-     * behind — one stale task-roster entry per job that finished as the
-     * host went down (#313). LAUNCHED on purpose: a run that is only
-     * RESERVED (in `#tasks`, its start's durable writes still awaiting)
-     * is aborted by deactivate() but not awaited — its body launches with
-     * an already-aborted signal and keeps its entry for the resume, the
-     * same at-least-once outcome as before #313 (follow-up: #333).
+     * Every run from `#reserve` until its `settled` resolves — a superset
+     * of `#tasks`, which a run leaves the moment its body returns
+     * (`#release`), BEFORE its ledger / liveness bookkeeping. Deactivation
+     * awaits this set, not the reservation table: a stop landing between
+     * the two would otherwise leave that bookkeeping behind — one stale
+     * task-roster entry per job that finished as the host went down
+     * (#313). From RESERVE, not launch: a run whose start is still
+     * awaiting its durable writes is aborted by deactivate() too, and its
+     * body then launches with an already-aborted signal — the grace has
+     * to cover that wind-down as well, or deactivation moves on while the
+     * body it just interrupted is still running (#333).
      */
     #settling = new Set<TaskRun>();
     /** Lazily bound — one instance per activation (one writer chain). */
@@ -1331,13 +1352,14 @@ export class Activation {
         ]);
         clearTimeout(timer);
         if (outcome === 'timeout' && __DEV__) {
-            // Two distinct failures, warned separately: a run still in
-            // `#tasks` is a body that did not wind down; one only in
-            // `#settling` has returned and is stuck on its bookkeeping's
-            // storage round trip — no body left to advise.
-            const bodies = [...this.#tasks.keys()];
+            // Two distinct failures, warned separately: a LAUNCHED run
+            // still in `#tasks` is a body that did not wind down; any
+            // other run in `#settling` is stuck on a storage round trip —
+            // its start's durable writes (not launched yet) or the
+            // bookkeeping after its body returned — with no body to advise.
+            const bodies = [...this.#tasks.values()].filter((r) => r.launched).map((r) => r.name);
             const bookkeeping = [...this.#settling]
-                .filter((r) => this.#tasks.get(r.name) !== r)
+                .filter((r) => !r.launched || this.#tasks.get(r.name) !== r)
                 .map((r) => r.name);
             const grace = `past the ${this.#host.taskGraceMs}ms grace — proceeding with deactivation.`;
             if (bodies.length > 0) {
@@ -1351,8 +1373,9 @@ export class Activation {
                 console.warn(
                     `[sigx actors] task(s) "${bookkeeping.join('", "')}" of ${actorLabel(this.ref)} ` +
                         `still had task bookkeeping in flight ${grace} The storage round trip ` +
-                        `clearing the ledger / task-roster entry outran taskGraceMs; the write ` +
-                        `is not cancelled and may still land, and an entry it leaves behind is ` +
+                        `writing or clearing the ledger / task-roster entry outran taskGraceMs; ` +
+                        `the write is not cancelled and may still land. An entry a start leaves ` +
+                        `behind resumes on the next activation; one a finish leaves behind is ` +
                         `cleared when the roster is adopted (a touch that finds nothing to ` +
                         `resume).`
                 );
@@ -1930,14 +1953,7 @@ export class Activation {
         // settle the deactivation just awaited.
         if (this.#abort.signal.aborted) throw new HostShutdownError();
         if (this.#tasks.has(name)) return;
-        const run: TaskRun = {
-            name,
-            controller: new AbortController(),
-            callId: mintCallId(),
-            startedAt: Date.now(),
-            restarts: 0,
-            settled: Promise.resolve()
-        };
+        const run = newTaskRun(name, Date.now(), 0);
         const fn = this.#resolveTask(name, run);
         if (typeof fn !== 'function') {
             throw new ActorMethodNotFoundError(
@@ -1950,7 +1966,8 @@ export class Activation {
         // Reserve SYNCHRONOUSLY, before the durable writes await: start is
         // callable from detached code, so two concurrent starts would both
         // pass the has() gate above and double-launch. Rolled back if the
-        // durable half fails.
+        // durable half fails — and settled then, so a deactivation grace
+        // that caught the run mid-start covers the rollback too.
         this.#reserve(run);
         try {
             // A derived ledger has nothing to write: the definition's own
@@ -1990,6 +2007,7 @@ export class Activation {
                     // At-least-once: the entry resumes on the next activation.
                 }
             }
+            this.#settle(run);
             throw error;
         }
         this.#launch(run, fn, input);
@@ -2002,14 +2020,7 @@ export class Activation {
      */
     async #resumeTask(name: string, entry: TaskLedgerEntry): Promise<void> {
         if (this.#faulted || this.#abort.signal.aborted || this.#tasks.has(name)) return;
-        const run: TaskRun = {
-            name,
-            controller: new AbortController(),
-            callId: mintCallId(),
-            startedAt: entry.startedAt,
-            restarts: entry.restarts + 1,
-            settled: Promise.resolve()
-        };
+        const run = newTaskRun(name, entry.startedAt, entry.restarts + 1);
         const fn = this.#resolveTask(name, run);
         if (typeof fn !== 'function') {
             if (__DEV__) {
@@ -2035,6 +2046,7 @@ export class Activation {
             }
         } catch (error) {
             this.#release(run);
+            this.#settle(run);
             throw error;
         }
         // A derived entry's input IS live state; a stored one is already a
@@ -2046,10 +2058,19 @@ export class Activation {
         this.#launch(run, fn, input);
     }
 
-    /** The single-flight gate. Synchronous on purpose — see #startTask. */
+    /** The single-flight gate. Synchronous on purpose — see #startTask.
+     *  Also where a run joins `#settling`: from here on deactivation awaits
+     *  it, whether it gets to launch or is rolled back (#333). */
     #reserve(run: TaskRun): void {
         this.#tasks.set(run.name, run);
+        this.#settling.add(run);
         this.#keepAlive++;
+    }
+
+    /** The run is over — launched and wound down, or rolled back. */
+    #settle(run: TaskRun): void {
+        this.#settling.delete(run);
+        run.settle();
     }
 
     #release(run: TaskRun): void {
@@ -2076,10 +2097,10 @@ export class Activation {
         // a detached body's ctx.actor() would then silently carry the
         // STARTING turn's chain instead of starting fresh. Clear it.
         const body = (): Promise<void> => this.#taskBody(run, fn, input);
-        this.#settling.add(run);
-        run.settled = (this.#als ? this.#als.run(null, body) : body()).finally(() => {
-            this.#settling.delete(run);
-        });
+        run.launched = true;
+        // `#taskBody` never rejects, so `settled` (resolved in `#settle`)
+        // never does either.
+        void (this.#als ? this.#als.run(null, body) : body()).finally(() => this.#settle(run));
     }
 
     #taskBody(run: TaskRun, fn: AnyTaskFn, input: unknown): Promise<void> {

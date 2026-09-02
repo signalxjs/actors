@@ -160,6 +160,75 @@ describe('task liveness: the per-host roster', () => {
         expect(await rosterOf(inner, hostId!)).toEqual([]);
     });
 
+    it('host.stop() during a start\'s liveness track waits for the launched body to wind down (#333)', async () => {
+        // A run is RESERVED (in the task table) the moment start is called,
+        // but its body launches only once the ledger write and the liveness
+        // track have landed. A stop in that window aborts the run and must
+        // wait for what it just aborted: the body launches with an aborted
+        // signal and winds down — and deactivation used to have moved on by
+        // then, so its grace never covered that wind-down. Modelled with a
+        // track held for one macrotask and `host.stop()` called the moment
+        // it starts.
+        const inner = rosterTaskLiveness();
+        let stopping: Promise<void> | null = null;
+        let host!: Host;
+        const liveness: typeof inner = {
+            bind: (c) => inner.bind(c),
+            start: () => inner.start(),
+            stop: () => inner.stop(),
+            track: async (ref) => {
+                if (!stopping) {
+                    stopping = host.stop({ timeoutMs: 1000 });
+                    await new Promise((r) => setTimeout(r, 0));
+                }
+                return inner.track(ref);
+            },
+            untrack: (ref) => inner.untrack(ref)
+        };
+        let windDown!: () => void;
+        const wound = new Promise<void>((r) => (windDown = r));
+        const seen: string[] = [];
+        const Worker = defineActor({
+            type: 'Worker',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({ begin: () => ctx.tasks.start('run') }),
+            tasks: (ctx) => ({
+                async run() {
+                    seen.push(ctx.abortSignal.aborted ? 'launched-aborted' : 'launched');
+                    await aborted(ctx.abortSignal);
+                    // A wind-down the test holds open, so "stop waited for it"
+                    // is an ordering fact rather than a race against a timer.
+                    await wound;
+                    seen.push('wound-down');
+                }
+            })
+        });
+        host = createHost({
+            actors: [Worker],
+            storage: memoryStorage(),
+            defaults: quiet,
+            taskLiveness: liveness
+        });
+        running.push(host);
+        const begun = host.actor(Worker, 'w').begin();
+        try {
+            await until(() => seen.length > 0);
+            expect(seen).toEqual(['launched-aborted']);
+            // The body is parked in its wind-down: stop must still be waiting.
+            const settled = await Promise.race([
+                stopping!.then(() => 'settled' as const),
+                new Promise<'pending'>((r) => setTimeout(() => r('pending'), 30))
+            ]);
+            expect(settled).toBe('pending');
+        } finally {
+            windDown();
+        }
+        await within(stopping!, 2000);
+        expect(seen).toEqual(['launched-aborted', 'wound-down']);
+        await within(begun, 2000);
+    });
+
     it('bookkeeping that outruns taskGraceMs is warned as such, not as an ignored signal', async () => {
         // The grace-timeout warning splits by what is stuck: a body still in
         // the task table ignored its signal; a run that has returned and is
