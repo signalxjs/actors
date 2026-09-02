@@ -300,9 +300,10 @@ export interface PluginRegistry {
  * that installs a placement backend names the strategy type it understands
  * (`cluster()` → `PlacementPolicy`), `app.use()` intersects it into the
  * app, and the app-bound `defineActor` accepts only that — so a strategy
- * tagged for another backend fails to compile instead of being refused at
- * dispatch (#58). Plugins that install no placement leave it at the widest
- * reading, `ActorPlacementStrategy`.
+ * tagged for another backend fails to compile where the runtime would have
+ * ignored it silently, and a malformed untagged one fails to compile where
+ * the runtime would have thrown at dispatch (#58). Plugins that install no
+ * placement leave it at the widest reading, `ActorPlacementStrategy`.
  */
 export interface ActorPlugin<
     Ext extends object = Record<never, never>,
@@ -348,7 +349,10 @@ export interface ActorApp<
 > {
     /**
      * Register a plugin. Mutates and returns THIS app, widened by `Ext` and
-     * narrowed to the plugin's `Placement` (see `ActorPlugin`).
+     * narrowed to the plugin's `Placement` (see `ActorPlugin`). The
+     * intersection is deliberate: a second placement backend with a
+     * different tag narrows `placement` to nothing, because no one strategy
+     * can satisfy two backends.
      */
     use<E extends object, P extends ActorPlacementStrategy = ActorPlacementStrategy>(
         plugin: ActorPlugin<E, P>

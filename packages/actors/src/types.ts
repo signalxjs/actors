@@ -257,6 +257,10 @@ export interface ActorPlacementStrategy {
      * missing `choose()` stops being a dev-only warning and a silent
      * misplacement in production. Set by each backend's own factories; a
      * hand-written strategy may omit it, and is then judged on shape alone.
+     *
+     * A backend's plugin can also narrow `ActorOptions.placement` to its own
+     * strategy type structurally, through `ActorPlugin<Ext, Placement>`, so
+     * the app-bound `defineActor` catches the mismatch at compile time (#58).
      */
     readonly backend?: string;
 }
@@ -1131,8 +1135,10 @@ export interface ActorOptions<
      *
      * Through an app-bound `defineActor` this is narrowed to what the app's
      * placement plugin understands (`cluster()` → `PlacementPolicy`), so a
-     * strategy tagged for another backend is a compile error rather than a
-     * runtime refusal (#58). The bare `defineActor` accepts any strategy.
+     * strategy tagged for another backend is a compile error where the
+     * runtime would have ignored it silently, and a malformed untagged one
+     * is a compile error where the runtime would have thrown (#58). The
+     * bare `defineActor` accepts any strategy.
      */
     placement?: Placement;
     /** Runs before the first message; throwing fails all queued callers. */
