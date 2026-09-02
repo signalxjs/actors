@@ -10,7 +10,8 @@
   `console.error` at best — so an app learned it had lost a write only by
   polling for faults, or never. `onStateError(ctx, error, phase)` on the
   definition now receives both: `phase: 'flush'` for the debounced save
-  (a transient error leaves the state dirty for the next flush; an etag
+  (a transient error leaves the state dirty and schedules no retry of its
+  own — the next write or the deactivation flush carries it; an etag
   conflict has faulted the activation), `'final-flush'` for the save at
   deactivation, where a failure IS lost data — dead-letter `ctx.snapshot()`
   from there. `ctx.save()` failures still reject the calling turn and never

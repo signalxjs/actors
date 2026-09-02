@@ -93,8 +93,10 @@ describe('onStateError', () => {
         await vi.waitFor(() => expect(seen).toHaveLength(1));
         expect(seen[0]).toEqual({ key: 'w', error: expect.any(Error), phase: 'flush', n: 1 });
         // Still serving: a transient storage error is not a state conflict.
+        // The failed flush re-armed nothing — this WRITE is what schedules
+        // the next one, and the dirty state rides along with it.
         await expect(client.bump()).resolves.toBe(2);
-        // Storage recovers; the dirty state rides the next flush.
+        // Storage recovers before that flush fires.
         failing.on = false;
         await vi.waitFor(async () => {
             const record = await storage.load('WBFlush', 'w');
@@ -109,18 +111,24 @@ describe('onStateError', () => {
         const wb = wbActor('WBConflict', 5, seen);
         const storage = memoryStorage();
         const host = createHost({ actors: [wb], storage, defaults: quiet });
-        const client = host.actor(wb, 'w');
-        await client.bump();
-        await vi.waitFor(async () => expect(await storage.load('WBConflict', 'w')).not.toBeNull());
-        // A second writer clobbers the record behind the activation's back.
-        const record = await storage.load('WBConflict', 'w');
-        await storage.save('WBConflict', 'w', { n: 99 }, record!.etag);
-        await client.bump();
-        await vi.waitFor(() => expect(seen).toHaveLength(1));
-        expect(seen[0]!.phase).toBe('flush');
-        expect(seen[0]!.error).toSatisfy(
-            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
-        );
+        try {
+            const client = host.actor(wb, 'w');
+            await client.bump();
+            await vi.waitFor(async () =>
+                expect(await storage.load('WBConflict', 'w')).not.toBeNull()
+            );
+            // A second writer clobbers the record behind the activation's back.
+            const record = await storage.load('WBConflict', 'w');
+            await storage.save('WBConflict', 'w', { n: 99 }, record!.etag);
+            await client.bump();
+            await vi.waitFor(() => expect(seen).toHaveLength(1));
+            expect(seen[0]!.phase).toBe('flush');
+            expect(seen[0]!.error).toSatisfy(
+                (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+            );
+        } finally {
+            await host.stop({ timeoutMs: 1000 });
+        }
     });
 
     it('a throwing hook is swallowed (dev-logged) and deactivation still completes', async () => {

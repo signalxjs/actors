@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import { defineActor } from '@sigx/actors';
+import {
+    ActorWrongHostError,
+    defineActor,
+    isActorError,
+    type ActorDispatcher,
+    type ActorPlacement,
+    type PlacementBindings
+} from '@sigx/actors';
 import { createHost, memoryStorage } from '@sigx/actors/host';
-import { ACTIVATION_RETRY_STORM_THRESHOLD } from '../src/host/local-host';
+import {
+    ACTIVATION_RETRY_STORM_THRESHOLD,
+    ACTIVATION_RETRY_STORM_WINDOW_MS
+} from '../src/host/local-host';
 
 /**
  * The `__DEV__` retry-storm warning (#54). A poisoned actor — one whose
@@ -72,6 +82,62 @@ describe('activation retry-storm warning', () => {
             expect(storms(warn)).toEqual([]);
             await expect(client.ping()).rejects.toThrow();
             expect(storms(warn)).toHaveLength(1);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('a streak older than the window restarts instead of warning', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const realNow = Date.now;
+        let skew = 0;
+        const now = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+        try {
+            const gate = { poison: true };
+            const def = poisoned('Poison4', gate);
+            const host = createHost({ actors: [def], storage: memoryStorage(), defaults: quiet });
+            const client = host.actor(def, 'k');
+            for (let i = 0; i < N - 1; i++) await expect(client.ping()).rejects.toThrow();
+            // The third failure lands after the window: a flaky actor, not
+            // a storm — it starts a fresh streak instead of completing one.
+            skew = ACTIVATION_RETRY_STORM_WINDOW_MS + 1;
+            await expect(client.ping()).rejects.toThrow();
+            expect(storms(warn)).toEqual([]);
+            for (let i = 0; i < N - 1; i++) await expect(client.ping()).rejects.toThrow();
+            expect(storms(warn)).toHaveLength(1);
+            // ...and the reported span is the NEW streak's, not the day's.
+            expect(storms(warn)[0]).toMatch(/in \d{1,4}ms/);
+        } finally {
+            now.mockRestore();
+            warn.mockRestore();
+        }
+    });
+
+    it('beforeActivate refusals are placement, not a poisoned actor — they do not count', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            let local: ActorDispatcher | undefined;
+            const bindings: PlacementBindings = {
+                beforeActivate(ref) {
+                    throw new ActorWrongHostError(`${ref.type}/${ref.key}`, { hostId: 's.other' });
+                }
+            };
+            const placement: ActorPlacement = {
+                dispatcherFor: () => local!,
+                bind(dispatcher) {
+                    local = dispatcher;
+                    return bindings;
+                }
+            };
+            const def = poisoned('Poison5', { poison: false });
+            const host = createHost({ actors: [def], storage: memoryStorage(), placement, defaults: quiet });
+            const client = host.actor(def, 'k');
+            for (let i = 0; i < N + 1; i++) {
+                await expect(client.ping()).rejects.toSatisfy(
+                    (e: unknown) => isActorError(e) && e.kind === 'wrong-host'
+                );
+            }
+            expect(storms(warn)).toEqual([]);
         } finally {
             warn.mockRestore();
         }

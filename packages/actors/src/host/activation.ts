@@ -1538,8 +1538,11 @@ export class Activation {
                         // Inside the same system turn, so a hook reading
                         // ctx.state sees the frame the save failed on. A
                         // conflict has already faulted the activation via
-                        // #doSave; a transient error leaves the state dirty
-                        // for the next boundary to reschedule.
+                        // #doSave. A transient error leaves the state dirty
+                        // and nothing here re-arms the debounce: #afterTurn
+                        // only schedules on a NEW dirty boundary, so the
+                        // next write or the final flush at deactivation
+                        // carries it — a non-mutating turn does not.
                         await this.#reportStateError(error, 'flush');
                     }
                 })

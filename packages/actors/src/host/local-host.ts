@@ -43,6 +43,16 @@ const DEFAULT_ACTIVATIONS_LIMIT = 100;
 export const ACTIVATION_RETRY_STORM_THRESHOLD = 3;
 
 /**
+ * How long one streak lives: a failure landing more than this after the
+ * streak began starts a new one. Three failures spread over a day are a
+ * flaky actor, not a storm — and the bound is what keeps the dev-only
+ * streak map from growing with every key a poisoned type is ever asked
+ * for. A storm that outlasts the window warns again — once per window,
+ * never per failure.
+ */
+export const ACTIVATION_RETRY_STORM_WINDOW_MS = 30_000;
+
+/**
  * Directory id of one stateless pool member: `NUL + actorId + NUL + seq`.
  * The LEADING NUL cannot collide with any `actorId` — types are non-empty
  * and NUL-free, so every actorId starts with a non-NUL character — and the
@@ -112,8 +122,9 @@ export class LocalHost implements ActorDispatcher {
     #bindings: () => PlacementBindings | undefined;
     /**
      * `__DEV__` only: consecutive `ActorActivationError`s per directory id
-     * and when the streak began. Cleared by a successful activation; an
-     * entry past the threshold stays so the streak warns once, not on
+     * and when the streak began. Cleared by a successful activation and
+     * restarted once it is older than `ACTIVATION_RETRY_STORM_WINDOW_MS`;
+     * an entry past the threshold stays so the streak warns once, not on
      * every further failure.
      */
     #activationFailures: Map<string, { count: number; since: number }> | null = __DEV__
@@ -514,9 +525,20 @@ export class LocalHost implements ActorDispatcher {
     #noteActivationFailure(id: string, ref: ActorRef): void {
         const failures = this.#activationFailures!;
         const now = Date.now();
-        const streak = failures.get(id) ?? { count: 0, since: now };
+        const expired = (s: { since: number }) => now - s.since > ACTIVATION_RETRY_STORM_WINDOW_MS;
+        let streak = failures.get(id);
+        if (!streak || expired(streak)) {
+            // A new streak. The map otherwise shrinks only on a success, so
+            // a poisoned type asked for many keys would grow it without
+            // bound — drop the streaks that have expired, amortized over
+            // the map having grown at all.
+            if (!streak && failures.size >= 256) {
+                for (const [k, s] of failures) if (expired(s)) failures.delete(k);
+            }
+            streak = { count: 0, since: now };
+            failures.set(id, streak);
+        }
         streak.count++;
-        failures.set(id, streak);
         if (streak.count === ACTIVATION_RETRY_STORM_THRESHOLD) {
             console.warn(
                 `[sigx actors] ${actorLabel(ref)} activated-and-failed ${streak.count} times in ` +
