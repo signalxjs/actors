@@ -1410,6 +1410,25 @@ export interface ActorWatchDeclaration {
 /** Per-call options for `actor(...).with()`, mirroring `fn.with()`. */
 export interface ActorCallOptions {
     signal?: AbortSignal;
+    /**
+     * This call's deadline as a BUDGET in milliseconds from now, in place of
+     * the host's `callTimeoutMs` (#75). Wins over the host default in both
+     * directions — a 50ms budget against a 30s default rejects at 50ms, and
+     * a 5-minute budget lets one long awaited method past a 30s default —
+     * but never EXTENDS a deadline the call inherits from an enclosing turn:
+     * on a `ctx.actor()` hop the effective deadline is the earlier of the
+     * inherited one and `now + deadlineMs`, so a budget deep in a chain can
+     * only tighten what the entry point allowed. Must be a positive finite
+     * number. The HTTP client sends it as remaining-ms
+     * (`x-sigx-deadline-ms`) and the endpoint re-anchors it on its own clock,
+     * the same discipline as the cluster envelope; the server rejects the
+     * call with the usual `call-timeout` error (504 on the wire) when it
+     * passes. Socket transports do not carry it in v1. A stream's
+     * consumption is not raced by it — a stream is consumed, not awaited —
+     * but the stream body runs under this call context, so an awaited
+     * `ctx.actor()` hop made from inside it inherits the deadline as usual.
+     */
+    deadlineMs?: number;
     /** Extra request headers (wire transport only). */
     headers?: Record<string, string>;
     /** Explicit server context for in-process calls (`fn.with({ context })`). */

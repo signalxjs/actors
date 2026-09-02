@@ -93,6 +93,19 @@ export const ACTOR_OWNER_HEADER = 'x-sigx-actor-owner';
 export const ACTOR_ONEWAY_HEADER = 'x-sigx-one-way';
 
 /**
+ * Client → server: this call's deadline (`.with({ deadlineMs })`, #75) as
+ * REMAINING milliseconds, never an absolute timestamp — the same discipline
+ * as the cluster envelope's `remainingMs`, and for the same reason: an
+ * absolute deadline would be wrong by the clock skew between the browser
+ * and the server. The endpoint re-anchors it on its own clock and stamps
+ * `ActorCallContext.deadline`, so the call carries this budget instead of
+ * the host's `callTimeoutMs`. Anything but a positive finite number is
+ * dropped whole (the host default applies) — never a 400, and never read
+ * as "no deadline".
+ */
+export const ACTOR_DEADLINE_HEADER = 'x-sigx-deadline-ms';
+
+/**
  * How the client derives an actor's routing token.
  *
  * - `'hash'` (default) — an opaque hash of the actor id.

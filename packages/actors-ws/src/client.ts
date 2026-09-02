@@ -14,7 +14,9 @@
  *   through placement on the session side (`onMiss: 'proxy'` semantics).
  *   Per-call `endpoint` overrides — the router seam's mechanism — are
  *   ignored, with one `__DEV__` warning: honouring them would mean a socket
- *   per host and destroy the connection collapse that is the point.
+ *   per host and destroy the connection collapse that is the point. So are
+ *   per-call `headers` (authenticated once at upgrade) and, for now, a
+ *   per-call `deadlineMs` (#75; the host default applies) — one warning each.
  * - **In-flight calls fail when the socket drops, and are NEVER retried
  *   here.** Same policy as the cluster connection: silently re-sending a
  *   non-idempotent actor method is a correctness bug, not a retry. The
@@ -128,6 +130,7 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
     let live: SocketLiveChannel | null = null;
     let warnedEndpoint = false;
     let warnedHeaders = false;
+    let warnedDeadline = false;
 
     const closedError = (): Error =>
         Object.assign(new Error('[sigx actors] socket transport is closed'), {
@@ -291,6 +294,13 @@ export function socketTransport(options: SocketTransportOptions = {}): ActorTran
             console.warn(
                 '[sigx actors] socketTransport cannot send per-call headers — the ' +
                     'connection was authenticated once at upgrade.'
+            );
+        }
+        if (init.deadlineMs !== undefined && !warnedDeadline) {
+            warnedDeadline = true;
+            console.warn(
+                '[sigx actors] socketTransport does not carry a per-call deadline yet ' +
+                    '(#75) — the host default applies.'
             );
         }
     };

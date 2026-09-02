@@ -8,7 +8,7 @@
  * the HTTP transport, and a dropped connection fails in-flight calls
  * WITHOUT retrying them.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServerFnError } from '@sigx/server';
 import { defineActor } from '@sigx/actors';
 import { createHost, type Host } from '@sigx/actors/host';
@@ -195,6 +195,21 @@ describe('unary calls over the socket', () => {
         });
         // …and the connection survived both failures.
         expect(await transport.call('Cart#total', ['k1'])).toBe(0);
+    });
+
+    it('warns once in __DEV__ that a per-call deadlineMs is not carried (#75)', async () => {
+        const s = await start();
+        const { transport } = pair(s);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            expect(await transport.call('Cart#total', ['k1'], { deadlineMs: 300_000 })).toBe(0);
+            expect(await transport.call('Cart#total', ['k1'], { deadlineMs: 5 })).toBe(0);
+            const about = warn.mock.calls.filter(([m]) => String(m).includes('deadline'));
+            expect(about).toHaveLength(1);
+            expect(String(about[0]![0])).toMatch(/host default applies/);
+        } finally {
+            warn.mockRestore();
+        }
     });
 
     it('a one-way call resolves immediately and still lands', async () => {

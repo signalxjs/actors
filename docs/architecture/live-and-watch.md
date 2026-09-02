@@ -441,9 +441,12 @@ task's `ctx.turn` — therefore carries the host's `callTimeoutMs`
 (`selfStartedCall` in `host/activation.ts`; before #302 they carried none,
 which is how the rig wedged with nothing timing out). A deadline bounds
 the wedge; it does not remove the cycle. A fan-out that calls back into its
-caller from many hosts wants a queue or one-way delivery (#49), and a
-pool-saturation gauge (#302, option 2) and the per-call budget override
-(#75) remain open.
+caller from many hosts wants a queue or one-way delivery (#49). A call can
+also carry its own budget — `.with({ deadlineMs })` (#75) replaces the
+host default for that one call, but on a `ctx.actor()` hop it only ever
+*tightens* the inherited deadline, and over HTTP it crosses as remaining-ms
+(`x-sigx-deadline-ms`) that the peer re-anchors on its own clock, like the
+cluster envelope. A pool-saturation gauge (#302, option 2) remains open.
 
 Concretely:
 

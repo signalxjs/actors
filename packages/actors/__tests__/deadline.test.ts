@@ -22,6 +22,10 @@ function probeActor() {
             async stuck() {
                 await new Promise(() => {});
             },
+            async nap() {
+                await new Promise((r) => setTimeout(r, 100));
+                return 'rested';
+            },
             async bumpThenFail() {
                 ctx.state.count++;
                 throw new Error('boom');
@@ -237,6 +241,168 @@ describe('call deadlines', () => {
             spy.mockRestore();
         } finally {
             vi.useRealTimers();
+            await stopped(host);
+        }
+    });
+});
+
+/**
+ * A two-hop chain for the per-call budget rules: `outer.hop(ms)` calls
+ * `inner.stuck()` through `ctx.actor(...).with({ deadlineMs: ms })` and
+ * reports how the hop ended, so a test can see the INNER outcome even when
+ * the outer caller is one-way or would itself time out later.
+ */
+function chainActors() {
+    const inner = defineActor({
+        type: 'DeadlineInner',
+        allowAnonymous: true,
+        state: () => ({}),
+        methods: () => ({
+            async stuck() {
+                await new Promise(() => {});
+            }
+        })
+    });
+    const seen: Array<{ kind: string; after: number }> = [];
+    const outer = defineActor({
+        type: 'DeadlineOuter',
+        allowAnonymous: true,
+        state: () => ({}),
+        methods: (ctx) => ({
+            async hop(deadlineMs: number) {
+                const started = Date.now();
+                try {
+                    await ctx.actor(inner, 'i').with({ deadlineMs }).stuck();
+                    return { kind: 'resolved', after: Date.now() - started };
+                } catch (e) {
+                    const entry = {
+                        kind: isActorError(e) ? e.kind : 'other',
+                        after: Date.now() - started
+                    };
+                    seen.push(entry);
+                    return entry;
+                }
+            }
+        })
+    });
+    return { inner, outer, seen };
+}
+
+describe('per-call deadlineMs', () => {
+    it('an explicit budget wins over the host default: 50ms against a 30s default', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        const def = probeActor();
+        const host = createHost({
+            actors: [def],
+            defaults: { ...quiet, callTimeoutMs: 30_000 }
+        });
+        try {
+            const p = host.actor(def, 'short').with({ deadlineMs: 50 }).stuck();
+            const assertion = expect(p).rejects.toSatisfy(
+                (e: unknown) =>
+                    isActorError(e) &&
+                    e.kind === 'call-timeout' &&
+                    (e as Error).message.includes('50ms')
+            );
+            await vi.advanceTimersByTimeAsync(100);
+            await assertion;
+        } finally {
+            vi.useRealTimers();
+            await stopped(host);
+        }
+    });
+
+    it('an explicit budget longer than the host default extends it — the issue\'s case', async () => {
+        const def = probeActor();
+        const host = createHost({
+            actors: [def],
+            defaults: { ...quiet, callTimeoutMs: 40 }
+        });
+        try {
+            const client = host.actor(def, 'long');
+            // The default still bounds an un-annotated call...
+            await expect(client.nap()).rejects.toSatisfy(
+                (e: unknown) => isActorError(e) && e.kind === 'call-timeout'
+            );
+            // ...and the per-call budget lifts exactly this one past it.
+            await expect(client.with({ deadlineMs: 5_000 }).nap()).resolves.toBe('rested');
+        } finally {
+            await stopped(host);
+        }
+    });
+
+    it('in-chain: an explicit budget shorter than the inherited deadline wins', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        const { inner, outer } = chainActors();
+        const host = createHost({
+            actors: [inner, outer],
+            defaults: { ...quiet, callTimeoutMs: 30_000 }
+        });
+        try {
+            const p = host.actor(outer, 'o').hop(50);
+            await vi.advanceTimersByTimeAsync(100);
+            // The inner hop timed out at ITS budget; the outer turn (still
+            // inside the inherited 30s) observed that and returned normally.
+            await expect(p).resolves.toEqual({ kind: 'call-timeout', after: 50 });
+        } finally {
+            vi.useRealTimers();
+            await stopped(host);
+        }
+    });
+
+    it('in-chain: an explicit budget never EXTENDS the inherited deadline', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        const { inner, outer, seen } = chainActors();
+        const host = createHost({
+            actors: [inner, outer],
+            defaults: { ...quiet, callTimeoutMs: 0 }
+        });
+        try {
+            // One-way, so the outer caller is not itself raced: what is
+            // observed below is the INNER hop alone, bounded by the 100ms it
+            // inherited despite asking for a minute.
+            await host.actor(outer, 'o').with({ oneWay: true, deadlineMs: 100 }).hop(60_000);
+            await vi.advanceTimersByTimeAsync(200);
+            expect(seen).toEqual([{ kind: 'call-timeout', after: 100 }]);
+        } finally {
+            vi.useRealTimers();
+            await stopped(host);
+        }
+    });
+
+    it('in-chain: with no inherited deadline the explicit budget applies on its own', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        const { inner, outer, seen } = chainActors();
+        // No host default and an un-annotated one-way entry: the chain
+        // carries NO deadline, so `inherited === undefined` and the hop's
+        // own budget is the only bound on the inner call.
+        const host = createHost({
+            actors: [inner, outer],
+            defaults: { ...quiet, callTimeoutMs: 0 }
+        });
+        try {
+            await host.actor(outer, 'o').with({ oneWay: true }).hop(50);
+            await vi.advanceTimersByTimeAsync(100);
+            expect(seen).toEqual([{ kind: 'call-timeout', after: 50 }]);
+        } finally {
+            vi.useRealTimers();
+            await stopped(host);
+        }
+    });
+
+    it('rejects a budget that is not a positive finite number', async () => {
+        const def = probeActor();
+        const host = createHost({ actors: [def], defaults: { ...quiet, callTimeoutMs: 0 } });
+        try {
+            // `'50'` is what a JS caller can hand over: `'50' > 0` coerces
+            // true and `Date.now() + '50'` would CONCATENATE into a deadline
+            // centuries away — the budget silently disabled.
+            for (const deadlineMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '50' as never]) {
+                await expect(async () =>
+                    host.actor(def, 'bad').with({ deadlineMs }).noop()
+                ).rejects.toThrow(/deadlineMs/);
+            }
+        } finally {
             await stopped(host);
         }
     });
