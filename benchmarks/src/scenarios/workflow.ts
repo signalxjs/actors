@@ -237,8 +237,14 @@ function mechanismMetrics(result: WfLoadResult): Metric[] {
         informational: true
     });
     const set = d.remindersSet ?? 0;
-    const remote = d['cluster/remoteDispatches'] ?? 0;
-    const local = d['cluster/routedLocal'] ?? 0;
+    // The per-request pair (#52), not `remoteDispatches`/`routedLocal`:
+    // `routedLocal` counts placement decisions and never sees the warm
+    // local fast path, so the old ratio read ~100% remote on a fleet that
+    // was serving nearly everything locally. Both `?? 0` — a fleet on a
+    // build that predates the pair reports neither, and `ratio` then says
+    // 0 rather than NaN.
+    const remote = d['cluster/dispatchesRemote'] ?? 0;
+    const local = d['cluster/dispatchesLocal'] ?? 0;
     return [
         count('reminders_set', 'remindersSet', 'higher'),
         count('reminders_fired', 'remindersFired', 'higher'),
@@ -267,6 +273,9 @@ function mechanismMetrics(result: WfLoadResult): Metric[] {
         count('def_reads', 'defReads', 'higher'),
         count('def_cache_hits', 'defCacheHits', 'higher'),
         {
+            // `dispatchesRemote / (dispatchesLocal + dispatchesRemote)`:
+            // the share of this run's calls that crossed a host boundary —
+            // the definition hot key and every child hop.
             name: 'remote_dispatch_ratio',
             value: ratio(remote, remote + local),
             unit: 'ratio',

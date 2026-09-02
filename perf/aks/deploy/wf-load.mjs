@@ -65,6 +65,10 @@ function discard(dir) {
 const CLUSTER_COUNTERS = [
     'remoteDispatches',
     'routedLocal',
+    // The per-request locality pair (#52) — what `remote_dispatch_ratio`
+    // in the workflow scenario is derived from.
+    'dispatchesLocal',
+    'dispatchesRemote',
     'directoryLookups',
     'directoryClaims',
     'claimConflicts',
