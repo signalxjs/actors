@@ -253,8 +253,9 @@ if (MODE === 'jobs') {
     };
     const wallS = summary.wallMs / 1000;
     summary.completedPerSec = wallS > 0 ? Math.round((summary.completed / wallS) * 10) / 10 : null;
-    // A LOWER BOUND: a completed job evidences its steps' checkpoints, a
-    // non-terminal one only what its last-polled progress showed.
+    // A LOWER BOUND: a completed job evidences its steps' checkpoints;
+    // any other status — running, stuck, failed, cancelled — contributes
+    // only what its last-polled progress showed.
     const checkpointsSeen = all.reduce(
         (a, i) => a + (i.status === 'completed' ? JOB_STEPS : (i.progress?.done ?? 0)),
         0
