@@ -10,7 +10,9 @@
   `routedLocal` never was, because it counts placement decisions and the
   warm local fast path bypasses it. Reads `—` until a host that reports the
   pair has dispatched anything, and never `NaN%` against a fleet on an older
-  build.
+  build. The reminder-shard grid below it now packs eight cells per row on
+  any pane 48 columns or wider (it folded at seven on a 60-column pane, one
+  row more than it needed), which is the line the new row takes.
 
 - **The node each host runs on, and how many nodes the fleet spans (#51).**
   The Hosts table has a `NODE` column, the host drill-down a `node` row, the
