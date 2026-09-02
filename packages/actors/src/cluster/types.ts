@@ -7,7 +7,6 @@
  * or gossip provider is a pure addition behind the same interfaces.
  */
 import type { ActorPlacementStrategy, ActorRef } from '../types';
-import type { CLUSTER_BACKEND } from './placement';
 
 /** Minted once per host START and never reused — a restart is a new host. */
 export interface HostIdentity {
@@ -266,8 +265,13 @@ export interface PlacementPolicy extends ActorPlacementStrategy {
      * is structurally NOT a `PlacementPolicy`, which is what lets the
      * app-bound `defineActor` of a `cluster()` app reject it at compile time
      * (#58). Still optional — a hand-written policy is judged on shape.
+     *
+     * Spelled as the literal rather than `typeof CLUSTER_BACKEND` so this
+     * contract file does not import the implementation; the two cannot
+     * drift, because `placement.ts` builds every factory policy with
+     * `backend: CLUSTER_BACKEND` and would stop compiling.
      */
-    readonly backend?: typeof CLUSTER_BACKEND;
+    readonly backend?: 'cluster';
     choose(
         ref: ActorRef,
         view: MembershipView,
