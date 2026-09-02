@@ -215,29 +215,59 @@ function shapeKnob(shape, name) {
  * the chain falls back PER LINK, so a fleet mid-rollout produces a clean
  * HTTP number wearing the tcp label — and `INFRA_SHAPE` would compare it as
  * tcp. `protocolBreaches` already fails the run for the analogous silent
- * invalidation; this does the same for `cluster/transportFallbacks`.
+ * invalidation; this does the same, off two numbers that catch two
+ * different failures:
+ *
+ * - `tcpHosts < hosts` — the chain is not INSTALLED everywhere. This is the
+ *   structural check, and it needs no trustworthy snapshot. It also covers
+ *   the blind spot of the delta below: `transportDispatcher` counts a
+ *   fallback once per peer at chain resolution and then caches the
+ *   transport it chose, so on a stably mixed fleet every link that fell
+ *   back BEFORE the `before` snapshot (a previous arm in the same session,
+ *   any pre-run cross-host traffic) stays on HTTP for the whole run without
+ *   moving the counter — delta 0, run measured over HTTP.
+ * - `cluster/transportFallbacks > 0` — a link actually FELL BACK during the
+ *   run, on a fleet that looks fully installed: the peer had no tcp
+ *   address at the moment its chain was resolved.
  *
  * Returns `null` when the run stands: a shape that is not tcp (over HTTP
- * there is nothing to fall back FROM), or a tcp run with zero fallbacks.
- * `valid: false` voids the run. `valid: true` with a message is a tcp run
- * whose count is MISSING — `cluster/*` keys are omitted when a stats
- * fan-out missed a host at either end — which is reported rather than
- * silently passed, but not failed: the absence is a snapshot failure, not
- * evidence of a fallback.
+ * there is nothing to fall back FROM), or a tcp run with the chain on every
+ * host and zero fallbacks. `valid: false` voids the run. `valid: true` with
+ * a message is a tcp run whose chain is installed everywhere but whose
+ * fallback count is MISSING — reported rather than silently passed, but
+ * not failed: the absence is a collection failure, not evidence of a
+ * fallback. Two causes, told apart by `watchesTrustworthy`: `cluster/*`
+ * keys are omitted from the delta when a stats fan-out missed a host at
+ * either end, and a host image whose counters predate the field is never
+ * summed at all (`socketTotals` skips non-numbers).
  *
  * @param {string | undefined} shape the live `INFRA_SHAPE`, read AFTER the run
  * @param {Record<string, number>} delta `WsLoadResult.delta`
+ * @param {{ hosts: number, tcpHosts: number, watchesTrustworthy: boolean }} fleet
+ *   the same run's `hosts`, `tcpHosts` and `watchesTrustworthy`
  * @returns {{ valid: boolean, message: string } | null}
  */
-export function transportGate(shape, delta) {
+export function transportGate(shape, delta, fleet) {
     if (shapeKnob(shape, 'TRANSPORT') !== 'tcp') return null;
+    const { hosts, tcpHosts, watchesTrustworthy } = fleet;
+    if (tcpHosts < hosts) {
+        return {
+            valid: false,
+            message:
+                `tcp in the transport chain on ${tcpHosts} of ${hosts} hosts — the fleet was ` +
+                'partly on HTTP for a TRANSPORT=tcp run; the run is not valid'
+        };
+    }
     const fallbacks = delta['cluster/transportFallbacks'];
     if (typeof fallbacks !== 'number') {
+        const cause = watchesTrustworthy
+            ? 'the hosts do not report it (an image whose counters predate the field)'
+            : 'a cluster-stats fan-out missed a host (watchesTrustworthy=false)';
         return {
             valid: true,
             message:
-                'transport fallbacks unknown — a cluster-stats fan-out missed a host, ' +
-                'so the tcp gate went unchecked; verify tcpHosts equals hosts by hand'
+                `transport fallbacks not collected — ${cause}; the chain is installed on all ` +
+                `${hosts} hosts, but whether a link fell back went unchecked`
         };
     }
     if (fallbacks > 0) {

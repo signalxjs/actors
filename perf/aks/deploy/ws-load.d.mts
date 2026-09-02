@@ -108,16 +108,21 @@ export interface TransportVerdict {
 }
 
 /**
- * The TCP gate (#223): on a shape whose knobs say `TRANSPORT=tcp`, a
- * non-zero `delta['cluster/transportFallbacks']` voids the run (`valid:
- * false`), and a MISSING count — `watchesTrustworthy` was false — is
- * reported as unchecked (`valid: true`, with a message) rather than
- * silently passed. `null` when the run stands: not a tcp shape, or a tcp
- * run with zero fallbacks.
+ * The TCP gate (#223): on a shape whose knobs say `TRANSPORT=tcp`, a run
+ * is void (`valid: false`) when `fleet.tcpHosts` is short of `fleet.hosts`
+ * — the chain is not installed everywhere, which the per-run delta cannot
+ * see once a link's fallback is cached from before the `before` snapshot —
+ * or when `delta['cluster/transportFallbacks']` is non-zero. A MISSING
+ * count on a fully installed fleet is reported as unchecked (`valid: true`,
+ * with a message naming the cause: a stats fan-out missed a host when
+ * `watchesTrustworthy` is false, otherwise the hosts do not report the
+ * field) rather than silently passed. `null` when the run stands: not a
+ * tcp shape, or a tcp run with the chain on every host and zero fallbacks.
  */
 export function transportGate(
     shape: string | undefined,
-    delta: Record<string, number>
+    delta: Record<string, number>,
+    fleet: Pick<WsLoadResult, 'hosts' | 'tcpHosts' | 'watchesTrustworthy'>
 ): TransportVerdict | null;
 
 export interface WsLoadOptions {

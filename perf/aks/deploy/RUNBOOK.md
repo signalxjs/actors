@@ -592,6 +592,10 @@ Pass/fail, and what to record:
   if the two disagree, one of them is wrong and the run is void.
 - **`protocolBreaches` must be 0.** The verb fails the run on any. A breach
   means the client and the session disagree about the vocabulary.
+- **On a `TRANSPORT=tcp` shape, `tcpHosts` must equal `hosts` and
+  `cluster/transportFallbacks` must be 0.** The verb fails the run on
+  either — a fleet partly on HTTP, or a link that fell back to it, is an
+  HTTP number wearing the tcp label. See the TCP section below.
 - **`maxBufferedBytes` is the CLIENT's send buffer, and cannot answer the
   backpressure question.** The socket send path is fire-and-forget —
   nothing in the runtime reads `bufferedAmount` — so a slow client shows up
@@ -749,12 +753,21 @@ bind cannot start at all, so a pod that answers has one; the mixed fleet is
 the case worth catching.)
 
 `tcpHosts` proves the chain is *installed*; `cluster/transportFallbacks` in
-the `delta` block proves no link actually *fell back* under load, which is
-the stronger claim. The hand-run enforces it (#223): a `TRANSPORT=tcp` shape
-with a non-zero fallback count exits non-zero, the way `protocolBreaches`
-does. The count rides with the other `cluster/*` deltas, so it is absent —
-and the gate says it went unchecked — when `watchesTrustworthy` is false;
-that is the one case where reading `tcpHosts` by hand is still the check.
+the `delta` block proves no link actually *fell back* during the run. The
+hand-run enforces both (#223): a `TRANSPORT=tcp` shape with `tcpHosts`
+short of `hosts`, or with a non-zero fallback count, exits non-zero the way
+`protocolBreaches` does. Neither number alone is enough. The fallback count
+is a per-run delta and the dispatcher caches the transport it chose per
+peer, so a link that fell back *before* the run's first snapshot — a
+previous arm in the same session, any pre-run cross-host traffic — stays
+on HTTP without moving the counter; `tcpHosts` catches that mixed fleet.
+And `tcpHosts` says nothing about a peer whose tcp address was missing at
+the moment a chain was resolved; the count does. The count rides with the
+other `cluster/*` deltas, so it is absent when `watchesTrustworthy` is
+false (a stats fan-out missed a host), and never summed on a host image
+whose counters predate the field; in either case the verb says the
+fallback check went unchecked, naming which, and lets the run stand on
+`tcpHosts` alone.
 
 Three numbers make the comparison, against scenario (q)5 on the same ladder:
 

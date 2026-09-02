@@ -596,10 +596,11 @@ async function wsLoad(args) {
         log('  ✗ protocol breaches — the client and the session disagree; the run is not valid');
         process.exitCode = 1;
     }
-    // A link that fell back to HTTP invalidates a TRANSPORT=tcp measurement
-    // as thoroughly as a breach does, and just as silently (#223). Judged
-    // against the shape the numbers belong to — the one re-read above.
-    const transport = transportGate(shapeAfter, result.delta);
+    // A fleet partly on HTTP, or a link that fell back to it, invalidates a
+    // TRANSPORT=tcp measurement as thoroughly as a breach does, and just as
+    // silently (#223). Judged against the shape the numbers belong to — the
+    // one re-read above.
+    const transport = transportGate(shapeAfter, result.delta, result);
     if (transport) {
         log(`  ${transport.valid ? '!' : '✗'} ${transport.message}`);
         if (!transport.valid) process.exitCode = 1;

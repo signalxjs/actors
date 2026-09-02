@@ -20,12 +20,19 @@ const TCP_SHAPE =
 const HTTP_SHAPE =
     'ws replicas=3 nodes=3 image=tag123 knobs=ENABLE_SOCKET=1,FETCH_CONNECTIONS=1024';
 
+/** A fleet on which the tcp chain is installed everywhere and every stats fan-out landed. */
+const CLEAN_FLEET = { hosts: 3, tcpHosts: 3, watchesTrustworthy: true };
+
 describe('transportGate (#223)', () => {
     it('voids a TRANSPORT=tcp run on which any link fell back', () => {
-        const verdict = transportGate(TCP_SHAPE, {
-            'cluster/remoteWatches': 1324,
-            'cluster/transportFallbacks': 2
-        });
+        const verdict = transportGate(
+            TCP_SHAPE,
+            {
+                'cluster/remoteWatches': 1324,
+                'cluster/transportFallbacks': 2
+            },
+            CLEAN_FLEET
+        );
         expect(verdict).not.toBeNull();
         expect(verdict!.valid).toBe(false);
         // The count is in the message — one fallback and a fleet's worth
@@ -36,20 +43,54 @@ describe('transportGate (#223)', () => {
 
     it('lets a clean tcp run stand', () => {
         expect(
-            transportGate(TCP_SHAPE, {
-                'cluster/remoteWatches': 1324,
-                'cluster/transportFallbacks': 0
-            })
+            transportGate(
+                TCP_SHAPE,
+                {
+                    'cluster/remoteWatches': 1324,
+                    'cluster/transportFallbacks': 0
+                },
+                CLEAN_FLEET
+            )
         ).toBeNull();
+    });
+
+    it('voids a TRANSPORT=tcp run whose chain is not installed on every host, whatever the delta says', () => {
+        // The delta has a blind spot the runbook's own case walks into:
+        // `transportDispatcher` counts a fallback once per peer at chain
+        // resolution and then CACHES the transport it chose, so on a
+        // stably mixed fleet every link that fell back before the `before`
+        // snapshot — a previous arm in the same session, any pre-run
+        // cross-host traffic — stays on HTTP for the whole run without
+        // moving the counter. `tcpHosts < hosts` catches exactly that, and
+        // needs no trustworthy snapshot to do it.
+        const verdict = transportGate(
+            TCP_SHAPE,
+            { 'cluster/remoteWatches': 1324, 'cluster/transportFallbacks': 0 },
+            { hosts: 3, tcpHosts: 2, watchesTrustworthy: true }
+        );
+        expect(verdict).not.toBeNull();
+        expect(verdict!.valid).toBe(false);
+        // Both numbers are in the message — "2 of 3" is the finding.
+        expect(verdict!.message).toMatch(/2 of 3/);
+        expect(verdict!.message).toContain('not valid');
+        // …and a missing count does not soften it into a hint.
+        expect(
+            transportGate(TCP_SHAPE, { open: 0 }, { hosts: 3, tcpHosts: 1, watchesTrustworthy: false })!.valid
+        ).toBe(false);
     });
 
     it('is silent when the shape is not tcp — a fallback off HTTP is not a claim the run made', () => {
         // Over HTTP there is nothing to fall back FROM; a non-zero count
         // here would be another transport's story, and a shape without a
         // knobs block at all has no TRANSPORT to gate on.
-        expect(transportGate(HTTP_SHAPE, { 'cluster/transportFallbacks': 3 })).toBeNull();
-        expect(transportGate('ws replicas=3 nodes=3 image=tag123', { 'cluster/transportFallbacks': 3 })).toBeNull();
-        expect(transportGate(undefined, { 'cluster/transportFallbacks': 3 })).toBeNull();
+        // Nor is a fleet without tcp installed anywhere — over HTTP that is
+        // the expected picture.
+        const noTcp = { hosts: 3, tcpHosts: 0, watchesTrustworthy: true };
+        expect(transportGate(HTTP_SHAPE, { 'cluster/transportFallbacks': 3 }, noTcp)).toBeNull();
+        expect(
+            transportGate('ws replicas=3 nodes=3 image=tag123', { 'cluster/transportFallbacks': 3 }, noTcp)
+        ).toBeNull();
+        expect(transportGate(undefined, { 'cluster/transportFallbacks': 3 }, noTcp)).toBeNull();
     });
 
     it('matches TRANSPORT as a whole knob, not a substring of another', () => {
@@ -58,27 +99,45 @@ describe('transportGate (#223)', () => {
         expect(
             transportGate(
                 'ws replicas=3 nodes=3 image=t knobs=SOCKET_ORIGIN=tcp,X_TRANSPORT=tcp',
-                { 'cluster/transportFallbacks': 3 }
+                { 'cluster/transportFallbacks': 3 },
+                CLEAN_FLEET
             )
         ).toBeNull();
         // …and the knob's position in the list does not matter.
         expect(
-            transportGate('ws replicas=3 nodes=3 image=t knobs=TRANSPORT=tcp,SOCKET_PING_MS=5000', {
-                'cluster/transportFallbacks': 1
-            })!.valid
+            transportGate(
+                'ws replicas=3 nodes=3 image=t knobs=TRANSPORT=tcp,SOCKET_PING_MS=5000',
+                { 'cluster/transportFallbacks': 1 },
+                CLEAN_FLEET
+            )!.valid
         ).toBe(false);
     });
 
-    it('says so, without failing the run, when the count is missing on a tcp run', () => {
-        // `cluster/*` keys are omitted from the delta when a cluster-stats
-        // fan-out missed a host at either end. A gate that silently passes
-        // on a missing number is the "number nobody knows to distrust"
-        // this rig exists to avoid — so the tcp run is told the gate went
-        // unchecked, but not voided: the absence is a snapshot failure,
-        // not evidence of a fallback.
-        const verdict = transportGate(TCP_SHAPE, { open: 0, deliveries: 10 });
-        expect(verdict).not.toBeNull();
-        expect(verdict!.valid).toBe(true);
-        expect(verdict!.message).toContain('unchecked');
+    it('says so, without failing the run, when the count is missing on a tcp run whose chain is installed everywhere', () => {
+        // A gate that silently passes on a missing number is the "number
+        // nobody knows to distrust" this rig exists to avoid — so the tcp
+        // run is told the fallback check went unchecked, but not voided:
+        // `tcpHosts` equals `hosts`, so the chain is installed, and the
+        // absence is a collection failure, not evidence of a fallback.
+        // Two causes, told apart by `watchesTrustworthy`: `cluster/*` keys
+        // are omitted from the delta when a cluster-stats fan-out missed a
+        // host at either end…
+        const fanOut = transportGate(TCP_SHAPE, { open: 0, deliveries: 10 }, {
+            hosts: 3,
+            tcpHosts: 3,
+            watchesTrustworthy: false
+        });
+        expect(fanOut).not.toBeNull();
+        expect(fanOut!.valid).toBe(true);
+        expect(fanOut!.message).toContain('unchecked');
+        expect(fanOut!.message).toContain('missed a host');
+        // …and a host image whose counters predate the field never sums
+        // it at all, so the key is missing on a fully trustworthy delta.
+        const oldImage = transportGate(TCP_SHAPE, { 'cluster/remoteWatches': 10 }, CLEAN_FLEET);
+        expect(oldImage).not.toBeNull();
+        expect(oldImage!.valid).toBe(true);
+        expect(oldImage!.message).toContain('unchecked');
+        expect(oldImage!.message).toContain('do not report');
+        expect(oldImage!.message).not.toContain('missed a host');
     });
 });
