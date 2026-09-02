@@ -4,6 +4,27 @@
 
 ### Added
 
+- **`onStateError` hook for write-behind save failures** (#54). A
+  `write-behind` save has no caller to throw to: the debounced flush failed
+  silently, and the final flush at deactivation was a `__DEV__`
+  `console.error` at best — so an app learned it had lost a write only by
+  polling for faults, or never. `onStateError(ctx, error, phase)` on the
+  definition now receives both: `phase: 'flush'` for the debounced save
+  (a transient error leaves the state dirty for the next flush; an etag
+  conflict has faulted the activation), `'final-flush'` for the save at
+  deactivation, where a failure IS lost data — dead-letter `ctx.snapshot()`
+  from there. `ctx.save()` failures still reject the calling turn and never
+  reach the hook. Without the hook, dev builds now log the debounced-flush
+  failure too, instead of dropping it.
+
+- **`__DEV__` warning for an activation retry storm** (#54). An actor whose
+  `onActivate` (or state load, or `migrateState`) throws fails every parked
+  caller and is forgotten, so the next caller activates it again — a hot
+  loop throttled only by its callers, and nothing in the logs said so. Dev
+  builds now warn once per streak when the same actor activates-and-fails
+  three times in a row (`Type/key activated-and-failed 3 times in Nms`); a
+  successful activation resets the streak.
+
 - **`fetchTransport` retries a pre-response connection failure once** (#55).
   A rolling restart leaves an irreducible residue of connection-level errors
   at the edge: the client writes onto a pooled keep-alive socket in the same

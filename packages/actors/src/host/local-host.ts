@@ -33,6 +33,16 @@ import { effectiveReentrancy } from './reentrancy';
 const DEFAULT_ACTIVATIONS_LIMIT = 100;
 
 /**
+ * Consecutive failed activations of ONE actor before the `__DEV__`
+ * retry-storm warning fires (#54). A throwing `onActivate` (or state load,
+ * or `migrateState`) fails every parked caller and forgets the slot, so the
+ * next caller activates it again — a hot loop throttled only by the
+ * callers. Small, because a genuinely transient failure clears on the
+ * first success and a poisoned actor is poisoned on the first retry.
+ */
+export const ACTIVATION_RETRY_STORM_THRESHOLD = 3;
+
+/**
  * Directory id of one stateless pool member: `NUL + actorId + NUL + seq`.
  * The LEADING NUL cannot collide with any `actorId` — types are non-empty
  * and NUL-free, so every actorId starts with a non-NUL character — and the
@@ -100,6 +110,15 @@ export class LocalHost implements ActorDispatcher {
     #shuttingDown = false;
     /** Read per use, not captured: `placement.bind()` runs after construction. */
     #bindings: () => PlacementBindings | undefined;
+    /**
+     * `__DEV__` only: consecutive `ActorActivationError`s per directory id
+     * and when the streak began. Cleared by a successful activation; an
+     * entry past the threshold stays so the streak warns once, not on
+     * every further failure.
+     */
+    #activationFailures: Map<string, { count: number; since: number }> | null = __DEV__
+        ? new Map()
+        : null;
 
     constructor(
         host: ActivationHost,
@@ -457,6 +476,7 @@ export class LocalHost implements ActorDispatcher {
                     // is dropped below — nothing activates.
                     await this.#bindings()?.beforeActivate?.(ref);
                     const activation = await Activation.create(ref, def, this.#host, turns);
+                    if (__DEV__) this.#activationFailures!.delete(id);
                     const current = this.#directory.get(id);
                     if (current === reserved) {
                         this.#directory.set(id, { phase: 'active', activation });
@@ -465,10 +485,14 @@ export class LocalHost implements ActorDispatcher {
                 })();
                 reserved = { phase: 'activating', promise };
                 this.#directory.set(id, reserved);
-                promise.catch(() => {
+                promise.catch((error: unknown) => {
                     // Activation failed: every parked caller rejects with the
-                    // ActorActivationError; nothing is remembered.
+                    // ActorActivationError; nothing is remembered — which is
+                    // exactly what lets a poisoned actor hot-loop (#54).
                     if (this.#directory.get(id) === reserved) this.#directory.delete(id);
+                    if (__DEV__ && error instanceof ActorActivationError) {
+                        this.#noteActivationFailure(id, ref);
+                    }
                 });
                 return promise;
             }
@@ -477,6 +501,29 @@ export class LocalHost implements ActorDispatcher {
             // Deactivating: park until drained, then re-activate fresh
             // (calls during deactivation wait, not fail).
             await slot.drained;
+        }
+    }
+
+    /**
+     * The `__DEV__` retry-storm warning (#54), in the slow-turn warning's
+     * idiom: count, and say so once per streak when the count crosses
+     * `ACTIVATION_RETRY_STORM_THRESHOLD`. Only `ActorActivationError`s
+     * count — a `beforeActivate` wrong-host refusal is placement, not a
+     * broken actor.
+     */
+    #noteActivationFailure(id: string, ref: ActorRef): void {
+        const failures = this.#activationFailures!;
+        const now = Date.now();
+        const streak = failures.get(id) ?? { count: 0, since: now };
+        streak.count++;
+        failures.set(id, streak);
+        if (streak.count === ACTIVATION_RETRY_STORM_THRESHOLD) {
+            console.warn(
+                `[sigx actors] ${actorLabel(ref)} activated-and-failed ${streak.count} times in ` +
+                    `${now - streak.since}ms. A throwing onActivate (or state load, or ` +
+                    `migrateState) is retried by every caller, so callers are the only ` +
+                    `throttle — fix the activation, or back off at the call site.`
+            );
         }
     }
 
