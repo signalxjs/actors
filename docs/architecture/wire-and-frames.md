@@ -70,6 +70,14 @@ Two properties are load-bearing:
   token costs a network hop, never a wrong answer. Any change that makes the
   token authoritative is a bug, not an optimization.
 
+Two kinds of call carry no token in any mode. `$`-prefixed mounts
+(`$live#subscribe` fans one response out to many actors, so there is no single
+owner), and **`defineWorker` types**: a worker is placed on whichever host the
+call lands on, so a token would pin every call for one key to one pod and hand
+back the fleet-wide spread that is the pool's whole point (#148 — measured as
+`pool_spread` 3.03 → 1.12 on three hosts). The build stamps the worker flag
+onto the client stub; a transport reads it from `ActorCallInit.worker`.
+
 It is a hash, not the key — the same `hashRouteToken(type, key)` that
 `@sigx/actors-otel` puts on spans, so spans join to routing tokens in access
 logs. Treat that as log hygiene rather than privacy: an unkeyed hash of an

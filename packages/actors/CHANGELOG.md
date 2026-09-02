@@ -56,6 +56,20 @@
 
 ### Fixed
 
+- **A `defineWorker` call no longer carries a routing token** (#148). The
+  client minted a token for a worker call exactly as for an actor call, so
+  an edge that hashes on it (`upstream-hash-by`, the k8s chart's Ingress)
+  pinned every call for one worker key to ONE pod — and a worker is always
+  placed locally, so the pool that had won 3.03× on three hosts by being
+  spread across all of them collapsed to a single host (`pool_spread` 1.12
+  on the same shape). The build now stamps a `worker` flag onto the client
+  stub (`__actorRef(type, endpoint, streams, reads, true)`,
+  `ExtractedActor.worker`), the proxy threads it through as
+  `ActorCallInit.worker`, and `fetchTransport` emits no token — no path
+  segment, no header — for such a call in any `route` mode, so the edge
+  round-robins it again. A stateful actor's token is unchanged. A custom
+  transport that mints its own token should honour the same flag.
+
 - **`host.stop()` now waits for a just-completed task's bookkeeping** (#313).
   A detached run left the activation's task table the moment its body
   returned, BEFORE its ledger clear and task-liveness `untrack` ran, and the

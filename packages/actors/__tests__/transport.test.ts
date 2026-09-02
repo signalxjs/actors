@@ -160,6 +160,47 @@ describe('the transport seam', () => {
         expect((init.headers as Record<string, string>)[ACTOR_ROUTE_HEADER]).toBeUndefined();
     });
 
+    it('a defineWorker ref mints no routing token, so the edge keeps spreading it', async () => {
+        // A worker has no owner to route to: it is always placed on whichever
+        // host the call lands on. A token would pin every call for one worker
+        // key to one pod and hand back the fleet-wide spread that is the
+        // pool's whole point (#148). An actor ref beside it still gets one.
+        const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ data: 0 })));
+        configureActors({ fetch: fetchSpy });
+        const Worker = __actorRef('Resize', ENDPOINT, ['chunks'], [], true) as never as ReturnType<typeof ref>;
+
+        await Worker.__sigxActorProxy('w1').add('fig');
+        await ref().__sigxActorProxy('w1').add('fig');
+
+        expect(String(fetchSpy.mock.calls[0][0])).toBe(`${ENDPOINT}/Resize/add`);
+        const init = fetchSpy.mock.calls[0][1] as RequestInit;
+        expect((init.headers as Record<string, string>)[ACTOR_ROUTE_HEADER]).toBeUndefined();
+        expect(String(fetchSpy.mock.calls[1][0])).toBe(
+            `${ENDPOINT}/r/${hashRouteToken('Cart', 'w1')}/Cart/add`
+        );
+    });
+
+    it('a worker stream carries no token either, and a substitute transport sees the flag', async () => {
+        const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+            new Response('{"done":true}\n', { headers: { 'content-type': 'application/x-ndjson' } })
+        );
+        configureActors({ route: 'key', fetch: fetchSpy });
+        const Worker = __actorRef('Resize', ENDPOINT, ['watch'], [], true) as never as ReturnType<typeof ref>;
+        for await (const _ of Worker.__sigxActorProxy('w2').watch()) {
+            // drain
+        }
+        // Even an explicit `route: 'key'` does not tokenize a worker — the
+        // mode chooses the token's SHAPE; a worker has nothing to shape.
+        expect(String(fetchSpy.mock.calls[0][0])).toBe(`${ENDPOINT}/Resize/watch`);
+
+        const transport = recordingTransport();
+        configureActors(transport);
+        await Worker.__sigxActorProxy('w3').add('x');
+        await ref().__sigxActorProxy('w3').add('x');
+        expect(transport.calls[0]!.init?.worker).toBe(true);
+        expect(transport.calls[1]!.init?.worker).toBeUndefined();
+    });
+
     it('clearing the transport falls back to the default', async () => {
         configureActors(recordingTransport());
         configureActors(null);

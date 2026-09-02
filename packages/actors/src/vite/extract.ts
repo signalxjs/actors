@@ -24,6 +24,14 @@ export interface ExtractedActor {
     reads: string[];
     authorized: boolean;
     anonymous: boolean;
+    /**
+     * A `defineWorker`. The client stub carries this so the transport mints
+     * no routing token for it: a worker has no owner to route to — it is
+     * placed on whichever host the call lands on — so a token would pin
+     * every call for one key to one pod and cost the pool its fleet-wide
+     * spread (#148).
+     */
+    worker: boolean;
     /** Offset of the defineActor call (for error locations). */
     offset: number;
 }
@@ -132,8 +140,10 @@ export function extractActors(
     /** Local names `defineActor` / `defineWorker` are imported under. A
      *  stateless worker swaps to the same `__actorRef` stub — the client
      *  needs only type, endpoint, streams and reads, none of which know
-     *  about state. */
+     *  about state — plus ONE flag, `worker`, so it knows not to mint a
+     *  routing token (`workerNames` is the subset that sets it). */
     const defineNames = new Set<string>();
+    const workerNames = new Set<string>();
     for (const node of program.body as Node[]) {
         if (node.type !== 'ImportDeclaration') continue;
         const source = node.source?.value as string | undefined;
@@ -151,11 +161,12 @@ export function extractActors(
                 (imported === 'defineActor' || imported === 'defineWorker')
             ) {
                 defineNames.add(spec.local.name as string);
+                if (imported === 'defineWorker') workerNames.add(spec.local.name as string);
             }
         }
     }
 
-    const readActor = (exportName: string, init: Node): void => {
+    const readActor = (exportName: string, init: Node, worker: boolean): void => {
         const arg = (init.arguments ?? [])[0] as Node | undefined;
         if (!arg || arg.type !== 'ObjectExpression') {
             errors.push({
@@ -240,6 +251,7 @@ export function extractActors(
             reads,
             authorized,
             anonymous,
+            worker,
             offset: (init.start ?? 0) as number
         });
     };
@@ -268,7 +280,7 @@ export function extractActors(
                     init.callee?.type === 'Identifier' &&
                     defineNames.has(init.callee.name as string)
                 ) {
-                    readActor(name, init);
+                    readActor(name, init, workerNames.has(init.callee.name as string));
                 } else {
                     otherExports.push(name);
                 }
@@ -312,13 +324,18 @@ export function extractActors(
             lines.push(`import { __serverOnly } from '@sigx/server/client';`);
         }
         for (const actor of actors) {
+            // The arguments are positional, so each one is emitted whenever
+            // any LATER one is: a reads-only actor still passes an empty
+            // `streams`, and a bare worker passes both arrays to reach the
+            // `worker` flag.
+            const withReads = actor.reads.length > 0 || actor.worker;
+            const withStreams = actor.streams.length > 0 || withReads;
             lines.push(
                 `export const ${actor.exportName} = __actorRef(` +
                     `${JSON.stringify(actor.type)}, ${JSON.stringify(options.endpoint)}` +
-                    // `streams` is positional, so a reads-only actor still
-                    // has to pass an empty array through it.
-                    `${actor.streams.length || actor.reads.length ? `, ${JSON.stringify(actor.streams)}` : ''}` +
-                    `${actor.reads.length ? `, ${JSON.stringify(actor.reads)}` : ''});`
+                    `${withStreams ? `, ${JSON.stringify(actor.streams)}` : ''}` +
+                    `${withReads ? `, ${JSON.stringify(actor.reads)}` : ''}` +
+                    `${actor.worker ? ', true' : ''});`
             );
         }
         for (const name of otherExports) {
