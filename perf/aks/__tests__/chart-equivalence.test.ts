@@ -180,13 +180,20 @@ const probeShape = (probe: Manifest | undefined) =>
     };
 
 describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
-    const rendered = helm
-        ? Object.fromEntries(
-              Object.entries(CHARTS).map(([name, chart]) => [name, render(chart)])
-          )
-        : {};
+    // Rendered on first use, not at collection: a `helm template` that
+    // fails is then a test failure with the chart named, not an error
+    // thrown while vitest is still discovering the file.
+    const cache = new Map<string, Manifest[]>();
+    const rendered = (name: string): Manifest[] => {
+        let manifests = cache.get(name);
+        if (!manifests) {
+            manifests = render(CHARTS[name]);
+            cache.set(name, manifests);
+        }
+        return manifests;
+    };
     const names = Object.keys(CHARTS);
-    const host = (name: string) => hostDeployment(rendered[name]);
+    const host = (name: string) => hostDeployment(rendered(name));
 
     it.each(names)('%s: rolls out surge-first, drain-second', (name) => {
         const { strategy } = host(name).spec;
@@ -236,7 +243,7 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
 
     it.each(names)('%s: host and redis carry resource requests and limits', (name) => {
         const containers = [container(host(name), 'host')];
-        const redis = rendered[name].find(
+        const redis = rendered(name).find(
             (m: Manifest) =>
                 m.kind === 'Deployment' &&
                 m.metadata?.labels?.['app.kubernetes.io/component'] === 'redis'
@@ -252,7 +259,7 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
     });
 
     it.each(names)('%s: a PodDisruptionBudget selects the host pods', (name) => {
-        const pdb = hostPdb(rendered[name], host(name));
+        const pdb = hostPdb(rendered(name), host(name));
         expect(pdb, 'a PDB whose selector matches the host pod labels').toBeDefined();
         // Permits a voluntary disruption, but not all of them at once.
         expect(pdb!.spec.maxUnavailable).toBeGreaterThanOrEqual(1);
@@ -294,8 +301,8 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
     it('the lessons agree across charts', () => {
         const [first, ...rest] = names;
         for (const other of rest) {
-            expect(lessons(rendered[other]), `${other} vs ${first}`).toEqual(
-                lessons(rendered[first])
+            expect(lessons(rendered(other)), `${other} vs ${first}`).toEqual(
+                lessons(rendered(first))
             );
         }
     });
@@ -316,7 +323,7 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
         it('a probe cadence changed in one chart breaks the cross-chart agreement', () => {
             const drifted = lessons(render(CHARTS['perf/app'], 'probes.readiness.periodSeconds=7'));
             expect(drifted.probes.readiness?.periodSeconds).toBe(7);
-            expect(drifted).not.toEqual(lessons(rendered['perf/aks']));
+            expect(drifted).not.toEqual(lessons(rendered('perf/aks')));
         });
     });
 });
