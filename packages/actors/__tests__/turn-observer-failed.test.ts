@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import { createHost, memoryStorage, type ActorTurnObserver } from '@sigx/actors/host';
 import type { TypeHandler } from '@sigx/serialize';
@@ -67,13 +67,26 @@ const call = { callChain: [], callId: 'test' };
 const ref = { type: Counter.type, key: 'k' };
 
 describe('turn observer: failed vs post-turn bookkeeping', () => {
-    it('reports failed:false for a turn whose post-turn snapshot threw on the caller', async () => {
+    // The poison flag is module-level state shared by `probe`; reset it per
+    // case so a red run cannot leak it into a later one. The host is stopped
+    // in `afterEach` for the same reason — a failing `expect` mid-test must
+    // not leave a stream subscription and the sweeper timers behind.
+    let host: ReturnType<typeof createHost> | undefined;
+    beforeEach(() => {
         poisoned = false;
+    });
+    afterEach(async () => {
+        poisoned = false;
+        await host?.stop({ timeoutMs: 2000 });
+        host = undefined;
+    });
+
+    it('reports failed:false for a turn whose post-turn snapshot threw on the caller', async () => {
         const seen: Array<{ method: string; failed: boolean }> = [];
         const onTurn: ActorTurnObserver = (_ref, method, _queued, _elapsed, failed) => {
             seen.push({ method, failed });
         };
-        const host = createHost({
+        host = createHost({
             actors: [Counter],
             storage: memoryStorage(),
             types: [probe],
@@ -110,7 +123,5 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
         // The control: a method that throws is what `failed:true` means.
         await expect(host.dispatch(ref, 'missing', [], call)).rejects.toThrow();
         expect(seen.at(-1)).toEqual({ method: 'missing', failed: true });
-
-        await host.stop({ timeoutMs: 2000 });
     });
 });
