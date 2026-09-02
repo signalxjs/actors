@@ -471,7 +471,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `runtime` — that name collides with a pnpm builtin): `ctx.tasks` detached
   work mutating through `ctx.turn` while reads keep answering, and a
   durable `ctx.reminders` entry that outlives the host that armed it and
-  re-activates the actor on a new one. Not published.
+  re-activates the actor on a new one. Two more scripted demos on one host
+  (#110): `pnpm --filter counter-example topics` — `ctx.publish` and
+  `subscriptions:` with no sigx app involved, a publish activating an idle
+  subscriber, `host.publish()` from outside any actor, and a deploy with no
+  subscriber reporting zero — and `pnpm --filter counter-example worker` —
+  `defineWorker` beside a `defineActor` twin, where two concurrent calls to
+  one key overlap for the pool and serialize for the actor, and the pool
+  grows under pressure to `maxLocal`. Not published.
   `pnpm --filter counter-example cluster:serve` keeps that cluster UP
   under steady traffic, with `metrics()` and `ops()` mounted — the
   target `sigx actors top` is demonstrated against.

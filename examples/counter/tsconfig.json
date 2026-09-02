@@ -29,5 +29,7 @@
     },
     // `env.d.ts` declares `__DEV__`, the runtime's compile-time flag, pulled
     // in because `paths` above compiles that source as part of this program.
-    "include": ["src/**/*.ts", "*.ts", "../../packages/actors/src/env.d.ts"]
+    // `__tests__` is in here so the demo-contract tests are typechecked by
+    // the root `typecheck`, not just transpiled by vitest.
+    "include": ["src/**/*.ts", "__tests__/**/*.ts", "*.ts", "../../packages/actors/src/env.d.ts"]
 }
