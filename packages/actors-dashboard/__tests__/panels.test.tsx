@@ -602,3 +602,66 @@ describe('the node each host runs on (#51)', () => {
     });
 });
 
+describe('socket sessions (#166)', () => {
+    const sockets = {
+        connectionsOpened: 7,
+        connectionsClosed: 4,
+        connectionsRefused: 2,
+        callsStarted: 40,
+        callsFailed: 3,
+        subscriptionsOpened: 9,
+        subscriptionsClosed: 5,
+        protocolBreaches: 1,
+        lifetimeCloses: 2,
+        deliveries: 1200,
+        deliveryBytes: 48_000,
+        throttleQuantized: 0,
+        open: 3,
+        inFlight: 1,
+        subscriptions: 4,
+        bufferedBytes: null,
+        lifetimeMs: null
+    };
+    const reporting = (): MonitorSnapshot =>
+        snapshotWith({ hosts: [host({ sockets }), demoSnapshot.hosts[1]!] });
+
+    it('shows the sockets column only when some host reported one', () => {
+        // A column of `—` across a fleet that never said would read as "no
+        // sockets anywhere".
+        const silent = mount(<HostsPanel state={demoState()} />);
+        expect(silent.text()).not.toContain('sockets');
+        silent.unmount();
+
+        const view = mount(<HostsPanel state={demoState(reporting())} />);
+        const headers = view.all('thead th').map((th) => th.textContent);
+        const column = headers.indexOf('sockets');
+        expect(column).toBeGreaterThan(-1);
+        const cells = view.all('tbody tr').map((row) => row.children[column]?.textContent);
+        // The polled host's count; a peer that said nothing draws a gap.
+        expect(cells).toEqual(['3', '—']);
+        view.unmount();
+    });
+
+    it('lists the sessions, deliveries and evictions in the drill-down', () => {
+        const state = demoState(reporting());
+        const view = mount(<HostPanel state={state} hostId="s.2sme5hx2" />);
+        const text = view.text();
+        // `text()` collapses runs of whitespace, hence the `\s+`.
+        expect(text).toContain('socket sessions');
+        expect(text).toMatch(/3 open\s+1 in flight\s+4 subs/);
+        expect(text).toMatch(/1\.2k frames\s+48 kB/);
+        expect(text).toMatch(/7 opened\s+4 closed\s+2 refused/);
+        expect(text).toMatch(/2 lifetime\s+1 protocol breach/);
+        // Unknown buffered bytes is a gap, never `0 B` (#208); no completed
+        // lifetime is "no samples", never three zeroes.
+        expect(text).toMatch(/buffered\s*—/);
+        expect(text).toMatch(/lifetime\s*no samples/);
+        view.unmount();
+    });
+
+    it('draws no socket block for a host that reported none', () => {
+        const view = mount(<HostPanel state={demoState()} hostId="s.2sme5hx2" />);
+        expect(view.text()).not.toContain('socket sessions');
+        view.unmount();
+    });
+});

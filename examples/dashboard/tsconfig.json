@@ -26,6 +26,7 @@
             "@sigx/actors-monitor/format": ["../../packages/actors-monitor/src/format.ts"],
             "@sigx/actors-monitor": ["../../packages/actors-monitor/src/index.ts"],
             "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/server": ["../../packages/actors/src/server/index.ts"],
             "@sigx/actors/cluster": ["../../packages/actors/src/cluster/index.ts"],
             "@sigx/actors": ["../../packages/actors/src/index.ts"]
         }
