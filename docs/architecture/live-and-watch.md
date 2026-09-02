@@ -377,6 +377,29 @@ reaches 1000). The durable sizing rule, cheapest option first:
 3. Or use `@sigx/actors-tcp` (one multiplexed connection per peer), which
    makes the pool arithmetic moot whatever the reads do.
 
+**Calls share that pool with watches, and a call awaited inside a turn is
+the worse tenant (#302).** A turn awaiting a cross-host `ctx.actor()` holds
+its own actor's turn queue AND one pooled connection to the peer until the
+peer answers. When the peer's turns are themselves awaiting calls back
+through the same pool — a parent awaiting `child.start()` on N children
+while each child's last turn awaits `parent.childDone()`, plus every
+finishing run awaiting `ctx.publish()` to one singleton — the pool fills
+with requests whose answers are queued behind the pool, and nothing
+completes. Storage, CPU and the transport all read idle; only `queued`
+climbs. The deadline is what breaks it: the HTTP transport itself honours
+only `abortSignal`, but the deadline crosses as remaining-ms and the
+*peer's* dispatcher races it, answers `call-timeout`, and the connection
+comes back so the caller's turn can proceed with an error. Hence the rule:
+**never await another host inside a turn without a deadline.** Every
+context the runtime mints for a self-started turn — a `ctx.timer` tick, a
+task's `ctx.turn` — therefore carries the host's `callTimeoutMs`
+(`selfStartedCall` in `host/activation.ts`; before #302 they carried none,
+which is how the rig wedged with nothing timing out). A deadline bounds
+the wedge; it does not remove the cycle. A fan-out that calls back into its
+caller from many hosts wants a queue or one-way delivery (#49), and a
+pool-saturation gauge (#302, option 2) and the per-call budget override
+(#75) remain open.
+
 Concretely:
 
 - Keep genuinely `mine()`-shaped reads — anything consulting `ctx.principal` — off hot

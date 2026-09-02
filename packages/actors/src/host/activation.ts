@@ -246,6 +246,14 @@ export interface ActivationHost {
         parentCall: () => ActorCallContext | null
     ): ActorClientWith<D>;
     /**
+     * The deadline a call entering the host NOW would carry — `Date.now()`
+     * plus the host's `callTimeoutMs`, or `undefined` when that is 0. Turns
+     * the actor starts on its own clock (a timer tick, a task's `ctx.turn`)
+     * mint their context from this, so a `ctx.actor()` call made inside one
+     * is bounded the way a call from an external turn is (#302).
+     */
+    defaultDeadline(): number | undefined;
+    /**
      * The topics fan-out — `ctx.publish` delegates here. `call` carries the
      * publishing turn's chain (so a subscription cycling back is a detected
      * deadlock); null means no turn was in progress and the host builds a
@@ -278,6 +286,22 @@ export interface ActivationHost {
      * is a plugin bug and is dev-warned, not silently honoured.
      */
     extendContext?(ref: ActorRef): object | undefined;
+}
+
+/**
+ * Call context for a turn the actor starts on its OWN clock — a timer tick,
+ * a task's `ctx.turn`. No caller means no inherited chain, traceparent or
+ * bag; the chain starts at the actor itself so `ctx.actor()` still detects a
+ * hop back home. The deadline is the host's default (#302): `ctx.actor()`
+ * relays `deadline` verbatim and the dispatcher stamps one only on an EMPTY
+ * chain, so a context minted here without it made every downstream call —
+ * cross-host ones included — unbounded. That is how a tick's fan-out held a
+ * fetch-pool connection forever once the pool wedged; with a deadline the
+ * peer gives up on its own clock and the connection comes back.
+ */
+function selfStartedCall(host: ActivationHost, id: string, callId: string): ActorCallContext {
+    const deadline = host.defaultDeadline();
+    return { callChain: [id], callId, ...(deadline !== undefined ? { deadline } : {}) };
 }
 
 /**
@@ -2093,7 +2117,7 @@ export class Activation {
                     // Deliberately NOT the starting call's context: a task
                     // outlives its starter, so neither traceparent nor the
                     // context bag flows in — ctx.bag reads empty here.
-                    const turnCall = { callChain: [self.id], callId: run.callId };
+                    const turnCall = selfStartedCall(self.#host, self.id, run.callId);
                     self.#currentCall = turnCall;
                     try {
                         return self.#als
@@ -2295,10 +2319,7 @@ export class Activation {
                             // Fresh context: a tick has no caller, so it
                             // inherits neither traceparent nor the context
                             // bag — ctx.bag reads empty in a timer callback.
-                            const tickCall = {
-                                callChain: [self.id],
-                                callId: mintCallId()
-                            };
+                            const tickCall = selfStartedCall(self.#host, self.id, mintCallId());
                             self.#currentCall = tickCall;
                             try {
                                 // The tick closure was created inside the

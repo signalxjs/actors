@@ -299,6 +299,7 @@ class HostImpl implements Host {
             slowTurnMs: this.#defaults.slowTurnMs,
             taskGraceMs: this.#defaults.taskGraceMs,
             scheduler: this.#scheduler,
+            defaultDeadline: () => this.#defaultDeadline(),
             loadState: async (ref) => {
                 const record = await this.#storage.load(ref.type, ref.key);
                 if (!record) return null;
@@ -625,12 +626,18 @@ class HostImpl implements Host {
         return this.#topicIndex;
     }
 
-    #externalCall(signal?: AbortSignal): ActorCallContext {
+    /** `Date.now() + callTimeoutMs`, or `undefined` when the host has no default. */
+    #defaultDeadline(): number | undefined {
         const timeout = this.#defaults.callTimeoutMs;
+        return timeout > 0 ? Date.now() + timeout : undefined;
+    }
+
+    #externalCall(signal?: AbortSignal): ActorCallContext {
+        const deadline = this.#defaultDeadline();
         return {
             callChain: [],
             callId: mintCallId(),
-            ...(timeout > 0 ? { deadline: Date.now() + timeout } : {}),
+            ...(deadline !== undefined ? { deadline } : {}),
             ...(signal ? { abortSignal: signal } : {})
         };
     }
