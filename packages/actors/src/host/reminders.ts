@@ -27,9 +27,14 @@
  * pulled forward) and is reported through `context.undelivered`. That keeps
  * the at-most-once-per-tick posture — a target that never answers costs one
  * attempt per tick, never a hot loop — while a failed dispatch costs a tick
- * rather than the wake. The one deliberate double: a dispatch that timed out
- * AFTER `onReminder` started running is retried too, so `onReminder` should
- * be idempotent — which every at-least-once consumer already assumes.
+ * rather than the wake. A reminder the actor SET again while its dispatch
+ * was failing is left as the actor set it (a later decision wins); one it
+ * CLEARED meanwhile may still be retried once — the tick had already
+ * deleted the entry, so the clear left nothing for the re-arm to see, and a
+ * tombstone would cost a write on every clear of an already-fired reminder.
+ * The two deliberate doubles, then: that one, and a dispatch that timed out
+ * AFTER `onReminder` started running, which is retried too. So `onReminder`
+ * should be idempotent — which every at-least-once consumer already assumes.
  */
 import { isStorageConflict } from '../errors';
 import type {
@@ -52,6 +57,13 @@ interface ReminderEntry {
     period?: number;
 }
 type ReminderTable = Record<string, Record<string, ReminderEntry>>;
+/** A due entry the tick collected — `advanced` is what it wrote for it. */
+interface Due {
+    id: string;
+    ref: ActorRef;
+    name: string;
+    advanced: ReminderEntry | null;
+}
 
 /** The default `ActorReminders`: the sharded table described above. */
 export function shardedReminders(): ActorReminders {
@@ -206,8 +218,7 @@ export class ReminderService implements ActorReminders {
         // `advanced` is what the tick wrote for the entry — `null` for a
         // deleted one-shot — so a failed dispatch can tell "still as I left
         // it" from "the actor has since set or cleared it" (see `#rearm`).
-        const due: { id: string; ref: ActorRef; name: string; advanced: ReminderEntry | null }[] =
-            [];
+        const due: Due[] = [];
         await this.#mutate(shard, (table) => {
             due.length = 0; // the mutation may retry after a CAS conflict
             for (const [id, entries] of Object.entries(table)) {
@@ -234,64 +245,79 @@ export class ReminderService implements ActorReminders {
         // Persisted first (above); now fire. The CAS is what keeps this
         // at-most-once per tick even if another host ticks the same shard:
         // the conflicting ticker reloads an advanced table and collects
-        // nothing. A dispatch that fails is put back for the next tick and
-        // counted (#306) — logged in dev, but never allowed to kill the loop.
+        // nothing. A dispatch that fails is counted (#306) — logged in dev,
+        // but never allowed to kill the loop — and collected, so the shard's
+        // failures go back on the table in ONE write once every dispatch has
+        // settled, rather than one `#mutate` per failure queued through the
+        // host's single writer chain in front of every actor's own
+        // `reminders.set/clear` (the overload that produces the failures is
+        // exactly when that queue must stay short: the rung in #306 had 131
+        // in one tick). The tick already waits for its slowest dispatch, so
+        // its latency is unchanged; what moves is when a FAST failure's
+        // re-arm lands — with the slowest one, at most `callTimeoutMs` later
+        // — and `nextDue` is computed at write time, so that only shifts the
+        // retry, never brings it inside a tick.
         const context = this.#require();
+        const failed: Due[] = [];
         await Promise.allSettled(
-            due.map(({ id, ref, name, advanced }) =>
-                context.deliver(ref, name).catch(async (error) => {
+            due.map((entry) =>
+                context.deliver(entry.ref, entry.name).catch((error) => {
                     if (__DEV__) {
                         console.error(
-                            `[sigx actors] reminder "${name}" on ${ref.type}/${ref.key} failed ` +
-                                `(retrying next tick):`,
+                            `[sigx actors] reminder "${entry.name}" on ` +
+                                `${entry.ref.type}/${entry.ref.key} failed (retrying next tick):`,
                             error
                         );
                     }
-                    context.undelivered?.(ref, name, error);
-                    await this.#rearm(shard, id, ref, name, advanced);
+                    context.undelivered?.(entry.ref, entry.name, error);
+                    failed.push(entry);
                 })
             )
         );
+        if (failed.length > 0) await this.#rearm(shard, failed);
     }
 
     /**
-     * Put a reminder whose dispatch failed back on the table, due one tick
-     * from now — so the retry happens on the next tick and never sooner,
-     * whatever the failure was. Only if the entry is still exactly as this
-     * tick left it: an actor that set or cleared the reminder meanwhile
-     * (from another turn, or from the very `onReminder` a timed-out dispatch
-     * went on to run) made a later decision, and that decision wins.
+     * Put the reminders whose dispatch failed this tick back on the table,
+     * due one tick from now — so the retry happens on the next tick and
+     * never sooner, whatever the failure was. Only where the entry is still
+     * exactly as the tick left it: an actor that SET the reminder again
+     * meanwhile (from another turn, or from the very `onReminder` a
+     * timed-out dispatch went on to run) made a later decision, and that
+     * decision wins. A one-shot the actor CLEARED meanwhile is the known
+     * exception: the tick had already deleted it, so the clear was a no-op
+     * on the table and absent is indistinguishable from untouched — it is
+     * re-armed and delivered once more (see the module header for why).
+     * A periodic one is not: its clear removed the advanced entry, and
+     * nothing is pulled forward for an entry that is gone.
      */
-    #rearm(
-        shard: string,
-        id: string,
-        ref: ActorRef,
-        name: string,
-        advanced: ReminderEntry | null
-    ): Promise<void> {
-        const nextDue = Date.now() + this.#require().tickMs;
+    #rearm(shard: string, failed: readonly Due[]): Promise<void> {
         return this.#mutate(shard, (table) => {
-            const current = table[id]?.[name];
-            if (advanced === null) {
-                // One-shot: deleted by the tick; absent still means unchanged.
-                if (current !== undefined) return;
-                (table[id] ??= {})[name] = { nextDue };
-            } else if (
-                current !== undefined &&
-                current.nextDue === advanced.nextDue &&
-                current.period === advanced.period
-            ) {
-                // Periodic: pull the next firing forward, but never past the
-                // period the tick already scheduled.
-                current.nextDue = Math.min(current.nextDue, nextDue);
+            const nextDue = Date.now() + this.#require().tickMs;
+            for (const { id, name, advanced } of failed) {
+                const current = table[id]?.[name];
+                if (advanced === null) {
+                    // One-shot: deleted by the tick; absent means untouched.
+                    if (current !== undefined) continue;
+                    (table[id] ??= {})[name] = { nextDue };
+                } else if (
+                    current !== undefined &&
+                    current.nextDue === advanced.nextDue &&
+                    current.period === advanced.period
+                ) {
+                    // Periodic: pull the next firing forward, but never past
+                    // the period the tick already scheduled.
+                    current.nextDue = Math.min(current.nextDue, nextDue);
+                }
             }
         }).catch((error) => {
-            // Storage is down or the CAS lost three times — the wake IS lost
-            // now, and the counter above already says so. Do not fail the
-            // tick over it.
+            // Storage is down or the CAS lost three times — those wakes ARE
+            // lost now, and the counter above already says so. Do not fail
+            // the tick over it.
             if (__DEV__) {
                 console.error(
-                    `[sigx actors] could not re-arm reminder "${name}" on ${ref.type}/${ref.key}:`,
+                    `[sigx actors] could not re-arm ${failed.length} failed reminder(s) ` +
+                        `on shard ${shard}:`,
                     error
                 );
             }
