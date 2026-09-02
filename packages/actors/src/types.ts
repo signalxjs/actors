@@ -426,6 +426,9 @@ export interface ActorStorageRecord {
  * does not deliberately replace, `saveText` included. A decorator that
  * returns a fixed three-method literal silently drops the optional path, and
  * the host falls back to the two-walk one — correct, just quietly slower.
+ *
+ * Every rule above is pinned by `storageConformance` in `@sigx/actors/testing`
+ * (workspace-only) — run it against a new adapter before trusting it.
  */
 export interface ActorStorage {
     load(type: string, key: string): Promise<ActorStorageRecord | null>;
