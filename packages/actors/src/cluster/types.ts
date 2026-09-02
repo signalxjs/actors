@@ -88,7 +88,8 @@ export interface MembershipView {
      *
      * Monotonic per PROCESS view, not per cluster: on a change nobody
      * wrote, the provider advances it locally past the store's counter
-     * (the counter catches up at the next written bump), so two hosts may
+     * (the two re-align only once written bumps carry the counter past
+     * it), so two hosts may
      * hold different values for the same converged membership. Compare it
      * only with earlier values from the same handle; for derived data,
      * the view OBJECT is the key (`membersMemo()`, `onChange`) (#269).

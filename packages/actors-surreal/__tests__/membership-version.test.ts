@@ -6,7 +6,8 @@
  * member count (the production finding this issue came from). The provider
  * now advances the exposed version locally (`max(stored, cached + 1)`)
  * whenever the host signature changes without a counter bump, and
- * re-converges onto the counter at the next written bump.
+ * re-aligns with the counter only once written bumps carry it past the
+ * advanced value.
  *
  * Not env-gated: the expiry is scripted through a fake `db` on the
  * structural `SurrealQueryable` seam — the database-clock version of this
@@ -43,7 +44,7 @@ function scriptedDb(): SurrealQueryable & { hosts: HostDescriptor[]; stored: num
 }
 
 describe('MembershipView.version on expiry (#267)', () => {
-    it('advances when a host expires without a counter bump, and re-converges on the next one', async () => {
+    it('advances when a host expires without a counter bump, and re-aligns once the counter overtakes it', async () => {
         const db = scriptedDb();
         db.stored = 3;
         db.hosts = [host('s.w1'), host('s.ghost')];

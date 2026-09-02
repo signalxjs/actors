@@ -21,7 +21,8 @@
   memoizing on `version` latched the stale member count. `pgMembership`
   now advances the exposed version locally (`max(stored, cached + 1)`)
   whenever the host signature changes without a counter bump, and
-  re-converges on the counter at the next written one. The counter itself
+  re-aligns with the counter only once written bumps carry it past the
+  advanced value. The counter itself
   is untouched and remains the LISTEN/NOTIFY skip gate — a bump whose
   payload merely catches up to a locally advanced view is still refreshed.
 - **A failing membership prune is no longer silent** (#268). The lazy

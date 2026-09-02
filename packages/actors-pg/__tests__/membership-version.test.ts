@@ -5,8 +5,8 @@
  * departure changed `hosts` while `version` stood still — and a consumer
  * memoizing on `version` latched the stale member count. The provider now
  * advances the exposed version locally (`max(stored, cached + 1)`) whenever
- * the host signature changes without a counter bump, and re-converges onto
- * the counter at the next written bump.
+ * the host signature changes without a counter bump, and re-aligns with the
+ * counter only once written bumps carry it past the advanced value.
  *
  * Not env-gated: the expiry is scripted through a fake pool on the
  * structural `PgPoolLike` seam — the database-clock version of this case
@@ -45,7 +45,7 @@ function scriptedPool(): PgPoolLike & { hosts: HostDescriptor[]; stored: number 
 }
 
 describe('MembershipView.version on expiry (#267)', () => {
-    it('advances when a host expires without a counter bump, and re-converges on the next one', async () => {
+    it('advances when a host expires without a counter bump, and re-aligns once the counter overtakes it', async () => {
         const pool = scriptedPool();
         pool.stored = 3;
         pool.hosts = [host('s.w1'), host('s.ghost')];

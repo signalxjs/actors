@@ -429,8 +429,9 @@ export function pgMembership(
         // The exposed version is a per-PROCESS change token, not the store's
         // counter: an expiry changes `hosts` with no writer to bump anything,
         // so every observed change advances it — past the counter when it
-        // must — and the next written bump re-converges the two (#267). A
-        // consumer keyed on `version` therefore sees the expiry too.
+        // must — and the two re-align only once written bumps carry the
+        // counter past it (#267). A consumer keyed on `version` therefore
+        // sees the expiry too.
         const next: MembershipView = { version: Math.max(stored, cached.version + 1), hosts };
         storeVersion = stored;
         cached = next;

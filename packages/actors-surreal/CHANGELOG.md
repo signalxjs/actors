@@ -21,8 +21,9 @@
   `version` latched the corpses into a concurrency cap for minutes, the
   production finding behind the issue. `surrealMembership` now advances the
   exposed version locally (`max(stored, cached + 1)`) whenever the host
-  signature changes without a counter bump, and re-converges on the counter
-  at the next written one. The counter itself is untouched.
+  signature changes without a counter bump, and re-aligns with the counter
+  only once written bumps carry it past the advanced value. The counter
+  itself is untouched.
 - **A failing membership prune is no longer silent** (#268). The lazy
   expiry prune in `surrealMembership` swallowed every failure — a
   permanently failing `DELETE` (permissions, schema drift) accumulated

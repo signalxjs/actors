@@ -108,8 +108,9 @@ host writes (join / `setStatus` / leave), so a provider that exposed it
 verbatim stood still on an expiry — and a consumer memoizing a member count on
 it latched the corpses. Each store-backed provider now keeps the counter as
 its push skip gate and advances the exposed version locally
-(`max(stored, cached + 1)`) on any signature-only change, re-converging at the
-next written bump. Hence "monotonic per process view": two hosts may hold
+(`max(stored, cached + 1)`) on any signature-only change, re-aligning with the
+counter only once written bumps carry it past the advanced value — a bump that
+merely catches up is itself a change and advances the view again. Hence "monotonic per process view": two hosts may hold
 different values for one converged membership, and `ClusterCounters.
 membershipVersion` spreads for that reason as well as for non-convergence.
 

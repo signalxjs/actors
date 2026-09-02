@@ -224,8 +224,9 @@
   stood still, and a consumer memoizing on it latched a stale member count.
   `pgMembership`, `redisMembership` and `surrealMembership` now advance the
   exposed version locally on any change nobody wrote (`max(stored,
-  cached + 1)`), re-converging on the store's counter at the next written
-  bump. The doc now says exactly that: strictly increasing on every change
+  cached + 1)`), re-aligning with the store's counter only once written bumps
+  carry it past the advanced value — a bump that merely catches up is itself
+  a change and advances the view again. The doc now says exactly that: strictly increasing on every change
   THIS process observes, monotonic per process view rather than per cluster
   (two hosts may hold different values for one converged membership), so
   compare it only with earlier values from the same handle. The memory hub
