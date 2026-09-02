@@ -626,6 +626,40 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
         // (1/hosts)^(N-1). It is the empty key.
         expect(top).toBeLessThan(N);
     }, 120_000);
+
+    // And the bug itself (#342): NO token. The server never reads the
+    // token — it resolves the owner from the key either way — so an
+    // untokened STATEFUL call presents the edge with exactly the wire a
+    // `defineWorker` call sends (no `/r/` segment, no header), and unlike a
+    // worker dispatch every fresh-key first-call IS a routing decision on
+    // whichever host the edge picked, so the counters above see it. On
+    // `upstream-hash-by: $http_x_sigx_actor_route` all N hash "" and land
+    // on one pod; on `$sigx_hash` each hashes its own `$request_id`. This
+    // is the one of the three that goes red against the old chart.
+    it('spreads untokened calls over more than one host', async () => {
+        const hosts = (await clusterReport()).totals.hosts;
+        if (hosts < 2) return;
+
+        const stamp = Date.now().toString(36);
+        const before = await received();
+        const N = 20;
+        for (let i = 0; i < N; i++) {
+            const res = await actorCall('Room', 'recent', [`untoken-${stamp}-${i}`, 20], {
+                route: false
+            });
+            expect(res.status).toBe(200);
+        }
+        await sleep(1_000);
+        const after = await received();
+
+        const deltas = deltasSince(before, after);
+        const top = Math.max(...deltas);
+        console.log(`  edge hash: ${N} untokened calls over ${hosts} hosts → ${deltas.join('/')}`);
+        // All N on one host is the empty key — the header hashed directly,
+        // or a controller without the map (nil → ""). Either way it is the
+        // fleet-wide pin this suite exists to catch.
+        expect(top).toBeLessThan(N);
+    }, 120_000);
 });
 
 describe.skipIf(!ready)('infra: topics fan out across real hosts', () => {
@@ -909,10 +943,9 @@ describe.skipIf(!ready || !CHAOS || !OPS_SECRET || PLACEMENT !== 'activation-cou
 
                 const baseline = spreadOf(await clusterReport());
                 // No routing token, so the hash does not pick the host: the
-                // PLACEMENT decides where they activate. (On the chart's
-                // ingress-nginx the empty key lands every call on ONE pod,
-                // #342 — which still leaves placement, not the hash, in
-                // charge of where a cold key activates.)
+                // chart's edge hashes a per-request id for an empty header
+                // (`$sigx_hash`, #342) and sprays these, and the PLACEMENT
+                // decides where a cold key activates either way.
                 const fresh = 90;
                 for (let i = 0; i < fresh; i++) {
                     await actorCall('Room', 'post', [`cold-${stamp}-${i}`, 'tester', 'x'], {

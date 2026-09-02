@@ -157,14 +157,18 @@ spec:
 #     }
 #
 # ⚠ WITHOUT THE MAP THIS CHART IS WORSE THAN ROUND-ROBIN. An nginx
-# variable no `map` defines is nil in Lua, the balancer hashes the empty
-# string, and EVERY actor call — tokened or not — lands on one pod. Do
-# not deploy this chart against a controller whose §0 is incomplete; the
-# RUNBOOK's verify step greps the programmed nginx.conf for the map.
+# variable no `map` defines is nil in Lua, so the balancer hashes the
+# empty string and EVERY actor call — tokened or not — lands on one pod.
+# (Unlike (1) and (2) this is read off the balancer's code, not yet seen
+# on a cluster; the spread assertions in `infra.test.ts` are what would
+# show it.) Do not deploy this chart against a controller whose §0 is
+# incomplete: the RUNBOOK's verify step greps the programmed nginx.conf
+# for the map, and `testenv.mjs up` refuses to release without it.
 #
-# `infra.test.ts` asserts both halves: one token pins to one host, and
-# distinct tokens reach more than one — so (1), (2) or (3) is loud instead
-# of quietly costing you the locality half (or the whole fleet).
+# `infra.test.ts` asserts the seam three ways: one token pins to one host,
+# distinct tokens reach more than one, and untokened calls reach more than
+# one — so (1), (2) or (3) is loud instead of quietly costing you the
+# locality half (or the whole fleet).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

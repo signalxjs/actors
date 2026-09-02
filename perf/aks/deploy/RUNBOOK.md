@@ -63,7 +63,9 @@ kubectl create namespace $NS
 #     hence the snippet. ⚠ Without it the chart is WORSE than round-robin:
 #     a variable no `map` defines is nil in Lua, the balancer hashes ""
 #     for every request, and the whole actor path — tokened or not — lands
-#     on one pod. If the ConfigMap already carries an `http-snippet`
+#     on one pod (read off the balancer's code, not yet observed on a
+#     cluster; `testenv.mjs up` refuses to release the chart until the map
+#     is programmed). If the ConfigMap already carries an `http-snippet`
 #     (a shared cluster), merge the map into it by hand instead of letting
 #     this patch overwrite it.
 #
@@ -79,7 +81,7 @@ kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller
 # Verify (b) took, in the PROGRAMMED nginx.conf — the map must be there
 # before any release of the chart hashes on it:
 kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- \
-  grep -A3 'map $http_x_sigx_actor_route $sigx_hash' /etc/nginx/nginx.conf
+  grep -F 'map $http_x_sigx_actor_route $sigx_hash {' /etc/nginx/nginx.conf
 
 # Verify (a) took, against the controller's PROGRAMMED backends — the
 # Ingress object is not evidence, since the annotation survives on it
@@ -99,10 +101,10 @@ defines a variable nobody else reads). The chart's side of the same fix (a
 dedicated Service so the actor Ingress gets its own backend, and
 `$sigx_hash` as the key) is in
 [`ingress.yaml`](../../app/deploy/chart/templates/ingress.yaml);
-`infra.test.ts` asserts the result both ways — one token pins to one host,
-distinct tokens reach more than one — so a missed step here fails the suite
-rather than quietly reading as "locality does not help" (or, with the map
-missing, as a perfect pin).
+`infra.test.ts` asserts the result three ways — one token pins to one host,
+distinct tokens reach more than one, untokened calls reach more than one —
+so a missed step here fails the suite rather than quietly reading as
+"locality does not help" (or, with the map missing, as a perfect pin).
 
 ## 1. Build + deploy — one command
 
