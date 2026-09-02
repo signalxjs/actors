@@ -215,7 +215,7 @@ describe.skipIf(!SURREAL_URL)('surreal cluster providers', () => {
             await m1.leave();
         });
 
-        it('a silent death expires on the DATABASE clock — no version bump needed', async () => {
+        it('a silent death expires on the DATABASE clock — and the view version moves with it (#267)', async () => {
             const m1 = surrealMembership({ db, ...opts });
             await m1.join({ hostId: 's.w1', epoch: 1, address: 'http://w1', status: 'active' });
             // A host that died without leaving: a record whose heartbeat never
@@ -237,6 +237,13 @@ describe.skipIf(!SURREAL_URL)('surreal cluster providers', () => {
             await expect(m1.isAlive('s.ghost')).resolves.toBe(true);
             const before = await m1.refresh();
             expect(before.hosts.map((h) => h.hostId).sort()).toEqual(['s.ghost', 's.w1']);
+            const counter = async (): Promise<number> => {
+                const [v] = await db.query<[number]>('SELECT VALUE v FROM ONLY $id', {
+                    id: new RecordId('sigx_mver', 1)
+                });
+                return Number(v);
+            };
+            const counterBefore = await counter();
 
             await vi.waitFor(
                 async () => {
@@ -244,9 +251,12 @@ describe.skipIf(!SURREAL_URL)('surreal cluster providers', () => {
                 },
                 { timeout: 3000 }
             );
-            // The cached view updates WITHOUT any version bump: the change
-            // detector compares host signatures, not just the counter —
-            // nothing ever announced this death, yet the poll drops it.
+            // Nothing ever announced this death, so `sigx_mver` does not
+            // move — the change detector compares host signatures, not just
+            // the counter, and the poll drops the corpse. The VIEW's version
+            // must move regardless: it is advanced locally on a
+            // signature-only change, so a consumer keyed on it sees the
+            // expiry instead of latching the stale member count (#267).
             await vi.waitFor(
                 () => {
                     expect(m1.view().hosts.some((h) => h.hostId === 's.ghost')).toBe(false);
@@ -254,6 +264,8 @@ describe.skipIf(!SURREAL_URL)('surreal cluster providers', () => {
                 { timeout: 3000 }
             );
             expect(m1.view().hosts.map((h) => h.hostId)).toEqual(['s.w1']);
+            expect(m1.view().version).toBeGreaterThan(before.version);
+            await expect(counter()).resolves.toBe(counterBefore);
             await m1.leave();
         });
 

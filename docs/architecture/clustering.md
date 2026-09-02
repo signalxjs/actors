@@ -102,11 +102,23 @@ a version-only comparison never converges. Push (pub/sub, LISTEN/NOTIFY, live
 query, watch) is **best-effort in every provider**; the poll is the guarantee
 and `pollMs` is the propagation bound.
 
+`MembershipView.version` follows the same rule: it is a **per-process change
+token, not the store's counter** (#267). The store's counter moves only when a
+host writes (join / `setStatus` / leave), so a provider that exposed it
+verbatim stood still on an expiry — and a consumer memoizing a member count on
+it latched the corpses. Each store-backed provider now keeps the counter as
+its push skip gate and advances the exposed version locally
+(`max(stored, cached + 1)`) on any signature-only change, re-aligning with the
+counter only once written bumps carry it past the advanced value — a bump that
+merely catches up is itself a change and advances the view again. Hence "monotonic per process view": two hosts may hold
+different values for one converged membership, and `ClusterCounters.
+membershipVersion` spreads for that reason as well as for non-convergence.
+
 The same rule governs anything *derived* from a view: **cache on the view
 object, never on `version`.** A provider builds a NEW `MembershipView` per
-observed change — including a peer expiring on the store's clock, which need
-not bump `version` (#267) — and hands back the same object until the next one,
-so object identity is the invalidation key that is always right. Placement's
+observed change — including a peer expiring on the store's clock, which no
+host writes — and hands back the same object until the next one, so object
+identity is the invalidation key that is always right. Placement's
 own derived data (`activeHostsCache` since #27, `eligibleCache` since #212)
 is a `WeakMap` keyed on the view object; `membersMemo(placement, filter?)`
 exports that pattern for consumers (#269), and `placement.onChange(cb)` passes

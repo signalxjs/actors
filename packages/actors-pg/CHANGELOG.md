@@ -14,6 +14,17 @@
   test case. `pgMembership` now tracks in-flight heartbeat writes,
   `leave()` drains them before the `DELETE`, and a beat that completes
   after `leave()` began no longer confirms the liveness clock.
+- **`MembershipView.version` moves when a peer expires** (#267).
+  `membership_version` is bumped only by a host that WRITES (join,
+  `setStatus`, leave); a peer dying silently has no writer, so its TTL
+  expiry changed `hosts` while `version` stood still, and a consumer
+  memoizing on `version` latched the stale member count. `pgMembership`
+  now advances the exposed version locally (`max(stored, cached + 1)`)
+  whenever the host signature changes without a counter bump, and
+  re-aligns with the counter only once written bumps carry it past the
+  advanced value. The counter itself
+  is untouched and remains the LISTEN/NOTIFY skip gate — a bump whose
+  payload merely catches up to a locally advanced view is still refreshed.
 - **A failing membership prune is no longer silent** (#268). The lazy
   expiry prune in `pgMembership` swallowed every failure — a permanently
   failing `DELETE` (permissions, schema drift) accumulated expired

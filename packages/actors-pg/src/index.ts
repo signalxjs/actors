@@ -331,8 +331,11 @@ export function pgMembership(
 
     let self: HostDescriptor | null = null;
     let cached: MembershipView = { version: 0, hosts: [] };
+    /** The store's counter as last read — the NOTIFY skip gate. Held apart
+     *  from `cached.version`, which may run AHEAD of it: see `refresh`. */
+    let storeVersion = 0;
     /** hostId:status join of the last view — expiry changes the view
-     *  without a version bump, so the version alone cannot detect change. */
+     *  without a counter bump, so the counter alone cannot detect change. */
     let signature = '';
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
@@ -414,29 +417,39 @@ export function pgMembership(
                 }
             });
         const hosts = live.rows.map((row) => JSON.parse(row['descriptor'] as string) as HostDescriptor);
-        const next: MembershipView = {
-            version: Number(versionRow.rows[0]?.['version'] ?? 0),
-            hosts
-        };
+        const stored = Number(versionRow.rows[0]?.['version'] ?? 0);
         const nextSignature = hosts
             .map((h) => `${h.hostId}:${h.status}`)
             .sort()
             .join(',');
-        const changed = next.version !== cached.version || nextSignature !== signature;
+        const changed = stored !== storeVersion || nextSignature !== signature;
+        // Unchanged: hand back the SAME object, so identity-keyed derived
+        // data (`membersMemo()`, placement's caches) holds across polls.
+        if (!changed) return cached;
+        // The exposed version is a per-PROCESS change token, not the store's
+        // counter: an expiry changes `hosts` with no writer to bump anything,
+        // so every observed change advances it — past the counter when it
+        // must — and the two re-align only once written bumps carry the
+        // counter past it (#267). A consumer keyed on `version` therefore
+        // sees the expiry too.
+        const next: MembershipView = { version: Math.max(stored, cached.version + 1), hosts };
+        storeVersion = stored;
         cached = next;
         signature = nextSignature;
-        if (changed) for (const cb of changeCbs) cb(next);
+        for (const cb of changeCbs) cb(next);
         return next;
     };
 
     // Coalesce the notification→refresh path (#26): a burst of NOTIFYs costs
     // one refresh plus at most one trailing catch-up per listener, not one
-    // refresh per message. The version gate rides the NOTIFY payload; silent
-    // expiries have no version, but they arrive via the poll, which also
-    // goes through the coalescer (as an unskippable demand).
+    // refresh per message. The version gate rides the NOTIFY payload and is
+    // judged against the STORE's counter — the exposed version may already
+    // be past it, and would wrongly skip a real bump. Silent expiries have
+    // no payload; they arrive via the poll, which also goes through the
+    // coalescer (as an unskippable demand).
     const coalescer = refreshCoalescer<MembershipView>({
         refresh,
-        version: () => cached.version,
+        version: () => storeVersion,
         quietMs: coalesceMs
     });
 

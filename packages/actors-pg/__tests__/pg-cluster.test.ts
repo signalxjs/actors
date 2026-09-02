@@ -198,7 +198,7 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
             }
         });
 
-        it('a silent death expires on the DATABASE clock — no version bump needed', async () => {
+        it('a silent death expires on the DATABASE clock — and the view version moves with it (#267)', async () => {
             const m1 = pgMembership(pool, { schema, heartbeatMs: 100, ttlMs: 400, pollMs: 100 });
             await m1.join({ hostId: 's.w1', epoch: 1, address: 'http://w1', status: 'active' });
             try {
@@ -222,6 +222,15 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
                 await expect(m1.isAlive('s.ghost')).resolves.toBe(true);
                 const before = await m1.refresh();
                 expect(before.hosts.map((h) => h.hostId).sort()).toEqual(['s.ghost', 's.w1']);
+                const counter = async (): Promise<number> =>
+                    Number(
+                        (
+                            await pool.query(
+                                `SELECT version FROM ${schema}.membership_version WHERE id = 1`
+                            )
+                        ).rows[0]!['version']
+                    );
+                const counterBefore = await counter();
 
                 await vi.waitFor(
                     async () => {
@@ -229,10 +238,13 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
                     },
                     { timeout: 2000 }
                 );
-                // The cached view updates WITHOUT any version bump: the
-                // change detector compares host signatures, not just the
-                // counter — nothing ever announced this death, yet the poll
-                // drops it.
+                // Nothing ever announced this death, so the store's counter
+                // does not move — the change detector compares host
+                // signatures, not just the counter, and the poll drops the
+                // corpse. The VIEW's version must move regardless: it is
+                // advanced locally on a signature-only change, so a consumer
+                // keyed on it sees the expiry instead of latching the stale
+                // member count (#267).
                 await vi.waitFor(
                     () => {
                         expect(m1.view().hosts.some((h) => h.hostId === 's.ghost')).toBe(false);
@@ -240,6 +252,8 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
                     { timeout: 2000 }
                 );
                 expect(m1.view().hosts.map((h) => h.hostId)).toEqual(['s.w1']);
+                expect(m1.view().version).toBeGreaterThan(before.version);
+                await expect(counter()).resolves.toBe(counterBefore);
             } finally {
                 await m1.leave();
             }

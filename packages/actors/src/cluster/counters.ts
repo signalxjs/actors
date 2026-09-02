@@ -162,8 +162,10 @@ export interface ClusterCounterTotals {
 /** One host's counters: the additive fields plus its own point-in-time state. */
 export interface ClusterCounters extends ClusterCounterTotals {
     /** `membership.view().version` AS THIS HOST SEES IT. A spread across
-     *  hosts means the view has not converged, which explains any
-     *  disagreement in the rest of the report. */
+     *  hosts means the views have not converged — or that hosts observed a
+     *  different number of changes nobody wrote (TTL expiries advance the
+     *  version per process, #267) — which explains any disagreement in the
+     *  rest of the report. */
     membershipVersion: number;
     /** Wire status, plus `'fenced'`: membership lost and self-fenced.
      *  `#fence()` deliberately leaves the published status alone, so this is
