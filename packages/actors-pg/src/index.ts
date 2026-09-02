@@ -337,6 +337,15 @@ export function pgMembership(
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let listener: PgListenClient | null = null;
+    /** Heartbeat writes still on the wire. `leave()` drains them before its
+     *  DELETE: `clearInterval` stops FUTURE ticks, but a write already
+     *  handed to the pool is neither awaited nor ordered against the
+     *  DELETE — it can commit AFTER it, resurrecting the row until its TTL
+     *  lapses (#209). */
+    const inflight = new Set<Promise<unknown>>();
+    /** Set by `leave()`: a beat completing after it began must not confirm
+     *  the clock, and nothing may issue a new write. */
+    let left = false;
     /** Once per membership, not per refresh — the prune rides every poll
      *  tick, and a permanently failing one would warn forever (#268). */
     let pruneWarned = false;
@@ -350,14 +359,23 @@ export function pgMembership(
     });
 
     const writeSelf = async (): Promise<void> => {
-        if (!self) return;
-        await pool.query(
+        if (!self || left) return;
+        const write = pool.query(
             `INSERT INTO ${s}.hosts (host_id, descriptor, expires_at)
              VALUES ($1, $2, now() + make_interval(secs => $3::float8 / 1000.0))
              ON CONFLICT (host_id) DO UPDATE
              SET descriptor = EXCLUDED.descriptor, expires_at = EXCLUDED.expires_at`,
             [self.hostId, JSON.stringify(self), ttlMs]
         );
+        inflight.add(write);
+        try {
+            await write;
+        } finally {
+            inflight.delete(write);
+        }
+        // `leave()` began while this was on the wire: the row is about to
+        // go, so the clock must not read this as a live confirmation.
+        if (left) return;
         clock.confirmed();
     };
 
@@ -424,6 +442,7 @@ export function pgMembership(
 
     return {
         async join(descriptor) {
+            left = false;
             self = descriptor;
             await writeSelf();
             await bumpVersion();
@@ -468,6 +487,7 @@ export function pgMembership(
             await bumpVersion();
         },
         async leave() {
+            left = true;
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
@@ -491,6 +511,9 @@ export function pgMembership(
             if (!self) return;
             const id = self.hostId;
             self = null;
+            // A beat the pool already holds must land BEFORE the DELETE, or
+            // it lands after and the row comes back (#209).
+            await Promise.allSettled(inflight);
             await pool.query(`DELETE FROM ${s}.hosts WHERE host_id = $1`, [id]);
             await bumpVersion().catch(noop);
         },

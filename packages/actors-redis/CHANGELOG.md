@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`leave()` no longer races its own heartbeat** (#209). The beat wrote
+  the host key with an untracked `void writeSelf()` every `heartbeatMs`;
+  `leave()` cleared the interval and issued its `DEL`/`SREM`, but a MULTI
+  already on the wire was neither awaited nor ordered against it — it
+  could commit *after* the removal, recreating the host key and re-adding
+  the member until its TTL lapsed. Peers saw a host that had left cleanly
+  for up to `ttlMs`. `redisMembership` now tracks in-flight heartbeat
+  writes, `leave()` drains them before the removal, and a beat that
+  completes after `leave()` began no longer confirms the liveness clock.
+
 ### Changed
 
 - **`url`-constructed clients enable auto-pipelining** (#311). When you
