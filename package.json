@@ -59,7 +59,7 @@
         "happy-dom": "^20.9.0",
         "oxlint": "^1.47.0",
         "size-limit": "^11",
-        "typescript": "^6.0.3",
+        "typescript": "^7.0.2",
         "vite": "^8.0.3",
         "vitest": "^4.1.5"
     },
