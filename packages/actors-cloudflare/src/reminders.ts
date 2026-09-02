@@ -10,6 +10,17 @@
  * That also removes the tick-cadence floor. `shardedReminders` can only
  * promise "at or after `nextDue`, checked every `reminderTickMs`"; an alarm
  * fires at the due time.
+ *
+ * A dispatch that FAILS is not a firing (#306, #326). The alarm advances or
+ * deletes an entry BEFORE it delivers, so a rejected `deliver()` — a
+ * deadline, an `onReminder` that threw — would otherwise be the end of the
+ * wake. Instead the entry is re-armed one tick out (`nextDue = now +
+ * tickMs`: a one-shot re-inserted, a periodic one pulled forward) and
+ * reported through `context.undelivered`, with the same rules as the
+ * sharded table: an entry the actor SET again meanwhile is left as the
+ * actor set it (a later decision wins), a periodic one it CLEARED stays
+ * cleared, and a one-shot it cleared may be retried once — the alarm had
+ * already deleted it, so absent is indistinguishable from untouched.
  */
 import type {
     ActorReminders,
@@ -38,6 +49,12 @@ interface Entry {
 interface Table {
     owner?: ActorRef;
     entries: Record<string, Entry>;
+}
+
+/** A due entry the alarm collected — `advanced` is what it wrote for it. */
+interface Due {
+    name: string;
+    advanced: Entry | null;
 }
 
 /** The alarm surface used here — narrow, so tests need no Workers runtime. */
@@ -125,6 +142,45 @@ export function durableObjectReminders(
         // Otherwise only move it EARLIER: a reminder set for later must not
         // push back one that is already armed and sooner.
         if (current === null || earliest < current) await alarms.setAlarm(earliest);
+    };
+
+    /**
+     * Put the entries whose dispatch failed back on the table, due one tick
+     * from now — so the retry is the NEXT alarm and never sooner, whatever
+     * the failure was. Only where an entry is still exactly as the alarm
+     * left it: an actor that SET it again meanwhile (from another turn, or
+     * from the very `onReminder` a timed-out dispatch went on to run) made
+     * a later decision, and that decision wins. A one-shot the actor
+     * CLEARED meanwhile is the known exception: the alarm had already
+     * deleted it, so the clear was a no-op and absent is indistinguishable
+     * from untouched — it is re-armed and delivered once more. A periodic
+     * one is not: its clear removed the advanced entry, and nothing is
+     * pulled forward for an entry that is gone. Returns whether `table`
+     * changed. Same rules as `shardedReminders()` (#306).
+     */
+    const retry = (table: Table, failed: readonly Due[], tickMs: number): boolean => {
+        const nextDue = now() + tickMs;
+        let changed = false;
+        for (const { name, advanced } of failed) {
+            const current = table.entries[name];
+            if (advanced === null) {
+                // One-shot: deleted by the alarm; absent means untouched.
+                if (current !== undefined) continue;
+                table.entries[name] = { nextDue };
+                changed = true;
+            } else if (
+                current !== undefined &&
+                current.nextDue === advanced.nextDue &&
+                current.period === advanced.period &&
+                nextDue < current.nextDue
+            ) {
+                // Periodic: pull the next firing forward, but never past the
+                // period the alarm already scheduled.
+                current.nextDue = nextDue;
+                changed = true;
+            }
+        }
+        return changed;
     };
 
     return {
@@ -233,6 +289,9 @@ export function durableObjectReminders(
             }
 
             // Phase 1 — gated: take what is due and persist the advance.
+            // `advanced` is what was written for each entry — `null` for a
+            // deleted one-shot — so a failed dispatch can tell "still as I
+            // left it" from "the actor has since set or cleared it".
             const { ref, due } = await gate(async () => {
                 const table = await load();
                 // Read the owner back from storage: after an eviction this
@@ -244,9 +303,11 @@ export function durableObjectReminders(
                 // Advance BEFORE delivering, exactly as the sharded table
                 // does: a crash between persist and dispatch skips one
                 // firing rather than double-firing.
+                const due: Due[] = [];
                 for (const [name, entry] of ready) {
                     if (entry.period === undefined) {
                         delete table.entries[name];
+                        due.push({ name, advanced: null });
                         continue;
                     }
                     // Advance from the SCHEDULED time, not from now, so an
@@ -256,23 +317,43 @@ export function durableObjectReminders(
                     let next = entry.nextDue + entry.period;
                     if (next <= at) next = at + entry.period;
                     table.entries[name] = { ...entry, nextDue: next };
+                    due.push({ name, advanced: table.entries[name]! });
                 }
                 await storage.put(TABLE_KEY, table);
-                return { ref: owner, due: ready.map(([name]) => name) };
+                return { ref: owner, due };
             });
 
             // Phase 2 — UNGATED: deliver. A handler rescheduling itself now
             // finds the gate free, which is the entire point of the split.
+            // A dispatch that fails is reported and collected (#326); its
+            // re-arm is one write in phase 3, not a gate round-trip per
+            // failure.
+            const failed: Due[] = [];
             if (ref) {
-                for (const name of due) {
+                for (const entry of due) {
                     try {
-                        await bound.deliver(ref, name);
+                        // Awaited INSIDE the try: the context is pluggable,
+                        // and a `deliver` that throws before it returns a
+                        // promise must land here exactly like a rejection.
+                        await bound.deliver(ref, entry.name);
                     } catch (error) {
+                        failed.push(entry);
                         if (__DEV__) {
                             console.error(
-                                `[sigx actors-cloudflare] reminder "${name}" failed:`,
+                                `[sigx actors-cloudflare] reminder "${entry.name}" failed ` +
+                                    '(retrying next tick):',
                                 error
                             );
+                        }
+                        try {
+                            bound.undelivered?.(ref, entry.name, error);
+                        } catch (reportError) {
+                            if (__DEV__) {
+                                console.error(
+                                    '[sigx actors-cloudflare] ActorRemindersContext.undelivered threw:',
+                                    reportError
+                                );
+                            }
                         }
                     }
                 }
@@ -283,13 +364,19 @@ export function durableObjectReminders(
                 );
             }
 
-            // Phase 3 — gated: re-read and re-arm. The re-read matters: a
-            // delivered `onReminder` may itself have called
-            // `ctx.reminders.set/clear`, persisting a newer table and arming
-            // an earlier alarm. Arming from the phase-1 snapshot would
-            // overwrite that with a later time.
+            // Phase 3 — gated: re-read, put the failures back, and re-arm.
+            // The re-read matters: a delivered `onReminder` may itself have
+            // called `ctx.reminders.set/clear`, persisting a newer table and
+            // arming an earlier alarm. Arming from the phase-1 snapshot would
+            // overwrite that with a later time — and the re-arm of a failed
+            // dispatch must see that newer table too, so an entry the actor
+            // set or cleared meanwhile is left as the actor left it.
             await gate(async () => {
-                await rearm(await load(), true);
+                const table = await load();
+                if (failed.length > 0 && retry(table, failed, bound.tickMs)) {
+                    await storage.put(TABLE_KEY, table);
+                }
+                await rearm(table, true);
             });
         }
     };

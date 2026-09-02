@@ -52,9 +52,23 @@ export const Counter = defineActor({
             await ctx.save();
             await ctx.reminders.set('wake', { due: 0 });
             return true;
+        },
+        /** Arms a reminder whose FIRST delivery throws — the #326 retry shape. */
+        async armFlaky() {
+            ctx.state.failNext = true;
+            await ctx.save();
+            await ctx.reminders.set('wake', { due: 0 });
+            return true;
         }
     }),
     async onReminder(ctx) {
+        if (ctx.state.failNext) {
+            // A rejected dispatch is not a firing: the alarm must re-arm
+            // this reminder `reminderTickMs` out rather than drop it.
+            ctx.state.failNext = false;
+            await ctx.save();
+            throw new Error('flaky: the first delivery fails');
+        }
         ctx.state.woke++;
         if (ctx.state.reschedule) {
             ctx.state.reschedule = false;
@@ -74,6 +88,9 @@ export const Counter = defineActor({
 export class TestHost extends createHostDurableObject<Env>({
     actors: [Counter],
     namespace: (env) => env.ACTORS,
+    // A short retry cadence so `reminders.test.ts` can watch a failed
+    // dispatch come back on the real alarm (#326) — 30s is the default.
+    app: (base) => defineActorApp({ ...base, defaults: { ...base.defaults, reminderTickMs: 500 } }),
     // The object-terminated socket (#158). Session options live HERE — the
     // session runs inside the object; the Worker only forwards the upgrade.
     socket: { origin: false }

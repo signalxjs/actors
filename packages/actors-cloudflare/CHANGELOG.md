@@ -13,6 +13,27 @@
   The Worker-terminated `workerSocket()` needed no change: it wraps
   `createActorSocketSession`, which checks per frame.
 
+### Fixed
+
+- **A reminder whose dispatch fails is retried one tick later instead of
+  being lost, and counted** (#326). `durableObjectReminders` advances or
+  deletes a due entry *before* `onAlarm()` delivers it, and a rejected
+  `deliver()` (a call deadline, an `onReminder` that threw) was at most
+  logged: the wake was gone, and `HostStats.remindersUndelivered` read `0`.
+  The default `shardedReminders()` got the retry in #306; this is the same
+  contract on a Durable Object. A rejected (or synchronously throwing)
+  `deliver()` now re-arms its entry `reminderTickMs` out (a one-shot
+  re-inserted, a periodic one pulled forward) in the alarm's final gated
+  write — so the platform alarm is re-scheduled for it, never sooner than a
+  tick, and a target that never answers costs one attempt per tick — and
+  each failed attempt is reported through
+  `ActorRemindersContext.undelivered`, so the host's counter, `ops()` and
+  `metrics()` now say so here too. Same rules as the sharded table: an entry
+  the actor set again meanwhile (from the very `onReminder` that then timed
+  out, say) is left as the actor set it — a later decision wins — a periodic
+  one it cleared stays cleared, and a one-shot it cleared while its dispatch
+  was failing may be retried once, so `onReminder` should be idempotent.
+
 ## [0.7.0] - 2026-08-09
 
 ### Added
