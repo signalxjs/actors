@@ -37,6 +37,9 @@ export function parseExposition(text: string): Sample[] {
             }
         }
         const value = valueText === '+Inf' ? Infinity : valueText === '-Inf' ? -Infinity : Number(valueText);
+        // A non-numeric value is a malformed line, not a NaN sample: NaN
+        // would slip past every `!== null` check and fail `toBe` silently.
+        if (Number.isNaN(value)) continue;
         samples.push({ name, labels, value });
     }
     return samples;

@@ -111,8 +111,28 @@ export interface DemoCluster {
 /** Where `crossHost` leaves the `cart` counter: 1+1+1+1+1+1 then +10 +100. */
 export const CROSS_HOST_COUNT = 116;
 
-const defaultPorts = (): number[] =>
-    (process.env.PROVIDERS_DEMO_PORTS ?? '5591,5592,5593').split(',').map((p) => Number(p.trim()));
+const DEFAULT_PORTS = '5591,5592,5593';
+
+/** An env value, with `""` treated as unset — `FOO= node demo.mjs` should not blank a default. */
+export const envOr = (value: string | undefined, fallback: string): string =>
+    value === undefined || value === '' ? fallback : value;
+
+/**
+ * `PROVIDERS_DEMO_PORTS` as three listener ports (0 = ephemeral), or a
+ * message naming the variable — `Number('abc')` is NaN, and `listen(NaN)`
+ * fails somewhere deep in Node with no hint of where the value came from.
+ */
+export function parsePorts(value: string | undefined): number[] {
+    const raw = envOr(value, DEFAULT_PORTS);
+    const ports = raw.split(',').map((p) => p.trim());
+    const valid = (p: string): boolean => /^\d+$/.test(p) && Number(p) <= 65535;
+    if (ports.length !== 3 || !ports.every(valid)) {
+        throw new Error(
+            `PROVIDERS_DEMO_PORTS must be three comma-separated ports (0-65535), e.g. "${DEFAULT_PORTS}"; got "${raw}"`
+        );
+    }
+    return ports.map(Number);
+}
 
 /** Poll `check` until it holds, or throw after `timeoutMs`. */
 async function until(check: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
@@ -125,8 +145,8 @@ async function until(check: () => boolean, what: string, timeoutMs = 10_000): Pr
 
 export async function startCluster(options: DemoClusterOptions): Promise<DemoCluster> {
     const log = options.log ?? ((...args: unknown[]) => console.log(...args));
-    const ports = options.ports ?? defaultPorts();
-    const opsSecret = options.opsSecret ?? process.env.PROVIDERS_DEMO_OPS_SECRET ?? 'demo-ops-secret';
+    const ports = options.ports ?? parsePorts(process.env.PROVIDERS_DEMO_PORTS);
+    const opsSecret = options.opsSecret ?? envOr(process.env.PROVIDERS_DEMO_OPS_SECRET, 'demo-ops-secret');
     // Host-to-host HMAC. Separate from the ops token on purpose: they
     // authenticate different things to different people.
     const secret = 'demo-secret';

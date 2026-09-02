@@ -19,12 +19,13 @@ sigx_actors_call_duration_seconds_sum 0.026326
 sigx_actors_call_duration_seconds_count 13
 sigx_actors_up 1 1700000000000
 this line is not a sample
+sigx_actors_broken{type="Counter"} not-a-number
 `;
 
 describe('parseExposition', () => {
     const samples = parseExposition(SCRAPE);
 
-    it('reads every sample line and skips comments, blanks and junk', () => {
+    it('reads every sample line and skips comments, blanks, junk and non-numeric values', () => {
         expect(samples.map((s) => s.name)).toEqual([
             'sigx_actors_calls_total',
             'sigx_actors_calls_total',
@@ -46,6 +47,11 @@ describe('parseExposition', () => {
         expect(samples[3]!.labels.le).toBe('+Inf');
         expect(samples[3]!.value).toBe(13);
         expect(samples[6]!.value).toBe(1);
+    });
+
+    it('never yields a NaN sample', () => {
+        expect(samples.some((s) => Number.isNaN(s.value))).toBe(false);
+        expect(sampleValue(samples, 'sigx_actors_broken')).toBeNull();
     });
 });
 

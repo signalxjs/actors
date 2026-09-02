@@ -12,7 +12,14 @@ import { memoryStorage } from '@sigx/actors/host';
 import { memoryClusterHub } from '@sigx/actors/cluster';
 import { prometheusOps } from '@sigx/actors-otel/prometheus';
 import { Counter } from '../src/counter.actor.ts';
-import { CROSS_HOST_COUNT, startCluster, type DemoCluster, type DemoClusterOptions } from '../src/cluster.ts';
+import {
+    CROSS_HOST_COUNT,
+    envOr,
+    parsePorts,
+    startCluster,
+    type DemoCluster,
+    type DemoClusterOptions
+} from '../src/cluster.ts';
 import { parseExposition, sampleValue } from '../src/prometheus.ts';
 
 const SECRET = 'test-ops-secret';
@@ -142,5 +149,25 @@ describe('the exposition reader against the real exporter', () => {
             sampleValue(samples, 'sigx_actors_method_calls_total', { type: 'Counter', method: 'increment' })
         ).toBe(9);
         expect(sampleValue(samples, 'sigx_actors_call_duration_seconds_bucket', { le: '+Inf' })).toBe(9);
+    });
+});
+
+describe('the env knobs', () => {
+    it('parsePorts takes exactly three ports and defaults when unset', () => {
+        expect(parsePorts(undefined)).toEqual([5591, 5592, 5593]);
+        expect(parsePorts(' 6001, 6002 ,6003 ')).toEqual([6001, 6002, 6003]);
+        expect(parsePorts('0,0,0')).toEqual([0, 0, 0]);
+    });
+
+    it('parsePorts rejects a malformed value with a message that names it', () => {
+        for (const bad of ['5591,5592', '5591,5592,5593,5594', '5591,abc,5593', '5591,5592.5,5593', '5591,70000,5593']) {
+            expect(() => parsePorts(bad)).toThrow(/PROVIDERS_DEMO_PORTS/);
+        }
+    });
+
+    it('envOr treats an empty value as unset', () => {
+        expect(envOr(undefined, 'dflt')).toBe('dflt');
+        expect(envOr('', 'dflt')).toBe('dflt');
+        expect(envOr('set', 'dflt')).toBe('set');
     });
 });
