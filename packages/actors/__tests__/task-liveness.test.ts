@@ -128,6 +128,9 @@ describe('task liveness: the per-host roster', () => {
         let onStop!: () => void;
         const stopCalled = new Promise<void>((r) => (onStop = r));
         let host!: Host;
+        // Deliberately no `saveText`: the roster prefers it when present, so
+        // the intercept below only sees the untrack because this wrapper
+        // routes every write through `save`. Do not spread `...inner` here.
         const storage: ReturnType<typeof memoryStorage> = {
             load: (t, k) => inner.load(t, k),
             save: async (t, k, st, e) => {

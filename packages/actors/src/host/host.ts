@@ -101,9 +101,11 @@ export interface HostDefaults {
     slowTurnMs?: number;
     /**
      * How long deactivation waits for a detached task to observe its abort
-     * signal and settle, ms, before refusing further turns anyway. Default
-     * 10s. Counts against `host.stop()`'s own `timeoutMs`, so keep it
-     * smaller than that.
+     * signal and settle, ms, before refusing further turns anyway. The same
+     * budget bounds the bookkeeping (ledger clear, task-liveness untrack)
+     * of a run whose body already returned as the stop landed (#313).
+     * Default 10s. Counts against `host.stop()`'s own `timeoutMs`, so keep
+     * it smaller than that.
      */
     taskGraceMs?: number;
     /**

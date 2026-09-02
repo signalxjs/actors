@@ -524,11 +524,16 @@ export class Activation {
     #tasks = new Map<string, TaskRun>();
     /**
      * Every LAUNCHED run until its `settled` resolves — a superset of
-     * `#tasks`, which a run leaves the moment its body returns
-     * (`#release`), BEFORE its ledger / liveness bookkeeping. Deactivation
-     * awaits this set, not the reservation table: a stop landing between
-     * the two would otherwise leave that bookkeeping behind — one stale
-     * task-roster entry per job that finished as the host went down (#313).
+     * `#tasks` from `#launch` on, which a run leaves the moment its body
+     * returns (`#release`), BEFORE its ledger / liveness bookkeeping.
+     * Deactivation awaits this set, not the reservation table: a stop
+     * landing between the two would otherwise leave that bookkeeping
+     * behind — one stale task-roster entry per job that finished as the
+     * host went down (#313). LAUNCHED on purpose: a run that is only
+     * RESERVED (in `#tasks`, its start's durable writes still awaiting)
+     * is aborted by deactivate() but not awaited — its body launches with
+     * an already-aborted signal and keeps its entry for the resume, the
+     * same at-least-once outcome as before #313 (follow-up: #333).
      */
     #settling = new Set<TaskRun>();
     /** Lazily bound — one instance per activation (one writer chain). */
@@ -1303,17 +1308,21 @@ export class Activation {
         clearTimeout(timer);
         if (outcome === 'timeout' && __DEV__) {
             const names = [...this.#settling].map((r) => r.name).join('", "');
+            const grace = `past the ${this.#host.taskGraceMs}ms grace — proceeding with deactivation.`;
             // A run still in `#tasks` is a body that did not wind down; one
             // only in `#settling` has returned and is stuck on its
-            // bookkeeping's storage round trip.
-            const why =
-                this.#tasks.size > 0
-                    ? 'ignored their abort signal'
-                    : 'still had ledger bookkeeping in flight';
+            // bookkeeping's storage round trip — no body left to advise.
             console.warn(
-                `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} ${why} past ` +
-                    `the ${this.#host.taskGraceMs}ms grace — proceeding with deactivation. ` +
-                    `Long-running task bodies must observe ctx.abortSignal.`
+                this.#tasks.size > 0
+                    ? `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} ignored their ` +
+                          `abort signal ${grace} Long-running task bodies must observe ` +
+                          `ctx.abortSignal.`
+                    : `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} still had task ` +
+                          `bookkeeping in flight ${grace} The storage round trip clearing the ` +
+                          `ledger / task-roster entry outran taskGraceMs; the write is not ` +
+                          `cancelled and may still land, and an entry it leaves behind is ` +
+                          `cleared when the roster is adopted (a touch that finds nothing to ` +
+                          `resume).`
             );
         }
     }
