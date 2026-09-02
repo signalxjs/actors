@@ -44,37 +44,65 @@ az aks nodepool add \
 
 kubectl create namespace $NS
 
-# The edge hash, half of the locality composition, needs ONE cluster-wide
-# controller setting that no chart can make. ingress-nginx >= 1.12 rates
-# `upstream-hash-by` as Critical risk (its value is an nginx variable) and
-# defaults the annotation risk level to `High`, so it silently strips the
-# value, logs nothing, and load-balances the actor path round-robin.
+# The edge hash, half of the locality composition, needs TWO cluster-wide
+# controller settings that no chart can make. Both live in the controller
+# ConfigMap, so they are one patch:
 #
-# It is a ConfigMap option, NOT a CLI flag: passing
+# (a) `annotations-risk-level: Critical`. ingress-nginx >= 1.12 rates
+#     `upstream-hash-by` as Critical risk (its value is an nginx variable)
+#     and defaults the annotation risk level to `High`, so it silently
+#     strips the value, logs nothing, and load-balances the actor path
+#     round-robin.
+# (b) `http-snippet` defining `$sigx_hash`. The controller's consistent
+#     hash has NO empty-key fallback (unlike nginx core `hash`, HAProxy or
+#     Envoy), and a `defineWorker` call carries no routing token (#148) —
+#     so hashing the header directly put every worker call, for every key,
+#     on ONE pod (#342). The chart hashes `$sigx_hash` instead: a `map`
+#     that substitutes the per-request `$request_id` for an empty header
+#     and passes a real token through. A `map` is http-context config,
+#     hence the snippet. ⚠ Without it the chart is WORSE than round-robin:
+#     a variable no `map` defines is nil in Lua, the balancer hashes ""
+#     for every request, and the whole actor path — tokened or not — lands
+#     on one pod. If the ConfigMap already carries an `http-snippet`
+#     (a shared cluster), merge the map into it by hand instead of letting
+#     this patch overwrite it.
+#
+# They are ConfigMap options, NOT CLI flags: passing
 # `--annotations-risk-level=Critical` as a controller arg crash-loops
 # v1.15.1 with `unknown flag`. And a running controller does not re-read
-# the key, so the restart is part of the step, not a precaution.
+# either key, so the restart is part of the step, not a precaution.
 kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
-  -p '{"data":{"annotations-risk-level":"Critical"}}'
+  -p '{"data":{"annotations-risk-level":"Critical","http-snippet":"map $http_x_sigx_actor_route $sigx_hash { \"\" $request_id; default $http_x_sigx_actor_route; }"}}'
 kubectl -n ingress-nginx rollout restart deploy/ingress-nginx-controller
 kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller
 
-# Verify it took, against the controller's PROGRAMMED backends — the
+# Verify (b) took, in the PROGRAMMED nginx.conf — the map must be there
+# before any release of the chart hashes on it:
+kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- \
+  grep -A3 'map $http_x_sigx_actor_route $sigx_hash' /etc/nginx/nginx.conf
+
+# Verify (a) took, against the controller's PROGRAMMED backends — the
 # Ingress object is not evidence, since the annotation survives on it
-# either way. `upstreamHashByConfig` must contain `upstream-hash-by`; a
-# bare `{"upstream-hash-by-subset-size":3}` means it is still being
-# dropped. (`/dbg` is the controller image's own debug binary — it needs
-# no curl in the container.)
+# either way. `upstreamHashByConfig` must contain
+# `"upstream-hash-by":"$sigx_hash"`; a bare
+# `{"upstream-hash-by-subset-size":3}` means it is still being dropped.
+# (`/dbg` is the controller image's own debug binary — it needs no curl in
+# the container. Nothing to see until §1 has released the chart.)
 kubectl -n ingress-nginx exec deploy/ingress-nginx-controller -- /dbg backends all \
   | jq '.[] | select(.name | test("host-actor")) | {name, upstreamHashByConfig, loadBalancing}'
 ```
 
-Because this is cluster-wide, it applies to every Ingress the controller
-serves — check that before flipping it on a shared cluster. The chart's
-side of the same fix (a dedicated Service so the actor Ingress gets its own
-backend) is in [`ingress.yaml`](../../app/deploy/chart/templates/ingress.yaml);
-`infra.test.ts` asserts the result, so a missed step here fails the suite
-rather than quietly reading as "locality does not help".
+Because both settings are cluster-wide, they apply to every Ingress the
+controller serves — check that before flipping them on a shared cluster
+(the risk level unlocks Critical annotations for everyone; the `map` only
+defines a variable nobody else reads). The chart's side of the same fix (a
+dedicated Service so the actor Ingress gets its own backend, and
+`$sigx_hash` as the key) is in
+[`ingress.yaml`](../../app/deploy/chart/templates/ingress.yaml);
+`infra.test.ts` asserts the result both ways — one token pins to one host,
+distinct tokens reach more than one — so a missed step here fails the suite
+rather than quietly reading as "locality does not help" (or, with the map
+missing, as a perfect pin).
 
 ## 1. Build + deploy — one command
 

@@ -552,6 +552,18 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
     // Varying the key while holding the token still keeps every call a
     // first-call, so all N are counted, while the edge still has exactly
     // one hash input. Measured with the hash working: 0/0/20.
+    const received = async (): Promise<Map<string, number>> =>
+        new Map(
+            (await clusterReport()).hosts.map((h) => [
+                h.hostId,
+                // What this host was handed by the edge, whether it then
+                // served the call itself or forwarded it to the owner.
+                h.counters.routedLocal + h.counters.remoteDispatches
+            ])
+        );
+    const deltasSince = (before: Map<string, number>, after: Map<string, number>): number[] =>
+        [...after].map(([id, n]) => n - (before.get(id) ?? 0));
+
     it('sends one routing token to one host', async () => {
         const hosts = (await clusterReport()).totals.hosts;
         // One host makes every request local by definition; nothing to pin.
@@ -559,15 +571,6 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
 
         const stamp = Date.now().toString(36);
         const token = routeToken('Room', `pin-anchor-${stamp}`);
-        const received = async (): Promise<Map<string, number>> =>
-            new Map(
-                (await clusterReport()).hosts.map((h) => [
-                    h.hostId,
-                    // What this host was handed by the edge, whether it then
-                    // served the call itself or forwarded it to the owner.
-                    h.counters.routedLocal + h.counters.remoteDispatches
-                ])
-            );
 
         const before = await received();
         const N = 20;
@@ -580,12 +583,48 @@ describe.skipIf(!ready || !OPS_SECRET)('infra: the edge hash actually pins a tok
         await sleep(1_000);
         const after = await received();
 
-        const deltas = [...after].map(([id, n]) => n - (before.get(id) ?? 0));
+        const deltas = deltasSince(before, after);
         const top = Math.max(...deltas);
         console.log(`  edge hash: one token over ${hosts} hosts → ${deltas.join('/')}`);
         // A working hash puts all N on one host. Round-robin puts N/hosts on
         // each. Anything below half is not a hash.
         expect(top).toBeGreaterThan(N / 2);
+    }, 120_000);
+
+    // The mirror image, because the assertion above passes for a hash that
+    // is TOO good. The chart's key is `$sigx_hash`, an nginx `map` variable
+    // the controller ConfigMap's `http-snippet` defines (RUNBOOK §0 (b)) so
+    // an untokened worker call hashes a per-request id instead of "" (#342).
+    // On a controller WITHOUT the map the variable is nil in Lua, the
+    // balancer hashes "" for every request, and the whole actor path lands
+    // on one pod — a fleet-wide pin that reads, above, as a perfect one.
+    //
+    // Same counting as above — fresh keys, so every call is a first-call
+    // and counted on the host the edge picked — but each key carries its
+    // OWN token, so the edge has N distinct hash inputs. A working
+    // consistent hash spreads them over the ring; a nil key puts all N on
+    // one host.
+    it('sends distinct routing tokens to more than one host', async () => {
+        const hosts = (await clusterReport()).totals.hosts;
+        if (hosts < 2) return;
+
+        const stamp = Date.now().toString(36);
+        const before = await received();
+        const N = 20;
+        for (let i = 0; i < N; i++) {
+            const res = await actorCall('Room', 'recent', [`spread-${stamp}-${i}`, 20]);
+            expect(res.status).toBe(200);
+        }
+        await sleep(1_000);
+        const after = await received();
+
+        const deltas = deltasSince(before, after);
+        const top = Math.max(...deltas);
+        console.log(`  edge hash: ${N} tokens over ${hosts} hosts → ${deltas.join('/')}`);
+        // Every one of N distinct tokens on ONE host is not a hash over a
+        // ring of two or more — the odds of a working one doing that are
+        // (1/hosts)^(N-1). It is the empty key.
+        expect(top).toBeLessThan(N);
     }, 120_000);
 });
 
@@ -676,11 +715,16 @@ describe.skipIf(!ready || !workersAvailable)('infra: a worker pool runs one key 
 
     it('answers on whichever host the call lands on', async () => {
         // No routing token — the wire a `defineWorker` call carries since
-        // #148. An edge with an empty-key fallback sprays these across the
-        // fleet; the chart's ingress-nginx hashes the empty header onto ONE
-        // pod instead (#342), so this asserts the answer, not the spread. A
-        // stateful actor would be proxied to its owner; a worker is local
-        // everywhere, so every host answers for itself and none redirects.
+        // #148. The chart's edge hashes `$sigx_hash`, which maps an empty
+        // header to a per-request id (#342), so these spray across the
+        // fleet — but a worker's answer names its pool MEMBER, not its host,
+        // and a worker dispatch is no routing decision (`dispatcherFor`
+        // hands a stateless type straight to the local host, so the
+        // counters above never move), so from outside this asserts the
+        // answer, not the spread; `infra/worker-pool`'s `pool_spread` is
+        // the measurement. A stateful actor would be proxied to its owner;
+        // a worker is local everywhere, so every host answers for itself
+        // and none redirects.
         const results = await Promise.all(
             Array.from({ length: 6 }, () =>
                 actorCall('Digest', 'summarize', ['anywhere', 'payload', 100], { route: false })
