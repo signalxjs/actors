@@ -85,8 +85,9 @@ same prefix — a spread fleet posing as a packed one.
 **Three shard states, three meanings.** One claimant is healthy. *None* means
 nothing is ticking that shard, those reminders are not firing, and nothing
 else in the system surfaces it. *Two or more* means membership views have
-diverged — safe, because the per-shard etag CAS keeps delivery at-most-once,
-but worth knowing. A renderer that collapses this to a claimant count loses
+diverged — safe, because the per-shard etag CAS keeps delivery at-most-once
+per tick (a dispatch that fails is retried next tick, #306), but worth
+knowing. A renderer that collapses this to a claimant count loses
 the distinction that matters.
 
 ## Adding a renderer

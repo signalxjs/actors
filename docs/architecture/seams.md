@@ -148,16 +148,22 @@ interface ActorRemindersContext {
 
 `undelivered` is how a failed `deliver()` reaches the host's own numbers —
 `HostStats.remindersUndelivered`, so `ops()`, `metrics()` gauges and the
-cluster's per-host report all carry it (#306). Call it per failed attempt.
+cluster's per-host report all carry it (#306). Call it per failed attempt;
+an implementation that does not call it leaves the counter at a `0` that
+means "said nothing" (the provider packages do not yet — #326).
 
 The default `shardedReminders()` keeps the table in `ActorStorage` under a
 reserved type, split into 16 hash shards that hosts divide between them by
 rendezvous hashing — which **assumes many actors per host**. It advances or
 deletes an entry *before* dispatching (the per-shard etag CAS is what keeps
 two tickers from double-firing), and puts an entry whose dispatch rejected
-back for the next tick (`nextDue = now + tickMs`) unless the actor set or
-cleared it meanwhile — so a deadline or a restarting host costs one tick,
-not the wake, and a target that never answers costs one attempt per tick. Where that
+back for the next tick (`nextDue = now + tickMs`, one write per shard for
+all of that tick's failures) unless the actor set it again meanwhile — so a
+deadline or a restarting host costs one tick, not the wake, and a target
+that never answers costs one attempt per tick. A one-shot the actor
+*cleared* while its dispatch was failing may still be retried once (the
+tick had already deleted it, so the clear left nothing for the re-arm to
+see), which is one more reason `onReminder` must be idempotent. Where that
 assumption is false, replace it: under Cloudflare's one-DO-per-actor model each
 actor's reminders live in its own object and fire from its own alarm, so there
 is nothing to shard and nothing to poll (and no cadence floor — an alarm fires

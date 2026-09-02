@@ -99,24 +99,31 @@
   activation. The original rejection is rethrown either way.
 
 - **A reminder whose dispatch fails is retried next tick instead of being
-  lost** (#306). `shardedReminders()` advances or deletes a due entry
-  *before* it dispatches — the at-most-once CAS design — and under overload
-  the dispatch is exactly what fails: a call deadline, a host mid-restart, an
-  `onReminder` that threw. The entry was already gone, so the actor slept
-  past its `wake` for good (131 lost wakes on one overloaded rung of the
-  workflow-engine workload). A rejected `deliver()` now re-arms its entry one
-  tick out (`nextDue = now + tickMs`: a one-shot is re-inserted, a periodic
-  one pulled forward), unless the actor set or cleared that reminder in the
-  meantime — a later decision wins. A failed dispatch therefore costs one tick
-  rather than the wake, and a target that never answers costs one attempt per
-  tick, never a hot loop. The one deliberate double: a dispatch that timed out
-  *after* `onReminder` had started is retried too, so `onReminder` should be
-  idempotent — the assumption every at-least-once consumer already makes.
-  Each failed attempt is counted in the new `HostStats.remindersUndelivered`
-  (in `host.stats()`, the `ops()` snapshot, `metrics()` gauges and the
-  cluster's per-host report), so a fleet that is missing wakes says so; a
-  custom `ActorReminders` reports through the new optional
-  `ActorRemindersContext.undelivered(ref, name, error)`.
+  lost — in the default `shardedReminders()`** (#306). It advances or deletes
+  a due entry *before* it dispatches — the at-most-once CAS design — and under
+  overload the dispatch is exactly what fails: a call deadline, a host
+  mid-restart, an `onReminder` that threw. The entry was already gone, so the
+  actor slept past its `wake` for good (131 lost wakes on one overloaded rung
+  of the workflow-engine workload). A rejected `deliver()` now re-arms its
+  entry one tick out (`nextDue = now + tickMs`: a one-shot is re-inserted, a
+  periodic one pulled forward), unless the actor set that reminder again in
+  the meantime — a later decision wins. A failed dispatch therefore costs one
+  tick rather than the wake, and a target that never answers costs one
+  attempt per tick, never a hot loop; a shard's failures go back in one write,
+  not one per failure. Two deliberate doubles: a one-shot the actor *cleared*
+  while its dispatch was failing may still be retried once (the tick had
+  already deleted it, so the clear left nothing for the re-arm to see), and a
+  dispatch that timed out *after* `onReminder` had started is retried too —
+  so `onReminder` should be idempotent, the assumption every at-least-once
+  consumer already makes. Each failed attempt is counted in the new
+  `HostStats.remindersUndelivered` (in `host.stats()`, the `ops()` snapshot,
+  `metrics()` gauges and the cluster's per-host report), so a fleet that is
+  missing wakes says so. **Scope:** the retry and the counter cover
+  `shardedReminders()`; a custom `ActorReminders` feeds the counter only if it
+  calls the new optional `ActorRemindersContext.undelivered(ref, name,
+  error)`, and `pgReminders`, `surrealReminders` and `durableObjectReminders`
+  do not yet — on those the wake is still lost and the counter reads `0`
+  (#326 tracks them).
 - **The `$live` endpoint's watch establishment now has a deadline** (#192).
   The socket session has armed the app posture's `timeoutMs` on watch
   establishment since #180 — pipeline + authorization + dispatch + the FIRST

@@ -1552,6 +1552,11 @@ export interface HostStats {
      * number lost for good: a value that keeps climbing is a target that
      * never comes back. Monotonic for the host's lifetime. OPTIONAL for the
      * same mixed-fleet reason as `watchLoops`.
+     *
+     * Fed only by an `ActorReminders` that calls
+     * `ActorRemindersContext.undelivered` — `shardedReminders()` does;
+     * `pgReminders`, `surrealReminders` and `durableObjectReminders` do not
+     * yet (#326), so on those a `0` here is "said nothing", not "lost none".
      */
     remindersUndelivered?: number;
 }
