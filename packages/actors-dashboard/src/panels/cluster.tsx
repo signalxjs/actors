@@ -48,6 +48,14 @@ export const ClusterPanel = component<PanelProps>((ctx) => () => {
             // of the cluster is not agreeing with placement.
             label: 'locates',
             value: `${count(c.locates)}  ${percent(c.locateRemote, c.locates)} answered "a peer owns it"`
+        },
+        {
+            // The per-request locality fraction (#52). Read this, not
+            // `routedLocal`: that one counts placement decisions and never
+            // sees the warm local fast path. `?? 0` because a fleet on a
+            // build that predates the pair reports neither field.
+            label: 'locality',
+            value: `${percent(c.dispatchesLocal ?? 0, (c.dispatchesLocal ?? 0) + (c.dispatchesRemote ?? 0))} local  (${count((c.dispatchesLocal ?? 0) + (c.dispatchesRemote ?? 0))} dispatches)`
         }
     ];
 

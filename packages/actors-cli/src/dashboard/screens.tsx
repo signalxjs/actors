@@ -642,6 +642,10 @@ export function ClusterScreen(props: { state: DashboardState; pane?: Pane }) {
     }
     const c = cluster.totals.counters;
     const cacheTotal = c.routeCacheHits + c.routeCacheMisses;
+    // `?? 0`: a fleet still on a build that predates the pair (#52) reports
+    // neither field, and `NaN%` is not an answer.
+    const dispatchesLocal = c.dispatchesLocal ?? 0;
+    const dispatches = dispatchesLocal + (c.dispatchesRemote ?? 0);
     // Each cell is a label, a glyph and a space; 16 shards would otherwise
     // run off a narrow pane.
     const perRow = Math.max(4, Math.min(8, Math.floor(pane.width / 8)));
@@ -672,6 +676,13 @@ export function ClusterScreen(props: { state: DashboardState; pane?: Pane }) {
                         // with placement.
                         label: 'locates',
                         value: `${count(c.locates)}  ${percent(c.locateRemote, c.locates)} answered "a peer owns it"`
+                    },
+                    {
+                        // The per-request locality fraction (#52). Read
+                        // this, not `routedLocal`: that one counts placement
+                        // decisions and never sees the warm local fast path.
+                        label: 'locality',
+                        value: `${percent(dispatchesLocal, dispatches)} local  (${count(dispatches)} dispatches)`
                     }
                 ]}
             />

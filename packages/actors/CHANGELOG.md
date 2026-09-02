@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Per-request locality counters: `dispatchesLocal` / `dispatchesRemote`**
+  (#52). `routedLocal` counts placement decisions and `remoteDispatches`
+  counts hop attempts, and neither sees the warm fast path — `dispatcherFor`
+  hands back the local dispatcher before the routing loop whenever the host
+  already holds the claim — so a fleet whose CPU per request had halved from
+  locality routing still read ~0% from `routedLocal / (routedLocal +
+  remoteDispatches)`. The new pair on `ClusterCounterTotals` counts once per
+  call, stream or watch subscriber, on the warm path and the routed path
+  alike (decided at the call's first resolved target), so `dispatchesLocal /
+  (dispatchesLocal + dispatchesRemote)` is the locality fraction the docs'
+  table promises. Stateless workers and `dispatchOn()` count in neither.
+  Existing counters are unchanged; `addCounters` sums the pair with `?? 0`,
+  so a mixed-version peer's report cannot NaN the `clusterStats` totals.
+
 - **`onStateError` hook for write-behind save failures** (#54). A
   `write-behind` save has no caller to throw to: the debounced flush failed
   silently, and the final flush at deactivation was a `__DEV__`

@@ -96,6 +96,7 @@ export const demoSnapshot: MonitorSnapshot = {
             queued: 2,
             perType: { Counter: 32 },
             counters: {
+                dispatchesLocal: 2560, dispatchesRemote: 1280,
                 routedLocal: 1280, remoteDispatches: 1280, remoteStreams: 1, remoteWatches: 0, coalescedWatches: 0, retries: 15,
                 routingFailures: 0, targetedDispatches: 0, inboundDispatches: 1280, inboundStreams: 0, inboundWatches: 0,
                 routeCacheHits: 238, routeCacheMisses: 44, directoryLookups: 44,

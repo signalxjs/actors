@@ -11,17 +11,42 @@
  * refused and retried attempts, which is itself the signal.
  *
  * There is no enable/disable toggle, unlike `metrics()`. These are integer
- * increments on paths already doing async directory and network work; the
- * local fast path (`dispatcherFor` handing back the local dispatcher for a
- * claimed actor) is not instrumented at all and stays byte for byte what it
- * was.
+ * increments on paths already doing async directory and network work. The
+ * one exception is the local fast path (`dispatcherFor` handing back the
+ * local dispatcher for a claimed actor), which pays exactly one increment —
+ * `dispatchesLocal` — and nothing else: that is the only place a warm local
+ * hit is visible at all, and without it a fleet's locality fraction cannot
+ * be read (#52).
  */
 import type { HostStatus } from './types';
 
 /** The additive fields — every one a monotonic count of events on THIS host. */
 export interface ClusterCounterTotals {
     // --- routing, origin side (this host initiated the call) ---------------
-    /** Routed dispatches that resolved to this host. */
+    /**
+     * Calls this host initiated that were served BY this host — once per
+     * call, stream or watch subscriber (#52). Counts the warm fast path
+     * (`dispatcherFor` short-circuiting on a held claim) as well as a
+     * routed call that resolved local, which is what makes
+     * `dispatchesLocal / (dispatchesLocal + dispatchesRemote)` the
+     * per-request locality fraction. Stateless workers and `dispatchOn()`
+     * count in neither: a worker is not placed and a targeted call chose
+     * its host, so neither has a locality to measure.
+     */
+    dispatchesLocal: number;
+    /**
+     * Calls this host initiated whose routing resolved to a PEER — once per
+     * call, decided at the call's first resolved target. A re-route after a
+     * `wrong-host` or `unreachable` is a `retries` event, not a second
+     * dispatch; `remoteDispatches` below is the per-attempt view.
+     */
+    dispatchesRemote: number;
+    /**
+     * ROUTED dispatches that resolved to this host — a PLACEMENT count, not
+     * a request count: the warm fast path never reaches the routing loop,
+     * so a perfectly local cluster reads near-zero here. For locality read
+     * `dispatchesLocal` instead.
+     */
     routedLocal: number;
     /** Hops sent OUT to a peer, per ATTEMPT — so retries are included. */
     remoteDispatches: number;
@@ -148,6 +173,8 @@ export interface ClusterCounters extends ClusterCounterTotals {
 
 export function createCounters(): ClusterCounterTotals {
     return {
+        dispatchesLocal: 0,
+        dispatchesRemote: 0,
         routedLocal: 0,
         remoteDispatches: 0,
         remoteStreams: 0,

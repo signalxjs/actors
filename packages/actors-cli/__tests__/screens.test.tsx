@@ -279,6 +279,8 @@ describe('screens render', () => {
                 view: { version: 4, size: 2, active: 2 },
                 totals: clusterTotals({
                     counters: {
+                        dispatchesLocal: 8,
+                        dispatchesRemote: 2,
                         routedLocal: 10,
                         remoteDispatches: 7,
                         remoteStreams: 0,
@@ -324,6 +326,10 @@ describe('screens render', () => {
         // Reported side by side and never summed — the gap IS the signal.
         expect(out).toContain('remoteDispatches');
         expect(out).toContain('inboundDispatches');
+        // The per-request fraction (#52) — from the dispatches pair, NOT
+        // from routedLocal, which would have said 59% here.
+        expect(out).toContain('locality');
+        expect(out).toContain('80% local');
         expect(out).toContain('UNCLAIMED');
         expect(out).toContain('claimed twice');
         expect(out).toContain('reminder shards');

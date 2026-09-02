@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`locality` on the cluster screen (#52).** The header now reads
+  `locality  80% local  (10 dispatches)`, derived from the placement's new
+  per-request pair `dispatchesLocal` / `dispatchesRemote` — the fraction
+  `routedLocal` never was, because it counts placement decisions and the
+  warm local fast path bypasses it. Reads `—` until a host that reports the
+  pair has dispatched anything, and never `NaN%` against a fleet on an older
+  build.
+
 - **The node each host runs on, and how many nodes the fleet spans (#51).**
   The Hosts table has a `NODE` column, the host drill-down a `node` row, the
   Overview a `nodes` row under `hosts`, and every `cluster · N host(s)` heading

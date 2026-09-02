@@ -569,6 +569,13 @@ const localityRouted: Scenario = {
  * come from outside the counters, and it does: this scenario issues the
  * calls, so it knows.
  *
+ * Since #52 the placement also keeps a per-REQUEST pair, `dispatchesLocal`
+ * / `dispatchesRemote`, that does count the warm fast path — that is the
+ * number an operator reads (`locality` on the CLI's cluster screen). This
+ * scenario keeps deriving from `remoteDispatches` against its own call
+ * count on purpose: the `exact` gates were baselined on it, and a
+ * denominator the scenario owns cannot drift with a counter's definition.
+ *
  * The arms exist to answer one open question — should `preferLocalPolicy()`
  * be the default? Edge-hash + prefer-local is the shape the routing RFC
  * recommends, and it wins on locality. The case AGAINST making it the
