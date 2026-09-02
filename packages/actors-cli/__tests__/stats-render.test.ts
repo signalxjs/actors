@@ -35,7 +35,8 @@ function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
                 meta: null,
                 metrics: null,
                 health: null,
-                activations: null
+                activations: null,
+                sockets: null
             }
         ],
         cluster: null,
@@ -48,6 +49,27 @@ function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
 }
 
 const render = (s: MonitorSnapshot): string => renderStats(s, 'http://a:3000').join('\n');
+
+/** The `sockets` ops section a host with a socket mount publishes (#166). */
+const sockets = {
+    connectionsOpened: 7,
+    connectionsClosed: 4,
+    connectionsRefused: 2,
+    callsStarted: 40,
+    callsFailed: 3,
+    subscriptionsOpened: 9,
+    subscriptionsClosed: 5,
+    protocolBreaches: 1,
+    lifetimeCloses: 2,
+    deliveries: 1200,
+    deliveryBytes: 48_000,
+    throttleQuantized: 6,
+    open: 3,
+    inFlight: 1,
+    subscriptions: 4,
+    bufferedBytes: 512,
+    lifetimeMs: { count: 4, minMs: 2, maxMs: 21, meanMs: 11.5, p50Ms: 2, p90Ms: 21, p99Ms: 21 }
+};
 
 describe('renderStats', () => {
     it('leads with the PARTIAL warning, not a footnote', () => {
@@ -175,6 +197,38 @@ describe('renderStats', () => {
         );
         expect(output).not.toMatch(/nodes/);
         expect(output).not.toMatch(/node /);
+    });
+
+    it('prints a host-labelled sockets section when the host reported one (#166)', () => {
+        const output = render(snapshot({ hosts: [{ ...snapshot().hosts[0]!, sockets }] }));
+        // One host's own, and the heading says so — the fan-out carries no
+        // socket digest, so this is never a cluster total.
+        expect(output).toMatch(/sockets — host host-a ONLY/);
+        expect(output).toMatch(/open {9}3 \(1 in flight\)/);
+        expect(output).toMatch(/subs {9}4 \(6 throttle-quantized\)/);
+        expect(output).toMatch(/deliveries {3}1\.2k frames {2}48 kB/);
+        expect(output).toMatch(/buffered {5}512 B/);
+        expect(output).toMatch(/connections {2}7 opened {2}4 closed {2}2 refused/);
+        expect(output).toMatch(/evicted {6}2 lifetime {2}1 protocol breach/);
+        expect(output).toMatch(/lifetime {5}p50 2ms {2}p90 21ms {2}p99 21ms/);
+    });
+
+    it('prints no sockets section for a host that reported none', () => {
+        // "Said nothing" is not "no sockets": a host without a socket mount
+        // must not read as one with zero sessions.
+        expect(render(snapshot())).not.toMatch(/sockets/);
+    });
+
+    it('draws unknown buffered bytes as a gap, not as zero (#208)', () => {
+        const output = render(
+            snapshot({
+                hosts: [{ ...snapshot().hosts[0]!, sockets: { ...sockets, bufferedBytes: null, lifetimeMs: null, lifetimeCloses: 0, protocolBreaches: 0 } }]
+            })
+        );
+        expect(output).toMatch(/buffered {5}—/);
+        // Nothing closed, nothing evicted: neither row claims a measurement.
+        expect(output).not.toMatch(/lifetime {5}p50/);
+        expect(output).not.toMatch(/evicted/);
     });
 
     it('says how to get metrics rather than silently showing nothing', () => {

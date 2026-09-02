@@ -4,6 +4,25 @@
 
 ### Added
 
+- **Socket sessions in `stats` and `top` (#166).** A host that publishes the
+  `sockets` ops section — `registry.reportOps('sockets', () =>
+  socketStats().snapshot())` — gets a `sockets — host <id> ONLY` block in
+  `sigx actors stats`: open sessions and calls in flight, live
+  subscriptions (and how many were throttle-quantized), deliveries with
+  their size, buffered bytes, connections opened/closed/refused, evictions
+  (lifetime-cap and protocol-breach closes, when any), and the connection
+  lifetime percentiles once anything has closed. `top` shows the same rows
+  on the host drill-down and a `SOCKETS` column (open sessions) in the Hosts
+  table — the column only once some host reported, so a fleet that never
+  said does not read as "no sockets anywhere". The heading says `ONLY`
+  because the fan-out carries no socket digest yet: the section is the
+  polled host's own, never a cluster total, and a peer's `—` means it said
+  nothing. Buffered bytes that no session could report draw as `—`, not
+  `0 B` (#208). The embedded source reads the section from the app's
+  `ops()` handle, the HTTP source from the ops body.
+
+### Added
+
 - **`locality` on the cluster screen (#52).** The header now reads
   `locality  80% local  (10 dispatches)`, derived from the placement's new
   per-request pair `dispatchesLocal` / `dispatchesRemote` — the fraction

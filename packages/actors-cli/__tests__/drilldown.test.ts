@@ -42,7 +42,8 @@ const host = (hostId: string): MonitorSnapshot['hosts'][number] => ({
     meta: null,
     metrics: null,
     health: null,
-    activations: null
+    activations: null,
+    sockets: null
 });
 
 function snapshot(over: Partial<MonitorSnapshot> = {}): MonitorSnapshot {

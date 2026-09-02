@@ -9,7 +9,7 @@
 import type { ActorsCommandContext } from './context';
 import { out, outJson } from './out';
 import { resolveSource } from '../resolve';
-import { count, durationMs, percent, uptime } from '@sigx/actors-monitor/format';
+import { bytes, count, durationMs, percent, uptime } from '@sigx/actors-monitor/format';
 import { nodeCount, type MonitorSnapshot } from '@sigx/actors-monitor';
 
 export async function runStats(ctx: ActorsCommandContext): Promise<void> {
@@ -195,6 +195,40 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
             '',
             'no metrics — add .use(metrics()) to the app to see calls, latency and errors'
         );
+    }
+
+    // Socket sessions (#166). Per host and labelled as such, because the
+    // section is one host's own: the fan-out carries no socket digest, so
+    // only the polled host can report, and a peer with `null` here said
+    // nothing — it did not say "no sockets".
+    for (const host of snapshot.hosts) {
+        const sockets = host.sockets;
+        if (!sockets) continue;
+        lines.push(
+            '',
+            `sockets — host ${host.hostId} ONLY`,
+            `  open         ${count(sockets.open)} (${count(sockets.inFlight)} in flight)`,
+            `  subs         ${count(sockets.subscriptions)}` +
+                (sockets.throttleQuantized > 0
+                    ? ` (${count(sockets.throttleQuantized)} throttle-quantized)`
+                    : ''),
+            `  deliveries   ${count(sockets.deliveries)} frames  ${bytes(sockets.deliveryBytes)}`,
+            // `—` is "no adapter could tell us", which is not `0 B` (#208).
+            `  buffered     ${bytes(sockets.bufferedBytes)}`,
+            `  connections  ${count(sockets.connectionsOpened)} opened  ${count(sockets.connectionsClosed)} closed  ${count(sockets.connectionsRefused)} refused`
+        );
+        // Closes the HOST decided on — a lifetime cap or a protocol breach —
+        // as opposed to a client hanging up. Only when any happened.
+        if (sockets.lifetimeCloses > 0 || sockets.protocolBreaches > 0) {
+            lines.push(
+                `  evicted      ${count(sockets.lifetimeCloses)} lifetime  ${count(sockets.protocolBreaches)} protocol breach`
+            );
+        }
+        if (sockets.lifetimeMs) {
+            lines.push(
+                `  lifetime     p50 ${durationMs(sockets.lifetimeMs.p50Ms)}  p90 ${durationMs(sockets.lifetimeMs.p90Ms)}  p99 ${durationMs(sockets.lifetimeMs.p99Ms)}`
+            );
+        }
     }
 
     if (snapshot.activations && snapshot.activations.length > 0) {

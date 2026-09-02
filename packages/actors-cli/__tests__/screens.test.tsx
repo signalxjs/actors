@@ -52,6 +52,7 @@ const host = (over: Partial<HostView> = {}): HostView => ({
     metrics: null,
     health: { ready: true, fatal: false, checks: {} },
     activations: null,
+    sockets: null,
     ...over
 });
 
@@ -445,3 +446,58 @@ describe('the node each host runs on (#51)', () => {
     });
 });
 
+describe('socket sessions (#166)', () => {
+    const sockets = {
+        connectionsOpened: 7,
+        connectionsClosed: 4,
+        connectionsRefused: 2,
+        callsStarted: 40,
+        callsFailed: 3,
+        subscriptionsOpened: 9,
+        subscriptionsClosed: 5,
+        protocolBreaches: 1,
+        lifetimeCloses: 2,
+        deliveries: 1200,
+        deliveryBytes: 48_000,
+        throttleQuantized: 0,
+        open: 3,
+        inFlight: 1,
+        subscriptions: 4,
+        bufferedBytes: null,
+        lifetimeMs: null
+    };
+
+    it('shows the SOCKETS column only when some host reported one', () => {
+        // A column of `—` across a fleet that never said would read as "no
+        // sockets anywhere".
+        const silent = rows(<HostsScreen state={stateWith()} cursor={cursorModel(0)} />);
+        expect(silent.join('\n')).not.toContain('SOCKETS');
+
+        const state = stateWith({ hosts: [host({ sockets }), host({ hostId: 'host-b' })] });
+        const out = rows(<HostsScreen state={state} cursor={cursorModel(0)} />);
+        const header = out.findIndex((line) => line.includes('SOCKETS'));
+        expect(header).toBeGreaterThan(-1);
+        // The polled host's count; a peer that said nothing draws a gap.
+        expect(out[header + 2]).toMatch(/host-a.*\b3\b/);
+        expect(out[header + 3]).toMatch(/host-b.*—/);
+    });
+
+    it('lists the sessions, deliveries and evictions in the drill-down', () => {
+        const state = stateWith({ hosts: [host({ sockets })] });
+        const out = draw(<HostScreen state={state} hostId="host-a" />);
+        expect(out).toContain('3 open  1 in flight  4 subs');
+        expect(out).toContain('1.2k frames  48 kB');
+        expect(out).toContain('7 opened  4 closed  2 refused');
+        expect(out).toContain('2 lifetime  1 protocol breach');
+        // Unknown buffered bytes is a gap, never `0 B` (#208); no completed
+        // lifetime is "no samples", never three zeroes.
+        expect(out).toMatch(/buffered\s+—/);
+        expect(out).toMatch(/lifetime\s+no samples/);
+    });
+
+    it('draws no socket rows for a host that reported none', () => {
+        const out = draw(<HostScreen state={stateWith()} hostId="host-a" />);
+        expect(out).not.toContain('sockets');
+        expect(out).not.toContain('deliveries');
+    });
+});

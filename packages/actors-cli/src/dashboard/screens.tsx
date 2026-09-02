@@ -42,7 +42,7 @@ import {
     type TableColumn
 } from '@sigx/terminal';
 import { digestSnapshot, type ActivationInfo } from '@sigx/actors/host';
-import { count, durationMs, gauge, percent, rate, uptime } from '@sigx/actors-monitor/format';
+import { bytes, count, durationMs, gauge, percent, rate, uptime } from '@sigx/actors-monitor/format';
 import {
     alertLines,
     coverageNote,
@@ -332,9 +332,13 @@ function percentiles(
 
 /**
  * The host table's columns. A function of the fleet, not a constant,
- * because the NODE cell is a label derived across every host (below).
+ * because the NODE cell is a label derived across every host (below), and
+ * because the SOCKETS column exists only when some host reported one.
  */
-const hostColumns = (labels: ReadonlyMap<string, string>): TableColumn<HostView>[] => [
+const hostColumns = (
+    labels: ReadonlyMap<string, string>,
+    sockets: boolean
+): TableColumn<HostView>[] => [
     { key: 'id', header: 'HOST', value: (s) => s.hostId, min: 8 },
     { key: 'status', header: 'STATUS', value: (s) => s.status },
     {
@@ -352,6 +356,20 @@ const hostColumns = (labels: ReadonlyMap<string, string>): TableColumn<HostView>
     { key: 'up', header: 'UP', value: (s) => uptime(s.uptimeMs), align: 'right' },
     { key: 'act', header: 'ACTS', value: (s) => count(s.stats.activations), align: 'right' },
     { key: 'queued', header: 'QUEUE', value: (s) => count(s.stats.queued), align: 'right' },
+    // Open socket sessions (#166), only when some host reported them — a
+    // column of `—` would say "no sockets anywhere" about a fleet that
+    // never said. `—` on a peer means the fan-out carried nothing for it,
+    // which today it never does: only the polled host can report.
+    ...(sockets
+        ? [
+              {
+                  key: 'sockets',
+                  header: 'SOCKETS',
+                  value: (s: HostView) => (s.sockets ? count(s.sockets.open) : '—'),
+                  align: 'right' as const
+              }
+          ]
+        : []),
     {
         key: 'view',
         header: 'VIEW',
@@ -409,7 +427,10 @@ export function HostsScreen(props: { state: DashboardState; cursor?: Model<numbe
         <Col>
             {alerts(props.state, pane)}
             <DataTable
-                columns={hostColumns(nodeLabels(snapshot.hosts))}
+                columns={hostColumns(
+                    nodeLabels(snapshot.hosts),
+                    snapshot.hosts.some((host) => host.sockets !== null)
+                )}
                 rows={snapshot.hosts}
                 model={props.cursor}
                 width={pane.width - TABLE_GUTTER}
@@ -533,12 +554,14 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
     );
     const actors = host.activations ?? [];
     const node = host.meta?.node;
+    const sockets = socketRows(host);
     const spent =
         alertHeight(props.state, pane) +
         1 +
         (host.health ? 4 : 3) +
         (node ? 1 : 0) +
         (digest ? 3 : 1) +
+        sockets.length +
         blockHeight(checks) +
         blockHeight(kinds) +
         blockHeight(recent) +
@@ -605,6 +628,7 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
             ) : (
                 <Line color="dim">no metrics from this host</Line>
             )}
+            {sockets.length > 0 ? <DetailList labelWidth={LABEL_WIDTH} rows={sockets} /> : null}
             {block('checks', checks, pane)}
             {block('errors by kind', kinds, pane)}
             {block('recent failures', recent, pane)}
@@ -625,6 +649,54 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
             )}
         </Col>
     );
+}
+
+/**
+ * A host's socket sessions (#166) as detail rows — none when it reported
+ * none, which is "said nothing", not "no sockets": a host without a socket
+ * mount and one whose sessions all closed are different findings, and
+ * only the polled host can say anything today.
+ */
+function socketRows(
+    host: HostView
+): { label: string; value: string; tone?: string }[] {
+    const sockets = host.sockets;
+    if (!sockets) return [];
+    return [
+        {
+            label: 'sockets',
+            value:
+                `${count(sockets.open)} open  ${count(sockets.inFlight)} in flight  ${count(sockets.subscriptions)} subs` +
+                (sockets.throttleQuantized > 0
+                    ? `  ${count(sockets.throttleQuantized)} throttle-quantized`
+                    : '')
+        },
+        {
+            label: 'deliveries',
+            value: `${count(sockets.deliveries)} frames  ${bytes(sockets.deliveryBytes)}`
+        },
+        // `—` is "no adapter could tell us", which is not `0 B` (#208).
+        { label: 'buffered', value: bytes(sockets.bufferedBytes) },
+        {
+            label: 'connections',
+            value: `${count(sockets.connectionsOpened)} opened  ${count(sockets.connectionsClosed)} closed  ${count(sockets.connectionsRefused)} refused`,
+            // A refused upgrade is a client that could not get in.
+            tone: sockets.connectionsRefused > 0 ? 'warn' : undefined
+        },
+        {
+            // Closes the HOST decided on — a lifetime cap or a protocol
+            // breach — as opposed to a client hanging up.
+            label: 'evicted',
+            value: `${count(sockets.lifetimeCloses)} lifetime  ${count(sockets.protocolBreaches)} protocol breach`,
+            tone: sockets.protocolBreaches > 0 ? 'warn' : undefined
+        },
+        {
+            label: 'lifetime',
+            value: sockets.lifetimeMs
+                ? `p50 ${durationMs(sockets.lifetimeMs.p50Ms)}  p99 ${durationMs(sockets.lifetimeMs.p99Ms)}`
+                : 'no samples'
+        }
+    ];
 }
 
 export function ClusterScreen(props: { state: DashboardState; pane?: Pane }) {

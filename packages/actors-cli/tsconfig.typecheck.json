@@ -29,6 +29,7 @@
         "paths": {
             "@sigx/actors": ["../actors/src/index.ts"],
             "@sigx/actors/host": ["../actors/src/host/index.ts"],
+            "@sigx/actors/server": ["../actors/src/server/index.ts"],
             "@sigx/actors/cluster": ["../actors/src/cluster/index.ts"],
             // Same reason as `@sigx/actors` above: from SOURCE, so a clean
             // checkout typechecks before anything is built. More specific
