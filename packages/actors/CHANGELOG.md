@@ -268,11 +268,10 @@
   `HostStats.remindersUndelivered` (in `host.stats()`, the `ops()` snapshot,
   `metrics()` gauges and the cluster's per-host report), so a fleet that is
   missing wakes says so. **Scope:** the retry and the counter cover
-  `shardedReminders()`; a custom `ActorReminders` feeds the counter only if it
-  calls the new optional `ActorRemindersContext.undelivered(ref, name,
-  error)`, and `pgReminders`, `surrealReminders` and `durableObjectReminders`
-  do not yet — on those the wake is still lost and the counter reads `0`
-  (#326 tracks them).
+  `shardedReminders()` here, and `pgReminders`, `surrealReminders` and
+  `durableObjectReminders` as of #326 (see those packages' changelogs); a
+  custom `ActorReminders` feeds the counter only if it calls the new optional
+  `ActorRemindersContext.undelivered(ref, name, error)`.
 - **The `$live` endpoint's watch establishment now has a deadline** (#192).
   The socket session has armed the app posture's `timeoutMs` on watch
   establishment since #180 — pipeline + authorization + dispatch + the FIRST

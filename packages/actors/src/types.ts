@@ -1622,9 +1622,10 @@ export interface HostStats {
      * same mixed-fleet reason as `watchLoops`.
      *
      * Fed only by an `ActorReminders` that calls
-     * `ActorRemindersContext.undelivered` — `shardedReminders()` does;
-     * `pgReminders`, `surrealReminders` and `durableObjectReminders` do not
-     * yet (#326), so on those a `0` here is "said nothing", not "lost none".
+     * `ActorRemindersContext.undelivered` — `shardedReminders()` does, and
+     * so do `pgReminders`, `surrealReminders` and `durableObjectReminders`
+     * (#326); on a custom implementation that does not, a `0` here is "said
+     * nothing", not "lost none".
      */
     remindersUndelivered?: number;
 }
