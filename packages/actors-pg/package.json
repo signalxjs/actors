@@ -48,10 +48,10 @@
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
         "@types/node": "^25.9.1",
-        "@types/pg": "^8.11.10",
-        "pg": "^8.13.1",
+        "@types/pg": "^8.23.1",
+        "pg": "^8.23.0",
         "typescript": "^6.0.3",
-        "vite": "^8.0.3"
+        "vite": "^8.2.2"
     },
     "publishConfig": {
         "access": "public"
