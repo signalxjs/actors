@@ -93,6 +93,22 @@
   (an nginx `map` to `$request_id`) or carve the worker paths out of the
   hashed Ingress by path, the way `$live` already is; #342 tracks the chart.
 
+- **A shared watch read no longer runs under the creating subscriber's
+  `ctx.bag` or abort signal** (#137). Watch loops are shared per `(method,
+  args, throttleMs)` and re-invoke under the first subscriber's call context.
+  #121 split that loop the moment a read consulted `ctx.principal`, but the
+  context's per-REQUEST halves stayed the creator's for the life of the
+  entry: `ctx.bag` handed a read serving every subscriber the creator's
+  request bag (and `ctx.actor()` relayed it onward), and a cross-host hop
+  the read made carried the creator's abort signal — so the first subscriber
+  leaving failed the in-flight re-read for everyone still attached. Inside a
+  shared watch turn `ctx.bag` is now the empty bag and the call's abort
+  signal is the watch's own, fired only when the last subscriber leaves. A
+  read that needs per-request context is not a shareable read — a plain
+  method or a `streams:` entry is per caller by construction. Principal
+  handling (#121, #138) is unchanged; this retires the limitation the 0.8.0
+  notes recorded.
+
 - **`host.stop()` now waits for a just-completed task's bookkeeping** (#313).
   A detached run left the activation's task table the moment its body
   returned, BEFORE its ledger clear and task-liveness `untrack` ran, and the

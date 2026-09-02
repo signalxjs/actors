@@ -952,10 +952,17 @@ export class Activation {
         qualified: boolean
     ): WatchEntry {
         const handles = new Set<WatchHandle>();
-        // The loop invokes under the CREATING subscriber's context — its
-        // bag and abortSignal included, a known quirk tracked separately
-        // from #121. The marker is how the `ctx.principal` getter reports
-        // that this read consulted identity.
+        // The loop invokes under the CREATING subscriber's context (chain,
+        // callId, deadline, traceparent, principal) — but NOT its
+        // per-request halves (#137). `bag` is the empty bag: the creator's
+        // bag is scratch stamped for ONE request, and a read serving many
+        // subscribers must not compute — or relay over a `ctx.actor()` hop
+        // — a value shaped by it. `abortSignal` is the WATCH's own, aborted
+        // when the last subscriber leaves: the creator's signal would take
+        // every hop the shared read has in flight down with the creator,
+        // failing the loop for everyone still subscribed.
+        // The marker is how the `ctx.principal` getter reports that this
+        // read consulted identity.
         // Declared principal-independent (#138)? Then the getter must FAIL
         // the read rather than record discovery — by the time it fires, a
         // relay may already have merged distinct identities onto one
@@ -964,8 +971,11 @@ export class Activation {
         const declared = declaresPrincipalIndependent(this.def.__sigxActor, method)
             ? { method, violated: null as Error | null }
             : undefined;
+        const teardown = new AbortController();
         const invokeCall: WatchInvokeCall = {
             ...call,
+            bag: EMPTY_CALL_BAG,
+            abortSignal: teardown.signal,
             [kWatchBase]: base,
             ...(declared ? { [kWatchDeclared]: declared } : {})
         };
@@ -1084,7 +1094,12 @@ export class Activation {
                 scheduler: this.#host.scheduler,
                 throttleMs
             },
-            () => void this.#watches.delete(key)
+            () => {
+                this.#watches.delete(key);
+                // The shared loop is gone; release anything still awaiting
+                // on its behalf (a hop parked on a peer, say).
+                teardown.abort();
+            }
         );
         return { shared, handles };
     }

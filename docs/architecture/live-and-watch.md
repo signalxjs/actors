@@ -57,8 +57,9 @@ the value, is documented in
 
 A read that derives its result from `ctx.principal` makes identity an **input
 to the read**. Sharing a loop across identities then serves one subscriber
-another's view — the first subscriber's context is what the loop invokes
-under. That was a real defect (#121), and the fix is the split:
+another's view — the first subscriber's call context is what the loop invokes
+under (its bag and abort signal excepted — see "What a shared turn carries"
+below). That was a real defect (#121), and the fix is the split:
 
 - The `ctx.principal` getter marks the invoking watch's base key (the
   `kWatchBase` marker on the loop's call context) into the activation's
@@ -87,6 +88,33 @@ author, but by making the observation FATAL: a declared read that consults
 getter throws before the read completes and the invoke wrapper rethrows if
 the body catches it. The owner-side machinery here is unchanged; a declared
 method simply can never enter `#watchPrincipalDependent`.
+
+## What a shared turn carries (#137)
+
+The loop's invoke context is built once, in `#createWatchEntry`, from the
+creating subscriber's call — and the split above is only half of what that
+implies. A call context has two kinds of field: those that describe the
+*chain* (`callChain`, `callId`, `deadline`, `traceparent`, `principal`), and
+two that describe *one request* — `bag`, edge-stamped scratch for a single
+call, and `abortSignal`, which fires when that one caller goes away. A read
+serving many subscribers must see neither, so the entry replaces both:
+
+- **`ctx.bag` is the empty bag** (`EMPTY_CALL_BAG`) inside a shared watch
+  turn, and a `ctx.actor()` / `ctx.publish()` hop the read makes relays the
+  empty bag, never the creator's. Discovery-by-bag would have been the #121
+  mechanism again — but qualifying keys by bag *content* shatters sharing
+  (the bag has unbounded cardinality), so the bag is neutralised rather than
+  keyed on. A read that needs per-request context is not a shareable read;
+  a plain method or a `streams:` entry is per caller by construction.
+- **The call's abort signal is the watch's own**, an `AbortController`
+  aborted from the entry's `onEmpty` — when the last subscriber leaves and
+  the loop is torn down. Subscribers still detach individually through
+  `FanOut.subscribe(signal)`; what changed is that a hop the shared read has
+  in flight (a cross-host call, whose transport honours the signal) no
+  longer dies with the creator, taking the re-read down for everyone else.
+
+The principal stays, deliberately: it is what #121's discovery splits on, and
+replacing it would hide identity-dependence instead of detecting it.
 
 ## A client may ask to be served more slowly — from a fixed ladder
 
@@ -261,9 +289,12 @@ not clear it; removing the flag or the read does.
 Three things the declaration deliberately does not cover, all worth knowing
 before using it:
 
-- **`ctx.bag`** is already first-subscriber-only on any coalesced stream,
-  declared or not (#137). This is a promise about *identity*, nothing else —
-  which is why it is not spelled "caller-independent".
+- **`ctx.bag`** — a shared turn never has one: since #137 the loop invokes
+  with the empty bag and the watch's own abort signal, whoever created it
+  (see "What a shared turn carries"). That is what lets this be a promise
+  about *identity* alone rather than "caller-independent": the per-request
+  half of the context is already gone from every coalesced read, declared
+  or not.
 - **Identity reached through `ctx.actor()` into another actor** is invisible
   to the marker, exactly as it is to #121's discovery.
 - **A touch that only authorizes** trips it too — #121 marks one touch
