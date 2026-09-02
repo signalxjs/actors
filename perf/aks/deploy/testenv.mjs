@@ -38,7 +38,7 @@ import { createHmac } from 'node:crypto';
 import { postMessageFnId } from '../../app/deploy/post-fn.mjs';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
 import { shapeMismatch } from '../../../benchmarks/src/shape.mjs';
-import { runWsLoad } from './ws-load.mjs';
+import { runWsLoad, transportGate } from './ws-load.mjs';
 import { runWfLoad } from './wf-load.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -563,6 +563,12 @@ async function wsLoad(args) {
     step('peak concurrency, observed on the HOSTS');
     log(JSON.stringify({
         hosts: result.hosts,
+        // The two numbers the runbook's TCP check needs, which this path
+        // never printed (#223): hosts with tcp in their chain — short of
+        // `hosts` on a TRANSPORT=tcp run means a fleet still partly on
+        // HTTP — and whether the `cluster/*` deltas below saw every host.
+        tcpHosts: result.tcpHosts,
+        watchesTrustworthy: result.watchesTrustworthy,
         peakOpen: result.peakOpen,
         peakSubscriptions: result.peakSubscriptions,
         samples: result.samples,
@@ -589,6 +595,14 @@ async function wsLoad(args) {
     if ((result.delta.protocolBreaches ?? 0) > 0) {
         log('  ✗ protocol breaches — the client and the session disagree; the run is not valid');
         process.exitCode = 1;
+    }
+    // A link that fell back to HTTP invalidates a TRANSPORT=tcp measurement
+    // as thoroughly as a breach does, and just as silently (#223). Judged
+    // against the shape the numbers belong to — the one re-read above.
+    const transport = transportGate(shapeAfter, result.delta);
+    if (transport) {
+        log(`  ${transport.valid ? '!' : '✗'} ${transport.message}`);
+        if (!transport.valid) process.exitCode = 1;
     }
 }
 

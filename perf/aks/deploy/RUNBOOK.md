@@ -737,14 +737,24 @@ against an HTTP one rather than being quietly diffed against it. That is the
 whole point: over TCP there is no pool to size, so the two are not two
 measurements of one deployment.
 
-**Check `hosts_with_tcp_transport` before believing any of it.** Every socket
-run now records how many hosts reported `tcp` in their transport chain. The
-chain falls through to HTTP per LINK for any peer advertising no tcp address,
-so a fleet still mid-rollout produces a perfectly clean HTTP measurement
-wearing the tcp label — and `INFRA_SHAPE` would then compare it as tcp. If
-that number is short of the host count, the run is void. (A host whose
-listener failed to bind cannot start at all, so a pod that answers has one;
-the mixed fleet is the case worth catching.)
+**Check `tcpHosts` and `cluster/transportFallbacks` before believing any of
+it.** Every socket run records how many hosts reported `tcp` in their
+transport chain — `tcpHosts` in the hand-run's `peak concurrency` line,
+`hosts_with_tcp_transport` in a `ws-bench` artifact. The chain falls through
+to HTTP per LINK for any peer advertising no tcp address, so a fleet still
+mid-rollout produces a perfectly clean HTTP measurement wearing the tcp
+label — and `INFRA_SHAPE` would then compare it as tcp. If that number is
+short of the host count, the run is void. (A host whose listener failed to
+bind cannot start at all, so a pod that answers has one; the mixed fleet is
+the case worth catching.)
+
+`tcpHosts` proves the chain is *installed*; `cluster/transportFallbacks` in
+the `delta` block proves no link actually *fell back* under load, which is
+the stronger claim. The hand-run enforces it (#223): a `TRANSPORT=tcp` shape
+with a non-zero fallback count exits non-zero, the way `protocolBreaches`
+does. The count rides with the other `cluster/*` deltas, so it is absent —
+and the gate says it went unchecked — when `watchesTrustworthy` is false;
+that is the one case where reading `tcpHosts` by hand is still the check.
 
 Three numbers make the comparison, against scenario (q)5 on the same ladder:
 

@@ -74,7 +74,9 @@ export interface WsLoadResult {
     /**
      * Monotonic totals, after minus before: `ops.sockets` always, plus
      * `cluster/remoteWatches` / `cluster/coalescedWatches` /
-     * `cluster/inboundWatches` when `watchesTrustworthy`.
+     * `cluster/inboundWatches` / `cluster/transportFallbacks` when
+     * `watchesTrustworthy`. The last is the TCP gate (#223): links that
+     * reached their peer over a later transport than the preferred one.
      */
     delta: Record<string, number>;
     /**
@@ -88,11 +90,35 @@ export interface WsLoadResult {
      * Hosts reporting `tcp` in their transport chain at the end of the run.
      * A `TRANSPORT=tcp` run where this is short of `hosts` measured a fleet
      * still partly on HTTP — the chain falls through per link, so that
-     * produces a clean HTTP number wearing the tcp label (#203).
+     * produces a clean HTTP number wearing the tcp label (#203). Proves the
+     * chain is INSTALLED; `delta['cluster/transportFallbacks']` proves no
+     * link actually fell back (#223).
      */
     tcpHosts: number;
     partial: boolean;
 }
+
+/**
+ * The verdict of {@link transportGate}: `valid: false` voids the run;
+ * `valid: true` carries a warning the run should print but not fail on.
+ */
+export interface TransportVerdict {
+    valid: boolean;
+    message: string;
+}
+
+/**
+ * The TCP gate (#223): on a shape whose knobs say `TRANSPORT=tcp`, a
+ * non-zero `delta['cluster/transportFallbacks']` voids the run (`valid:
+ * false`), and a MISSING count — `watchesTrustworthy` was false — is
+ * reported as unchecked (`valid: true`, with a message) rather than
+ * silently passed. `null` when the run stands: not a tcp shape, or a tcp
+ * run with zero fallbacks.
+ */
+export function transportGate(
+    shape: string | undefined,
+    delta: Record<string, number>
+): TransportVerdict | null;
 
 export interface WsLoadOptions {
     context: string;
