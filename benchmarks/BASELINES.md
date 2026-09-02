@@ -3008,14 +3008,14 @@ duration-bounded, so ~1.4× the throughput is ~1.4× the runs and ~1.4× the
 allocations in the same 400 ms — the same reading the 2026-08-06 section
 gave the `state/dirty-size` counts.
 
-## 2026-09-02 · Tier 3 — the workflow engine on the 5-round-trip runtime (#329, the Go-PoC bar)
+## 2026-09-02 · Tier 3 — the workflow engine on the 5-round-trip runtime (#329, the Go host PoC bar)
 
 | | |
 |---|---|
 | Shape | `wf replicas=3 nodes=3 image=00a9da4 knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` |
 | Cluster | AKS, 3 × 1 vCPU host pods on 3 nodes, one Redis, HTTP host-to-host |
 | Driver | in-cluster `wf-bench` via `cluster-test.yml` dispatch, run **33621360065** (`workflow.json` artifact) |
-| Why | The first recorded Tier-3 run on the runtime with #309 (state-record ledger), #310 (roster liveness) and #311 (auto-pipelined url clients) — the comparison bar for the planned Go host PoC. The 2026-08-26 figures were image `fccf287`/`c6d1b15`, twelve storage round trips per run ago. |
+| Why | The first recorded Tier-3 run on the runtime with #309 (state-record ledger), #310 (roster liveness) and #311 (auto-pipelined `url`-constructed clients) — the comparison bar for the planned Go host PoC. The 2026-08-26 figures were image `fccf287`/`c6d1b15`, twelve storage round trips per run ago. |
 | Caveat | `main` moved past the measured image the same day (#322–#325, including two runtime fixes: #323 job revert-on-failed-start, #324 deadlines on timer/task turns). Neither touches a hot path measured here, but the shape pins `image=00a9da4` and a comparison against a later image is a different run. |
 | The A/B that is NOT here | #311's before/after is still parked: the old-image leg cannot deploy through the dispatch workflow — the Azure federated credential matches the OIDC subject *including the ref*, so only `main` can log in (AADSTS700213; noted on #311 with two unblock options). |
 
