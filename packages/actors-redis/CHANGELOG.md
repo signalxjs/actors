@@ -4,14 +4,14 @@
 
 ### Changed
 
-- **Clients the package constructs itself enable auto-pipelining** (#311).
-  `redisStorage({ url })` and `redisCluster({ url })` now pass
-  `enableAutoPipelining: true` to the `Redis` they create, so every command
+- **`url`-constructed clients enable auto-pipelining** (#311). When you
+  pass `url`, `redisStorage` and `redisCluster` construct their own
+  `Redis` and now do so with `enableAutoPipelining: true`: every command
   issued in one event-loop tick — a busy host's many CAS saves above all —
-  rides one socket write instead of one each. A caller who passes `client`
-  keeps full ownership of its options, unchanged. The membership
-  subscriber is unaffected: it is a `duplicate()` that only subscribes,
-  and ioredis never auto-pipelines subscription commands.
+  rides one socket write instead of one each. Passing `client` is
+  unchanged — you own that client's options. The membership subscriber is
+  unaffected either way: it is a `duplicate()` that only subscribes, and
+  ioredis never auto-pipelines subscription commands.
 
 ## [0.9.2] - 2026-08-17
 
