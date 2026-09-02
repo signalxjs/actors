@@ -117,7 +117,13 @@ export interface ClusterPluginOptions {
     rebalance?: RebalanceOptions & { intervalMs?: number };
 }
 
-export interface ClusterPlugin extends ActorPlugin {
+/**
+ * Carries `PlacementPolicy` as its `Placement` so the app-bound
+ * `defineActor` of an app that `.use(cluster(...))` accepts only a cluster
+ * strategy for `placement` (#58) — the compile-time layer over the runtime
+ * `backend`-tag refusal in `ClusterPlacement`.
+ */
+export interface ClusterPlugin extends ActorPlugin<Record<never, never>, PlacementPolicy> {
     /**
      * This host's placement — for the operational primitives that have no
      * plugin equivalent: `identity`, `descriptor()`, `migrate(ref)`.
