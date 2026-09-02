@@ -150,6 +150,35 @@ differ from a Node host:
   here — surface `attempts` in your UI so it reads as "resumed", not
   "restarted".
 
+## Workflow throughput — where the ceilings are
+
+For "many runs in flight" — thousands of jobs starting and finishing per
+minute — the levers, in the order they pay:
+
+- **A run costs five storage round trips**: the state load on activation,
+  a state CAS on start and on finish, and a task-roster CAS on each side
+  (#309 folded the ledger into job state; #310 made liveness a per-host
+  roster with nothing periodic per running job). On a real store those are
+  RTTs — the in-process floor is ~20–30 k runs/s per host, so the store's
+  latency, not the runtime, is what a deployment divides by.
+- **One host process per core.** A host is one JS thread, and mailboxes
+  are not cores: the cluster scales linearly across processes (Tier 3: a
+  pool's total went 867 → 1 863 ops/s for 3 → 7 hosts) where threads cap
+  out. Run N processes per machine and let placement spread the runs.
+- **`redisStorage({ url })` auto-pipelines** (#311): a host's same-tick
+  CAS bursts coalesce into fewer socket writes. If you pass `client`,
+  set `enableAutoPipelining: true` yourself.
+- **Co-locate a queue actor with its jobs** — the `route` option's
+  routing token plus an edge that hashes it keeps the enqueue→start hop
+  local; `@sigx/actors-tcp` makes the hops that remain one multiplexed
+  connection per peer instead of a pooled request each.
+- **Throttle observers.** `job.watch({ throttleMs })` — an unthrottled
+  watcher multiplies every checkpoint by the boundary snapshot.
+- **Checkpoint size is the other axis**: a checkpoint re-encodes the whole
+  job state, so cost grows with the run (`jobs/checkpoint-growth`,
+  ~20 µs small → ~113 µs at 300 rows). Keep checkpoints to a cursor where
+  you can; the O(delta) seam is #312.
+
 ## Which shape for which problem
 
 | Problem | Shape |

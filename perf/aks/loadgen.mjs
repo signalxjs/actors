@@ -182,7 +182,8 @@ if (MODE === 'jobs') {
             log(`start failed for ${key}: ${kind}`);
         }
     }
-    log(`started ${JOB_COUNT - startFailures}/${JOB_COUNT} jobs (${JOB_STEPS}x${JOB_STEP_MS}ms)`);
+    const startPhaseMs = Math.round(performance.now() - started);
+    log(`started ${JOB_COUNT - startFailures}/${JOB_COUNT} jobs in ${startPhaseMs}ms (${JOB_STEPS}x${JOB_STEP_MS}ms)`);
 
     const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
     const deadline = started + JOB_TIMEOUT_S * 1000;
@@ -228,6 +229,14 @@ if (MODE === 'jobs') {
         steps: JOB_STEPS,
         stepMs: JOB_STEP_MS,
         wallMs: Math.round(performance.now() - started),
+        startPhaseMs,
+        // Throughput, not only pass/fail (#318): starts/s through the
+        // sequential start loop (closed-loop, so it prices the start round
+        // trips); completions/s and a checkpoint rate are added below.
+        startedPerSec:
+            startPhaseMs > 0
+                ? Math.round(((JOB_COUNT - startFailures) / startPhaseMs) * 1000 * 10) / 10
+                : null,
         startFailures,
         completed: completed.length,
         failed: all.filter((i) => i.status === 'failed').length,
@@ -242,6 +251,15 @@ if (MODE === 'jobs') {
         // last round can't skew the metric negative.
         crashResumes: sumAttempts - all.filter((i) => (i.attempts ?? 0) > 0).length
     };
+    const wallS = summary.wallMs / 1000;
+    summary.completedPerSec = wallS > 0 ? Math.round((summary.completed / wallS) * 10) / 10 : null;
+    // A LOWER BOUND: a completed job evidences its steps' checkpoints, a
+    // non-terminal one only what its last-polled progress showed.
+    const checkpointsSeen = all.reduce(
+        (a, i) => a + (i.status === 'completed' ? JOB_STEPS : (i.progress?.done ?? 0)),
+        0
+    );
+    summary.checkpointsPerSec = wallS > 0 ? Math.round((checkpointsSeen / wallS) * 10) / 10 : null;
     console.log(JSON.stringify(summary));
     process.exit(summary.completed === JOB_COUNT ? 0 : 1);
 }
