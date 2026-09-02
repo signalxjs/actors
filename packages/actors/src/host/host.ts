@@ -211,6 +211,8 @@ class HostImpl implements Host {
     #bindings: PlacementBindings | undefined;
     #local: LocalHost;
     #reminders: ActorReminders;
+    /** Failed reminder dispatches, per attempt — `HostStats.remindersUndelivered` (#306). */
+    #remindersUndelivered = 0;
     #taskLiveness: ActorTaskLiveness;
     #registry = new Map<
         string,
@@ -399,7 +401,10 @@ class HostImpl implements Host {
             tickMs: this.#defaults.reminderTickMs,
             ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true,
             deliver: (ref, name) =>
-                this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall())
+                this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall()),
+            undelivered: () => {
+                this.#remindersUndelivered++;
+            }
         });
         // Single-node: an id for THIS host instance, never reused — the
         // roster's key and what a successor tells its predecessor's by.
@@ -940,7 +945,7 @@ class HostImpl implements Host {
     }
 
     stats(): HostStats {
-        return this.#local.stats();
+        return { ...this.#local.stats(), remindersUndelivered: this.#remindersUndelivered };
     }
 
     activations(options?: ActivationsOptions): readonly ActivationInfo[] {

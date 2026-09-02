@@ -18,6 +18,8 @@ import {
 // The service class itself is internal — imported directly for the
 // concurrent-ticker CAS test.
 import { ReminderService } from '../src/host/reminders';
+import { reminderShardOf } from '../src/host/reminder-shards';
+import { emptyHostStats } from '../src/types';
 import { peekHost, type ActorReminders, type ActorRemindersContext } from '@sigx/actors';
 
 let running: Host | null = null;
@@ -289,6 +291,347 @@ describe('reminders', () => {
         await expect(client.wakeMeIn(120_000)).resolves.toBeUndefined();
         expect(conflicts).toBe(1);
         await expect(client.listReminders()).resolves.toEqual(['wake']);
+    });
+});
+
+describe('a failed dispatch is retried, not lost (#306)', () => {
+    // The shard entry is advanced / deleted BEFORE `deliver()` runs (the
+    // at-most-once CAS design). Under overload the dispatch is exactly what
+    // fails — a deadline, a host mid-restart — and the wake used to be gone
+    // with it. A failed dispatch now re-arms the entry one tick out, so it
+    // costs a tick rather than the wake, and is counted.
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const TICK = 5;
+    const ref = { type: 'Waking', key: 'retry' };
+    const id = `${ref.type}\u0000${ref.key}`;
+    const shard = reminderShardOf(id);
+
+    async function entryOf(storage: ActorStorage, name: string) {
+        const record = await storage.load(REMINDER_TYPE, shard);
+        const table = (record?.state ?? {}) as Record<
+            string,
+            Record<string, { nextDue: number; period?: number }>
+        >;
+        return table[id]?.[name];
+    }
+
+    function failing(storage: ActorStorage, failures: () => boolean) {
+        const scheduler = manualScheduler();
+        const attempts: string[] = [];
+        const undelivered: { name: string; error: unknown }[] = [];
+        const service = new ReminderService();
+        service.bind({
+            storage,
+            scheduler,
+            tickMs: TICK,
+            ownsShard: () => true,
+            deliver: async (_ref, name) => {
+                attempts.push(name);
+                if (failures()) throw new Error('dispatch deadline');
+            },
+            undelivered: (_ref, name, error) => void undelivered.push({ name, error })
+        });
+        return { service, scheduler, attempts, undelivered };
+    }
+
+    it('re-arms a one-shot whose dispatch failed for the next tick', async () => {
+        const storage = memoryStorage();
+        let fail = true;
+        const { service, scheduler, attempts, undelivered } = failing(storage, () => fail);
+        const api = service.apiFor(ref);
+        await api.set('wake', { due: 0 });
+        const armed = (await entryOf(storage, 'wake'))!.nextDue;
+        service.start();
+        try {
+            const before = Date.now();
+            scheduler.advance(TICK); // tick 1: deliver rejects
+            await vi.waitFor(() => expect(attempts).toEqual(['wake']));
+            // Still registered — nudged one tick out, not dropped.
+            await vi.waitFor(async () => {
+                const entry = await entryOf(storage, 'wake');
+                expect(entry).toBeDefined();
+                expect(entry!.nextDue).toBeGreaterThanOrEqual(before + TICK);
+                expect(entry!.nextDue).toBeLessThanOrEqual(Date.now() + TICK);
+                expect(entry!.nextDue).toBeGreaterThan(armed);
+            });
+            expect(undelivered).toHaveLength(1);
+            expect(undelivered[0]!.name).toBe('wake');
+            expect((undelivered[0]!.error as Error).message).toBe('dispatch deadline');
+
+            fail = false;
+            await sleep(TICK * 2);
+            scheduler.advance(TICK); // tick 2: delivered
+            await vi.waitFor(() => expect(attempts).toEqual(['wake', 'wake']));
+            // A one-shot that finally fired clears itself.
+            await vi.waitFor(async () => expect(await api.list()).toEqual([]));
+            expect(undelivered).toHaveLength(1);
+        } finally {
+            service.stop();
+        }
+    });
+
+    it('retries a periodic reminder next tick rather than a period later', async () => {
+        const storage = memoryStorage();
+        let fail = true;
+        const { service, scheduler, attempts } = failing(storage, () => fail);
+        const api = service.apiFor(ref);
+        await api.set('beat', { due: 0, period: 60_000 });
+        service.start();
+        try {
+            const before = Date.now();
+            scheduler.advance(TICK);
+            await vi.waitFor(() => expect(attempts).toEqual(['beat']));
+            let rearmed = 0;
+            await vi.waitFor(async () => {
+                const entry = await entryOf(storage, 'beat');
+                expect(entry!.period).toBe(60_000);
+                expect(entry!.nextDue).toBeLessThanOrEqual(Date.now() + TICK);
+                expect(entry!.nextDue).toBeGreaterThanOrEqual(before + TICK);
+                rearmed = entry!.nextDue;
+            });
+
+            fail = false;
+            await sleep(TICK * 2);
+            scheduler.advance(TICK);
+            await vi.waitFor(() => expect(attempts).toEqual(['beat', 'beat']));
+            // A SUCCESSFUL firing advances by the period, as before.
+            await vi.waitFor(async () => {
+                const entry = await entryOf(storage, 'beat');
+                expect(entry!.nextDue).toBeGreaterThanOrEqual(rearmed + 60_000);
+            });
+        } finally {
+            service.stop();
+        }
+    });
+
+    it('a permanently failing target costs one attempt per tick, no hotter', async () => {
+        const storage = memoryStorage();
+        const { service, scheduler, attempts, undelivered } = failing(storage, () => true);
+        const api = service.apiFor(ref);
+        await api.set('wake', { due: 0 });
+        service.start();
+        try {
+            // One attempt per `advance()` — the guard is the count inside
+            // the loop: a re-arm inside the tick would show as a second
+            // attempt before the next advance. (A `manualScheduler()` never
+            // ticks on its own, so waiting between ticks proves nothing.)
+            for (let tick = 1; tick <= 4; tick++) {
+                scheduler.advance(TICK);
+                await vi.waitFor(() => expect(attempts).toHaveLength(tick));
+                await sleep(TICK * 2);
+                expect(attempts).toHaveLength(tick);
+            }
+            expect(undelivered).toHaveLength(4);
+            await expect(api.list()).resolves.toEqual(['wake']);
+        } finally {
+            service.stop();
+        }
+    });
+
+    it('a deliver() that throws synchronously is retried like a rejection, even if undelivered throws', async () => {
+        // The context is pluggable: a custom `ActorRemindersContext.deliver`
+        // need not be an async function, so it can throw BEFORE it returns a
+        // promise. That throw must land in the same place as a rejection —
+        // counted and re-armed — and a misbehaving `undelivered` reporter
+        // must not cost the re-arm either.
+        const storage = memoryStorage();
+        const scheduler = manualScheduler();
+        const attempts: string[] = [];
+        let reported = 0;
+        const service = new ReminderService();
+        service.bind({
+            storage,
+            scheduler,
+            tickMs: TICK,
+            ownsShard: () => true,
+            deliver: (_ref, name) => {
+                attempts.push(name);
+                throw new Error('sync throw'); // not a rejection: thrown before any promise
+            },
+            undelivered: () => {
+                reported++;
+                throw new Error('reporter broke');
+            }
+        });
+        const api = service.apiFor(ref);
+        await api.set('wake', { due: 0 });
+        service.start();
+        try {
+            const before = Date.now();
+            scheduler.advance(TICK); // tick 1: deliver throws synchronously
+            await vi.waitFor(() => expect(attempts).toEqual(['wake']));
+            await vi.waitFor(async () => {
+                const entry = await entryOf(storage, 'wake');
+                expect(entry).toBeDefined();
+                expect(entry!.nextDue).toBeGreaterThanOrEqual(before + TICK);
+            });
+            expect(reported).toBe(1);
+
+            await sleep(TICK * 2);
+            scheduler.advance(TICK); // tick 2: attempted again, still one per tick
+            await vi.waitFor(() => expect(attempts).toEqual(['wake', 'wake']));
+            expect(reported).toBe(2);
+            await expect(api.list()).resolves.toEqual(['wake']);
+        } finally {
+            service.stop();
+        }
+    });
+
+    /** A service whose every `deliver()` hangs until `reject()` fails them all. */
+    function hanging(storage: ActorStorage) {
+        let reject!: (error: Error) => void;
+        const pending = new Promise<void>((_, r) => {
+            reject = r;
+        });
+        const scheduler = manualScheduler();
+        const attempts: string[] = [];
+        const service = new ReminderService();
+        service.bind({
+            storage,
+            scheduler,
+            tickMs: TICK,
+            ownsShard: () => true,
+            deliver: (_ref, name) => {
+                attempts.push(name);
+                return pending;
+            }
+        });
+        return { service, scheduler, attempts, reject };
+    }
+
+    it('does not overwrite a reminder the actor set again while its dispatch was failing', async () => {
+        const storage = memoryStorage();
+        const { service, scheduler, reject } = hanging(storage);
+        const api = service.apiFor(ref);
+        await api.set('wake', { due: 0 });
+        service.start();
+        try {
+            scheduler.advance(TICK);
+            // The entry is gone (deleted before dispatch) while delivery is
+            // in flight...
+            await vi.waitFor(async () => expect(await api.list()).toEqual([]));
+            // ...the actor sets it again for later, from some other turn...
+            await api.set('wake', { due: 120_000 });
+            const rearmed = (await entryOf(storage, 'wake'))!.nextDue;
+            // ...and THEN the original dispatch fails. The retry must not
+            // overwrite the actor's own, later, decision.
+            reject(new Error('dispatch deadline'));
+            await sleep(TICK * 4);
+            expect((await entryOf(storage, 'wake'))!.nextDue).toBe(rearmed);
+        } finally {
+            service.stop();
+        }
+    });
+
+    it('does not resurrect a periodic reminder cleared while its dispatch was failing', async () => {
+        const storage = memoryStorage();
+        const { service, scheduler, attempts, reject } = hanging(storage);
+        const api = service.apiFor(ref);
+        await api.set('beat', { due: 0, period: 60_000 });
+        service.start();
+        try {
+            scheduler.advance(TICK);
+            await vi.waitFor(() => expect(attempts).toEqual(['beat']));
+            // The advanced entry is still on the table; the clear removes it,
+            // so the failed dispatch finds nothing to pull forward.
+            await api.clear('beat');
+            reject(new Error('dispatch deadline'));
+            await sleep(TICK * 4);
+            expect(await entryOf(storage, 'beat')).toBeUndefined();
+            scheduler.advance(TICK);
+            await sleep(TICK * 4);
+            expect(attempts).toEqual(['beat']);
+        } finally {
+            service.stop();
+        }
+    });
+
+    it('a one-shot cleared while its dispatch was failing is retried once (documented)', async () => {
+        // The tick deleted the one-shot before dispatching, so the clear was a
+        // no-op on the table and the re-arm cannot tell "cleared" from
+        // "untouched" — it re-inserts the entry. That is the documented
+        // exception to "a later decision wins" (module header, CHANGELOG):
+        // `onReminder` must be idempotent anyway, and a tombstone would cost a
+        // write on every clear of an already-fired reminder. This pins the
+        // behaviour so a change to it is a deliberate one.
+        const storage = memoryStorage();
+        const { service, scheduler, attempts, reject } = hanging(storage);
+        const api = service.apiFor(ref);
+        await api.set('wake', { due: 0 });
+        service.start();
+        try {
+            scheduler.advance(TICK);
+            await vi.waitFor(() => expect(attempts).toEqual(['wake']));
+            await api.clear('wake');
+            reject(new Error('dispatch deadline'));
+            await vi.waitFor(async () => expect(await entryOf(storage, 'wake')).toBeDefined());
+        } finally {
+            service.stop();
+        }
+    });
+
+    it("re-arms a shard's failed dispatches in one write, not one per failure", async () => {
+        // The re-arm is the write that happens under overload — one `#mutate`
+        // per failure would queue N load+CAS round trips through the host's
+        // single writer chain, ahead of every actor's own set/clear (#307).
+        const inner = memoryStorage();
+        let saves = 0;
+        const storage: ActorStorage = {
+            ...inner,
+            save: (...args) => {
+                saves++;
+                return inner.save(...args);
+            }
+        };
+        const { service, scheduler, attempts } = failing(storage, () => true);
+        const api = service.apiFor(ref); // one actor: every name lands on one shard
+        await api.set('a', { due: 0 });
+        await api.set('b', { due: 0 });
+        await api.set('c', { due: 0, period: 60_000 });
+        saves = 0;
+        service.start();
+        try {
+            scheduler.advance(TICK);
+            await vi.waitFor(() => expect(attempts.sort()).toEqual(['a', 'b', 'c']));
+            await vi.waitFor(async () =>
+                expect((await api.list()).sort()).toEqual(['a', 'b', 'c'])
+            );
+            // The tick's own advance/delete, then a single re-arm.
+            expect(saves).toBe(2);
+        } finally {
+            service.stop();
+        }
+    });
+
+    it('counts undelivered reminders on the host (HostStats.remindersUndelivered)', async () => {
+        let fails = 1;
+        const attempts: string[] = [];
+        const def = defineActor({
+            type: 'Flaky',
+            allowAnonymous: true,
+            state: () => ({}),
+            onReminder(_ctx, name) {
+                attempts.push(name);
+                if (fails-- > 0) throw new Error('not this time');
+            },
+            methods: (ctx) => ({
+                async wakeMeIn(ms: number) {
+                    await ctx.reminders.set('wake', { due: ms });
+                }
+            })
+        });
+        const host = createHost({
+            actors: [def],
+            storage: memoryStorage(),
+            defaults: { reminderTickMs: 25, sweepIntervalMs: 60_000, callTimeoutMs: 0 }
+        });
+        running = host;
+        await host.start();
+        expect(host.stats().remindersUndelivered).toBe(0);
+        expect(emptyHostStats().remindersUndelivered).toBe(0);
+        await host.actor(def, 'f1').wakeMeIn(0);
+        await vi.waitFor(() => expect(attempts).toEqual(['wake', 'wake']), { timeout: 3000 });
+        expect(host.stats().remindersUndelivered).toBe(1);
     });
 });
 
