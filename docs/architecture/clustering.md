@@ -107,10 +107,10 @@ object, never on `version`.** A provider builds a NEW `MembershipView` per
 observed change — including a peer expiring on the store's clock, which need
 not bump `version` (#267) — and hands back the same object until the next one,
 so object identity is the invalidation key that is always right. Placement's
-own derived data (`activeHostsCache`, `eligibleCache`) has been a `WeakMap`
-keyed on the view object since #27; `membersMemo(placement, filter?)` exports
-that pattern for consumers (#269), and `placement.onChange(cb)` passes the
-provider's change stream through for anything the memo does not cover. A
+own derived data (`activeHostsCache` since #27, `eligibleCache` since #212)
+is a `WeakMap` keyed on the view object; `membersMemo(placement, filter?)`
+exports that pattern for consumers (#269), and `placement.onChange(cb)` passes
+the provider's change stream through for anything the memo does not cover. A
 consumer that memoized `members()` on `version` latched a stale member count
 into a concurrency cap — the failure this exists to make unreachable.
 

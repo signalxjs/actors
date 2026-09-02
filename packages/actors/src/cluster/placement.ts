@@ -238,7 +238,8 @@ export interface ClusterPlacement extends ActorPlacement {
      * The current members, self included — active by default, optionally
      * filtered to hosts registering a type (#213). A sync view read, no
      * I/O: the queryable form of `view()`, and the primitive a fan-out
-     * ("call this worker on every host registering it") enumerates.
+     * ("call this worker on every host registering it") enumerates. On a
+     * hot path, `membersMemo()` answers this memoized per view object.
      *
      * Optional on the interface (the `noteAuthFailure` posture) so a
      * hand-rolled placement predating it keeps compiling.
@@ -250,7 +251,10 @@ export interface ClusterPlacement extends ActorPlacement {
      * provider observes a change — including a peer expiring on the
      * store's TTL clock, which need not bump `version` (#267). The hook
      * for invalidating anything a consumer derives from `view()` beyond
-     * what `membersMemo()` covers. Returns the unsubscribe.
+     * what `membersMemo()` covers. Returns the unsubscribe. The callback
+     * runs synchronously inside the provider's refresh path (the
+     * `transport.onMembership` posture) and must not throw: a throw
+     * aborts the remaining subscribers and rejects that refresh.
      *
      * Optional on the interface (the `members` posture) so a hand-rolled
      * placement predating it keeps compiling.
