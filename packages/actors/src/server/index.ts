@@ -45,6 +45,7 @@ export {
 /** The routing token an inbound call carries. READ-ONLY — the endpoint does
  *  not consult it, and deliberately never validates it. */
 export {
+    ACTOR_DEADLINE_HEADER,
     ACTOR_ONEWAY_HEADER,
     ACTOR_ROUTE_HEADER,
     ACTOR_ROUTE_SEGMENT,

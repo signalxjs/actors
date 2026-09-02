@@ -70,7 +70,8 @@ export interface HostDefaults {
      *  external calls and for the turns an actor starts on its own clock —
      *  timer ticks and a task's `ctx.turn` (#302). Every `ctx.actor()` call
      *  made from such a turn, same-host or cross-host, is bounded by it.
-     *  Default 30s. `0` disables. */
+     *  Default 30s. `0` disables. A single call overrides it with
+     *  `.with({ deadlineMs })` (#75). */
     callTimeoutMs?: number;
     /**
      * Sweeper cadence, ms. Default 60s. `0` disables idle collection —
@@ -186,6 +187,8 @@ interface ResolvedDefaults {
  *  `ActorCallOptions` the host itself can honour. */
 interface HostCallOptions {
     signal?: AbortSignal;
+    /** Budget in ms from now; see `ActorCallOptions.deadlineMs` (#75). */
+    deadlineMs?: number;
     oneWay?: true;
     /** Explicit context-bag entries, merged (explicit wins) over whatever
      *  the call inherits; validated by `mergeCallBag` (throws). */
@@ -710,6 +713,25 @@ class HostImpl implements Host {
         const fromChain = outbound();
         let base = fromChain ?? this.#externalCall();
         if (callOptions?.signal) base = { ...base, abortSignal: callOptions.signal };
+        const budget = callOptions?.deadlineMs;
+        if (budget !== undefined) {
+            if (!(budget > 0) || budget === Infinity) {
+                throw new Error(
+                    `[sigx actors] deadlineMs must be a positive finite number of ` +
+                        `milliseconds, got ${budget}.`
+                );
+            }
+            // An explicit budget REPLACES the host default an external call
+            // was just minted with, but can only tighten a deadline inherited
+            // from the enclosing turn — a hop deep in a chain never buys
+            // itself more time than the entry point allowed (#75).
+            const explicit = Date.now() + budget;
+            const inherited = fromChain?.deadline;
+            base = {
+                ...base,
+                deadline: inherited === undefined ? explicit : Math.min(inherited, explicit)
+            };
+        }
         if (callOptions?.oneWay) base = { ...base, oneWay: true };
         if (callOptions?.bag) {
             const bag = mergeCallBag(base.bag, callOptions.bag);

@@ -24,6 +24,7 @@ import { ActorMethodNotFoundError } from '../errors';
 import { isTraceparent } from '../traceparent';
 import { authorizeActorCall, encodePrincipal } from '../guards';
 import {
+    ACTOR_DEADLINE_HEADER,
     ACTOR_FOLLOW_HEADER,
     ACTOR_HOPS_HEADER,
     ACTOR_ONEWAY_HEADER,
@@ -551,6 +552,12 @@ function synthesize(
         // Caller-supplied and shape-checked only: relayed for tracing
         // middleware, never control flow. Malformed → dropped, not a 400.
         const traceparent = rq.request.headers.get('traceparent');
+        // The per-call budget (#75), remaining-ms re-anchored on THIS clock.
+        // A deadline the client chose replaces the host default (the
+        // dispatcher stamps `callTimeoutMs` only on a context without one);
+        // anything unreadable as a positive finite budget is dropped whole,
+        // so a bad header can neither 400 nor mean "unbounded".
+        const budget = Number(rq.request.headers.get(ACTOR_DEADLINE_HEADER));
         // The context bag comes ONLY from what this request stamped
         // (`stampCallBag` → rq.locals) — never from a request header: a
         // browser-settable bag would be a straight authorization bypass the
@@ -566,6 +573,7 @@ function synthesize(
                 callChain: [],
                 callId: mintCallId(),
                 ...(isTraceparent(traceparent) ? { traceparent } : {}),
+                ...(budget > 0 && budget < Infinity ? { deadline: Date.now() + budget } : {}),
                 ...(bag !== undefined ? { bag } : {}),
                 ...(principal !== undefined ? { principal } : {}),
                 // One-way: the dispatch below resolves at turn acceptance,

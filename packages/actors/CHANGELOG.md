@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Per-call deadline: `.with({ deadlineMs })`** (#75). The only bound on a
+  call was the host-wide `callTimeoutMs` (default 30s), so a remote client
+  driving one long awaited method — an editor's full-flow run through a
+  stateless worker — hit the ceiling with no per-call escape hatch, and a
+  caller wanting a *tighter* budget for one probe had none either.
+  `ActorCallOptions.deadlineMs` is a budget in milliseconds from now that
+  replaces the host default for that call, in both directions: a 50ms budget
+  against a 30s default rejects at 50ms with the usual `call-timeout` error,
+  and a 5-minute budget lets one call past a 30s default. It never *extends*
+  a deadline inherited from an enclosing turn — on a `ctx.actor()` hop the
+  effective deadline is the earlier of the inherited one and `now +
+  deadlineMs`, so a budget deep in a chain can only tighten what the entry
+  point allowed. Honoured by the in-process `actor()` client, the host
+  client, `ctx.actor(...).with()`, and the HTTP transport, where it rides as
+  remaining-ms in a new `x-sigx-deadline-ms` header (exported as
+  `ACTOR_DEADLINE_HEADER` from `@sigx/actors/server`) that the endpoint
+  re-anchors on its own clock — the cluster envelope's discipline; a value
+  that is not a positive finite number is dropped whole and the host default
+  applies. Socket transports do not carry it yet.
+
 - **Per-request locality counters: `dispatchesLocal` / `dispatchesRemote`**
   (#52). `routedLocal` counts placement decisions and `remoteDispatches`
   counts hop attempts, and neither sees the warm fast path — `dispatcherFor`

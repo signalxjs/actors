@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
-import { actor, defineActor, useActor } from '@sigx/actors';
+import { actor, defineActor, isActorError, useActor } from '@sigx/actors';
 import { createHost, type Host } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
@@ -52,6 +52,27 @@ describe('actor() entry', () => {
         await startHost([def]);
         await expect(actor(def, 'k').bump()).resolves.toBe(1);
         await expect(useActor(def, 'k').bump()).resolves.toBe(2);
+    });
+
+    it('honours a per-call deadlineMs in-process (#75)', async () => {
+        const def = defineActor({
+            type: 'Deadlined',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: () => ({
+                async nap() {
+                    await new Promise((r) => setTimeout(r, 150));
+                    return 'rested';
+                }
+            })
+        });
+        // The host has NO default deadline (`quiet`): the budget below is the
+        // only thing that can reject this call.
+        await startHost([def]);
+        await expect(actor(def, 'd').with({ deadlineMs: 20 }).nap()).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'call-timeout'
+        );
+        await expect(actor(def, 'd').nap()).resolves.toBe('rested');
     });
 
     it('runs actor-level then method-level guards, with the actor#method info', async () => {

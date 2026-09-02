@@ -194,12 +194,18 @@ function serverClient<D extends AnyActorDefinition>(
                     const principal = await encodePrincipal(rq);
                     // The host client skips absent options, so passing them
                     // through unconditionally is safe and smaller.
+                    const deadlineMs = options?.deadlineMs;
                     const raw =
-                        options?.signal || options?.oneWay || bag || principal
+                        options?.signal ||
+                        options?.oneWay ||
+                        bag ||
+                        principal ||
+                        deadlineMs !== undefined
                             ? host.actor(def, key).with(
                                   withPrincipal(
                                       {
                                           signal: options?.signal,
+                                          deadlineMs,
                                           oneWay: options?.oneWay,
                                           bag
                                       },

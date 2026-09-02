@@ -9,7 +9,11 @@ import { isServerFnError, ServerFnError } from '@sigx/server';
 import { stubServerApp } from '@sigx/server/testing';
 import { actor, defineActor } from '@sigx/actors';
 import { createHost, type Host } from '@sigx/actors/host';
-import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
+import {
+    ACTOR_DEADLINE_HEADER,
+    handleActorRequest,
+    matchesActorRequest
+} from '@sigx/actors/server';
 import { __actorRef, configureActors } from '@sigx/actors/client';
 
 const ENDPOINT = 'http://actors.test/_sigx/actor';
@@ -332,6 +336,83 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         await expect(actor(ref, 't1').nap()).rejects.toSatisfy(
             (e: unknown) => isServerFnError(e) && e.status === 504
         );
+    });
+
+    it('a per-call deadlineMs rides the request as remaining-ms and overrides the host default (#75)', async () => {
+        const slowpoke = defineActor({
+            type: 'Slowpoke',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: () => ({
+                async nap(ms: number) {
+                    await new Promise((r) => setTimeout(r, ms));
+                    return 'rested';
+                }
+            })
+        });
+        const host = createHost({
+            actors: [slowpoke],
+            defaults: { ...quiet, callTimeoutMs: 40 }
+        });
+        const sent: Array<string | null> = [];
+        configureActors({
+            endpoint: ENDPOINT,
+            fetch: async (input, init) => {
+                sent.push(new Headers(init?.headers).get(ACTOR_DEADLINE_HEADER));
+                return handleActorRequest(new Request(input, init), { host, origin: false });
+            }
+        });
+        const ref = __actorRef('Slowpoke', ENDPOINT) as unknown as typeof slowpoke;
+        // Longer than the host default: the call the default would have 504'd
+        // now completes...
+        await expect(actor(ref, 'd1').with({ deadlineMs: 5_000 }).nap(120)).resolves.toBe(
+            'rested'
+        );
+        // ...shorter than it: rejected at the per-call budget, 504 as ever.
+        await expect(actor(ref, 'd2').with({ deadlineMs: 20 }).nap(120)).rejects.toSatisfy(
+            (e: unknown) => isServerFnError(e) && e.status === 504
+        );
+        // An un-annotated call sends no header and keeps the host default.
+        await expect(actor(ref, 'd3').nap(120)).rejects.toSatisfy(
+            (e: unknown) => isServerFnError(e) && e.status === 504
+        );
+        expect(sent).toEqual(['5000', '20', null]);
+        await host.stop({ timeoutMs: 500 });
+    });
+
+    it('a malformed deadline header is dropped, not honoured as unbounded (#75)', async () => {
+        const slowpoke = defineActor({
+            type: 'Slowpoke',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: () => ({
+                async nap(ms: number) {
+                    await new Promise((r) => setTimeout(r, ms));
+                    return 'rested';
+                }
+            })
+        });
+        const host = createHost({
+            actors: [slowpoke],
+            defaults: { ...quiet, callTimeoutMs: 40 }
+        });
+        for (const bad of ['nope', 'NaN', 'Infinity', '-5', '0']) {
+            const response = await handleActorRequest(
+                new Request(`${ENDPOINT}/${encodeURIComponent('Slowpoke#nap')}`, {
+                    method: 'POST',
+                    headers: {
+                        'content-type': 'application/json',
+                        [ACTOR_DEADLINE_HEADER]: bad
+                    },
+                    body: JSON.stringify({ args: ['m', 120] })
+                }),
+                { host, origin: false }
+            );
+            // The host default (40ms) still applies: a value the endpoint
+            // cannot read as a positive finite budget is ignored whole.
+            expect(response.status, `header ${JSON.stringify(bad)}`).toBe(504);
+        }
+        await host.stop({ timeoutMs: 500 });
     });
 
     it('app middleware vetoes over the same mount — the endpoint guard it replaces', async () => {

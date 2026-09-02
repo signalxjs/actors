@@ -26,6 +26,7 @@
  * wire-level fact (the fetch never reached a server), not app policy.
  */
 import {
+    ACTOR_DEADLINE_HEADER,
     ACTOR_ONEWAY_HEADER,
     ACTOR_ROUTE_HEADER,
     encodeRouteToken,
@@ -76,6 +77,12 @@ export {
 export interface ActorCallInit {
     signal?: AbortSignal;
     headers?: Record<string, string>;
+    /**
+     * This call's deadline as a budget in ms from now (#75), sent as the
+     * `x-sigx-deadline-ms` header — remaining-ms, so the server re-anchors it
+     * on its own clock. Replaces the host's `callTimeoutMs` for this call.
+     */
+    deadlineMs?: number;
     /**
      * The endpoint the build baked into the client ref. A transport that
      * carries its own endpoint ignores it; `fetchTransport` treats it as the
@@ -301,6 +308,8 @@ async function send(
     // A custom header, so it preflights cross-origin — the same posture as
     // the routing token header above.
     if (init?.oneWay) headers[ACTOR_ONEWAY_HEADER] = '1';
+    // Remaining-ms, not an absolute time: the server's clock is not ours.
+    if (init?.deadlineMs !== undefined) headers[ACTOR_DEADLINE_HEADER] = String(init.deadlineMs);
     const path = routePath(endpointOf(config, init), token, symbol);
     const signal = init?.signal ? { signal: init.signal } : {};
     // A declared read goes out as GET with its arguments in the query, which
