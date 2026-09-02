@@ -242,7 +242,8 @@ function shapeKnob(shape, name) {
  * summed at all (`socketTotals` skips non-numbers).
  *
  * @param {string | undefined} shape the live `INFRA_SHAPE`, read AFTER the run
- * @param {Record<string, number>} delta `WsLoadResult.delta`
+ * @param {Record<string, number | undefined>} delta `WsLoadResult.delta` —
+ *   `cluster/transportFallbacks` is absent when not collected, see above
  * @param {{ hosts: number, tcpHosts: number, watchesTrustworthy: boolean }} fleet
  *   the same run's `hosts`, `tcpHosts` and `watchesTrustworthy`
  * @returns {{ valid: boolean, message: string } | null}

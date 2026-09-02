@@ -595,7 +595,11 @@ Pass/fail, and what to record:
 - **On a `TRANSPORT=tcp` shape, `tcpHosts` must equal `hosts` and
   `cluster/transportFallbacks` must be 0.** The verb fails the run on
   either — a fleet partly on HTTP, or a link that fell back to it, is an
-  HTTP number wearing the tcp label. See the TCP section below.
+  HTTP number wearing the tcp label. A fallback count that was not
+  collected (absent from the `delta` block) is *not* a failure: the verb
+  prints that the fallback check went unchecked and why, and the run
+  stands on `tcpHosts` alone — record that with the numbers. See the TCP
+  section below.
 - **`maxBufferedBytes` is the CLIENT's send buffer, and cannot answer the
   backpressure question.** The socket send path is fire-and-forget —
   nothing in the runtime reads `bufferedAmount` — so a slow client shows up

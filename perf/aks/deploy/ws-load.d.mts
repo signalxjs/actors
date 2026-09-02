@@ -72,13 +72,17 @@ export interface WsLoadResult {
     peakBufferedBytes: number | null;
     samples: number;
     /**
-     * Monotonic totals, after minus before: `ops.sockets` always, plus
-     * `cluster/remoteWatches` / `cluster/coalescedWatches` /
+     * Monotonic totals, after minus before: the `ops.sockets` counters,
+     * plus `cluster/remoteWatches` / `cluster/coalescedWatches` /
      * `cluster/inboundWatches` / `cluster/transportFallbacks` when
-     * `watchesTrustworthy`. The last is the TCP gate (#223): links that
+     * `watchesTrustworthy`. Keys are only ever those the hosts REPORTED —
+     * `socketTotals` sums a counter only where it is a number — so a key
+     * can be missing even on a trustworthy snapshot (a host image whose
+     * counters predate it); read with `?? 0` or check for `undefined`.
+     * `cluster/transportFallbacks` is the TCP gate (#223): links that
      * reached their peer over a later transport than the preferred one.
      */
-    delta: Record<string, number>;
+    delta: Record<string, number | undefined>;
     /**
      * Both snapshots saw EVERY host's cluster section. False means no
      * `cluster/*` key is present in `delta` at all — a delta is only as
@@ -121,7 +125,7 @@ export interface TransportVerdict {
  */
 export function transportGate(
     shape: string | undefined,
-    delta: Record<string, number>,
+    delta: Record<string, number | undefined>,
     fleet: Pick<WsLoadResult, 'hosts' | 'tcpHosts' | 'watchesTrustworthy'>
 ): TransportVerdict | null;
 
