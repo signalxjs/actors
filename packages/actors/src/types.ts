@@ -193,12 +193,22 @@ export interface ActorDispatcher {
  * Called from a `finally`. Throwing from here is swallowed (dev-logged) —
  * an observer must never be able to fail a turn.
  *
- * `failed` means THE METHOD INVOCATION THREW, which is deliberately narrower
- * than "the caller saw an error": the runtime's own post-turn bookkeeping
- * (change fan-out, write-behind scheduling) runs after this and could in
- * principle fail on its own, and such a turn is reported as succeeded. The
- * narrow meaning is the one an actor author can act on; widening it is
- * tracked separately rather than left ambiguous here.
+ * `failed` means THE METHOD INVOCATION THREW — deliberately narrower than
+ * "the caller saw an error" (#53). The observer fires the moment the method
+ * settles; the runtime's own post-turn bookkeeping (change-feed fan-out,
+ * write-behind scheduling) runs AFTER it, inside the same `finally`, and
+ * can fail on its own — a boundary snapshot whose codec throws, say. Such
+ * a turn is reported with `failed: false` even though its caller receives
+ * the bookkeeping error. Nor does `elapsedMs` include that bookkeeping.
+ * This is the contract, not a gap waiting to close: the narrow meaning is
+ * the one an actor author can act on (their code threw, or it did not),
+ * and it is pinned by a test. A dashboard that needs "the caller errored"
+ * measures it at the dispatch seam — a dispatch middleware sees every
+ * rejection the caller sees, which is where the `metrics` plugin's
+ * `calls.failed` already counts — and reports storage failures through
+ * their own channels: a write-behind flush failure has no caller and
+ * reaches the definition's `onStateError` (#54), and any storage error
+ * at all is visible to a decorating `ActorStorage`.
  *
  * `call` is the turn's `ActorCallContext` — what lets an observer correlate
  * the turn with the dispatch that caused it (`callId`, `traceparent`).
