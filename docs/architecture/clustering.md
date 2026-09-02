@@ -102,6 +102,18 @@ a version-only comparison never converges. Push (pub/sub, LISTEN/NOTIFY, live
 query, watch) is **best-effort in every provider**; the poll is the guarantee
 and `pollMs` is the propagation bound.
 
+The same rule governs anything *derived* from a view: **cache on the view
+object, never on `version`.** A provider builds a NEW `MembershipView` per
+observed change — including a peer expiring on the store's clock, which need
+not bump `version` (#267) — and hands back the same object until the next one,
+so object identity is the invalidation key that is always right. Placement's
+own derived data (`activeHostsCache`, `eligibleCache`) has been a `WeakMap`
+keyed on the view object since #27; `membersMemo(placement, filter?)` exports
+that pattern for consumers (#269), and `placement.onChange(cb)` passes the
+provider's change stream through for anything the memo does not cover. A
+consumer that memoized `members()` on `version` latched a stale member count
+into a concurrency cap — the failure this exists to make unreachable.
+
 ## Placement resolution
 
 `clusterPlacement` resolves a ref to a dispatcher by consulting the directory,

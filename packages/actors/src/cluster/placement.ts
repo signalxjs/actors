@@ -245,6 +245,18 @@ export interface ClusterPlacement extends ActorPlacement {
      */
     members?(filter?: MembersFilter): readonly HostDescriptor[];
     /**
+     * The membership change stream, passed straight through from the
+     * provider seam (#269): fires with the NEW view object whenever the
+     * provider observes a change — including a peer expiring on the
+     * store's TTL clock, which need not bump `version` (#267). The hook
+     * for invalidating anything a consumer derives from `view()` beyond
+     * what `membersMemo()` covers. Returns the unsubscribe.
+     *
+     * Optional on the interface (the `members` posture) so a hand-rolled
+     * placement predating it keeps compiling.
+     */
+    onChange?(cb: (view: MembershipView) => void): () => void;
+    /**
      * Invoke a stateless worker method ON a specific member (#213) — the
      * generalized `$sigx:host#stats` mechanism, public. The worker executes
      * on the targeted host (that is what a worker IS); errors propagate
@@ -417,6 +429,46 @@ const LOCAL: ActorLocation = Object.freeze({ local: true as const });
  *  and the only safe direction (#212). */
 function hostRegisters(host: HostDescriptor, type: string): boolean {
     return host.types === undefined || host.types.includes(type);
+}
+
+/** The `members()` filter over a view (#213): active by default, optionally
+ *  narrowed to hosts registering a type. */
+function filterMembers(view: MembershipView, filter?: MembersFilter): readonly HostDescriptor[] {
+    const status = filter?.status ?? 'active';
+    const registers = filter?.registers;
+    return view.hosts.filter(
+        (h) =>
+            (status === 'any' || h.status === status) &&
+            (registers === undefined || hostRegisters(h, registers))
+    );
+}
+
+/**
+ * `members()` memoized per VIEW OBJECT (#269) — the one obvious right way
+ * to read the members on a hot path. Returns a thunk answering the SAME
+ * array for as long as `placement.view()` hands back the same object, and
+ * recomputing the moment it hands back a new one. Keyed on identity for
+ * the `activeHostsCache` reason, and NEVER on `version`: a provider that
+ * expires a peer on the store's TTL clock re-allocates the view without
+ * necessarily bumping the version (#267), so a consumer that memoized on
+ * `version` latched a stale member count. A provider minting a fresh
+ * object per `view()` call still gets correct answers; it just pays the
+ * filter per call, exactly as `members()` does.
+ */
+export function membersMemo(
+    placement: Pick<ClusterPlacement, 'view'>,
+    filter?: MembersFilter
+): () => readonly HostDescriptor[] {
+    const cache = new WeakMap<MembershipView, readonly HostDescriptor[]>();
+    return () => {
+        const view = placement.view();
+        let members = cache.get(view);
+        if (members === undefined) {
+            members = filterMembers(view, filter);
+            cache.set(view, members);
+        }
+        return members;
+    };
 }
 
 /**
@@ -1290,13 +1342,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
     }
 
     members(filter?: MembersFilter): readonly HostDescriptor[] {
-        const status = filter?.status ?? 'active';
-        const registers = filter?.registers;
-        return this.view().hosts.filter(
-            (h) =>
-                (status === 'any' || h.status === status) &&
-                (registers === undefined || hostRegisters(h, registers))
-        );
+        return filterMembers(this.view(), filter);
+    }
+
+    onChange(cb: (view: MembershipView) => void): () => void {
+        return this.#options.membership.onChange(cb);
     }
 
     async dispatchOn(

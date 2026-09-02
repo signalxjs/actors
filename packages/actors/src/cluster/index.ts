@@ -10,6 +10,7 @@ export { cluster, type ClusterPlugin, type ClusterPluginOptions } from './plugin
 export {
     clusterPlacement,
     consistentHashPolicy,
+    membersMemo,
     preferLocalPolicy,
     randomPlacementPolicy,
     type ClusterPlacement,
