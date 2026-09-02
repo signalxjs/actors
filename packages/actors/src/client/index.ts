@@ -319,13 +319,14 @@ async function send(
     // the endpoint, which drops a malformed value whole: the caller asked for
     // a budget, and silently getting the host default instead is the bug.
     if (init?.deadlineMs !== undefined) {
-        if (!(init.deadlineMs > 0) || init.deadlineMs === Infinity) {
+        const budget = init.deadlineMs;
+        if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= 0) {
             throw new Error(
                 `[sigx actors] deadlineMs must be a positive finite number of ` +
-                    `milliseconds, got ${init.deadlineMs}.`
+                    `milliseconds, got ${String(budget)}.`
             );
         }
-        headers[ACTOR_DEADLINE_HEADER] = String(init.deadlineMs);
+        headers[ACTOR_DEADLINE_HEADER] = String(budget);
     }
     const path = routePath(endpointOf(config, init), token, symbol);
     const signal = init?.signal ? { signal: init.signal } : {};

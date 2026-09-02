@@ -403,7 +403,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
             })
         });
         const ref = __actorRef('Slowpoke', ENDPOINT) as unknown as typeof slowpoke;
-        for (const deadlineMs of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        for (const deadlineMs of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, '50' as never]) {
             await expect(actor(ref, 'bad').with({ deadlineMs }).nap(1)).rejects.toThrow(
                 /deadlineMs must be a positive finite number/
             );

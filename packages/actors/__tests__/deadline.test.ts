@@ -394,7 +394,10 @@ describe('per-call deadlineMs', () => {
         const def = probeActor();
         const host = createHost({ actors: [def], defaults: { ...quiet, callTimeoutMs: 0 } });
         try {
-            for (const deadlineMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+            // `'50'` is what a JS caller can hand over: `'50' > 0` coerces
+            // true and `Date.now() + '50'` would CONCATENATE into a deadline
+            // centuries away — the budget silently disabled.
+            for (const deadlineMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '50' as never]) {
                 await expect(async () =>
                     host.actor(def, 'bad').with({ deadlineMs }).noop()
                 ).rejects.toThrow(/deadlineMs/);

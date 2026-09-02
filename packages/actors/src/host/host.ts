@@ -715,7 +715,7 @@ class HostImpl implements Host {
         if (callOptions?.signal) base = { ...base, abortSignal: callOptions.signal };
         const budget = callOptions?.deadlineMs;
         if (budget !== undefined) {
-            if (!(budget > 0) || budget === Infinity) {
+            if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= 0) {
                 throw new Error(
                     `[sigx actors] deadlineMs must be a positive finite number of ` +
                         `milliseconds, got ${budget}.`
