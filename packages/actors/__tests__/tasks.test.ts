@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor, HostShutdownError } from '@sigx/actors';
-import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
+import { createHost, manualScheduler, memoryStorage, TASKS_TYPE } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
 
@@ -467,6 +467,66 @@ describe('tasks: cancellation and deactivation', () => {
         expect(
             warns.mock.calls.some((c) => String(c[0]).includes('ignored their abort signal'))
         ).toBe(true);
+    });
+
+    it('the grace warning names signal-ignoring bodies and stuck bookkeeping separately', async () => {
+        // One activation, two runs past the grace for different reasons:
+        // `forever` never observes its signal (still in the task table),
+        // `quick` returned at once and is stuck on its ledger clear (the
+        // TASKS_TYPE save that drops it is held). Each must be named under
+        // its own warning — a returned run is not a body to advise (#313).
+        const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const inner = memoryStorage();
+        const held = gate();
+        let sawQuick = false;
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: async (t, k, st, e) => {
+                if (t === TASKS_TYPE) {
+                    const json = JSON.stringify(st);
+                    if (json.includes('"quick"')) sawQuick = true;
+                    else if (sawQuick) await held.opened; // the clear of `quick`
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const worker = defineActor({
+            type: 'Mixed',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                begin: async () => {
+                    await ctx.tasks.start('forever');
+                    await ctx.tasks.start('quick');
+                }
+            }),
+            tasks: () => ({
+                async forever() {
+                    await new Promise(() => {}); // never settles, ignores abort
+                },
+                async quick() {}
+            })
+        });
+        const host = createHost({
+            actors: [worker],
+            storage,
+            defaults: { ...quiet, taskGraceMs: 30 }
+        });
+        await host.actor(worker, 'a').begin();
+        await until(() => sawQuick);
+        try {
+            await within(host.stop({ timeoutMs: 5000 }), 2000);
+        } finally {
+            held.open();
+        }
+        const messages = warns.mock.calls.map((c) => String(c[0]));
+        const ignored = messages.find((m) => m.includes('ignored their abort signal'));
+        const stuck = messages.find((m) => m.includes('still had task bookkeeping in flight'));
+        expect(ignored).toContain('"forever"');
+        expect(ignored).not.toContain('"quick"');
+        expect(stuck).toContain('"quick"');
+        expect(stuck).not.toContain('"forever"');
     });
 
     it('starting a task during deactivation throws HostShutdownError', async () => {

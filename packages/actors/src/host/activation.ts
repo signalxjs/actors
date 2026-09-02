@@ -1307,23 +1307,32 @@ export class Activation {
         ]);
         clearTimeout(timer);
         if (outcome === 'timeout' && __DEV__) {
-            const names = [...this.#settling].map((r) => r.name).join('", "');
+            // Two distinct failures, warned separately: a run still in
+            // `#tasks` is a body that did not wind down; one only in
+            // `#settling` has returned and is stuck on its bookkeeping's
+            // storage round trip — no body left to advise.
+            const bodies = [...this.#tasks.keys()];
+            const bookkeeping = [...this.#settling]
+                .filter((r) => this.#tasks.get(r.name) !== r)
+                .map((r) => r.name);
             const grace = `past the ${this.#host.taskGraceMs}ms grace — proceeding with deactivation.`;
-            // A run still in `#tasks` is a body that did not wind down; one
-            // only in `#settling` has returned and is stuck on its
-            // bookkeeping's storage round trip — no body left to advise.
-            console.warn(
-                this.#tasks.size > 0
-                    ? `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} ignored their ` +
-                          `abort signal ${grace} Long-running task bodies must observe ` +
-                          `ctx.abortSignal.`
-                    : `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} still had task ` +
-                          `bookkeeping in flight ${grace} The storage round trip clearing the ` +
-                          `ledger / task-roster entry outran taskGraceMs; the write is not ` +
-                          `cancelled and may still land, and an entry it leaves behind is ` +
-                          `cleared when the roster is adopted (a touch that finds nothing to ` +
-                          `resume).`
-            );
+            if (bodies.length > 0) {
+                console.warn(
+                    `[sigx actors] task(s) "${bodies.join('", "')}" of ${actorLabel(this.ref)} ` +
+                        `ignored their abort signal ${grace} Long-running task bodies must ` +
+                        `observe ctx.abortSignal.`
+                );
+            }
+            if (bookkeeping.length > 0) {
+                console.warn(
+                    `[sigx actors] task(s) "${bookkeeping.join('", "')}" of ${actorLabel(this.ref)} ` +
+                        `still had task bookkeeping in flight ${grace} The storage round trip ` +
+                        `clearing the ledger / task-roster entry outran taskGraceMs; the write ` +
+                        `is not cancelled and may still land, and an entry it leaves behind is ` +
+                        `cleared when the roster is adopted (a touch that finds nothing to ` +
+                        `resume).`
+                );
+            }
         }
     }
 
