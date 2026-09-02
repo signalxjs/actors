@@ -201,6 +201,28 @@ describe('the transport seam', () => {
         expect(transport.calls[1]!.init?.worker).toBeUndefined();
     });
 
+    it('a caller cannot flag a stateful actor as a worker through .with()', async () => {
+        // The worker flag is the build's fact about the TYPE, not a per-call
+        // option: `.with({ worker: true })` on a `defineActor` ref must not
+        // silently drop its routing token, exactly as `.with({ ref })` cannot
+        // re-route a proxy and `.with({ get: true })` cannot reach a write.
+        const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ data: 0 })));
+        configureActors({ fetch: fetchSpy });
+
+        await ref().__sigxActorProxy('c9').with({ worker: true }).add('fig');
+
+        expect(String(fetchSpy.mock.calls[0][0])).toBe(
+            `${ENDPOINT}/r/${hashRouteToken('Cart', 'c9')}/Cart/add`
+        );
+        const init = fetchSpy.mock.calls[0][1] as RequestInit;
+        expect((init.headers as Record<string, string>)[ACTOR_ROUTE_HEADER]).toBe(hashRouteToken('Cart', 'c9'));
+
+        const transport = recordingTransport();
+        configureActors(transport);
+        await ref().__sigxActorProxy('c9').with({ worker: true }).add('fig');
+        expect(transport.calls[0]!.init?.worker).toBeUndefined();
+    });
+
     it('clearing the transport falls back to the default', async () => {
         configureActors(recordingTransport());
         configureActors(null);

@@ -66,9 +66,18 @@
   stub (`__actorRef(type, endpoint, streams, reads, true)`,
   `ExtractedActor.worker`), the proxy threads it through as
   `ActorCallInit.worker`, and `fetchTransport` emits no token — no path
-  segment, no header — for such a call in any `route` mode, so the edge
-  round-robins it again. A stateful actor's token is unchanged. A custom
-  transport that mints its own token should honour the same flag.
+  segment, no header — for such a call in any `route` mode; a
+  `.with({ worker: true })` on a stateful actor is ignored, so a caller
+  cannot drop an actor's token either. A custom transport that mints its
+  own token should honour the same flag. **Caveat — the edge must fall back
+  on an empty hash key.** nginx core `hash`, HAProxy `balance hdr(...)` and
+  Envoy's ring hash round-robin (or pick at random) when the key is empty,
+  so the spread comes back there; ingress-nginx's Lua consistent hash does
+  NOT — it hashes the empty string, so an `upstream-hash-by` Ingress like
+  the k8s chart's pins EVERY untokened worker call, for every key and type,
+  onto one pod. On such an edge either give the hash an empty-key fallback
+  (an nginx `map` to `$request_id`) or carve the worker paths out of the
+  hashed Ingress by path, the way `$live` already is; #342 tracks the chart.
 
 - **`host.stop()` now waits for a just-completed task's bookkeeping** (#313).
   A detached run left the activation's task table the moment its body

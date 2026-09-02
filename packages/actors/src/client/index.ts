@@ -474,10 +474,13 @@ export function __actorRef(
         // GET for declared reads alone, so letting a `.with({ get: true })`
         // reach a write or a stream would turn one into a 405 — a carrier
         // choice silently breaking calls it has no business touching.
-        const { get: carrier, ...rest } = options ?? {};
+        // `worker` is REMOVED too: whether the type is a worker is the
+        // build's fact, not the call's, so a `.with({ worker: true })` on a
+        // stateful actor must not silently drop its routing token (#148).
+        const { get: carrier, worker: _ignored, ...rest } = options ?? {};
         // `ref` and `worker` LAST so they are authoritative: a caller's
         // `.with({ ref })` cannot make a proxy route as some other actor, and
-        // whether the type is a worker is the build's fact, not the call's.
+        // a worker cannot be un-flagged.
         const init: ActorCallInit = {
             ...rest,
             endpoint: options?.endpoint ?? endpoint,

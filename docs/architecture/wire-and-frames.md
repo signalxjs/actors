@@ -76,7 +76,20 @@ owner), and **`defineWorker` types**: a worker is placed on whichever host the
 call lands on, so a token would pin every call for one key to one pod and hand
 back the fleet-wide spread that is the pool's whole point (#148 — measured as
 `pool_spread` 3.03 → 1.12 on three hosts). The build stamps the worker flag
-onto the client stub; a transport reads it from `ActorCallInit.worker`.
+onto the client stub; a transport reads it from `ActorCallInit.worker`, and the
+proxy strips it from `.with()` so a caller cannot drop a stateful actor's token.
+
+The two differ at the edge, though. No token only restores the spread on a
+load balancer that **falls back when the hash key is empty** — nginx core
+`hash`, HAProxy `balance hdr(...)` and Envoy's ring hash do; ingress-nginx's Lua
+consistent hash does not, it hashes `""` and pins every untokened request onto
+whichever one pod that lands on. `$live` is safe on the k8s chart because it is
+carved out of the hashed Ingress *by path*; a worker call has no distinguishing
+path (`/_sigx/actor/Digest/summarize`), so a deployment hashing on the header
+must either give the hash an empty-key fallback (an nginx `map` to
+`$request_id`) or carve its worker types out by path as well. Until the chart
+does (#342), `pool_spread` on the reference estate reads ~1 — one pod for ALL
+workers, which is worse than one pod per key.
 
 It is a hash, not the key — the same `hashRouteToken(type, key)` that
 `@sigx/actors-otel` puts on spans, so spans join to routing tokens in access

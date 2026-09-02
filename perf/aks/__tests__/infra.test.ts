@@ -675,10 +675,12 @@ describe.skipIf(!ready || !workersAvailable)('infra: a worker pool runs one key 
     }, 120_000);
 
     it('answers on whichever host the call lands on', async () => {
-        // No routing token: the ingress round-robins, so these spray across
-        // the fleet. A stateful actor would be proxied to its owner; a
-        // worker is local everywhere, so every host answers for itself and
-        // none of them ever redirects.
+        // No routing token — the wire a `defineWorker` call carries since
+        // #148. An edge with an empty-key fallback sprays these across the
+        // fleet; the chart's ingress-nginx hashes the empty header onto ONE
+        // pod instead (#342), so this asserts the answer, not the spread. A
+        // stateful actor would be proxied to its owner; a worker is local
+        // everywhere, so every host answers for itself and none redirects.
         const results = await Promise.all(
             Array.from({ length: 6 }, () =>
                 actorCall('Digest', 'summarize', ['anywhere', 'payload', 100], { route: false })
@@ -862,8 +864,11 @@ describe.skipIf(!ready || !CHAOS || !OPS_SECRET || PLACEMENT !== 'activation-cou
                 );
 
                 const baseline = spreadOf(await clusterReport());
-                // No routing token: the edge sends these round-robin, so the
-                // PLACEMENT decides where they activate rather than the hash.
+                // No routing token, so the hash does not pick the host: the
+                // PLACEMENT decides where they activate. (On the chart's
+                // ingress-nginx the empty key lands every call on ONE pod,
+                // #342 — which still leaves placement, not the hash, in
+                // charge of where a cold key activates.)
                 const fresh = 90;
                 for (let i = 0; i < fresh; i++) {
                     await actorCall('Room', 'post', [`cold-${stamp}-${i}`, 'tester', 'x'], {
