@@ -132,6 +132,10 @@ if (REDIS_URL) {
         }),
         advertise: `http://${process.env.POD_IP ?? '127.0.0.1'}:${INTERNAL_PORT}`,
         secret: need('CLUSTER_SECRET'),
+        // The node under this pod (downward API), published as `meta.node`
+        // so the ops output can say "3 hosts / 1 node" (#51). Absent
+        // locally, and then simply not published.
+        ...(process.env.NODE_NAME ? { meta: { node: process.env.NODE_NAME } } : {}),
         // Half of the locality pair (the other half is the edge hashing
         // `x-sigx-actor-route` — see the chart's actor Ingress). The LB
         // sends every call for a room to the same host; this makes that

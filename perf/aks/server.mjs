@@ -4,6 +4,7 @@
  *
  *   PORT                listen port                        default 7311
  *   POD_IP              this pod's IP (downward API)       default 127.0.0.1
+ *   NODE_NAME           this pod's node (downward API)     optional → meta.node
  *   REDIS_URL           redis://host:6379                  REQUIRED
  *   CLUSTER_SECRET      host-to-host HMAC secret           REQUIRED
  *   OPS_SECRET          /_sigx/ops bearer token            REQUIRED
@@ -81,6 +82,10 @@ const need = (name) => {
 
 const PORT = Number(process.env.PORT ?? 7311);
 const POD_IP = process.env.POD_IP ?? '127.0.0.1';
+// Published as `meta.node` on this host's descriptor, so the ops output can
+// count the DISTINCT nodes the fleet spans (#51). Absent locally — a host
+// that does not know its node says nothing rather than inventing one.
+const NODE_NAME = process.env.NODE_NAME;
 const REDIS_URL = need('REDIS_URL');
 const CLUSTER_SECRET = need('CLUSTER_SECRET');
 const OPS_SECRET = need('OPS_SECRET');
@@ -185,6 +190,7 @@ const plugin = cluster({
     providers,
     advertise: `http://${POD_IP}:${PORT}`,
     secret: CLUSTER_SECRET,
+    ...(NODE_NAME ? { meta: { node: NODE_NAME } } : {}),
     // `tcpTransport` reads its bound address back after listening and
     // publishes it in this host's descriptor, so `advertiseHost` is the only
     // thing it cannot work out for itself inside a pod.
