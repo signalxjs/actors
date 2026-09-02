@@ -212,7 +212,9 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
                 (sockets.throttleQuantized > 0
                     ? ` (${count(sockets.throttleQuantized)} throttle-quantized)`
                     : ''),
-            `  deliveries   ${count(sockets.deliveries)} frames  ${bytes(sockets.deliveryBytes)}`,
+            // `~`: deliveryBytes counts UTF-16 code units — exact for ASCII,
+            // an under-count otherwise — not bytes on the wire.
+            `  deliveries   ${count(sockets.deliveries)} frames  ~${bytes(sockets.deliveryBytes)}`,
             // `—` is "no adapter could tell us", which is not `0 B` (#208).
             `  buffered     ${bytes(sockets.bufferedBytes)}`,
             `  connections  ${count(sockets.connectionsOpened)} opened  ${count(sockets.connectionsClosed)} closed  ${count(sockets.connectionsRefused)} refused`

@@ -206,7 +206,7 @@ describe('renderStats', () => {
         expect(output).toMatch(/sockets — host host-a ONLY/);
         expect(output).toMatch(/open {9}3 \(1 in flight\)/);
         expect(output).toMatch(/subs {9}4 \(6 throttle-quantized\)/);
-        expect(output).toMatch(/deliveries {3}1\.2k frames {2}48 kB/);
+        expect(output).toMatch(/deliveries {3}1\.2k frames {2}~48 kB/);
         expect(output).toMatch(/buffered {5}512 B/);
         expect(output).toMatch(/connections {2}7 opened {2}4 closed {2}2 refused/);
         expect(output).toMatch(/evicted {6}2 lifetime {2}1 protocol breach/);

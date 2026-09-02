@@ -9,8 +9,9 @@
   socketStats().snapshot())` — gets a `sockets — host <id> ONLY` block in
   `sigx actors stats`: open sessions and calls in flight, live
   subscriptions (and how many were throttle-quantized), deliveries with
-  their size, buffered bytes, connections opened/closed/refused, evictions
-  (lifetime-cap and protocol-breach closes, when any), and the connection
+  their size (`~48 kB` — UTF-16 code units, exact for ASCII), buffered
+  bytes, connections opened/closed/refused, evictions (lifetime-cap and
+  protocol-breach closes, when any), and the connection
   lifetime percentiles once anything has closed. `top` shows the same rows
   on the host drill-down and a `SOCKETS` column (open sessions) in the Hosts
   table — the column only once some host reported, so a fleet that never

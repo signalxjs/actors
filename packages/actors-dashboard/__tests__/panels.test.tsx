@@ -649,7 +649,7 @@ describe('socket sessions (#166)', () => {
         // `text()` collapses runs of whitespace, hence the `\s+`.
         expect(text).toContain('socket sessions');
         expect(text).toMatch(/3 open\s+1 in flight\s+4 subs/);
-        expect(text).toMatch(/1\.2k frames\s+48 kB/);
+        expect(text).toMatch(/1\.2k frames\s+~48 kB/);
         expect(text).toMatch(/7 opened\s+4 closed\s+2 refused/);
         expect(text).toMatch(/2 lifetime\s+1 protocol breach/);
         // Unknown buffered bytes is a gap, never `0 B` (#208); no completed

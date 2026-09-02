@@ -486,7 +486,7 @@ describe('socket sessions (#166)', () => {
         const state = stateWith({ hosts: [host({ sockets })] });
         const out = draw(<HostScreen state={state} hostId="host-a" />);
         expect(out).toContain('3 open  1 in flight  4 subs');
-        expect(out).toContain('1.2k frames  48 kB');
+        expect(out).toContain('1.2k frames  ~48 kB');
         expect(out).toContain('7 opened  4 closed  2 refused');
         expect(out).toContain('2 lifetime  1 protocol breach');
         // Unknown buffered bytes is a gap, never `0 B` (#208); no completed

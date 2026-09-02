@@ -7,7 +7,8 @@
 - **Socket sessions on the host drill-down and in the Hosts table (#166).**
   A host that publishes the `sockets` ops section gets a `socket sessions`
   block on its panel — open sessions and calls in flight, live
-  subscriptions, deliveries with their size, buffered bytes, connections
+  subscriptions, deliveries with their size (`~`: UTF-16 code units, exact
+  for ASCII), buffered bytes, connections
   opened/closed/refused, evictions (lifetime-cap and protocol-breach
   closes), and the lifetime percentiles once anything has closed — and the
   Hosts table gains a `sockets` column (open sessions) once some host

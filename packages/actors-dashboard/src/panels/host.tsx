@@ -148,7 +148,9 @@ function socketRows(sockets: SocketStatsSnapshot): DetailRow[] {
         },
         {
             label: 'deliveries',
-            value: `${count(sockets.deliveries)} frames  ${bytes(sockets.deliveryBytes)}`
+            // `~`: deliveryBytes counts UTF-16 code units — exact for ASCII,
+            // an under-count otherwise — not bytes on the wire.
+            value: `${count(sockets.deliveries)} frames  ~${bytes(sockets.deliveryBytes)}`
         },
         // `—` is "no adapter could tell us", which is not `0 B` (#208).
         { label: 'buffered', value: bytes(sockets.bufferedBytes) },
