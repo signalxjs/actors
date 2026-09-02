@@ -1838,11 +1838,15 @@ export class Activation {
             await this.#host.taskLiveness.track(this.ref);
         } catch (error) {
             this.#release(run);
-            // The ledger write may have landed before the failure. A caller
-            // who sees start() reject must not find the run resumed by the
-            // next activation, so take the entry back — best-effort (a
-            // failure here leaves the documented at-least-once behaviour),
-            // and keyed so a raced replacement run is never deleted.
+            // The ledger write may have landed before the failure. For a
+            // STORED ledger, a caller who sees start() reject must not find
+            // the run resumed by the next activation, so take the entry
+            // back — best-effort (a failure here leaves the documented
+            // at-least-once behaviour), keyed so a raced replacement run is
+            // never deleted. A DERIVED ledger has nothing to take back
+            // here: whether a rejected start leaves resumable state is the
+            // definition's own contract, since it saved that state before
+            // calling tasks.start (see the defineJob follow-up issue).
             if (!this.def.__sigxActor.resumeTasks) {
                 try {
                     await this.#ledger.mutate((ledger) => {
