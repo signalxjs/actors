@@ -642,9 +642,16 @@ export function ClusterScreen(props: { state: DashboardState; pane?: Pane }) {
     }
     const c = cluster.totals.counters;
     const cacheTotal = c.routeCacheHits + c.routeCacheMisses;
-    // Each cell is a label, a glyph and a space; 16 shards would otherwise
-    // run off a narrow pane.
-    const perRow = Math.max(4, Math.min(8, Math.floor(pane.width / 8)));
+    // `?? 0`: a fleet still on a build that predates the pair (#52) reports
+    // neither field, and `NaN%` is not an answer.
+    const dispatchesLocal = c.dispatchesLocal ?? 0;
+    const dispatches = dispatchesLocal + (c.dispatchesRemote ?? 0);
+    // Each cell is a 4-wide label, a glyph and a space — six columns — so
+    // a 60-column pane holds the full eight per row and 16 shards stay on
+    // two lines, which is the line the `locality` header row (#52) needs
+    // inside a 20-row pane. Narrower than 48 the grid folds rather than
+    // running off the edge.
+    const perRow = Math.max(4, Math.min(8, Math.floor(pane.width / 6)));
     // Two columns of counters rather than one long list: fifteen rows plus a
     // shard grid does not fit a 20-row pane, and bare counters are exactly
     // the content that still reads at half width. Anything with a COMPOUND
@@ -672,6 +679,13 @@ export function ClusterScreen(props: { state: DashboardState; pane?: Pane }) {
                         // with placement.
                         label: 'locates',
                         value: `${count(c.locates)}  ${percent(c.locateRemote, c.locates)} answered "a peer owns it"`
+                    },
+                    {
+                        // The per-request locality fraction (#52). Read
+                        // this, not `routedLocal`: that one counts placement
+                        // decisions and never sees the warm local fast path.
+                        label: 'locality',
+                        value: `${percent(dispatchesLocal, dispatches)} local  (${count(dispatches)} dispatches)`
                     }
                 ]}
             />

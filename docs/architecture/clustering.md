@@ -215,6 +215,49 @@ Three rules keep it honest:
 `addCounters` sums with `?? 0` so a mixed-version peer's report missing newer
 counters cannot NaN the `clusterStats` totals.
 
+## Reading locality from the counters
+
+`routedLocal` is a *placement* count, not a request count. `dispatcherFor`
+hands back the local dispatcher *before* the routing loop whenever the host
+already holds the claim, so in the warm steady state a local hit never reaches
+the site that increments it, and `routedLocal / (routedLocal +
+remoteDispatches)` reads near-zero for a perfectly local cluster — #52
+measured `routedLocal` 33 → 81 against ~270k reads on a fleet whose CPU per
+request had just halved from locality routing.
+
+The pair to read instead is `dispatchesLocal` / `dispatchesRemote`: once per
+call, stream or watch *subscriber*, on the warm fast path and the routed path
+alike, decided at the call's first resolved target. So
+`dispatchesLocal / (dispatchesLocal + dispatchesRemote)` is the per-request
+locality fraction the locality-routing table promises, and it is what the CLI's
+cluster screen and the dashboard render as `locality`. Three rules keep the
+pair honest:
+
+- **Once per call.** `remoteDispatches` stays per *attempt* (retries
+  included), which is why the two differ even on the routed path. A re-route
+  after `wrong-host` or `unreachable` is a `retries` event, not a second
+  dispatch.
+- **Per subscriber, not per stream.** A coalesced watch (#111) is one hop
+  serving n subscribers; each attach counts `dispatchesRemote` once, and the
+  shared pump behind it is told it has already been accounted for.
+- **Workers and `dispatchOn()` count in neither.** Nothing placed them — a
+  worker runs wherever it is called and a targeted call chose its host — so
+  they have no locality to measure and would only dilute the fraction. Nor
+  does a call whose target never resolves (`unplaceable` through every
+  retry): with no first resolved target there is nothing to decide, so it
+  lands only in `routingFailures`.
+
+The pair counts calls this host *initiated*, which is more than the requests
+it received: reminder and task-tick firings and topic deliveries go through
+`Host.dispatch` → `dispatcherFor` like any other call, so `dispatchesLocal +
+dispatchesRemote` runs ahead of an inbound request count on a host with
+timers armed. Read the fraction, not the sum, against a request rate.
+
+The warm fast path pays exactly this one increment and nothing else; the
+`cluster/locality-warm` bench keeps deriving its `local_fraction` from
+`remoteDispatches` against its own call count so its `exact` gates stay as
+baselined.
+
 ## Shutdown ordering
 
 The sequence is deliberately not the obvious one:

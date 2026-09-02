@@ -402,7 +402,10 @@ flatter prefer-local:
   warm state a local hit counts nothing at all, and
   `routedLocal / (routedLocal + remoteDispatches)` reads near-zero for a
   perfectly local cluster. Count `remoteDispatches` against a known call
-  count instead.
+  count instead. (Since #52 the placement also exposes a per-request pair,
+  `dispatchesLocal` / `dispatchesRemote`, that does count the warm path —
+  that is what an operator reads; the scenario keeps its own denominator so
+  the gates stay as baselined.)
 - **A skewed edge needs its own counter for the traffic it does NOT skew.**
   Reusing one counter for both advances it by five per leftover call, so the
   "spread the rest" fifth only ever visits every fifth host — concentrating

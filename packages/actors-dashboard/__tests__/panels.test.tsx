@@ -444,6 +444,9 @@ describe('ClusterPanel', () => {
         const text = view.text();
         expect(text).toContain('remoteDispatches');
         expect(text).toContain('inboundDispatches');
+        // The per-request fraction (#52), from the dispatches pair.
+        expect(text).toContain('locality');
+        expect(text).toContain('67% local');
         view.unmount();
     });
 

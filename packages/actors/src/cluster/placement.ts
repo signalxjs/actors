@@ -1097,7 +1097,13 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
     dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher> {
         // Local fast path: we hold the claim, no store reads, no routing.
-        if (this.#claimed.has(actorId(ref))) return this.#local!;
+        // The ONE counter on this path (#52): the host calls `dispatcherFor`
+        // once per dispatch, stream or watch, so this is once per call —
+        // and it is the only place a warm local hit is visible at all.
+        if (this.#claimed.has(actorId(ref))) {
+            this.#counters.dispatchesLocal++;
+            return this.#local!;
+        }
         // Stateless workers always run HERE: no directory lookup, no route
         // cache, no policy. A remote hop to run a pure function is a bug,
         // and skipping `#resolveTarget` entirely is what makes the
@@ -1493,6 +1499,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     Symbol.asyncIterator
                 ]();
             }
+            // Per SUBSCRIBER (#52), whether this attach opens the shared
+            // stream or joins one: from the caller's side each is a watch
+            // served by a peer. The pump below is told not to count again.
+            this.#counters.dispatchesRemote++;
             // Normalized as the owner will normalize it (absent == 50), so
             // an absent and an explicit default coalesce. Args go through
             // the WIRE codec: two arg lists this encoding cannot tell apart
@@ -1621,8 +1631,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // Driving the EXISTING retry generator means first-pull wrong-host/
         // unreachable re-routing now protects the shared stream for every
         // subscriber at once, and `remoteWatches` increments where it
-        // always did — once per stream attempt.
-        const source = this.#routedStreamed(ref, method, args, sharedCall, 'watch', options)[
+        // always did — once per stream attempt. `'shared-watch'`: the
+        // subscribers behind this stream were each counted at attach.
+        const source = this.#routedStreamed(ref, method, args, sharedCall, 'shared-watch', options)[
             Symbol.asyncIterator
         ]();
         try {
@@ -2199,6 +2210,9 @@ class ClusterPlacementImpl implements ClusterPlacement {
     ): Promise<unknown> {
         const id = actorId(ref);
         let lastError: unknown;
+        // Per-CALL locality (#52), decided at the first resolved target; the
+        // per-attempt counters below keep counting every retry.
+        let accounted = false;
         for (let attempt = 0; attempt <= this.#retries; attempt++) {
             if (attempt > 0) this.#counters.retries++;
             let target: 'local' | HostDescriptor;
@@ -2215,6 +2229,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     await this.#backoff(attempt);
                 }
                 continue;
+            }
+            if (!accounted) {
+                accounted = true;
+                if (target === 'local') this.#counters.dispatchesLocal++;
+                else this.#counters.dispatchesRemote++;
             }
             try {
                 if (target === 'local') {
@@ -2259,16 +2278,21 @@ class ClusterPlacementImpl implements ClusterPlacement {
      * failure halfway through, and hand the iterator back its `return()` on
      * an early exit. If anything, retry matters more for a watch — a watch
      * outlives the rebalance a stream would have finished before.
+     *
+     * `'shared-watch'` is a watch whose locality (#52) the caller already
+     * counted: the shared stream behind a coalesced watch is one hop serving
+     * n subscribers, each of which was counted when it attached.
      */
     #routedStreamed(
         ref: ActorRef,
         method: string,
         args: readonly unknown[],
         call: ActorCallContext,
-        mode: 'stream' | 'watch',
+        mode: 'stream' | 'watch' | 'shared-watch',
         options?: { throttleMs?: number }
     ): AsyncIterable<unknown> {
         const id = actorId(ref);
+        let accounted = mode === 'shared-watch';
         const resolveTarget = (): Promise<'local' | HostDescriptor> => this.#resolveTarget(ref);
         const refreshMembership = (): Promise<unknown> =>
             this.#options.membership.refresh().catch(() => {});
@@ -2306,16 +2330,21 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     }
                     continue;
                 }
+                if (!accounted) {
+                    accounted = true;
+                    if (target === 'local') counters.dispatchesLocal++;
+                    else counters.dispatchesRemote++;
+                }
                 let iterable: AsyncIterable<unknown>;
                 if (target === 'local') {
                     counters.routedLocal++;
                     iterable =
-                        mode === 'watch'
+                        mode !== 'stream'
                             ? local.dispatchWatch!(ref, method, args, call, options)
                             : local.dispatchStream!(ref, method, args, call);
                 } else {
                     const dispatcher = remoteDispatcher(target);
-                    if (mode === 'watch') {
+                    if (mode !== 'stream') {
                         if (!dispatcher.dispatchWatch) {
                             // Names the TRANSPORT, not the placement: the
                             // placement can watch perfectly well, and the

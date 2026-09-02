@@ -41,6 +41,7 @@ view                 #5  1 active of 2
 collected from       s.2sme5hx2
 route cache          84% hit  (282 lookups)
 locates              44  27% answered "a peer owns it"
+locality             67% local  (3.84k dispatches)
 remoteDispatches     1.28k  directoryClaims      37
 inboundDispatches    1.28k  claimConflicts       4
 routedLocal          1.28k  wrongHostRedirects   3
@@ -63,6 +64,7 @@ view                 #5  1 active of 2
 collected from       s.2sme5hx2
 route cache          84% hit  (282 lookups)
 locates              44  27% answered "a peer owns it"
+locality             67% local  (3.84k dispatches)
 remoteDispatches     1.28k  directoryClaims      37
 inboundDispatches    1.28k  claimConflicts       4
 routedLocal          1.28k  wrongHostRedirects   3
@@ -72,9 +74,8 @@ retries              15     authFailures         0
 routingFailures      0      selfFences           0
 
 reminder shards ● claimed ○ UNCLAIMED ◆ claimed twice
-p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ●
-p7  ● p8  ● p9  ● p10 ● p11 ● p12 ● p13 ●
-p14 ● p15 ●"
+p0  ● p1  ● p2  ● p3  ○ p4  ● p5  ● p6  ● p7  ●
+p8  ● p9  ● p10 ● p11 ● p12 ● p13 ● p14 ● p15 ●"
 `;
 
 exports[`rendered frames > Health 1`] = `
