@@ -370,6 +370,26 @@ describe('per-call deadlineMs', () => {
         }
     });
 
+    it('in-chain: with no inherited deadline the explicit budget applies on its own', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        const { inner, outer, seen } = chainActors();
+        // No host default and an un-annotated one-way entry: the chain
+        // carries NO deadline, so `inherited === undefined` and the hop's
+        // own budget is the only bound on the inner call.
+        const host = createHost({
+            actors: [inner, outer],
+            defaults: { ...quiet, callTimeoutMs: 0 }
+        });
+        try {
+            await host.actor(outer, 'o').with({ oneWay: true }).hop(50);
+            await vi.advanceTimersByTimeAsync(100);
+            expect(seen).toEqual([{ kind: 'call-timeout', after: 50 }]);
+        } finally {
+            vi.useRealTimers();
+            await stopped(host);
+        }
+    });
+
     it('rejects a budget that is not a positive finite number', async () => {
         const def = probeActor();
         const host = createHost({ actors: [def], defaults: { ...quiet, callTimeoutMs: 0 } });

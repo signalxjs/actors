@@ -81,6 +81,11 @@ export interface ActorCallInit {
      * This call's deadline as a budget in ms from now (#75), sent as the
      * `x-sigx-deadline-ms` header — remaining-ms, so the server re-anchors it
      * on its own clock. Replaces the host's `callTimeoutMs` for this call.
+     * Enforced by the SERVER (504 `call-timeout`), the same posture as
+     * `callTimeoutMs`: the fetch itself is not aborted locally, so a hung
+     * connection is bounded only by `signal`. Must be a positive finite
+     * number — `fetchTransport` throws otherwise, exactly as the host client
+     * does, rather than sending a value the endpoint would drop.
      */
     deadlineMs?: number;
     /**
@@ -309,7 +314,19 @@ async function send(
     // the routing token header above.
     if (init?.oneWay) headers[ACTOR_ONEWAY_HEADER] = '1';
     // Remaining-ms, not an absolute time: the server's clock is not ours.
-    if (init?.deadlineMs !== undefined) headers[ACTOR_DEADLINE_HEADER] = String(init.deadlineMs);
+    // A third custom header, so a `.with({ deadlineMs })` on a declared
+    // `reads:` GET costs a preflight too. Validated here rather than left to
+    // the endpoint, which drops a malformed value whole: the caller asked for
+    // a budget, and silently getting the host default instead is the bug.
+    if (init?.deadlineMs !== undefined) {
+        if (!(init.deadlineMs > 0) || init.deadlineMs === Infinity) {
+            throw new Error(
+                `[sigx actors] deadlineMs must be a positive finite number of ` +
+                    `milliseconds, got ${init.deadlineMs}.`
+            );
+        }
+        headers[ACTOR_DEADLINE_HEADER] = String(init.deadlineMs);
+    }
     const path = routePath(endpointOf(config, init), token, symbol);
     const signal = init?.signal ? { signal: init.signal } : {};
     // A declared read goes out as GET with its arguments in the query, which

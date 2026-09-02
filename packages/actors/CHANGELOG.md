@@ -22,7 +22,9 @@
   `ACTOR_DEADLINE_HEADER` from `@sigx/actors/server`) that the endpoint
   re-anchors on its own clock — the cluster envelope's discipline; a value
   that is not a positive finite number is dropped whole and the host default
-  applies. Socket transports do not carry it yet.
+  applies (both clients throw before sending one). Socket transports do not
+  carry it yet — `socketTransport` warns once in dev and the host default
+  applies.
 
 - **Per-request locality counters: `dispatchesLocal` / `dispatchesRemote`**
   (#52). `routedLocal` counts placement decisions and `remoteDispatches`

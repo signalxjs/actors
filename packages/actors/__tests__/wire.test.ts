@@ -380,6 +380,37 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
         await host.stop({ timeoutMs: 500 });
     });
 
+    it('the HTTP client rejects a budget that is not a positive finite number before sending (#75)', async () => {
+        // Same rule as the host client: the two entry points to
+        // `ActorCallOptions.deadlineMs` must agree, or a browser caller asking
+        // for a budget would silently get the host default instead.
+        let sent = 0;
+        configureActors({
+            endpoint: ENDPOINT,
+            fetch: async () => {
+                sent++;
+                return new Response('{}', { status: 200 });
+            }
+        });
+        const slowpoke = defineActor({
+            type: 'Slowpoke',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: () => ({
+                async nap(ms: number) {
+                    return ms;
+                }
+            })
+        });
+        const ref = __actorRef('Slowpoke', ENDPOINT) as unknown as typeof slowpoke;
+        for (const deadlineMs of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+            await expect(actor(ref, 'bad').with({ deadlineMs }).nap(1)).rejects.toThrow(
+                /deadlineMs must be a positive finite number/
+            );
+        }
+        expect(sent).toBe(0);
+    });
+
     it('a malformed deadline header is dropped, not honoured as unbounded (#75)', async () => {
         const slowpoke = defineActor({
             type: 'Slowpoke',
