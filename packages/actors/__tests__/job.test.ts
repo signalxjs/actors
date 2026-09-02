@@ -736,23 +736,40 @@ describe('defineJob: a rejected task start takes the running transition back (#3
     /**
      * Reject the roster write that TRACKS `id` (the run's liveness), `n`
      * times. The host's index registration and the untrack never carry the
-     * id, so they pass — this is the `ctx.tasks.start` failure alone.
+     * id, so they pass — this is the `ctx.tasks.start` failure alone. With
+     * `thenJobSave`, the job's OWN next save after that failure rejects
+     * too — the revert's save, which exercises `launch()`'s fallback.
      */
     function trackFailingStorage(id: string) {
         const inner = memoryStorage();
+        const [jobType, jobKey] = id.split('\u0000') as [string, string];
         let failures = 0;
+        let jobSaveFailures = 0;
+        let thenJobSave = false;
         const storage: ReturnType<typeof memoryStorage> = {
             load: (t, k) => inner.load(t, k),
             save: (t, k, st, e) => {
                 if (t === ROSTER_TYPE && failures > 0 && id in (st as object)) {
                     failures--;
+                    if (thenJobSave) jobSaveFailures++;
                     return Promise.reject(new Error('roster transiently down'));
+                }
+                if (t === jobType && k === jobKey && jobSaveFailures > 0) {
+                    jobSaveFailures--;
+                    return Promise.reject(new Error('job record transiently down'));
                 }
                 return inner.save(t, k, st, e);
             },
             clear: (t, k, e) => inner.clear(t, k, e)
         };
-        return { storage, inner, fail: (n: number) => void (failures = n) };
+        return {
+            storage,
+            inner,
+            fail: (n: number, opts: { thenJobSave?: boolean } = {}) => {
+                failures = n;
+                thenJobSave = opts.thenJobSave ?? false;
+            }
+        };
     }
 
     it('start(): the job reads pending again, no host resumes it, and a retry starts it', async () => {
@@ -827,5 +844,40 @@ describe('defineJob: a rejected task start takes the running transition back (#3
         expect(await a.result()).toEqual({ doc: 'contract', approved: { by: 'bob' } });
         expect(runs).toEqual([undefined, { by: 'bob' }]);
         expect((await a.status()).attempts).toBe(1); // pause-resume stays free
+    });
+
+    it('when the revert save fails too, live state stays in step with the durable running record and the run resumes at-least-once', async () => {
+        const { storage, inner, fail } = trackFailingStorage('RevertStuck\u0000run-1');
+        const runs: number[] = [];
+        const Job = defineJob({
+            type: 'RevertStuck',
+            allowAnonymous: true,
+            run: async (job, input: { n: number }) => {
+                runs.push(job.attempt);
+                return input.n * 2;
+            }
+        });
+        const hostA = createHost({ actors: [Job], storage, defaults: quiet });
+        running = hostA;
+        const a = hostA.actor(Job, 'run-1');
+        fail(1, { thenJobSave: true });
+        // The caller still sees the LAUNCH's rejection, not the revert's.
+        await expect(a.start({ n: 21 })).rejects.toThrow(/roster transiently down/);
+        // The durable record could not be taken back, so it says `running`
+        // — and the live state must agree with it rather than read
+        // `pending` over a `running` ledger: the previous contract stands.
+        const record = (await inner.load('RevertStuck', 'run-1'))?.state as { status: string };
+        expect(record.status).toBe('running');
+        expect(await a.status()).toMatchObject({ status: 'running', attempts: 1 });
+        expect(runs).toEqual([]);
+        // …which is at-least-once: the next activation derives the run
+        // from the record and resumes it.
+        await within(hostA.stop({ timeoutMs: 2000 }), 1500);
+        const hostB = createHost({ actors: [Job], storage, defaults: quiet });
+        running = hostB;
+        const b = hostB.actor(Job, 'run-1');
+        await until(async () => (await b.status()).status === 'completed');
+        expect(await b.result()).toBe(42);
+        expect(runs).toEqual([2]); // a resumed run is its own attempt
     });
 });

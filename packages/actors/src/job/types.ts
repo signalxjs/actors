@@ -180,12 +180,17 @@ export interface JobOptions<In, Out, C, Extra extends object> {
 export type JobMethodTable<In, Out, Extra extends object> = {
     /** Idempotent: a non-pending job returns its current info and never
      *  restarts — safe under HTTP retry. Resolves once the run is durably
-     *  recorded and launched, NOT when it finishes. */
+     *  recorded and launched, NOT when it finishes. Rejects if the launch
+     *  fails, and then leaves the job `pending` — live and on disk — so
+     *  nothing resumes the run and the same call can be retried (#316). */
     start(input: In): Promise<JobInfo<Extra>>;
     status(): JobInfo<Extra>;
     /** Marks `cancelled` immediately and aborts the run. Terminal no-op. */
     cancel(): Promise<JobInfo<Extra>>;
-    /** Resume a `paused` job, optionally with data for the run body. */
+    /** Resume a `paused` job, optionally with data for the run body.
+     *  Rejects if the launch fails, and then leaves the job `paused` with
+     *  the rejected call's data dropped, so a retry does not find a stale
+     *  answer waiting (#316). */
     resume(data?: unknown): Promise<JobInfo<Extra>>;
     /** The result of a `completed` job; throws JobNotDoneError /
      *  JobFailedError / JobCancelledError otherwise. */

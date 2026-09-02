@@ -186,6 +186,9 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         try {
             await ctx.tasks.start(RUN, s.input);
         } catch (error) {
+            // Snapshot the same keys `prior` names, so the two writers
+            // cannot drift: whatever a caller adds to `prior` is what the
+            // fallback below restores.
             const running: Record<string, unknown> = {};
             for (const k of Object.keys(prior) as (keyof S)[]) running[k] = s[k];
             Object.assign(s, prior);
