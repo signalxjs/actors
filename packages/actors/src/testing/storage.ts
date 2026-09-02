@@ -429,10 +429,16 @@ const keysAreOpaqueAndDistinct: ConformanceCase<StorageConformanceFactory> = {
                 try {
                     etags.set(key, await s.save(T, key, state, null));
                 } catch (error) {
-                    // A conflict here means two DISTINCT keys landed on one
+                    // A CONFLICT here means two DISTINCT keys landed on one
                     // record — an escaping or trimming layer that is not
-                    // injective. Reported as such rather than as a raw throw.
-                    assert(false, `save under the fresh key ${show(key)} rejected (${String(error)}) — it collided with an earlier key`);
+                    // injective. Any other rejection is the backend refusing
+                    // the key itself; say which, so the failure is debuggable.
+                    assert(
+                        false,
+                        isStorageConflict(error)
+                            ? `save under the fresh key ${show(key)} conflicted — it collided with an earlier key`
+                            : `save under the fresh key ${show(key)} rejected: ${String(error)}`
+                    );
                 }
             }
             for (const [key, state] of keys) {
