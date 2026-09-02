@@ -1402,7 +1402,8 @@ export class Activation {
             // AFTER the observer, on purpose: `failed` is "the method threw",
             // and a bookkeeping failure here (a boundary snapshot whose codec
             // throws) reaches the caller for a turn already reported as
-            // succeeded — the documented, test-pinned contract (#53).
+            // succeeded — the documented, test-pinned contract (#53). What
+            // #afterTurn leaves undone when that throws is #338.
             this.#afterTurn(started);
         }
     }

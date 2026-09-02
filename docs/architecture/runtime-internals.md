@@ -183,3 +183,15 @@ covers **dispatched turns only**, including reminder delivery. Deliberately
 excluded: volatile `ctx.timer` ticks, write-behind flushes, and reentrant
 `ctx.actor` inline calls. When the last observer leaves, the runtime stops
 timing turns entirely — which is what makes `metrics()` cheap to leave off.
+
+`failed` means **the method invocation threw**, not "the caller saw an error"
+(#53). The observer fires in the turn's `finally` *before* `#afterTurn` — the
+post-turn bookkeeping that folds the turn's writes into the version, fans the
+boundary out to `ctx.changes()` subscribers and schedules a write-behind flush
+— so `elapsedMs` stops at the method too, and a bookkeeping failure (a
+boundary snapshot whose codec throws) reaches the caller for a turn the
+observer already reported with `failed: false`. That ordering is deliberate
+and test-pinned (`turn-observer-failed.test.ts`; what `#afterTurn` leaves
+undone when the snapshot throws is tracked in #338). "The caller errored" is
+measured at the dispatch seam, where a middleware sees every rejection and the
+`metrics` plugin's `calls.failed` already counts it.
