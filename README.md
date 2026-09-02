@@ -38,6 +38,7 @@ architecture notes in [`docs/`](docs).
 | [`@sigx/actors-redis`](packages/actors-redis) | Redis providers — cluster membership, the actor directory, and etag-CAS actor storage |
 | [`@sigx/actors-pg`](packages/actors-pg) | Postgres providers — etag-CAS actor storage, cluster membership, and the actor directory |
 | [`@sigx/actors-surreal`](packages/actors-surreal) | SurrealDB 3 providers — etag-CAS actor storage, cluster membership, the actor directory, and durable reminders |
+| [`@sigx/actors-sqlite`](packages/actors-sqlite) | SQLite actor storage — etag-CAS persistence in one file on `node:sqlite`, for the single-node host with nothing to operate (Node ≥ 22.13) |
 | [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — host liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Framed TCP transport — one multiplexed connection per peer |
 | [`@sigx/actors-ws`](packages/actors-ws) | Client-facing WebSocket transport — browsers calling actors over one multiplexed socket |

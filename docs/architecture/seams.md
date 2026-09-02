@@ -41,11 +41,13 @@ the cost is a rejected save (`ActorStorageConflict`, which the runtime turns
 into fault-and-reload) rather than corruption. Do not add a code path that
 writes state without passing through it.
 
-Etags are opaque and implementation-minted — every shipped provider uses a
-UUID. The runtime only ever compares them for equality.
+Etags are opaque and implementation-minted — the network providers use a
+UUID, `fileStorage` and `sqliteStorage` a per-record version counter. The
+runtime only ever compares them for equality.
 
 Implementers: `memoryStorage` (`./host`), `fileStorage` (`./node`, dev only),
-`redisStorage`, `pgStorage`, `surrealStorage`, `durableObjectStorage`,
+`redisStorage`, `pgStorage`, `surrealStorage`, `sqliteStorage` (embedded,
+single-node, on `node:sqlite`), `durableObjectStorage`,
 `unhostedStorage` (Cloudflare's Worker half — every operation throws, because
 in-memory storage on a host that hosts nothing would be a silent lie).
 

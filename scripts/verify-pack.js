@@ -43,6 +43,7 @@ const PACKAGES = [
     'packages/actors-otel',
     'packages/actors-pg',
     'packages/actors-redis',
+    'packages/actors-sqlite',
     'packages/actors-surreal',
     'packages/actors-tcp',
     'packages/actors-ws',
@@ -166,14 +167,14 @@ function packageOf(specifier) {
 /**
  * Every package this one IMPORTS at runtime must be one it DECLARES.
  *
- * The gap this closes: the smoke below installs all twelve tarballs into one
+ * The gap this closes: the smoke below installs all thirteen tarballs into one
  * sandbox, so a package that imports a sibling without declaring it resolves
  * there and fails only for a real consumer installing it alone. That is
  * exactly how `@sigx/actors-dashboard@0.9.0` shipped unloadable (#254) — it
  * imports `digestSnapshot` from `@sigx/actors/host` for the per-host latency
  * row, and named `@sigx/actors` nowhere in its manifest.
  *
- * Static rather than twelve more `npm install`s: it costs seconds, it is
+ * Static rather than thirteen more `npm install`s: it costs seconds, it is
  * deterministic, and "every runtime import is declared" is precisely the
  * invariant that was broken.
  *

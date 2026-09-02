@@ -49,6 +49,7 @@ const PACKAGES = [
     'packages/actors-otel',
     'packages/actors-pg',
     'packages/actors-redis',
+    'packages/actors-sqlite',
     'packages/actors-surreal',
     'packages/actors-tcp',
     'packages/actors-ws',
