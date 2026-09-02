@@ -84,9 +84,10 @@
 ### Fixed
 
 - **Every actor call to a Durable Object 404'd** once core made the mount
-  base load-bearing (signalxjs/core#563). The object's mount lives at `/_sigx/do`, but the
-  base never reached `handleServerFnRequest`, so core matched the path
-  against its own `/_sigx/fn` default. Latent until 0.15; fatal after.
+  base load-bearing (signalxjs/core#563). The object's mount lives at
+  `/_sigx/do`, but the base never reached `handleServerFnRequest`, so core
+  matched the path against its own `/_sigx/fn` default. Latent until 0.15;
+  fatal after.
 - **Host-to-host traffic 401'd under the fail-closed runtime.** The internal
   mount authenticates with a per-request HMAC, not a principal, so its
   wrappers now declare anonymity — otherwise core's identity gate (which

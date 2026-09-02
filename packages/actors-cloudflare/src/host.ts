@@ -354,9 +354,9 @@ export function createHostDurableObject<Env = unknown>(
             return handleHostRequestForRuntime(request, {
                 ...options.endpoint,
                 // This mount lives at `/_sigx/do`, not the internal default.
-                // Core checks the path prefix itself (signalxjs/core#563) and everything
-                // after it IS the symbol, so a mount that does not name its
-                // own base 404s every call before resolving.
+                // Core checks the path prefix itself (signalxjs/core#563) and
+                // everything after it IS the symbol, so a mount that does not
+                // name its own base 404s every call before resolving.
                 base,
                 runtime
             });

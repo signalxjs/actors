@@ -28,6 +28,9 @@
  *   node scripts/check-issue-refs.mjs --require-api # fail if the API is unreachable
  *   node scripts/check-issue-refs.mjs <path>...     # check specific paths
  *
+ * A file in `EXEMPT_FILES` is skipped even under an explicit directory, but
+ * naming the file itself as a `<path>` checks it — an explicit ask wins.
+ *
  * Both checks need the repository's issue list, so **neither can run without
  * the GitHub API** — there is no useful offline subset. Without a token or a
  * network this exits 0 with a warning, so a contributor's local run is not
@@ -82,6 +85,10 @@ const requireApi = args.includes('--require-api');
 const paths = args.filter((a) => !a.startsWith('--'));
 const roots = paths.length > 0 ? paths : DEFAULT_PATHS;
 
+/** Paths named on the command line, in `git ls-files` form, so an exempt
+ *  file asked for by name is checked rather than silently dropped. */
+const named = new Set(paths.map((p) => path.posix.normalize(p.replace(/\\/g, '/'))));
+
 /** Tracked files under `roots`, minus the binary/lock noise. */
 function trackedFiles() {
     const out = execFileSync('git', ['ls-files', '-z', '--', ...roots], {
@@ -93,7 +100,7 @@ function trackedFiles() {
         .split('\0')
         .filter(Boolean)
         .filter((f) => !/pnpm-lock|\.(svg|png|ico|jpg|jpeg|gif|woff2?)$/i.test(f))
-        .filter((f) => !EXEMPT_FILES.has(f));
+        .filter((f) => !EXEMPT_FILES.has(f) || named.has(f));
 }
 
 /**

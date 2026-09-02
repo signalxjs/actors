@@ -5,14 +5,14 @@
  * The ambient read uses core's documented `__SIGX_SERVERFN_CONTEXT__` seam
  * (docs/seams.md: stamped by every scope entry, contract
  * `() => Request | Partial<ServerFnContext> | undefined`). Since core 0.14
- * (signalxjs/core#494) a scope resolves to a `Partial<ServerFnContext>` whose `locals` IS
- * the per-request store — it must be passed through by reference, so a guard
- * writing `rq.locals` here is visible to every other call in the flow. A
- * bare `Request` stays legal in the contract (an app may stamp its own
- * resolver), so both branches below are load-bearing. This function is
- * this package's single accessor for it. Missing seam = detached context —
- * a no-op, per the seam rules; only touching `rq.request` then throws,
- * exactly like core's own detached context.
+ * (signalxjs/core#494) a scope resolves to a `Partial<ServerFnContext>`
+ * whose `locals` IS the per-request store — it must be passed through by
+ * reference, so a guard writing `rq.locals` here is visible to every other
+ * call in the flow. A bare `Request` stays legal in the contract (an app may
+ * stamp its own resolver), so both branches below are load-bearing. This
+ * function is this package's single accessor for it. Missing seam = detached
+ * context — a no-op, per the seam rules; only touching `rq.request` then
+ * throws, exactly like core's own detached context.
  */
 import type { ServerFnContext } from '@sigx/server';
 

@@ -120,7 +120,8 @@ function fakeNamespace(): DurableObjectNamespaceLike & {
                     typeof input === 'string' ? new Request(input, init) : input;
                 return handleHostRequestForRuntime(request, {
                     // The mount names its own base, exactly as the real
-                    // object does: everything after it IS the symbol (signalxjs/core#563).
+                    // object does: everything after it IS the symbol
+                    // (signalxjs/core#563).
                     base: BASE,
                     runtime: hostEndpointRuntime(host)
                 });

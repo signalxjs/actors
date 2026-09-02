@@ -4,7 +4,8 @@
  * `actor()` entry, so every transport runs the SAME middleware,
  * authentication and authorization.
  *
- * The split core made (signalxjs/core#607, signalxjs/core#610) lands here as three facts:
+ * The split core made (signalxjs/core#607, signalxjs/core#610) lands here
+ * as three facts:
  *
  *  - **Middleware and authentication are the app's**, configured once on
  *    `createServerApp` and reached through core's fail-closed seam. Actors

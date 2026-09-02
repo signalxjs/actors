@@ -300,10 +300,10 @@ export async function handleHostRequestForRuntime(
         }
     }
     return handleServerFnRequest(request, {
-        // Same signalxjs/core#563 rule as the public mount: core checks the path prefix
-        // itself and defaults to `/_sigx/fn`, so the internal mount must
-        // name its own base or every host-to-host call 404s before it
-        // resolves.
+        // Same signalxjs/core#563 rule as the public mount: core checks the
+        // path prefix itself and defaults to `/_sigx/fn`, so the internal
+        // mount must name its own base or every host-to-host call 404s
+        // before it resolves.
         ...rest,
         base,
         // Server-to-server traffic sends no Origin header; the per-request
