@@ -619,12 +619,14 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `deploy/edge-ladder.mjs`. The charts (this one and
   `perf/app/deploy/`) are validated by `.github/workflows/charts.yml`
   against a kind cluster with the ingress-nginx admission webhook — the
-  check `helm lint` cannot be. The same job runs
-  `__tests__/chart-equivalence.test.ts` (#59): the two charts were
-  hand-copied from one another, so it renders both and asserts the shared
-  hardening lessons (probes, PDB, node spread, resources, drain budget)
-  still agree — outcomes, never bytes; it skips wherever `helm` is not on
-  PATH. Not published.
+  check `helm lint` cannot be. `__tests__/chart-equivalence.test.ts`
+  (#59) is the other guard: the two charts were hand-copied from one
+  another, so it renders both and asserts the shared hardening lessons
+  (probes, PDB, node spread, resources, drain budget) still agree —
+  outcomes, never bytes. It runs wherever `helm` is on PATH (the hosted
+  runners preinstall one, so the main CI matrix covers it; `charts.yml`
+  runs it first, before the cluster) and skips with the reason as its
+  skip note otherwise. Not published.
 - `perf/app` → `sigx-perf-app` — the Tier-3 SYSTEM UNDER TEST: the app the
   harness deploys and measures. It was `examples/chat` until the two were
   split, which is why it carries a dual listener, a Helm chart, a

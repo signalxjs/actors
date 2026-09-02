@@ -15,8 +15,12 @@
 # (`perf/aks/__tests__/chart-equivalence.test.ts`, #59): the two charts were
 # hand-copied from one another and drift, so it renders both and asserts
 # the shared hardening lessons (probes, PDB, spread, resources, drain
-# budget) still agree. It needs `helm`, which only this job installs — the
-# main CI matrix skips it.
+# budget) still agree. It runs wherever `helm` is on PATH — the hosted
+# runners preinstall one, so the main CI matrix covers it too; this job
+# adds ORDER, not coverage: on a chart change it fails in seconds, before
+# the cluster below has finished coming up. That costs a full-monorepo
+# `pnpm install` (about a minute, cached) in a job that otherwise needs
+# no dependencies.
 name: Charts
 
 on:
@@ -66,9 +70,10 @@ jobs:
         with:
           cluster_name: charts
 
-      # Here and not later: kind-action is what puts `helm` on PATH, and a
-      # chart that has lost a lesson should fail in seconds — before the 6m
-      # ingress-nginx install below, not after it.
+      # Here and not later: a chart that has lost a lesson should fail in
+      # seconds — before the 6m ingress-nginx install below, not after it.
+      # (After kind-action so the run uses the helm it pins, not whichever
+      # one the runner image shipped with.)
       - name: The shared hardening lessons agree across both charts
         run: pnpm test perf/aks/__tests__/chart-equivalence
 

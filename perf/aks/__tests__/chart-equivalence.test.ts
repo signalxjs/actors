@@ -22,13 +22,21 @@
  * mechanism (podAntiAffinity vs topologySpreadConstraints), so the assertion
  * is on the outcome (hosts spread on the hostname topology), not the field.
  *
- * Needs `helm` on PATH; skips with a message otherwise. CI runs it in
- * `.github/workflows/charts.yml`, which already installs helm for the
- * kind-cluster dry runs — the main matrix has no helm and skips cleanly.
+ * Needs `helm` on PATH and runs wherever it finds one; without it the guard
+ * test below skips, carrying the reason as its skip note (vitest shows it
+ * in the verbose and JSON reporters — a console.warn from a fully skipped
+ * file is swallowed). GitHub's hosted runners preinstall helm, so the main
+ * CI matrix in ci.yml — Ubuntu and Windows alike — exercises this suite on
+ * every `pnpm test`. `.github/workflows/charts.yml` runs it as well, right
+ * after kind-action and before its 6m ingress-nginx install, so that on a
+ * chart change a lost lesson fails in seconds rather than after the cluster
+ * has finished coming up.
  *
  * The negative controls at the end are how a check earns its place: a case
  * that cannot fail is decoration, so the spread and PDB detectors are each
- * shown to go red against a render with that lesson switched off.
+ * shown to go red against a render with that lesson switched off, and the
+ * cross-chart comparison is shown to go red when one chart's probe cadence
+ * is nudged away from the other's.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -37,20 +45,27 @@ import { parseAllDocuments } from 'yaml';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
-/** True when `helm` resolves on PATH and runs — the only prerequisite. */
-const helm = (() => {
+/** `helm version --short`, or null when `helm` does not resolve on PATH — the only prerequisite. */
+const helmVersion = (() => {
     try {
-        execFileSync('helm', ['version', '--short'], { stdio: 'ignore' });
-        return true;
+        return execFileSync('helm', ['version', '--short'], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
     } catch {
-        return false;
+        return null;
     }
 })();
-if (!helm) {
-    console.warn(
-        'chart-equivalence: `helm` is not on PATH — skipping. CI runs this suite in charts.yml.'
-    );
-}
+const helm = helmVersion !== null;
+
+// The one test that runs without helm. Its job is to say WHY the rest was
+// skipped, in the place vitest actually surfaces: the skip note. (A
+// module-level console.warn from a file whose every test is skipped never
+// reaches the terminal.)
+it('helm is on PATH', (ctx) => {
+    if (!helm) ctx.skip('`helm` is not on PATH — the chart-equivalence suite did not run');
+    expect(helmVersion).toMatch(/^v\d/);
+});
 
 // Loose on purpose: these are rendered Kubernetes objects and the test reads
 // a handful of well-known paths out of them.
@@ -199,14 +214,17 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
 
     it.each(names)('%s: startup, liveness and readiness probes on a real port', (name) => {
         const c = container(host(name), 'host');
-        const portNames = new Set(c.ports.map((p: Manifest) => p.name));
+        // A probe port is real when the container declares it — by name or
+        // by number; Kubernetes accepts either, and the lesson is that the
+        // probe hits a listener the pod actually exposes.
+        const ports: Manifest[] = c.ports ?? [];
+        const isDeclared = (port: unknown) =>
+            ports.some((p) => p.name === port || p.containerPort === port);
         for (const kind of ['startupProbe', 'livenessProbe', 'readinessProbe']) {
             const probe = c[kind];
             expect(probe, kind).toBeDefined();
             expect(probe.httpGet?.path, `${kind} is httpGet`).toBeTruthy();
-            expect(portNames.has(probe.httpGet.port), `${kind} port ${probe.httpGet.port}`).toBe(
-                true
-            );
+            expect(isDeclared(probe.httpGet.port), `${kind} port ${probe.httpGet.port}`).toBe(true);
             expect(probe.periodSeconds, `${kind} periodSeconds`).toBeGreaterThan(0);
         }
         // Startup covers a slow boot (the Redis join), so it must be allowed
@@ -257,25 +275,28 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
      * not compared: #59's library-chart extraction is where the two become
      * one, and until then either is an acceptable spread.
      */
-    it('the lessons agree across charts', () => {
-        const summary = (name: string) => {
-            const dep = host(name);
-            const c = container(dep, 'host');
-            return {
-                rollingUpdate: dep.spec.strategy.rollingUpdate,
-                terminationGracePeriodSeconds: dep.spec.template.spec.terminationGracePeriodSeconds,
-                preStopSleepSeconds: preStopSleepSeconds(c),
-                probes: {
-                    startup: probeShape(c.startupProbe),
-                    liveness: probeShape(c.livenessProbe),
-                    readiness: probeShape(c.readinessProbe)
-                },
-                pdbMaxUnavailable: hostPdb(rendered[name], dep)?.spec.maxUnavailable
-            };
+    const lessons = (manifests: Manifest[]) => {
+        const dep = hostDeployment(manifests);
+        const c = container(dep, 'host');
+        return {
+            rollingUpdate: dep.spec.strategy.rollingUpdate,
+            terminationGracePeriodSeconds: dep.spec.template.spec.terminationGracePeriodSeconds,
+            preStopSleepSeconds: preStopSleepSeconds(c),
+            probes: {
+                startup: probeShape(c.startupProbe),
+                liveness: probeShape(c.livenessProbe),
+                readiness: probeShape(c.readinessProbe)
+            },
+            pdbMaxUnavailable: hostPdb(manifests, dep)?.spec.maxUnavailable
         };
+    };
+
+    it('the lessons agree across charts', () => {
         const [first, ...rest] = names;
         for (const other of rest) {
-            expect(summary(other), `${other} vs ${first}`).toEqual(summary(first));
+            expect(lessons(rendered[other]), `${other} vs ${first}`).toEqual(
+                lessons(rendered[first])
+            );
         }
     });
 
@@ -288,6 +309,14 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
         it('pdb off renders no PDB', () => {
             const manifests = render(CHARTS['perf/aks'], 'pdb.enabled=false');
             expect(hostPdb(manifests, hostDeployment(manifests))).toBeUndefined();
+        });
+
+        // The comparison itself: one chart's readiness cadence nudged off the
+        // other's is exactly the drift this suite exists to catch.
+        it('a probe cadence changed in one chart breaks the cross-chart agreement', () => {
+            const drifted = lessons(render(CHARTS['perf/app'], 'probes.readiness.periodSeconds=7'));
+            expect(drifted.probes.readiness?.periodSeconds).toBe(7);
+            expect(drifted).not.toEqual(lessons(rendered['perf/aks']));
         });
     });
 });
