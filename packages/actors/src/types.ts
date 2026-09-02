@@ -1423,8 +1423,10 @@ export interface ActorCallOptions {
      * (`x-sigx-deadline-ms`) and the endpoint re-anchors it on its own clock,
      * the same discipline as the cluster envelope; the server rejects the
      * call with the usual `call-timeout` error (504 on the wire) when it
-     * passes. Socket transports do not carry it in v1. Streams ignore it: a
-     * stream is consumed, not awaited.
+     * passes. Socket transports do not carry it in v1. A stream's
+     * consumption is not raced by it — a stream is consumed, not awaited —
+     * but the stream body runs under this call context, so an awaited
+     * `ctx.actor()` hop made from inside it inherits the deadline as usual.
      */
     deadlineMs?: number;
     /** Extra request headers (wire transport only). */
