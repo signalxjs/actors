@@ -202,5 +202,8 @@ export function withSockets(
     hostId: string,
     sockets: SocketStatsSnapshot | null
 ): HostView[] {
-    return hosts.map((host) => (host.hostId === hostId && sockets ? { ...host, sockets } : host));
+    // Written so the rule holds BY CONSTRUCTION, not by trusting the input:
+    // a row that arrives already carrying a section (a reused snapshot, a
+    // caller that guessed) is cleared unless it is the polled host's.
+    return hosts.map((host) => ({ ...host, sockets: host.hostId === hostId ? sockets : null }));
 }

@@ -8,7 +8,8 @@
  * zeroes for a 401 costs ten minutes debugging a healthy cluster.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { httpSource, OpsRequestError } from '@sigx/actors-monitor';
+import { httpSource, OpsRequestError, withSockets } from '@sigx/actors-monitor';
+import { host } from './fixture';
 
 const SECRET = 'ops-secret';
 
@@ -297,5 +298,25 @@ describe('httpSource', () => {
     it('labels itself by origin, so it is never ambiguous what is being watched', () => {
         expect(httpSource({ url: 'http://host.test/' }).kind).toBe('http');
         expect(httpSource({ url: 'http://host.test/' }).label).toBe('http://host.test');
+    });
+});
+
+describe('withSockets', () => {
+    it('puts the section on the polled host and clears every other row, by construction (#166)', () => {
+        // Rows that arrive already carrying a section — a reused snapshot,
+        // a caller that guessed — must not leak it onto the wrong host: the
+        // invariant is "exactly one row, the polled one", not "at least".
+        const stale = { ...socketsSection, open: 99 };
+        const rows = withSockets(
+            [host({ hostId: 'a', sockets: stale }), host({ hostId: 'b', sockets: stale })],
+            'b',
+            socketsSection
+        );
+        expect(rows.map((row) => row.sockets?.open ?? null)).toEqual([null, 3]);
+    });
+
+    it('answers null on the polled host too when it published nothing', () => {
+        const rows = withSockets([host({ hostId: 'a', sockets: socketsSection })], 'a', null);
+        expect(rows[0]!.sockets).toBeNull();
     });
 });
