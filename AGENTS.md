@@ -515,6 +515,23 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   takes a host LIST and fails over on transport errors only; a proxy that
   drops the query string breaks every drill-down silently; and
   `startsWith('/ops')` alone would also proxy `/opsummary`. Not published.
+- `examples/providers` — the provider packages with no example of their
+  own (#86), each as a SEAM SWAP on one three-host cluster: `src/cluster.ts`
+  is `examples/counter`'s cluster walk with `storage`, `providers` and
+  `transport` lifted out as options, and one script per package fills the
+  seam. `pg-demo.mjs` (`pgStorage` + `pgCluster`, `ensurePgSchema` first,
+  the tables read back with SQL after) and `surreal-demo.mjs`
+  (`surrealStorage` + `surrealCluster`, a hand-built connection to show
+  `surrealRetryable` and unlimited reconnect are the contract) are
+  env-gated on `PG_URL` / `SURREAL_URL` exactly as the packages' suites
+  are — no variable, a printed skip and exit 0, so local Docker is not
+  required. `tcp-demo.mjs` chains `[tcpTransport(), httpTransport()]` and
+  counts the owner's HTTP sockets after a 32-call burst (0 over TCP, the
+  pool over `--http`). `otel-demo.mjs` mounts `prometheusOps()` and
+  `otelMetricsBridge()` per host and asserts the scrape and the OTel
+  collection agree. Ports `PROVIDERS_DEMO_PORTS` (default 5591–5593); the
+  `__tests__` run the walk on memory seams and port 0. Not Redis/k8s — those
+  are `perf/aks`'s. Not published.
 - `perf/aks` → `sigx-perf-aks` — the production-shaped Kubernetes
   deployment test, and the reason `perf/` exists as a tree of its own: it
   is 4k lines of rig around a 300-line app, which under `examples/` read
