@@ -137,7 +137,8 @@ export interface CreateHostOptions {
      * Default `rosterTaskLiveness()` — one roster record per host, adopted
      * by a survivor. `reminderTaskLiveness()` is one reminder per running
      * task, which is right where a reminder is the platform's own wake-up
-     * (a Durable Object's alarm).
+     * (a Durable Object's alarm). Implementations are HOST-SCOPED: pass a
+     * fresh instance per host — the built-ins refuse a second bind().
      */
     taskLiveness?: ActorTaskLiveness;
     /**
