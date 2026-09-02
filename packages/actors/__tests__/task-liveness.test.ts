@@ -2,7 +2,7 @@
  * Task liveness (#310): a running task is found again after its host dies
  * through a per-host ROSTER, not a reminder per task.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import { defineJob } from '@sigx/actors/job';
 import {
@@ -114,6 +114,96 @@ describe('task liveness: the per-host roster', () => {
         await until(async () => (await client.status()).status === 'completed');
         const [hostId] = await hostIds(storage);
         await until(async () => (await rosterOf(storage, hostId!)).length === 0);
+    });
+
+    it('host.stop() right after a run completes waits for its roster clear (#313)', async () => {
+        // The roster clear runs AFTER the run has left the task table, so a
+        // stop that lands in between must still cover it. Modelled on a
+        // store with a round trip: the untrack write is held for one
+        // macrotask, and `host.stop()` is called the moment it starts —
+        // exactly the window a rolling deploy hits right after a job
+        // finishes. Without the fix, stop resolves before the write lands.
+        const inner = memoryStorage();
+        let stopping: Promise<void> | null = null;
+        let onStop!: () => void;
+        const stopCalled = new Promise<void>((r) => (onStop = r));
+        let host!: Host;
+        // Deliberately no `saveText`: the roster prefers it when present, so
+        // the intercept below only sees the untrack because this wrapper
+        // routes every write through `save`. Do not spread `...inner` here.
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: async (t, k, st, e) => {
+                const untrack =
+                    t === ROSTER_TYPE &&
+                    k !== ROSTER_INDEX_KEY &&
+                    Object.keys(st as object).length === 0;
+                if (untrack && !stopping) {
+                    stopping = host.stop({ timeoutMs: 1000 });
+                    onStop();
+                    await new Promise((r) => setTimeout(r, 0));
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const Job = defineJob({ type: 'Parked', allowAnonymous: true, run: async () => 1 });
+        host = createHost({ actors: [Job], storage, defaults: quiet });
+        running.push(host);
+        await host.actor(Job, 'run-1').start(undefined as never);
+        // Microtask-only from here to the assertion (no timer poll), so the
+        // check runs BEFORE the held write's macrotask — a stop that did not
+        // wait for it resolves first and is caught with the entry still there.
+        await within(stopCalled, 2000);
+        await within(stopping!, 2000);
+        const [hostId] = await hostIds(inner);
+        expect(await rosterOf(inner, hostId!)).toEqual([]);
+    });
+
+    it('bookkeeping that outruns taskGraceMs is warned as such, not as an ignored signal', async () => {
+        // The grace-timeout warning splits by what is stuck: a body still in
+        // the task table ignored its signal; a run that has returned and is
+        // only waiting on its roster clear is a storage round trip, with no
+        // body to advise. Here the body is long gone — the untrack write is
+        // the only thing outstanding, held past the grace.
+        const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const inner = memoryStorage();
+        let release!: () => void;
+        const held = new Promise<void>((r) => (release = r));
+        let onUntrack!: () => void;
+        const untrackStarted = new Promise<void>((r) => (onUntrack = r));
+        // No `saveText` (see above): every roster write goes through `save`.
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: async (t, k, st, e) => {
+                const untrack =
+                    t === ROSTER_TYPE &&
+                    k !== ROSTER_INDEX_KEY &&
+                    Object.keys(st as object).length === 0;
+                if (untrack) {
+                    onUntrack();
+                    await held;
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const Job = defineJob({ type: 'Parked', allowAnonymous: true, run: async () => 1 });
+        const host = createHost({ actors: [Job], storage, defaults: { ...quiet, taskGraceMs: 30 } });
+        running.push(host);
+        await host.actor(Job, 'run-1').start(undefined as never);
+        // Stop only once the body has returned and its untrack is the one
+        // thing outstanding — a stop before that interrupts the body
+        // instead, and there is no bookkeeping to outrun the grace.
+        await within(untrackStarted, 2000);
+        try {
+            await within(host.stop({ timeoutMs: 1000 }), 2000);
+        } finally {
+            release();
+        }
+        const messages = warns.mock.calls.map((c) => String(c[0]));
+        expect(messages.some((m) => m.includes('still had task bookkeeping in flight'))).toBe(true);
+        expect(messages.some((m) => m.includes('ignored their abort signal'))).toBe(false);
     });
 
     it('a restarted single host adopts its predecessor: the run resumes with no call', async () => {

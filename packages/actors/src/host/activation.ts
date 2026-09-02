@@ -522,6 +522,20 @@ export class Activation {
     #warnedTaskState = false;
     /** Running detached tasks, by name (single-flight per name). */
     #tasks = new Map<string, TaskRun>();
+    /**
+     * Every LAUNCHED run until its `settled` resolves — a superset of
+     * `#tasks` from `#launch` on, which a run leaves the moment its body
+     * returns (`#release`), BEFORE its ledger / liveness bookkeeping.
+     * Deactivation awaits this set, not the reservation table: a stop
+     * landing between the two would otherwise leave that bookkeeping
+     * behind — one stale task-roster entry per job that finished as the
+     * host went down (#313). LAUNCHED on purpose: a run that is only
+     * RESERVED (in `#tasks`, its start's durable writes still awaiting)
+     * is aborted by deactivate() but not awaited — its body launches with
+     * an already-aborted signal and keeps its entry for the resume, the
+     * same at-least-once outcome as before #313 (follow-up: #333).
+     */
+    #settling = new Set<TaskRun>();
     /** Lazily bound — one instance per activation (one writer chain). */
     #ledgerApi: TaskLedgerApi | null = null;
     /** Shared watch loops, keyed by `method` + encoded args — and, once a
@@ -1215,10 +1229,8 @@ export class Activation {
      */
     async deactivate(reason: DeactivationReason): Promise<void> {
         this.#abort.abort();
-        if (this.#tasks.size > 0) {
-            for (const run of this.#tasks.values()) run.controller.abort(reason);
-            await this.#settleTasks();
-        }
+        for (const run of this.#tasks.values()) run.controller.abort(reason);
+        if (this.#settling.size > 0) await this.#settleTasks();
         this.turns.close();
         await this.turns.drain();
         const opts = this.def.__sigxActor;
@@ -1275,14 +1287,15 @@ export class Activation {
     }
 
     /**
-     * Wait for every signalled task to settle, bounded by `taskGraceMs`.
-     * A host timer on purpose (not the scheduler): the grace is part of a
-     * stop already in flight, same as the shutdown drain deadline — and on
-     * a scheduler that never fires, a signal-ignoring task would otherwise
-     * hold deactivation forever.
+     * Wait for every launched run to settle — signalled bodies AND the
+     * bookkeeping of runs whose body already returned — bounded by
+     * `taskGraceMs`. A host timer on purpose (not the scheduler): the grace
+     * is part of a stop already in flight, same as the shutdown drain
+     * deadline — and on a scheduler that never fires, a signal-ignoring
+     * task would otherwise hold deactivation forever.
      */
     async #settleTasks(): Promise<void> {
-        const pending = [...this.#tasks.values()].map((r) => r.settled);
+        const pending = [...this.#settling].map((r) => r.settled);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const deadline = new Promise<'timeout'>((r) => {
             timer = setTimeout(() => r('timeout'), this.#host.taskGraceMs);
@@ -1294,13 +1307,32 @@ export class Activation {
         ]);
         clearTimeout(timer);
         if (outcome === 'timeout' && __DEV__) {
-            const names = [...this.#tasks.keys()].join('", "');
-            console.warn(
-                `[sigx actors] task(s) "${names}" of ${actorLabel(this.ref)} ignored their ` +
-                    `abort signal past the ${this.#host.taskGraceMs}ms grace — proceeding ` +
-                    `with deactivation. Long-running task bodies must observe ` +
-                    `ctx.abortSignal.`
-            );
+            // Two distinct failures, warned separately: a run still in
+            // `#tasks` is a body that did not wind down; one only in
+            // `#settling` has returned and is stuck on its bookkeeping's
+            // storage round trip — no body left to advise.
+            const bodies = [...this.#tasks.keys()];
+            const bookkeeping = [...this.#settling]
+                .filter((r) => this.#tasks.get(r.name) !== r)
+                .map((r) => r.name);
+            const grace = `past the ${this.#host.taskGraceMs}ms grace — proceeding with deactivation.`;
+            if (bodies.length > 0) {
+                console.warn(
+                    `[sigx actors] task(s) "${bodies.join('", "')}" of ${actorLabel(this.ref)} ` +
+                        `ignored their abort signal ${grace} Long-running task bodies must ` +
+                        `observe ctx.abortSignal.`
+                );
+            }
+            if (bookkeeping.length > 0) {
+                console.warn(
+                    `[sigx actors] task(s) "${bookkeeping.join('", "')}" of ${actorLabel(this.ref)} ` +
+                        `still had task bookkeeping in flight ${grace} The storage round trip ` +
+                        `clearing the ledger / task-roster entry outran taskGraceMs; the write ` +
+                        `is not cancelled and may still land, and an entry it leaves behind is ` +
+                        `cleared when the roster is adopted (a touch that finds nothing to ` +
+                        `resume).`
+                );
+            }
         }
     }
 
@@ -1970,7 +2002,10 @@ export class Activation {
         // a detached body's ctx.actor() would then silently carry the
         // STARTING turn's chain instead of starting fresh. Clear it.
         const body = (): Promise<void> => this.#taskBody(run, fn, input);
-        run.settled = this.#als ? this.#als.run(null, body) : body();
+        this.#settling.add(run);
+        run.settled = (this.#als ? this.#als.run(null, body) : body()).finally(() => {
+            this.#settling.delete(run);
+        });
     }
 
     #taskBody(run: TaskRun, fn: AnyTaskFn, input: unknown): Promise<void> {
@@ -1991,7 +2026,8 @@ export class Activation {
                 this.#release(run);
             }
             // Ledger bookkeeping is INSIDE `settled`, so deactivation's
-            // grace wait covers it. An interrupted run — aborted by
+            // grace wait covers it — through `#settling`, since the run has
+            // just left `#tasks` (#313). An interrupted run — aborted by
             // deactivation, not cancel — KEEPS its entry: that entry is the
             // resume. This holds whether the body returned or threw during
             // the wind-down; a run that completes right as deactivation

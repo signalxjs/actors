@@ -262,14 +262,9 @@ const lifecycle: Scenario = {
                 for (let i = 0; i < LIFECYCLE_EXACT_RUNS; i++) {
                     await runLifecycle(fixture.host, `exact-${lifecycleSeq++}`);
                 }
-                // The ledger and reminder clears run DETACHED after
-                // `onSettled`, and `host.stop()` does not wait for them: the
-                // run leaves the task table before its bookkeeping finishes,
-                // so the deactivation grace has nothing to await. On memory
-                // storage every step is a microtask, so one macrotask turn
-                // drains the last run's tail deterministically — without it
-                // the totals come up exactly one clear short.
-                await new Promise((resolve) => setImmediate(resolve));
+                // The last run's roster clear runs DETACHED after `onSettled`;
+                // `host.stop()` waits for it (#313), so the totals below are
+                // complete without a macrotask flush here.
             } finally {
                 await fixture.stop();
             }
