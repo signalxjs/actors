@@ -1392,8 +1392,9 @@ export interface ActorWatchDeclaration {
      * Two limits to know. Enforcement covers exactly the channel #121's
      * discovery covers — identity reached through `ctx.actor()` into
      * ANOTHER actor, or smuggled through a closure, is invisible to it. And
-     * this is a promise about *identity only*: `ctx.bag` is already
-     * first-subscriber-only on any coalesced stream (#137), declared or not.
+     * this is a promise about *identity only*: `ctx.bag` is the empty bag
+     * inside any watch turn (#137), declared or not — a shared read never
+     * sees a subscriber's per-request context.
      *
      * Touching `ctx.principal` merely to authorize trips this too — #121
      * marks one touch anywhere, even a discarded one. Authorization belongs

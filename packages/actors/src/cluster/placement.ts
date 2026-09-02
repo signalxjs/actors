@@ -1609,9 +1609,10 @@ class ClusterPlacementImpl implements ClusterPlacement {
     ): Promise<void> {
         // Per-subscriber context (deadline, bag, traceparent) cannot ride a
         // shared stream. Nothing sound is lost: the owner's shared watch
-        // loop already re-invokes under its FIRST subscriber's context only
-        // (`Activation.openWatch`), and the principal is in the coalescing
-        // key — so every subscriber on this stream shares it by
+        // loop drops the per-request fields itself — empty bag, its own
+        // abort signal, a deadline minted per read (#137,
+        // `Activation.#createWatchEntry`) — and the principal is in the
+        // coalescing key, so every subscriber on this stream shares it by
         // construction, EXCEPT on a `principalIndependent` stream (#138),
         // where `principal` is undefined and the read has declared it cannot
         // tell the difference. Either way the identity this runs under is
