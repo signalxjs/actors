@@ -318,6 +318,9 @@ async function send(
     // `reads:` GET costs a preflight too. Validated here rather than left to
     // the endpoint, which drops a malformed value whole: the caller asked for
     // a budget, and silently getting the host default instead is the bug.
+    // Anchored as an absolute time on OUR clock so the retry below can send
+    // what is left of the budget rather than the whole of it again.
+    let deadline: number | undefined;
     if (init?.deadlineMs !== undefined) {
         const budget = init.deadlineMs;
         if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= 0) {
@@ -326,6 +329,7 @@ async function send(
                     `milliseconds, got ${String(budget)}.`
             );
         }
+        deadline = Date.now() + budget;
         headers[ACTOR_DEADLINE_HEADER] = String(budget);
     }
     const path = routePath(endpointOf(config, init), token, symbol);
@@ -364,6 +368,13 @@ async function send(
         // on the signal, not the error shape, so a custom abort reason
         // cannot masquerade as a connection failure.
         if (init?.signal?.aborted || !isConnectionError(error)) throw error;
+        // Re-stamp the REMAINING budget: `request.headers` is the object
+        // above, so the retry sees it. Never below 1 — `0` is malformed to the
+        // endpoint (host default applies), whereas 1ms yields the
+        // `call-timeout` the exhausted budget promised.
+        if (deadline !== undefined) {
+            headers[ACTOR_DEADLINE_HEADER] = String(Math.max(1, deadline - Date.now()));
+        }
         return run();
     }
 }

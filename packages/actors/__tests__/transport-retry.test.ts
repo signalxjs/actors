@@ -11,6 +11,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fetchTransport } from '@sigx/actors/client';
+import { ACTOR_DEADLINE_HEADER } from '@sigx/actors/server';
 
 const ENDPOINT = 'http://actors.test/_sigx/actor';
 
@@ -52,6 +53,54 @@ describe('pre-response connection retry (#55)', () => {
         expect(fetchSpy).toHaveBeenCalledTimes(2);
         // The retry re-sends the SAME request.
         expect(String(fetchSpy.mock.calls[1][0])).toBe(String(fetchSpy.mock.calls[0][0]));
+    });
+
+    it('the retry carries what is LEFT of a per-call deadlineMs, not the whole budget again (#75)', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const seen: Array<string | null> = [];
+            const fetchSpy = vi
+                .fn<typeof globalThis.fetch>()
+                .mockImplementationOnce(async (_url, init) => {
+                    seen.push(new Headers(init?.headers).get(ACTOR_DEADLINE_HEADER));
+                    // The failed attempt cost 30ms of the caller's 100ms.
+                    vi.setSystemTime(Date.now() + 30);
+                    throw undiciError('ECONNRESET');
+                })
+                .mockImplementationOnce(async (_url, init) => {
+                    seen.push(new Headers(init?.headers).get(ACTOR_DEADLINE_HEADER));
+                    return dataResponse('ok');
+                });
+            const transport = fetchTransport({ endpoint: ENDPOINT, fetch: fetchSpy });
+            await expect(transport.call('Cart#total', ['c1'], { deadlineMs: 100 })).resolves.toBe('ok');
+            expect(seen).toEqual(['100', '70']);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a budget exhausted by the failed attempt retries with 1ms, so the server answers call-timeout (#75)', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const seen: Array<string | null> = [];
+            const fetchSpy = vi
+                .fn<typeof globalThis.fetch>()
+                .mockImplementationOnce(async () => {
+                    vi.setSystemTime(Date.now() + 500);
+                    throw undiciError('ECONNRESET');
+                })
+                .mockImplementationOnce(async (_url, init) => {
+                    seen.push(new Headers(init?.headers).get(ACTOR_DEADLINE_HEADER));
+                    return dataResponse('late');
+                });
+            const transport = fetchTransport({ endpoint: ENDPOINT, fetch: fetchSpy });
+            await transport.call('Cart#total', ['c1'], { deadlineMs: 100 });
+            // Never `0` or negative — the endpoint drops those as malformed and
+            // the host default would silently take over.
+            expect(seen).toEqual(['1']);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('retries the opaque browser TypeError (no code anywhere)', async () => {

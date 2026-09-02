@@ -20,7 +20,8 @@
   client, `ctx.actor(...).with()`, and the HTTP transport, where it rides as
   remaining-ms in a new `x-sigx-deadline-ms` header (exported as
   `ACTOR_DEADLINE_HEADER` from `@sigx/actors/server`) that the endpoint
-  re-anchors on its own clock — the cluster envelope's discipline; a value
+  re-anchors on its own clock — the cluster envelope's discipline — and
+  that the one connection-error retry re-stamps with what is *left*; a value
   that is not a positive finite number is dropped whole and the host default
   applies (both clients throw before sending one). Socket transports do not
   carry it yet — `socketTransport` warns once in dev and the host default
