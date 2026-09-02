@@ -322,8 +322,13 @@ const ingressIp = () =>
  */
 function ensureEdgeHashMap() {
     const snippet = kube(['-n', cfg.ingressNs, 'get', 'configmap', 'ingress-nginx-controller',
-        '-o', 'jsonpath={.data.http-snippet}'], { quiet: true, allowFail: true });
-    if (snippet?.includes('$sigx_hash')) return log(`  ${cfg.ingressNs}: http-snippet defines $sigx_hash`);
+        '-o', 'jsonpath={.data.http-snippet}'], { quiet: true, allowFail: true }) ?? '';
+    // The `map` directive itself, not the variable name: `$sigx_hash` in a
+    // comment or some other directive would pass a substring test and let a
+    // map-less controller through — the one thing this gate exists to stop.
+    if (/\bmap\s+\$http_x_sigx_actor_route\s+\$sigx_hash\s*\{/.test(snippet)) {
+        return log(`  ${cfg.ingressNs}: http-snippet maps $http_x_sigx_actor_route → $sigx_hash`);
+    }
     log(`✗ ${cfg.ingressNs}/ingress-nginx-controller has no \`$sigx_hash\` map in its http-snippet — ` +
         `the chart's upstream-hash-by would pin the WHOLE actor path to one pod. Apply RUNBOOK §0 (b) first.`);
     process.exit(1);
