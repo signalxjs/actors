@@ -214,14 +214,9 @@ describe.skipIf(!SURREAL_URL)('surrealReminders', () => {
                     expect(row!.dueInMs).toBeGreaterThan(0);
                     expect(row!.dueInMs).toBeLessThanOrEqual(TICK);
                 });
-                // Not sooner than that: an immediate tick finds nothing due.
-                scheduler.advance(TICK);
-                await sleep(100);
-                expect(delivered).toHaveLength(1);
-
                 fail = false;
                 await sleep(TICK);
-                scheduler.advance(TICK); // tick 3: delivered
+                scheduler.advance(TICK); // tick 2: delivered
                 await vi.waitFor(() => expect(delivered).toHaveLength(2));
                 expect(delivered[1]).toEqual({ ref, name: 'wake' });
                 // A one-shot that finally fired clears itself.

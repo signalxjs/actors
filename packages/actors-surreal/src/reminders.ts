@@ -94,10 +94,13 @@ const ALL_SHARDS: readonly string[] = Array.from({ length: SHARD_COUNT }, (_v, i
  * rewritten to this, and the SDK throws on the FIRST failing statement — so
  * the retryable message never reaches `surrealRetryable`.
  *
- * Matching it is safe HERE and only here: this transaction contains no
- * `THROW`, so an abort can only mean a conflict, and re-running it is
- * idempotent — it simply re-selects whatever is due now. It is not safe as a
- * global predicate, which is why `surrealRetryable` omits it.
+ * Matching it is safe HERE and only here: neither `CLAIM` nor `REARM`
+ * contains a `THROW`, so an abort can only mean a conflict, and re-running
+ * either is idempotent. `CLAIM` simply re-selects whatever is due now;
+ * `REARM` guards every write on the state the claim left (`d = $claimed + p
+ * AND d > $retry`, `!record::exists`), so a row the first run already moved
+ * is a no-op the second time. It is not safe as a global predicate, which is
+ * why `surrealRetryable` omits it.
  */
 const ABORTED = /The query was not executed due to a failed transaction/;
 const CLAIM_ATTEMPTS = 5;
@@ -107,7 +110,12 @@ const CLAIM_ATTEMPTS = 5;
  *  including the transaction-control ones. */
 const CLAIM_ROW = 5;
 
-/** A claimed row, as stored. `id` is what the re-arm addresses. */
+/**
+ * A claimed row, as stored. `id` is what the re-arm addresses. `d` is the
+ * due instant BEFORE the claim advanced it, present only because v3 rejects
+ * an `ORDER BY` over a field the selection omits (see `CLAIM`); it travels
+ * back into `$failed` unread — the re-arm compares against `$at`, not this.
+ */
 interface DueRow {
     id: RecordId;
     t: string;
@@ -117,6 +125,7 @@ interface DueRow {
     sh: string;
     /** Period in ms; 0 is a one-shot (see `set`). */
     p: number;
+    d: Date;
 }
 
 /**

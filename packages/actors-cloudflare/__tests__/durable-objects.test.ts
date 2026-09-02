@@ -433,7 +433,7 @@ describe('durableObjectReminders', () => {
             clock = 1_000;
             alarms.at = null;
             await reminders.onAlarm();
-            expect(attempts.sort()).toEqual(['beat', 'wake']);
+            expect([...attempts].sort()).toEqual(['beat', 'wake']);
             // The one-shot is as the actor re-set it, not one tick out…
             expect(table().entries['wake']).toEqual({ nextDue: 6_000 });
             // …and the cleared periodic stays cleared.
