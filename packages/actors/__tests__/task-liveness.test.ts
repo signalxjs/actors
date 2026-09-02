@@ -116,6 +116,47 @@ describe('task liveness: the per-host roster', () => {
         await until(async () => (await rosterOf(storage, hostId!)).length === 0);
     });
 
+    it('host.stop() right after a run completes waits for its roster clear (#313)', async () => {
+        // The roster clear runs AFTER the run has left the task table, so a
+        // stop that lands in between must still cover it. Modelled on a
+        // store with a round trip: the untrack write is held for one
+        // macrotask, and `host.stop()` is called the moment it starts —
+        // exactly the window a rolling deploy hits right after a job
+        // finishes. Without the fix, stop resolves before the write lands.
+        const inner = memoryStorage();
+        let stopping: Promise<void> | null = null;
+        let onStop!: () => void;
+        const stopCalled = new Promise<void>((r) => (onStop = r));
+        let host!: Host;
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: async (t, k, st, e) => {
+                const untrack =
+                    t === ROSTER_TYPE &&
+                    k !== ROSTER_INDEX_KEY &&
+                    Object.keys(st as object).length === 0;
+                if (untrack && !stopping) {
+                    stopping = host.stop({ timeoutMs: 1000 });
+                    onStop();
+                    await new Promise((r) => setTimeout(r, 0));
+                }
+                return inner.save(t, k, st, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const Job = defineJob({ type: 'Parked', allowAnonymous: true, run: async () => 1 });
+        host = createHost({ actors: [Job], storage, defaults: quiet });
+        running.push(host);
+        await host.actor(Job, 'run-1').start(undefined as never);
+        // Microtask-only from here to the assertion (no timer poll), so the
+        // check runs BEFORE the held write's macrotask — a stop that did not
+        // wait for it resolves first and is caught with the entry still there.
+        await within(stopCalled, 2000);
+        await within(stopping!, 2000);
+        const [hostId] = await hostIds(inner);
+        expect(await rosterOf(inner, hostId!)).toEqual([]);
+    });
+
     it('a restarted single host adopts its predecessor: the run resumes with no call', async () => {
         const attempts: number[] = [];
         const storage = memoryStorage();

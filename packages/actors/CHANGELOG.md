@@ -21,6 +21,16 @@
 
 ### Fixed
 
+- **`host.stop()` now waits for a just-completed task's bookkeeping** (#313).
+  A detached run left the activation's task table the moment its body
+  returned, BEFORE its ledger clear and task-liveness `untrack` ran, and the
+  deactivation grace only awaited what was still in the table — so a host
+  stopping right after a job finished (a rolling deploy, at scale) left one
+  stale task-roster entry per such job for adoption to find later. Launched
+  runs are now tracked until their bookkeeping settles, separately from the
+  reservation table, and deactivation awaits that set: a stop that lands in
+  the window covers the clear, within the same `taskGraceMs`.
+
 - **Timer ticks and task turns now carry the host's `callTimeoutMs`** (#302).
   A `ctx.timer` tick and a task's `ctx.turn` minted a call context with no
   `deadline`; `ctx.actor()` relays the deadline verbatim and the dispatcher
