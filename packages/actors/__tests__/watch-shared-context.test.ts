@@ -8,7 +8,10 @@
  * request, the second would fail everyone's loop the moment the first
  * subscriber left. Inside a shared watch turn `ctx.bag` is the empty bag
  * and the call's abort signal is the watch's own — it fires only when the
- * shared loop itself is torn down.
+ * shared loop itself is torn down. The creator's `deadline` — an absolute
+ * epoch-ms stamp, relayed verbatim over `ctx.actor()` — is per-request too:
+ * every read mints the host's default afresh, so a hop the shared read makes
+ * is never raced against a stamp that lapsed with the creator's request.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { defineActor, type ActorCallContext } from '@sigx/actors';
@@ -205,6 +208,69 @@ describe('shared watch call context (#137)', () => {
         // Bob's loop survives Alice's departure and delivers the re-read.
         expect(await b.next()).toBe('1:v');
         expect(calls).toBe(3);
+
+        await a.close();
+        await b.close();
+    });
+
+    it('a lapsed creator deadline does not fail the hops a later shared read makes', async () => {
+        const Other = defineActor({
+            type: 'Other',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: () => ({
+                async value(): Promise<string> {
+                    return 'v';
+                }
+            })
+        });
+        const Watched = defineActor({
+            type: 'Watched',
+            allowAnonymous: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                async view(): Promise<string> {
+                    // The hop is what the deadline bites: local dispatch races
+                    // the relayed `deadline`, and a stamp already in the past
+                    // rejects before the callee runs.
+                    const v = await (ctx.actor(Other, 'o') as { value(): Promise<string> }).value();
+                    return `${ctx.state.n}:${v}`;
+                },
+                async bump(): Promise<void> {
+                    ctx.state.n++;
+                }
+            })
+        });
+        host = createHost({
+            actors: [Other, Watched],
+            defaults: { ...quiet, callTimeoutMs: 100 }
+        });
+        await host.start();
+        const ref = { type: 'Watched', key: 'w' };
+        const alice = callAs('alice');
+        const bob = callAs('bob');
+        // Alice's request carries the deadline a call entering the host
+        // carries; it lapses long before the watch does.
+        const a = subscriber(
+            host.dispatchWatch!(
+                ref,
+                'view',
+                [],
+                { ...alice.call, deadline: Date.now() + 100 },
+                { throttleMs: 0 }
+            )
+        );
+        expect(await a.next()).toBe('0:v');
+        const b = subscriber(host.dispatchWatch!(ref, 'view', [], bob.call, { throttleMs: 0 }));
+        expect(await b.next()).toBe('0:v');
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await host.dispatch(ref, 'bump', [], callAs('mutator').call);
+
+        // The re-read hops under a deadline minted for THIS read, not the
+        // one Alice's request expired on — for her and for Bob alike.
+        expect(await a.next()).toBe('1:v');
+        expect(await b.next()).toBe('1:v');
 
         await a.close();
         await b.close();
