@@ -1969,8 +1969,10 @@ transport because it had already stopped opening streams.
 
 A stronger gate than `hosts_with_tcp_transport` exists and was checked by
 hand: **`transportFallbacks` was 0 on all three hosts after 1 324 remote
-watch streams** — not one link fell back. It is not in the rig's output
-today (#223).
+watch streams** — not one link fell back. Since #223 the `ws-load` hand-run
+prints it as `cluster/transportFallbacks` in its `delta` block and fails a
+`TRANSPORT=tcp` run on any; the `ws-bench` artifact still records only
+`hosts_with_tcp_transport`.
 
 ### The delivery path — a smaller and messier effect than it first looked
 

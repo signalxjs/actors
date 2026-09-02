@@ -98,7 +98,8 @@ export interface RunResult {
     /** Deepest HOST-side send buffer seen; `null` ⇒ no host could report one. */
     peakBufferedBytes?: number | null;
     hosts: number;
-    delta: Record<string, number>;
+    /** Only the counters the hosts reported — a key can be absent (#223). */
+    delta: Record<string, number | undefined>;
     /** Both cluster-stats snapshots saw the whole fleet; false ⇒ no `cluster/*`. */
     watchesTrustworthy?: boolean;
     /** Hosts reporting `tcp` in their transport chain (#203). */

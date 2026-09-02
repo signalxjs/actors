@@ -72,11 +72,17 @@ export interface WsLoadResult {
     peakBufferedBytes: number | null;
     samples: number;
     /**
-     * Monotonic totals, after minus before: `ops.sockets` always, plus
-     * `cluster/remoteWatches` / `cluster/coalescedWatches` /
-     * `cluster/inboundWatches` when `watchesTrustworthy`.
+     * Monotonic totals, after minus before: the `ops.sockets` counters,
+     * plus `cluster/remoteWatches` / `cluster/coalescedWatches` /
+     * `cluster/inboundWatches` / `cluster/transportFallbacks` when
+     * `watchesTrustworthy`. Keys are only ever those the hosts REPORTED —
+     * `socketTotals` sums a counter only where it is a number — so a key
+     * can be missing even on a trustworthy snapshot (a host image whose
+     * counters predate it); read with `?? 0` or check for `undefined`.
+     * `cluster/transportFallbacks` is the TCP gate (#223): links that
+     * reached their peer over a later transport than the preferred one.
      */
-    delta: Record<string, number>;
+    delta: Record<string, number | undefined>;
     /**
      * Both snapshots saw EVERY host's cluster section. False means no
      * `cluster/*` key is present in `delta` at all — a delta is only as
@@ -88,11 +94,40 @@ export interface WsLoadResult {
      * Hosts reporting `tcp` in their transport chain at the end of the run.
      * A `TRANSPORT=tcp` run where this is short of `hosts` measured a fleet
      * still partly on HTTP — the chain falls through per link, so that
-     * produces a clean HTTP number wearing the tcp label (#203).
+     * produces a clean HTTP number wearing the tcp label (#203). Proves the
+     * chain is INSTALLED; `delta['cluster/transportFallbacks']` proves no
+     * link actually fell back (#223).
      */
     tcpHosts: number;
     partial: boolean;
 }
+
+/**
+ * The verdict of {@link transportGate}: `valid: false` voids the run;
+ * `valid: true` carries a warning the run should print but not fail on.
+ */
+export interface TransportVerdict {
+    valid: boolean;
+    message: string;
+}
+
+/**
+ * The TCP gate (#223): on a shape whose knobs say `TRANSPORT=tcp`, a run
+ * is void (`valid: false`) when `fleet.tcpHosts` is short of `fleet.hosts`
+ * — the chain is not installed everywhere, which the per-run delta cannot
+ * see once a link's fallback is cached from before the `before` snapshot —
+ * or when `delta['cluster/transportFallbacks']` is non-zero. A MISSING
+ * count on a fully installed fleet is reported as unchecked (`valid: true`,
+ * with a message naming the cause: a stats fan-out missed a host when
+ * `watchesTrustworthy` is false, otherwise the hosts do not report the
+ * field) rather than silently passed. `null` when the run stands: not a
+ * tcp shape, or a tcp run with the chain on every host and zero fallbacks.
+ */
+export function transportGate(
+    shape: string | undefined,
+    delta: Record<string, number | undefined>,
+    fleet: Pick<WsLoadResult, 'hosts' | 'tcpHosts' | 'watchesTrustworthy'>
+): TransportVerdict | null;
 
 export interface WsLoadOptions {
     context: string;
