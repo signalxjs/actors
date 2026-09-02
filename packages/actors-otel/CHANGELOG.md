@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Socket sessions reach both exporters (#166).** When the app publishes
+  `socketStats().digest()` as the `'sockets'` digest
+  (`registry.reportDigest('sockets', () => stats.digest())`), `prometheusOps`
+  reads it beside `'metrics'` and `renderPrometheus()` emits the
+  `{prefix}socket_*` families: one counter per total
+  (`socket_connections_opened_total` / `_closed_total` / `_refused_total`,
+  `socket_calls_total` / `_failed_total`, `socket_subscriptions_opened_total`
+  / `_closed_total`, `socket_protocol_breaches_total`,
+  `socket_lifetime_closes_total`, `socket_deliveries_total`,
+  `socket_delivery_bytes_total`, `socket_throttle_quantized_total`), two
+  derived gauges (`socket_sessions` and `socket_subscriptions` — `opened −
+  closed`, which is exactly the live count because the recorder closes only
+  what it opened), and the `socket_connection_duration_seconds` histogram on
+  the same exact-at-native-bounds grid as the call histograms.
+  `otelMetricsBridge()` observes the same set as `sigx.actors.socket.*`
+  (plus `socket.connection_duration.p50/p90/p99` under `percentileGauges`).
+  `renderPrometheus()` takes the digest as an optional fourth argument;
+  without one — a host with no socket mount — no socket family is emitted at
+  all, because "no sockets here" and "zero connections" are different facts.
+  `socket_delivery_bytes_total` is UTF-16 code units, exact for ASCII and an
+  under-count otherwise, and its HELP text says so. The digest type is
+  exported as `SocketStatsDigest`.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

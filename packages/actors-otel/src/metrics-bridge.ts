@@ -18,6 +18,12 @@
  * Register the `MeterProvider` (globally or via the option) BEFORE
  * `app.start()`: unlike traces, the api has no upgrading proxy for meters —
  * a meter obtained from the no-op provider stays no-op.
+ *
+ * The socket-session digest (#166) rides the same callback: a second
+ * `registry.digest('sockets')` read beside the first, observed only when
+ * the app publishes one. The instruments exist either way — an instrument
+ * with no observations exports nothing, and creating them lazily on the
+ * first digest would race the reader.
  */
 import { metrics as otelMetrics, type BatchObservableResult, type MeterProvider, type Observable } from '@opentelemetry/api';
 import type { Host } from '@sigx/actors';
@@ -27,6 +33,7 @@ import {
     type MetricsDigest,
     type PluginRegistry
 } from '@sigx/actors/host';
+import type { SocketStatsDigest } from './prometheus';
 
 export interface OtelMetricsBridgeOptions {
     /** The provider to report against. Default: the global registration. */
@@ -100,6 +107,59 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                     description: 'Turns waiting to run.'
                 });
 
+                // Socket sessions (#166). Counters map one-to-one onto the
+                // digest's totals; the two gauges are `opened − closed`,
+                // which is exactly the live count (the recorder closes only
+                // what it opened) — the same derivation the Prometheus
+                // renderer makes, so the two exporters cannot disagree.
+                const socketCounters: Array<[Observable, keyof SocketStatsDigest]> = (
+                    [
+                        ['connections.opened', 'Socket sessions that completed the upgrade.', 'connectionsOpened'],
+                        ['connections.closed', 'Socket sessions torn down.', 'connectionsClosed'],
+                        [
+                            'connections.refused',
+                            'Socket upgrades refused before serving a byte (origin, auth).',
+                            'connectionsRefused'
+                        ],
+                        ['calls', 'Calls dispatched over sockets (unary, stream and one-way).', 'callsStarted'],
+                        ['calls.failed', 'Socket calls that answered an error frame.', 'callsFailed'],
+                        ['subscriptions.opened', 'Live subscriptions opened over sockets.', 'subscriptionsOpened'],
+                        ['subscriptions.closed', 'Live subscriptions closed over sockets.', 'subscriptionsClosed'],
+                        [
+                            'protocol_breaches',
+                            'Socket sessions closed for speaking outside the vocabulary (1003/1009).',
+                            'protocolBreaches'
+                        ],
+                        [
+                            'lifetime_closes',
+                            'Socket sessions closed by revalidateMs/maxConnectionMs (1008).',
+                            'lifetimeCloses'
+                        ],
+                        ['deliveries', 'Subscription frames pushed to socket clients.', 'deliveries'],
+                        [
+                            'delivery_bytes',
+                            'Outbound subscription-frame size, in UTF-16 code units — exact for ' +
+                                'ASCII, under-reports otherwise.',
+                            'deliveryBytes'
+                        ],
+                        [
+                            'throttle_quantized',
+                            'Subscriptions whose requested delivery window the throttle policy moved.',
+                            'throttleQuantized'
+                        ]
+                    ] as const
+                ).map(([name, description, field]) => [
+                    meter.createObservableCounter(`sigx.actors.socket.${name}`, { description }),
+                    field
+                ]);
+                const socketSessions = meter.createObservableGauge('sigx.actors.socket.sessions', {
+                    description: 'Socket sessions open right now.'
+                });
+                const socketSubscriptions = meter.createObservableGauge(
+                    'sigx.actors.socket.subscriptions',
+                    { description: 'Live subscriptions held over sockets right now.' }
+                );
+
                 const instruments: Observable[] = [
                     calls,
                     callsFailed,
@@ -112,7 +172,10 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                     storageOps,
                     conflicts,
                     activations,
-                    queued
+                    queued,
+                    ...socketCounters.map(([instrument]) => instrument),
+                    socketSessions,
+                    socketSubscriptions
                 ];
 
                 type DistributionKey = 'latency' | 'queue' | 'turn' | 'storageLatency';
@@ -142,6 +205,23 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                         percentiles.push(trio);
                         instruments.push(trio[0], trio[1], trio[2]);
                     }
+                }
+                // The socket lifetime distribution, under the same switch and
+                // the same caveat: THIS host's percentiles, not aggregatable.
+                let socketLifetime: [Observable, Observable, Observable] | null = null;
+                if (percentileGauges) {
+                    const gauge = (quantile: string): Observable =>
+                        meter.createObservableGauge(
+                            `sigx.actors.socket.connection_duration.${quantile}`,
+                            {
+                                description:
+                                    `${quantile} of socket session lifetime on THIS host, seconds. ` +
+                                    'Not aggregatable across hosts.',
+                                unit: 's'
+                            }
+                        );
+                    socketLifetime = [gauge('p50'), gauge('p90'), gauge('p99')];
+                    instruments.push(...socketLifetime);
                 }
 
                 const callback = (result: BatchObservableResult): void => {
@@ -178,6 +258,30 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                         result.observe(p50, snapshot.p50Ms / 1000);
                         result.observe(p90, snapshot.p90Ms / 1000);
                         result.observe(p99, snapshot.p99Ms / 1000);
+                    }
+
+                    // Absent is normal — a host with no socket mount — and
+                    // observes nothing, so the families never appear for it.
+                    const sockets = registry.digest('sockets') as SocketStatsDigest | undefined;
+                    if (sockets === undefined) return;
+                    for (const [instrument, field] of socketCounters) {
+                        result.observe(instrument, sockets[field] as number);
+                    }
+                    result.observe(
+                        socketSessions,
+                        sockets.connectionsOpened - sockets.connectionsClosed
+                    );
+                    result.observe(
+                        socketSubscriptions,
+                        sockets.subscriptionsOpened - sockets.subscriptionsClosed
+                    );
+                    if (socketLifetime && sockets.lifetime) {
+                        const lifetime = digestSnapshot(sockets.lifetime);
+                        if (lifetime.count > 0) {
+                            result.observe(socketLifetime[0], lifetime.p50Ms / 1000);
+                            result.observe(socketLifetime[1], lifetime.p90Ms / 1000);
+                            result.observe(socketLifetime[2], lifetime.p99Ms / 1000);
+                        }
                     }
                 };
 
