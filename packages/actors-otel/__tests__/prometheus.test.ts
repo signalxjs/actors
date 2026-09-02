@@ -137,7 +137,7 @@ describe('renderPrometheus', () => {
     });
 
     it('renders the socket families from the sockets digest (#166)', () => {
-        const text = renderPrometheus(digest, null, {}, socketDigest);
+        const text = renderPrometheus(digest, null, { sockets: socketDigest });
         const lines = text.split('\n');
 
         // Counters, one-to-one with the totals.
@@ -177,7 +177,7 @@ describe('renderPrometheus', () => {
     });
 
     it('renders socket counters but no lifetime histogram before any session closed', () => {
-        const text = renderPrometheus(digest, null, {}, { ...socketDigest, lifetime: null });
+        const text = renderPrometheus(digest, null, { sockets: { ...socketDigest, lifetime: null } });
         expect(text).toContain('sigx_actors_socket_connections_opened_total 7');
         expect(text).not.toContain('socket_connection_duration');
     });
@@ -185,7 +185,7 @@ describe('renderPrometheus', () => {
     it('checks the sockets digest layout on its own', () => {
         // The two digests come from different providers; a foreign layout
         // on one must not cost the other its distribution, and vice versa.
-        const text = renderPrometheus(digest, null, {}, { ...socketDigest, layout: 'll-5-30' });
+        const text = renderPrometheus(digest, null, { sockets: { ...socketDigest, layout: 'll-5-30' } });
         expect(text).toContain('sigx_actors_call_duration_seconds_count 8');
         expect(text).toContain('sigx_actors_socket_sessions 3');
         expect(text).not.toContain('socket_connection_duration');

@@ -44,9 +44,18 @@ export interface RenderPrometheusOptions {
      * are dropped. Default: a per-octave grid, 1µs → ~134s (~28 bounds).
      */
     bucketsSeconds?: readonly number[];
+    /**
+     * The socket-session digest (#166), when the app publishes one
+     * (`registry.reportDigest('sockets', () => stats.digest())`). Absent or
+     * null renders no socket family at all — a host that serves no sockets
+     * is not a host with zero connections, and a scraper that sees the
+     * family appear knows the transport is mounted.
+     */
+    sockets?: SocketStatsDigest | null;
 }
 
-export interface PrometheusOpsOptions extends RenderPrometheusOptions {
+/** `prometheusOps` reads the socket digest off the registry itself. */
+export interface PrometheusOpsOptions extends Omit<RenderPrometheusOptions, 'sockets'> {
     /** Route path. Default `'/_sigx/metrics'`. */
     path?: string;
     /**
@@ -163,19 +172,16 @@ function renderHistogram(
  * combine `reset()`-based polling with scraping. The `_metrics_window_seconds`
  * gauge is how an operator notices a reset happened.
  *
- * `sockets` is the socket-session digest (#166), when the app publishes one
- * (`registry.reportDigest('sockets', () => stats.digest())`). Null renders
- * no socket family at all — a host that serves no sockets is not a host
- * with zero connections, and a scraper that sees the family appear knows
- * the transport is mounted.
+ * `options.sockets` is the socket-session digest (#166); see
+ * `RenderPrometheusOptions`.
  */
 export function renderPrometheus(
     digest: MetricsDigest,
     stats: HostStats | null,
-    options: RenderPrometheusOptions = {},
-    sockets: SocketStatsDigest | null = null
+    options: RenderPrometheusOptions = {}
 ): string {
     const prefix = options.prefix ?? DEFAULT_PREFIX;
+    const sockets = options.sockets ?? null;
     const out = new Lines();
 
     // --- counters -----------------------------------------------------
@@ -481,12 +487,10 @@ export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
                         );
                     }
                     const sockets = registry.digest('sockets') as SocketStatsDigest | undefined;
-                    const body = renderPrometheus(
-                        digest,
-                        host?.stats() ?? null,
-                        render,
-                        sockets ?? null
-                    );
+                    const body = renderPrometheus(digest, host?.stats() ?? null, {
+                        ...render,
+                        sockets: sockets ?? null
+                    });
                     return new Response(method === 'HEAD' ? null : body, {
                         status: 200,
                         headers: {

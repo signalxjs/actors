@@ -27,6 +27,7 @@
  */
 import { metrics as otelMetrics, type BatchObservableResult, type MeterProvider, type Observable } from '@opentelemetry/api';
 import type { Host } from '@sigx/actors';
+import type { SocketStatsTotals } from '@sigx/actors/server';
 import {
     digestSnapshot,
     type ActorPlugin,
@@ -112,7 +113,7 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                 // which is exactly the live count (the recorder closes only
                 // what it opened) — the same derivation the Prometheus
                 // renderer makes, so the two exporters cannot disagree.
-                const socketCounters: Array<[Observable, keyof SocketStatsDigest]> = (
+                const socketCounters: Array<[Observable, keyof SocketStatsTotals]> = (
                     [
                         ['connections.opened', 'Socket sessions that completed the upgrade.', 'connectionsOpened'],
                         ['connections.closed', 'Socket sessions torn down.', 'connectionsClosed'],
@@ -265,7 +266,7 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                     const sockets = registry.digest('sockets') as SocketStatsDigest | undefined;
                     if (sockets === undefined) return;
                     for (const [instrument, field] of socketCounters) {
-                        result.observe(instrument, sockets[field] as number);
+                        result.observe(instrument, sockets[field]);
                     }
                     result.observe(
                         socketSessions,

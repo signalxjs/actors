@@ -10,6 +10,7 @@ import { component } from '@sigx/runtime-core';
 import { alertLines, hostTone, type HostView } from '@sigx/actors-monitor';
 import { bytes, count, durationMs, uptime } from '@sigx/actors-monitor/format';
 import { digestSnapshot } from '@sigx/actors/host';
+import type { SocketStatsSnapshot } from '@sigx/actors/server';
 import { Awaiting, Alerts, DataTable, DetailList, Section, type DetailRow } from '../parts/primitives';
 import { activationColumns, activationTone } from './actors';
 import { awaitingReason,
@@ -62,7 +63,7 @@ export const HostPanel = component<PanelProps & { hostId: string }>((ctx) => () 
             {host.sockets ? (
                 <section class="sxad-section">
                     <h3>socket sessions</h3>
-                    <DetailList rows={socketRows(host)} />
+                    <DetailList rows={socketRows(host.sockets)} />
                 </section>
             ) : null}
 
@@ -135,8 +136,7 @@ function metricsRows(host: HostView): DetailRow[] {
     ];
 }
 
-function socketRows(host: HostView): DetailRow[] {
-    const sockets = host.sockets!;
+function socketRows(sockets: SocketStatsSnapshot): DetailRow[] {
     return [
         {
             label: 'sockets',

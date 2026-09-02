@@ -20,9 +20,9 @@
   the same exact-at-native-bounds grid as the call histograms.
   `otelMetricsBridge()` observes the same set as `sigx.actors.socket.*`
   (plus `socket.connection_duration.p50/p90/p99` under `percentileGauges`).
-  `renderPrometheus()` takes the digest as an optional fourth argument;
-  without one — a host with no socket mount — no socket family is emitted at
-  all, because "no sockets here" and "zero connections" are different facts.
+  `renderPrometheus()` takes the digest as `options.sockets`; without one —
+  a host with no socket mount — no socket family is emitted at all, because
+  "no sockets here" and "zero connections" are different facts.
   `socket_delivery_bytes_total` is UTF-16 code units, exact for ASCII and an
   under-count otherwise, and its HELP text says so. The digest type is
   exported as `SocketStatsDigest`.
