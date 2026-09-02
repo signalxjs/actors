@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment node
+ *
  * The shared `ActorStorage` conformance suite (#65), run against a REAL
  * SQLite file — the same cases `memoryStorage`, `fileStorage`, Postgres,
  * Redis, SurrealDB and the Durable Object adapter run, so "sqliteStorage is
@@ -13,6 +15,13 @@
  * a Node 20 leg, which must skip cleanly. The package itself imports
  * `node:sqlite` statically, so it is loaded dynamically AFTER the probe —
  * a static import would throw at module load, before any `skipIf` ran.
+ *
+ * `@vitest-environment node`, not the root config's `happy-dom`: vite's
+ * client environment externalizes only the builtins the RUNNING Node lists
+ * in `module.builtinModules`, and `node:sqlite` (a `node:`-scheme-only
+ * module) appears there from Node 24 — on 20 and 22 the resolver refuses
+ * it with "Cannot bundle Node.js built-in" before the probe ever runs. The
+ * server environment treats every `node:` id as builtin on any Node.
  *
  * Every case gets a fresh database FILE in its own temp directory (not
  * `:memory:` — the on-disk mode with its WAL sidecars is what a host runs

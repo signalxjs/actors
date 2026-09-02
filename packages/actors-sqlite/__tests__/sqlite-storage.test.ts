@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment node
+ *
  * sqliteStorage tests — what is SQLite-specific, beyond the shared
  * conformance suite: the NUL escape on identifiers (SQLite stores a
  * NUL-bearing string whole and truncates it on every read), the CAS race
@@ -8,7 +10,7 @@
  *
  * Gated on `node:sqlite` being importable (Node >= 22.13; the CI matrix has
  * a Node 20 leg) — see storage-conformance.test.ts for why the package is
- * imported dynamically.
+ * imported dynamically, and why this file runs in the `node` environment.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';

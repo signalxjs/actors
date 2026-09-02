@@ -314,8 +314,13 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   the package's `engines` says `>=22.13.0`, and both test files probe
   `import('node:sqlite')` and `describe.skipIf` on failure — importing the
   package DYNAMICALLY after the probe, since its static `node:sqlite`
-  import would throw at load on the Node 20 leg before any skip ran. Not
-  a cluster store: two hosts on one file serialize on the write lock.
+  import would throw at load on the Node 20 leg before any skip ran. Both
+  run under `@vitest-environment node`, not the root `happy-dom`: vite's
+  client environment only externalizes builtins the running Node lists in
+  `module.builtinModules`, and `node:sqlite` is listed there from Node 24
+  — on 20/22 the resolver refuses it ("Cannot bundle Node.js built-in")
+  before the probe runs. Not a cluster store: two hosts on one file
+  serialize on the write lock.
 - `packages/actors-surreal` → `@sigx/actors-surreal` — SurrealDB (≥3.0,
   3.2.4+ recommended) providers: `surrealStorage` (etag-CAS `ActorStorage`
   on a COMPOSITE record id `{prefix}state:[type, key]` — the primary index,
