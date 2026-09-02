@@ -1870,7 +1870,8 @@ export class Activation {
             // never deleted. A DERIVED ledger has nothing to take back
             // here: whether a rejected start leaves resumable state is the
             // definition's own contract, since it saved that state before
-            // calling tasks.start (see the defineJob follow-up issue).
+            // calling tasks.start (defineJob's `launch()` takes its
+            // `running` transition back, #316).
             if (!this.def.__sigxActor.resumeTasks) {
                 try {
                     await this.#ledger.mutate((ledger) => {

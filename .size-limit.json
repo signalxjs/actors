@@ -53,7 +53,7 @@
   {
     "name": "@sigx/actors/job",
     "path": "packages/actors/dist/job.prod.js",
-    "limit": "3.15 KB",
+    "limit": "3.25 KB",
     "ignore": [
       "@sigx/serialize",
       "@sigx/server"

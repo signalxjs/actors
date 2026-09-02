@@ -163,6 +163,44 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         }
     }
 
+    /**
+     * Launch the run AFTER `running` is durable — and take the transition
+     * back if the launch rejects (#316). The state record is the ledger
+     * (#309), so a `running` that outlives a failed `tasks.start` (task
+     * liveness could not reach storage, say) is a run the caller was told
+     * never started but the next activation resumes anyway — at-least-once
+     * from the side nobody asked for. `#startTask`'s own rollback covers
+     * stored ledgers only; for a derived ledger the definition that saved
+     * the state is the one that must unsave it, which is this. `prior`
+     * holds exactly the fields the caller wrote on the way to `running`,
+     * at their pre-transition values.
+     *
+     * The revert is best-effort: if its save fails too, live state is put
+     * back in step with the durable `running` (rather than a `pending`
+     * activation over a `running` record), which is the previous contract —
+     * the run resumes on the next activation, at-least-once. Either way
+     * the caller sees the original rejection.
+     */
+    async function launch(ctx: Ctx, prior: Partial<S>): Promise<void> {
+        const s = ctx.state;
+        try {
+            await ctx.tasks.start(RUN, s.input);
+        } catch (error) {
+            // Snapshot the same keys `prior` names, so the two writers
+            // cannot drift: whatever a caller adds to `prior` is what the
+            // fallback below restores.
+            const running: Record<string, unknown> = {};
+            for (const k of Object.keys(prior) as (keyof S)[]) running[k] = s[k];
+            Object.assign(s, prior);
+            try {
+                await ctx.save();
+            } catch {
+                Object.assign(s, running);
+            }
+            throw error;
+        }
+    }
+
     /** Shared by the `cancel` method and `JobControl.cancel`. */
     async function doCancel(ctx: Ctx): Promise<void> {
         const s = ctx.state;
@@ -185,10 +223,11 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
             }
             return;
         }
+        const prior: Partial<S> = { status: 'paused', resumeData: s.resumeData };
         s.status = 'running';
         s.resumeData = data ?? null;
         await ctx.save();
-        await ctx.tasks.start(RUN, s.input);
+        await launch(ctx, prior);
     }
 
     function control(ctx: Ctx): JobControl<Extra> {
@@ -250,6 +289,15 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
             async start(input: In): Promise<JobInfo<Extra>> {
                 const s = ctx.state;
                 if (s.status !== 'pending') return liveInfo(ctx);
+                // A pending job is the fresh state — nothing writes these five
+                // fields before `start` does — so the revert's target is known.
+                const prior: Partial<S> = {
+                    status: 'pending',
+                    input: null,
+                    attempts: 0,
+                    startedAt: null,
+                    principal: null
+                };
                 s.status = 'running';
                 s.input = input;
                 s.attempts = 1;
@@ -260,7 +308,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                 // host, days later, with nobody waiting.
                 s.principal = encodePrincipalValue(ctx.principal) ?? null;
                 await ctx.save();
-                await ctx.tasks.start(RUN, input);
+                await launch(ctx, prior);
                 return liveInfo(ctx);
             },
             status: (): JobInfo<Extra> => liveInfo(ctx),
