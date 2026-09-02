@@ -23,7 +23,13 @@ import type { RedisClient } from './index';
 export interface RedisStorageOptions {
     /** An existing ioredis client (shared with the cluster providers). */
     client?: RedisClient;
-    /** Or a URL — the package constructs its own client. */
+    /**
+     * Or a URL — the package constructs its own client, with
+     * `enableAutoPipelining: true` (#311): ioredis coalesces commands
+     * issued in the same event-loop tick into fewer socket writes, which
+     * is where a host busy with many same-tick CAS saves spends. Pass
+     * `client` instead to own the options.
+     */
     url?: string;
     /** Key namespace. Default `sigx`. */
     namespace?: string;
@@ -58,7 +64,9 @@ interface StorageCommands {
 export function redisStorage(options: RedisStorageOptions): ActorStorage {
     const base =
         options.client ??
-        (options.url !== undefined ? new Redis(options.url) : undefined);
+        (options.url !== undefined
+            ? new Redis(options.url, { enableAutoPipelining: true })
+            : undefined);
     if (!base) {
         throw new Error('[sigx actors-redis] pass either `client` (ioredis) or `url`.');
     }
