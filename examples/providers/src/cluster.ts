@@ -156,7 +156,19 @@ export async function startCluster(options: DemoClusterOptions): Promise<DemoClu
     let steps = 0;
     const step = (title: string): void => log(`\n=== ${++steps}. ${title} ===`);
 
+    // The walk is written for three hosts (`1..6` in singleActivation, the
+    // two survivors in failover), so a caller's `ports` is held to that too.
+    if (ports.length !== 3) {
+        throw new Error(`startCluster needs exactly three ports (one per host); got ${ports.length}`);
+    }
+
     const members: Member[] = [];
+    const teardown = async (): Promise<void> => {
+        await Promise.all(members.map((m) => m.app.stop({ timeoutMs: 2000 })));
+        await Promise.all(
+            members.map((m) => new Promise<void>((r) => (m.server.listening ? m.server.close(() => r()) : r())))
+        );
+    };
     for (const [index, wanted] of ports.entries()) {
         // Listen FIRST, on whatever port was asked for — `0` binds an
         // ephemeral one, which is what the test suite uses — then read the
@@ -170,7 +182,21 @@ export async function startCluster(options: DemoClusterOptions): Promise<DemoClu
             if (handler) handler(req, res);
             else res.writeHead(503).end();
         });
-        await new Promise<void>((r) => server.listen(wanted, '127.0.0.1', r));
+        try {
+            // `listen` reports a failed bind (EADDRINUSE on a
+            // `PROVIDERS_DEMO_PORTS` value) as an 'error' event, never through
+            // the callback — without this the promise would hang forever.
+            await new Promise<void>((resolve, reject) => {
+                server.once('error', reject);
+                server.listen(wanted, '127.0.0.1', () => {
+                    server.off('error', reject);
+                    resolve();
+                });
+            });
+        } catch (error) {
+            await teardown();
+            throw error;
+        }
         const address = server.address();
         const port = typeof address === 'object' && address ? address.port : wanted;
 

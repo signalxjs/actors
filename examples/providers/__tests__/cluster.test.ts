@@ -7,6 +7,7 @@
  * and a step that asserts a wrong thing fails HERE rather than only when
  * someone has a Postgres to hand.
  */
+import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { memoryStorage } from '@sigx/actors/host';
 import { memoryClusterHub } from '@sigx/actors/cluster';
@@ -160,6 +161,26 @@ describe('stop()', () => {
         for (const p of closed) void p.then(() => settled++);
         await demo.stop();
         expect(settled).toBe(3);
+    });
+});
+
+describe('startCluster() misconfiguration', () => {
+    it('rejects a port list that is not three long, before binding anything', async () => {
+        await expect(start({ ports: [0, 0] })).rejects.toThrow(/three/);
+    });
+
+    it('rejects with the listen error when a port is taken, and stops the hosts it did start', async () => {
+        const taken = createServer();
+        await new Promise<void>((r) => taken.listen(0, '127.0.0.1', r));
+        const address = taken.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        try {
+            // The first host binds fine; the SECOND collides, so the failure
+            // path has something to clean up.
+            await expect(start({ ports: [0, port, 0] })).rejects.toThrow(/EADDRINUSE/);
+        } finally {
+            await new Promise<void>((r) => taken.close(() => r()));
+        }
     });
 });
 
