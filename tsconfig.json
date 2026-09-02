@@ -35,6 +35,7 @@
       "@sigx/actors-k8s": ["./packages/actors-k8s/src/index.ts"],
       "@sigx/actors-tcp": ["./packages/actors-tcp/src/index.ts"],
       "@sigx/actors-pg": ["./packages/actors-pg/src/index.ts"],
+      "@sigx/actors-sqlite": ["./packages/actors-sqlite/src/index.ts"],
       "@sigx/actors-surreal": ["./packages/actors-surreal/src/index.ts"],
       "@sigx/actors-redis": ["./packages/actors-redis/src/index.ts"],
       "@sigx/actors-cloudflare": ["./packages/actors-cloudflare/src/index.ts"],
