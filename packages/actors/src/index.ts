@@ -76,6 +76,7 @@ export type {
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,
+    StateErrorPhase,
     ReminderApi,
     ActorScheduler,
     ActorTask,

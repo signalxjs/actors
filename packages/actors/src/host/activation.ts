@@ -38,6 +38,7 @@ import {
     type AnyActorDefinition,
     type DeactivationReason,
     type ReminderApi,
+    type StateErrorPhase,
     type TaskApi,
     type TaskInfo,
     type TimerHandle,
@@ -1259,12 +1260,7 @@ export class Activation {
             try {
                 await this.#gatedSave(this.#version);
             } catch (error) {
-                if (__DEV__) {
-                    console.error(
-                        `[sigx actors] final write-behind flush of ${actorLabel(this.ref)} failed:`,
-                        error
-                    );
-                }
+                await this.#reportStateError(error, 'final-flush');
             }
         }
         for (const t of this.#timers.values()) t.clear();
@@ -1534,11 +1530,56 @@ export class Activation {
             // interleaving actor there IS no between-turns state: the
             // snapshot is synchronously consistent but may be mid-logical-
             // turn — the documented 'always' contract.
-            this.turns.run(() => this.#gatedSave(this.#version)).catch(() => {
-                // Save failures fault the activation via #doSave; a closed
-                // turns at deactivation time is handled by the final flush.
-            });
+            this.turns
+                .run(async () => {
+                    try {
+                        await this.#gatedSave(this.#version);
+                    } catch (error) {
+                        // Inside the same system turn, so a hook reading
+                        // ctx.state sees the frame the save failed on. A
+                        // conflict has already faulted the activation via
+                        // #doSave. A transient error leaves the state dirty
+                        // and nothing here re-arms the debounce: #afterTurn
+                        // only schedules on a NEW dirty boundary, so the
+                        // next write or the final flush at deactivation
+                        // carries it — a non-mutating turn does not.
+                        await this.#reportStateError(error, 'flush');
+                    }
+                })
+                .catch(() => {
+                    // Only a closed turns rejects here (deactivation began
+                    // before the debounce fired) — the final flush owns it.
+                });
         });
+    }
+
+    /**
+     * A write-behind save failed with no caller to throw to (#54). The
+     * app's `onStateError` owns reporting when it exists — a throw there is
+     * ignored, like `onDeactivate`'s — and a dev build logs it otherwise.
+     */
+    async #reportStateError(error: unknown, phase: StateErrorPhase): Promise<void> {
+        const hook = this.def.__sigxActor.onStateError;
+        if (!hook) {
+            if (__DEV__) {
+                console.error(
+                    `[sigx actors] ${phase === 'flush' ? '' : 'final '}write-behind flush of ` +
+                        `${actorLabel(this.ref)} failed:`,
+                    error
+                );
+            }
+            return;
+        }
+        try {
+            await hook(this.#ctx, error, phase);
+        } catch (hookError) {
+            if (__DEV__) {
+                console.error(
+                    `[sigx actors] onStateError of ${actorLabel(this.ref)} threw (ignored):`,
+                    hookError
+                );
+            }
+        }
     }
 
     /**

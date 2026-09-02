@@ -643,6 +643,19 @@ export type DeactivationReason =
     | 'activation-failed'
     | 'migrated';
 
+/**
+ * Which write-behind save failed with no caller to throw to (#54).
+ * `'flush'` is the debounced save between turns. A transient storage error
+ * there leaves the state dirty but schedules NO retry of its own: the next
+ * write (a new dirty boundary re-arms the debounce) or the final flush at
+ * deactivation carries it — a non-mutating turn does not, and a crash in
+ * between loses the write. An etag conflict there instead faults the
+ * activation (`ActorStateConflictError`) and its unsaved writes are
+ * discarded. `'final-flush'` is the save at deactivation — the last chance
+ * for those writes, so a failure there IS lost data.
+ */
+export type StateErrorPhase = 'flush' | 'final-flush';
+
 // ---------------------------------------------------------------------------
 // Topics — actor-to-actor pub/sub
 
@@ -1096,6 +1109,24 @@ export interface ActorOptions<
     onActivate?(ctx: ActorContext<S, Ext>): void | Promise<void>;
     /** Runs after the queue drains, before state teardown. */
     onDeactivate?(ctx: ActorContext<S, Ext>, reason: DeactivationReason): void | Promise<void>;
+    /**
+     * A `write-behind` save failed and there is no caller to throw to
+     * (#54) — `ctx.save()` failures still reject the turn that called it
+     * and never come here. Report it (page, metric, dead-letter
+     * `ctx.snapshot()`) instead of polling for faults; see
+     * `StateErrorPhase` for what each phase means for the state. The hook
+     * only observes: a `'flush'` failure schedules no retry of its own —
+     * the next write or the deactivation flush carries the dirty state —
+     * and a `'final-flush'` failure is the last word on it. Runs
+     * serialized with turns in the `'flush'` phase and after the drain in
+     * `'final-flush'`, and is awaited in both. A throw is dev-logged and
+     * ignored. Without the hook, a dev build logs the failure instead.
+     */
+    onStateError?(
+        ctx: ActorContext<S, Ext>,
+        error: unknown,
+        phase: StateErrorPhase
+    ): void | Promise<void>;
     /** Durable-reminder callback. */
     onReminder?(ctx: ActorContext<S, Ext>, name: string): void | Promise<void>;
     /**
