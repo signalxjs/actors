@@ -137,15 +137,19 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
             const m2 = pgMembership(pool, opts);
             await m1.join({ hostId: 's.one', epoch: 1, address: 'http://one', status: 'active' });
             await m2.join({ hostId: 's.two', epoch: 1, address: 'http://two', status: 'active' });
-            await expect(m1.isAlive('s.two')).resolves.toBe(true);
-            const view = await m1.refresh();
-            expect(view.hosts.map((h) => h.hostId).sort()).toEqual(['s.one', 's.two']);
+            try {
+                await expect(m1.isAlive('s.two')).resolves.toBe(true);
+                const view = await m1.refresh();
+                expect(view.hosts.map((h) => h.hostId).sort()).toEqual(['s.one', 's.two']);
 
-            await m2.leave();
-            await expect(m1.isAlive('s.two')).resolves.toBe(false);
-            const after = await m1.refresh();
-            expect(after.hosts.map((h) => h.hostId)).toEqual(['s.one']);
-            await m1.leave();
+                await m2.leave();
+                await expect(m1.isAlive('s.two')).resolves.toBe(false);
+                const after = await m1.refresh();
+                expect(after.hosts.map((h) => h.hostId)).toEqual(['s.one']);
+            } finally {
+                await m2.leave();
+                await m1.leave();
+            }
         });
 
         it('a beat that lands past the TTL fires onSelfSuspect even though the write SUCCEEDS (#45)', async () => {
@@ -184,53 +188,61 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
             const m2 = pgMembership(pool, opts);
             await m1.join({ hostId: 's.s1', epoch: 1, address: 'http://s1', status: 'active' });
             await m2.join({ hostId: 's.s2', epoch: 1, address: 'http://s2', status: 'active' });
-            await m2.setStatus('leaving');
-            const view = await m1.refresh();
-            expect(view.hosts.find((h) => h.hostId === 's.s2')?.status).toBe('leaving');
-            await m2.leave();
-            await m1.leave();
+            try {
+                await m2.setStatus('leaving');
+                const view = await m1.refresh();
+                expect(view.hosts.find((h) => h.hostId === 's.s2')?.status).toBe('leaving');
+            } finally {
+                await m2.leave();
+                await m1.leave();
+            }
         });
 
         it('a silent death expires on the DATABASE clock — no version bump needed', async () => {
             const m1 = pgMembership(pool, { schema, heartbeatMs: 100, ttlMs: 400, pollMs: 100 });
             await m1.join({ hostId: 's.w1', epoch: 1, address: 'http://w1', status: 'active' });
-            // A host that died without leaving: a row whose heartbeat never
-            // renews. Inserted directly, because the point is exactly that
-            // NOTHING announces the death — only expiry reveals it.
-            await pool.query(
-                `INSERT INTO ${schema}.hosts (host_id, descriptor, expires_at)
-                 VALUES ($1, $2, now() + interval '300 milliseconds')`,
-                [
-                    's.ghost',
-                    JSON.stringify({
-                        hostId: 's.ghost',
-                        epoch: 1,
-                        address: 'http://ghost',
-                        status: 'active'
-                    })
-                ]
-            );
-            await expect(m1.isAlive('s.ghost')).resolves.toBe(true);
-            const before = await m1.refresh();
-            expect(before.hosts.map((h) => h.hostId).sort()).toEqual(['s.ghost', 's.w1']);
+            try {
+                // A host that died without leaving: a row whose heartbeat
+                // never renews. Inserted directly, because the point is
+                // exactly that NOTHING announces the death — only expiry
+                // reveals it.
+                await pool.query(
+                    `INSERT INTO ${schema}.hosts (host_id, descriptor, expires_at)
+                     VALUES ($1, $2, now() + interval '300 milliseconds')`,
+                    [
+                        's.ghost',
+                        JSON.stringify({
+                            hostId: 's.ghost',
+                            epoch: 1,
+                            address: 'http://ghost',
+                            status: 'active'
+                        })
+                    ]
+                );
+                await expect(m1.isAlive('s.ghost')).resolves.toBe(true);
+                const before = await m1.refresh();
+                expect(before.hosts.map((h) => h.hostId).sort()).toEqual(['s.ghost', 's.w1']);
 
-            await vi.waitFor(
-                async () => {
-                    await expect(m1.isAlive('s.ghost')).resolves.toBe(false);
-                },
-                { timeout: 2000 }
-            );
-            // The cached view updates WITHOUT any version bump: the change
-            // detector compares host signatures, not just the counter —
-            // nothing ever announced this death, yet the poll drops it.
-            await vi.waitFor(
-                () => {
-                    expect(m1.view().hosts.some((h) => h.hostId === 's.ghost')).toBe(false);
-                },
-                { timeout: 2000 }
-            );
-            expect(m1.view().hosts.map((h) => h.hostId)).toEqual(['s.w1']);
-            await m1.leave();
+                await vi.waitFor(
+                    async () => {
+                        await expect(m1.isAlive('s.ghost')).resolves.toBe(false);
+                    },
+                    { timeout: 2000 }
+                );
+                // The cached view updates WITHOUT any version bump: the
+                // change detector compares host signatures, not just the
+                // counter — nothing ever announced this death, yet the poll
+                // drops it.
+                await vi.waitFor(
+                    () => {
+                        expect(m1.view().hosts.some((h) => h.hostId === 's.ghost')).toBe(false);
+                    },
+                    { timeout: 2000 }
+                );
+                expect(m1.view().hosts.map((h) => h.hostId)).toEqual(['s.w1']);
+            } finally {
+                await m1.leave();
+            }
         });
 
         it('views converge via LISTEN/NOTIFY without waiting out the poll interval', async () => {
@@ -242,21 +254,32 @@ describe.skipIf(!PG_URL)('pg cluster providers', () => {
 
             const started = Date.now();
             await m2.join({ hostId: 's.p2', epoch: 1, address: 'http://p2', status: 'active' });
-            await vi.waitFor(
-                () => {
-                    expect(m1.view().hosts.map((h) => h.hostId).sort()).toEqual(['s.p1', 's.p2']);
-                },
-                { timeout: 2000 }
-            );
-            expect(Date.now() - started).toBeLessThan(2000); // ≪ pollMs
-            await m2.leave();
-            await vi.waitFor(
-                () => {
-                    expect(m1.view().hosts.map((h) => h.hostId)).toEqual(['s.p1']);
-                },
-                { timeout: 2000 }
-            );
-            await m1.leave();
+            // In a `finally`: this case failed once on CI with a stale host
+            // from the case before it (#209 — the heartbeat/leave race), and
+            // the un-run `leave()`s then held both LISTEN connections
+            // checked out, so `afterAll`'s `pool.end()` hung too.
+            try {
+                await vi.waitFor(
+                    () => {
+                        expect(m1.view().hosts.map((h) => h.hostId).sort()).toEqual([
+                            's.p1',
+                            's.p2'
+                        ]);
+                    },
+                    { timeout: 2000 }
+                );
+                expect(Date.now() - started).toBeLessThan(2000); // ≪ pollMs
+                await m2.leave();
+                await vi.waitFor(
+                    () => {
+                        expect(m1.view().hosts.map((h) => h.hostId)).toEqual(['s.p1']);
+                    },
+                    { timeout: 2000 }
+                );
+            } finally {
+                await m2.leave();
+                await m1.leave();
+            }
         });
     });
 

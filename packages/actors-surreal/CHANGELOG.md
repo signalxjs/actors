@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **`leave()` no longer races its own heartbeat** (#209). The beat wrote
+  the host record with an untracked `void writeSelf()` every
+  `heartbeatMs`; `leave()` cleared the interval and issued its `DELETE`,
+  but an `UPSERT` already on the wire was neither awaited nor ordered
+  against it — it could commit *after* the `DELETE` (an `UPSERT` never
+  notices a concurrent delete, rule 1 of this package), resurrecting the
+  row until its TTL lapsed. Peers saw a host that had left cleanly for up
+  to `ttlMs`. `surrealMembership` now tracks in-flight heartbeat writes,
+  `leave()` drains them before the `DELETE`, and a beat that completes
+  after `leave()` began no longer confirms the liveness clock.
 - **A failing membership prune is no longer silent** (#268). The lazy
   expiry prune in `surrealMembership` swallowed every failure — a
   permanently failing `DELETE` (permissions, schema drift) accumulated

@@ -129,6 +129,15 @@ export function redisMembership(
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let subscriber: RedisClient | null = null;
+    /** Heartbeat writes still on the wire. `leave()` drains them before its
+     *  DEL: `clearInterval` stops FUTURE ticks, but a write already
+     *  handed to the connection is neither awaited nor ordered against the
+     *  DEL — it can commit AFTER it, recreating the host key until its TTL
+     *  lapses (#209). */
+    const inflight = new Set<Promise<unknown>>();
+    /** Set by `leave()`: a beat completing after it began must not confirm
+     *  the clock, and nothing may issue a new write. */
+    let left = false;
     /** Host set + descriptor signature of the last view — see `refresh`. */
     let signature = '';
     const changeCbs = new Set<(view: MembershipView) => void>();
@@ -141,8 +150,8 @@ export function redisMembership(
     });
 
     const writeSelf = async (): Promise<void> => {
-        if (!self) return;
-        await client
+        if (!self || left) return;
+        const write = client
             .multi()
             .hset(hostKey(self.hostId), 'd', JSON.stringify(self))
             .pexpire(hostKey(self.hostId), ttlMs)
@@ -156,6 +165,15 @@ export function redisMembership(
             // both converge within one beat.
             .sadd(setKey, self.hostId)
             .exec();
+        inflight.add(write);
+        try {
+            await write;
+        } finally {
+            inflight.delete(write);
+        }
+        // `leave()` began while this was on the wire: the key is about to
+        // go, so the clock must not read this as a live confirmation.
+        if (left) return;
         clock.confirmed();
     };
 
@@ -218,6 +236,7 @@ export function redisMembership(
 
     return {
         async join(descriptor) {
+            left = false;
             self = descriptor;
             await writeSelf(); // …which `sadd`s us into the set as well
             await bumpVersion();
@@ -257,6 +276,7 @@ export function redisMembership(
             await bumpVersion();
         },
         async leave() {
+            left = true;
             if (beat) clearInterval(beat);
             if (poll) clearInterval(poll);
             beat = poll = null;
@@ -273,6 +293,9 @@ export function redisMembership(
             if (!self) return;
             const id = self.hostId;
             self = null;
+            // A beat already on the wire must land BEFORE the DEL, or it
+            // lands after and the host key comes back (#209).
+            await Promise.allSettled(inflight);
             // Removal and version bump commit atomically; the push is
             // best-effort on top (the poll covers a lost publish).
             const results = await client
