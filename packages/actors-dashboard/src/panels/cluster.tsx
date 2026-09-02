@@ -31,6 +31,10 @@ export const ClusterPanel = component<PanelProps>((ctx) => () => {
 
     const c = cluster.totals.counters;
     const cacheTotal = c.routeCacheHits + c.routeCacheMisses;
+    // `?? 0`: a fleet still on a build that predates the pair (#52) reports
+    // neither field, and `NaN%` is not an answer.
+    const dispatchesLocal = c.dispatchesLocal ?? 0;
+    const dispatches = dispatchesLocal + (c.dispatchesRemote ?? 0);
 
     const header: DetailRow[] = [
         {
@@ -52,10 +56,9 @@ export const ClusterPanel = component<PanelProps>((ctx) => () => {
         {
             // The per-request locality fraction (#52). Read this, not
             // `routedLocal`: that one counts placement decisions and never
-            // sees the warm local fast path. `?? 0` because a fleet on a
-            // build that predates the pair reports neither field.
+            // sees the warm local fast path.
             label: 'locality',
-            value: `${percent(c.dispatchesLocal ?? 0, (c.dispatchesLocal ?? 0) + (c.dispatchesRemote ?? 0))} local  (${count((c.dispatchesLocal ?? 0) + (c.dispatchesRemote ?? 0))} dispatches)`
+            value: `${percent(dispatchesLocal, dispatches)} local  (${count(dispatches)} dispatches)`
         }
     ];
 

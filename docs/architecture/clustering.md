@@ -242,7 +242,16 @@ pair honest:
   shared pump behind it is told it has already been accounted for.
 - **Workers and `dispatchOn()` count in neither.** Nothing placed them — a
   worker runs wherever it is called and a targeted call chose its host — so
-  they have no locality to measure and would only dilute the fraction.
+  they have no locality to measure and would only dilute the fraction. Nor
+  does a call whose target never resolves (`unplaceable` through every
+  retry): with no first resolved target there is nothing to decide, so it
+  lands only in `routingFailures`.
+
+The pair counts calls this host *initiated*, which is more than the requests
+it received: reminder and task-tick firings and topic deliveries go through
+`Host.dispatch` → `dispatcherFor` like any other call, so `dispatchesLocal +
+dispatchesRemote` runs ahead of an inbound request count on a host with
+timers armed. Read the fraction, not the sum, against a request rate.
 
 The warm fast path pays exactly this one increment and nothing else; the
 `cluster/locality-warm` bench keeps deriving its `local_fraction` from
