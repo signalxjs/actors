@@ -25,9 +25,10 @@ export interface RedisStorageOptions {
     client?: RedisClient;
     /**
      * Or a URL — the package constructs its own client, with
-     * `enableAutoPipelining: true` (#311): every CAS in one event-loop tick
-     * rides one socket write, which is where a busy host's cost lives
-     * (#245). Pass `client` instead to own the options.
+     * `enableAutoPipelining: true` (#311): ioredis coalesces commands
+     * issued in the same event-loop tick into fewer socket writes, which
+     * is where a host busy with many same-tick CAS saves spends. Pass
+     * `client` instead to own the options.
      */
     url?: string;
     /** Key namespace. Default `sigx`. */
