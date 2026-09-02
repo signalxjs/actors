@@ -80,10 +80,18 @@ export interface HostDescriptor extends HostIdentity {
 
 export interface MembershipView {
     /**
-     * Monotonic per cluster; bumps on any join/leave/status change a host
-     * WRITES. A peer expiring on the store's TTL clock is observed, not
-     * written, so it need not bump this (#267) — derive from the view
-     * OBJECT (`membersMemo()`, `onChange`), never from `version` (#269).
+     * A change token for THIS process's view. Strictly increases whenever a
+     * refresh observes a change — the store's counter moved (a join, leave
+     * or status change some host wrote), or the live host set differs from
+     * the last view, which includes a peer expiring on the store's TTL
+     * clock with no writer at all (#267). Unchanged views keep the value.
+     *
+     * Monotonic per PROCESS view, not per cluster: on a change nobody
+     * wrote, the provider advances it locally past the store's counter
+     * (the counter catches up at the next written bump), so two hosts may
+     * hold different values for the same converged membership. Compare it
+     * only with earlier values from the same handle; for derived data,
+     * the view OBJECT is the key (`membersMemo()`, `onChange`) (#269).
      */
     readonly version: number;
     /** Hosts currently believed live. */

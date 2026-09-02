@@ -274,8 +274,11 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
 
     let self: HostDescriptor | null = null;
     let cached: MembershipView = { version: 0, hosts: [] };
+    /** `sigx_mver` as last read. Held apart from `cached.version`, which may
+     *  run AHEAD of it: see `refresh`. */
+    let storeVersion = 0;
     /** hostId:status join of the last view — an expiry changes the view
-     *  without a version bump, so the version alone cannot detect change. */
+     *  without a counter bump, so the counter alone cannot detect change. */
     let signature = '';
     let beat: ReturnType<typeof setInterval> | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
@@ -344,12 +347,22 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             }
         });
         const hosts = descriptors.map((row) => JSON.parse(row) as HostDescriptor);
-        const next: MembershipView = { version: Number(version ?? 0), hosts };
+        const stored = Number(version ?? 0);
         const nextSignature = hosts
             .map((h) => `${h.hostId}:${h.status}`)
             .sort()
             .join(',');
-        const changed = next.version !== cached.version || nextSignature !== signature;
+        const changed = stored !== storeVersion || nextSignature !== signature;
+        // The exposed version is a per-PROCESS change token, not `sigx_mver`:
+        // an expiry changes `hosts` with no writer to bump anything, so every
+        // observed change advances it — past the counter when it must — and
+        // the next written bump re-converges the two (#267). A consumer keyed
+        // on `version` therefore sees the expiry too.
+        const next: MembershipView = {
+            version: changed ? Math.max(stored, cached.version + 1) : cached.version,
+            hosts
+        };
+        storeVersion = stored;
         cached = next;
         signature = nextSignature;
         if (changed) for (const cb of changeCbs) cb(next);
@@ -359,10 +372,11 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
     // Coalesce the notification→refresh path (#26): a burst of live-query
     // events costs one refresh plus at most one trailing catch-up per
     // subscriber, not one refresh per event. Events are noted versionless —
-    // live queries are at-most-once and unordered, so no event is skippable.
+    // live queries are at-most-once and unordered, so no event is skippable;
+    // the gate still reads the STORE's counter, never the exposed version.
     const coalescer = refreshCoalescer<MembershipView>({
         refresh,
-        version: () => cached.version,
+        version: () => storeVersion,
         quietMs: options.coalesceMs ?? 0
     });
 

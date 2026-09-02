@@ -13,6 +13,16 @@
   for up to `ttlMs`. `redisMembership` now tracks in-flight heartbeat
   writes, `leave()` drains them before the removal, and a beat that
   completes after `leave()` began no longer confirms the liveness clock.
+- **`MembershipView.version` moves when a peer expires** (#267). `mver` is
+  `INCR`'d only by a host that WRITES (join, `setStatus`, leave); a peer
+  dying silently has no writer, so its host key's TTL expiry — and a
+  pruned host's rejoin (#45) — changed `hosts` while `version` stood still,
+  and a consumer memoizing on `version` latched the stale member count.
+  `redisMembership` now advances the exposed version locally (`max(stored,
+  cached + 1)`) whenever the host signature changes without a counter bump,
+  and re-converges on the counter at the next written one. The counter
+  itself is untouched and remains the pub/sub skip gate — a published bump
+  that merely catches up to a locally advanced view is still refreshed.
 
 ### Changed
 

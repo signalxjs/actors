@@ -217,6 +217,21 @@
 
 ### Changed
 
+- **`MembershipView.version` is a per-process change token, and a TTL
+  expiry moves it** (#267). The contract read "monotonic per cluster; bumps
+  on any join/leave/status change" — but a peer dying silently has no
+  writer, so the store-backed providers changed `hosts` while `version`
+  stood still, and a consumer memoizing on it latched a stale member count.
+  `pgMembership`, `redisMembership` and `surrealMembership` now advance the
+  exposed version locally on any change nobody wrote (`max(stored,
+  cached + 1)`), re-converging on the store's counter at the next written
+  bump. The doc now says exactly that: strictly increasing on every change
+  THIS process observes, monotonic per process view rather than per cluster
+  (two hosts may hold different values for one converged membership), so
+  compare it only with earlier values from the same handle. The memory hub
+  and `k8sMembership` already behaved this way. Derived data should still
+  key on the view object (`membersMemo()`, `onChange`, #269).
+
 - **Task liveness is a per-host roster, not a reminder per running task**
   (#310). A new seam, `ActorTaskLiveness` (`CreateHostOptions.taskLiveness`),
   answers how a dead host's in-flight detached runs are found again. The

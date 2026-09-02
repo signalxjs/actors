@@ -138,6 +138,9 @@ export function redisMembership(
     /** Set by `leave()`: a beat completing after it began must not confirm
      *  the clock, and nothing may issue a new write. */
     let left = false;
+    /** `mver` as last read — the pub/sub skip gate. Held apart from
+     *  `cached.version`, which may run AHEAD of it: see `refresh`. */
+    let storeVersion = 0;
     /** Host set + descriptor signature of the last view — see `refresh`. */
     let signature = '';
     const changeCbs = new Set<(view: MembershipView) => void>();
@@ -207,9 +210,9 @@ export function redisMembership(
             // Lazy prune: expired heartbeats leave set members behind.
             await client.srem(setKey, ...dead).catch(noop);
         }
-        const next: MembershipView = { version: Number(verRaw ?? 0), hosts };
+        const stored = Number(verRaw ?? 0);
         // Signature, like the pg and surreal providers: a host REJOINING the
-        // set (its beat re-`sadd`ing after a prune) writes no version bump,
+        // set (its beat re-`sadd`ing after a prune) writes no counter bump,
         // and an expiry never did either. Without this, `cached` would
         // silently gain or lose a host while `onChange` stayed quiet —
         // leaving transports unnotified and the departed-host sweep un-run.
@@ -217,7 +220,17 @@ export function redisMembership(
             .map((h) => `${h.hostId}:${h.status}`)
             .sort()
             .join(',');
-        const changed = next.version !== cached.version || nextSignature !== signature;
+        const changed = stored !== storeVersion || nextSignature !== signature;
+        // The exposed version is a per-PROCESS change token, not `mver`: an
+        // expiry (or that rejoin) changes `hosts` with no writer to bump
+        // anything, so every observed change advances it — past the counter
+        // when it must — and the next written bump re-converges the two
+        // (#267). A consumer keyed on `version` therefore sees the expiry.
+        const next: MembershipView = {
+            version: changed ? Math.max(stored, cached.version + 1) : cached.version,
+            hosts
+        };
+        storeVersion = stored;
         cached = next;
         signature = nextSignature;
         if (changed) for (const cb of changeCbs) cb(next);
@@ -227,10 +240,12 @@ export function redisMembership(
     // Coalesce the notification→refresh path (#26): a burst of pub/sub
     // messages costs one refresh plus at most one trailing catch-up per
     // subscriber, not one refresh per message — and a message whose
-    // published version the view has already caught up past costs nothing.
+    // published counter the view has already caught up past costs nothing.
+    // The gate is judged against the STORE's counter: the exposed version
+    // may already be past it, and would wrongly skip a real bump.
     const coalescer = refreshCoalescer<MembershipView>({
         refresh,
-        version: () => cached.version,
+        version: () => storeVersion,
         quietMs: coalesceMs
     });
 
