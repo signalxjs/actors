@@ -4,6 +4,30 @@
 
 ### Added
 
+- **`internal: true` — server-internal actors the public wire never serves**
+  (#74). The common shape "this type is only ever called in-process or
+  host-to-host" had no word of its own: the OmniaFlow migration marked
+  every Flow actor `allowAnonymous: true` when the intent was *not public*,
+  and the only line of defense left was a consumer-side bearer wrapper
+  around the mount. `defineActor`, `defineWorker` and `defineJob` now take
+  `internal?: true`. A flagged type is refused by every PUBLIC entry point
+  — the actor endpoint's unary and GET-read paths, the `$live` multiplex
+  (per subscription, so its siblings keep streaming) and the socket
+  session's calls and subscriptions — with exactly the answer an
+  unregistered type gets: same 404, same `method-not-found` kind, same
+  message shape, so a probe learns nothing. In-process `actor()` /
+  `ctx.actor()` and the cluster's HMAC-authenticated host-to-host mount
+  (`resolveHostSymbol`, `hostEndpointRuntime`) keep serving it — that is
+  the point. The Vite build still extracts and registers an internal actor
+  (in-process callers need it in `virtual:sigx-actors`) but emits a
+  `__serverOnly` stand-in in the client module instead of an `__actorRef`,
+  so no type name, endpoint or stream table for it reaches the browser
+  bundle and an accidental client-side call fails loudly. Orthogonal to
+  access: the pipeline still runs for the callers that can reach it, so an
+  internal actor declares `authorize` / `allowAnonymous` (or relies on the
+  app default) like any other, and the `requireAuthorization` build gate is
+  unchanged.
+
 - **Per-call deadline: `.with({ deadlineMs })`** (#75). The only bound on a
   call was the host-wide `callTimeoutMs` (default 30s), so a remote client
   driving one long awaited method — an editor's full-flow run through a

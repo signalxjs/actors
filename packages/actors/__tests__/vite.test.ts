@@ -145,6 +145,68 @@ export const Pool = defineWorker({ type: 'Pool', allowAnonymous: true, methods: 
         );
     });
 
+    it('an `internal: true` actor gets no client stub — a server-only stand-in instead (#74)', () => {
+        const code = `
+import { defineActor, defineWorker } from '@sigx/actors';
+
+export const Ledger = defineActor({
+    type: 'Ledger',
+    internal: true,
+    allowAnonymous: true,
+    state: () => ({ n: 0 }),
+    methods: (ctx) => ({ async bump() { return ++ctx.state.n; } }),
+    streams: (ctx) => ({ async *watch() { yield* ctx.changes(); } })
+});
+
+export const Digest = defineWorker({
+    type: 'Digest',
+    internal: true as const,
+    allowAnonymous: true,
+    methods: () => ({ async run() {} })
+});
+
+export const Front = defineActor({
+    type: 'Front',
+    allowAnonymous: true,
+    state: () => ({}),
+    methods: () => ({ async ping() { return 'pong'; } })
+});
+`;
+        const result = extractActors(code, 'src/ledger.actor.ts', opts());
+        expect(result.errors).toEqual([]);
+        // Still EXTRACTED: the server registry (`virtual:sigx-actors`) is
+        // built from this list, and an internal actor must be registered
+        // for in-process and host-to-host calls to reach it.
+        expect(result.actors.map((a) => [a.type, a.internal])).toEqual([
+            ['Ledger', true],
+            ['Digest', true],
+            ['Front', false]
+        ]);
+        // But the browser gets no way to address it: no `__actorRef`, so no
+        // type name, endpoint or stream table for it leaks into the bundle.
+        expect(result.clientModule).toContain(
+            `export const Ledger = __serverOnly("Ledger", "src/ledger.actor.ts");`
+        );
+        expect(result.clientModule).toContain(
+            `export const Digest = __serverOnly("Digest", "src/ledger.actor.ts");`
+        );
+        expect(result.clientModule).not.toContain('__actorRef("Ledger"');
+        expect(result.clientModule).not.toContain('__actorRef("Digest"');
+        expect(result.clientModule).not.toContain('watch');
+        expect(result.clientModule).toContain(`import { __serverOnly } from '@sigx/server/client';`);
+        // The public sibling keeps its stub.
+        expect(result.clientModule).toContain(`export const Front = __actorRef("Front", "/_sigx/actor");`);
+    });
+
+    it('an internal actor still has to decide its own access — the gate is unchanged', () => {
+        const code = `
+import { defineActor } from '@sigx/actors';
+export const Ledger = defineActor({ type: 'Ledger', internal: true, state: () => ({}), methods: () => ({}) });
+`;
+        const result = extractActors(code, 'src/ledger.actor.ts', opts());
+        expect(result.errors[0]?.message).toMatch(/declares no `authorize:` policy/);
+    });
+
     it('the requireAuthorization gate applies to workers too', () => {
         const code = `
 import { defineWorker } from '@sigx/actors';

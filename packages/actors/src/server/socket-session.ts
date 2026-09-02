@@ -58,7 +58,8 @@ import {
     actorPrincipal,
     authorizeActorCall,
     encodePrincipal,
-    enterActorRequest
+    enterActorRequest,
+    isInternalActor
 } from '../guards';
 import { relayStream } from '../stream-relay';
 import { parseWire } from '../wire-parse';
@@ -540,7 +541,9 @@ export async function createActorSocketSession(
                 );
             }
             const def = (await host.definition(type)) as AnyActorDefinition | undefined;
-            if (!def) {
+            // An `internal: true` type is refused with the unknown-type
+            // answer — same rule and same reason as the public HTTP mount.
+            if (!def || isInternalActor(def)) {
                 throw new ServerFnError(
                     404,
                     `Unknown actor "${symbol}" — no actor type "${type}" is registered with ` +
@@ -699,7 +702,9 @@ export async function createActorSocketSession(
                 );
             }
             const def = (await host.definition(sub.t)) as AnyActorDefinition | undefined;
-            if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
+            if (!def || isInternalActor(def)) {
+                throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
+            }
             const rqCall = callContext(watch.ctrl.signal);
             await authorizeActorCall(def, sub.m, sub.k, rqCall, 'wire');
             const bag = takeCallBag(rqCall.locals);

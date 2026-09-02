@@ -22,7 +22,7 @@ import { mintCallId } from '../call-id';
 import { takeCallBag } from '../call-context-bag';
 import { ActorMethodNotFoundError } from '../errors';
 import { isTraceparent } from '../traceparent';
-import { authorizeActorCall, encodePrincipal } from '../guards';
+import { authorizeActorCall, encodePrincipal, isInternalActor } from '../guards';
 import {
     ACTOR_DEADLINE_HEADER,
     ACTOR_FOLLOW_HEADER,
@@ -336,6 +336,12 @@ function warnOnce(hostId: string): void {
  * Callers get the same status and envelope either way, but a hand-rolled
  * mount that tests the result for `null` to fall through to another handler
  * must instead compare against its own registry first.
+ *
+ * An `internal: true` type (#74) resolves to that SAME wrapper: on the
+ * public mount it is a type that does not exist, and the answer must not
+ * say otherwise. The in-process client and the host-to-host mount
+ * (`resolveHostSymbol`) never consult this resolver, so they keep serving
+ * it.
  */
 /**
  * Rewrite `{base}/r/{token}/{symbol}` to `{base}/{symbol}` before core sees
@@ -382,12 +388,13 @@ export function createActorResolver(
         if (!def) return notFound(symbol, type);
         if (isPromise(def)) {
             return def.then((resolved) => {
-                if (!resolved) return notFound(symbol, type);
+                if (!resolved || isInternalActor(resolved)) return notFound(symbol, type);
                 const wrapped = synthesize(host, resolved, symbol, method, options);
                 cache.set(symbol, wrapped);
                 return wrapped;
             });
         }
+        if (isInternalActor(def)) return notFound(symbol, type);
         const wrapped = synthesize(host, def, symbol, method, options);
         cache.set(symbol, wrapped);
         return wrapped;

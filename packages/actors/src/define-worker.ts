@@ -42,6 +42,7 @@ export function defineWorker<
         kind: 'worker',
         ...(options.authorize ? { authorize: options.authorize } : {}),
         ...(options.allowAnonymous !== undefined ? { allowAnonymous: options.allowAnonymous } : {}),
+        ...(options.internal !== undefined ? { internal: options.internal } : {}),
         ...(options.methodAuthorize ? { methodAuthorize: options.methodAuthorize } : {}),
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.onActivate ? { onActivate: options.onActivate } : {}),

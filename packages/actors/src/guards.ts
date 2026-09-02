@@ -106,6 +106,17 @@ function kindOf(def: AnyActorDefinition): ActorResourceKind {
     return def.__sigxActor.kind ?? 'actor';
 }
 
+/**
+ * Is this type off the public wire (`internal: true`, #74)? Every PUBLIC
+ * entry point — the actor endpoint, `$live`, the socket session — asks this
+ * right after the definition lookup and answers a hit exactly as it answers
+ * an unregistered type. Here, next to the access pipeline, for the same
+ * reason the pipeline is: three transports must not drift on it.
+ */
+export function isInternalActor(def: AnyActorDefinition): boolean {
+    return def.__sigxActor.internal === true;
+}
+
 /** Does this definition decide its own access, either way? */
 export function hasAuthorization(def: AnyActorDefinition): boolean {
     const opts = def.__sigxActor;
