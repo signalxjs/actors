@@ -353,19 +353,19 @@ export function surrealMembership(options: SurrealClusterOptions): ClusterMember
             .sort()
             .join(',');
         const changed = stored !== storeVersion || nextSignature !== signature;
+        // Unchanged: hand back the SAME object, so identity-keyed derived
+        // data (`membersMemo()`, placement's caches) holds across polls.
+        if (!changed) return cached;
         // The exposed version is a per-PROCESS change token, not `sigx_mver`:
         // an expiry changes `hosts` with no writer to bump anything, so every
         // observed change advances it — past the counter when it must — and
         // the next written bump re-converges the two (#267). A consumer keyed
         // on `version` therefore sees the expiry too.
-        const next: MembershipView = {
-            version: changed ? Math.max(stored, cached.version + 1) : cached.version,
-            hosts
-        };
+        const next: MembershipView = { version: Math.max(stored, cached.version + 1), hosts };
         storeVersion = stored;
         cached = next;
         signature = nextSignature;
-        if (changed) for (const cb of changeCbs) cb(next);
+        for (const cb of changeCbs) cb(next);
         return next;
     };
 

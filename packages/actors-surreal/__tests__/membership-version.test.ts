@@ -65,9 +65,11 @@ describe('MembershipView.version on expiry (#267)', () => {
         expect(changes).toEqual([3, expired.version]);
 
         // Nothing changed: the version holds (it is a change token, not a
-        // refresh counter) and onChange stays quiet.
+        // refresh counter), onChange stays quiet, and it is the SAME object —
+        // identity-keyed memos (`membersMemo()`) must not churn per poll.
         const same = await membership.refresh();
-        expect(same.version).toBe(expired.version);
+        expect(same).toBe(expired);
+        expect(membership.view()).toBe(expired);
         expect(changes).toHaveLength(2);
 
         // A WRITTEN bump whose counter merely catches up to the locally
