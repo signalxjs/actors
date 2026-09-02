@@ -316,18 +316,22 @@ activity feed in `examples/chat`.
 pnpm --filter counter-example worker
 ```
 
-`defineWorker` (`src/resolver.worker.ts`) sits next to a `defineActor` twin
+`defineWorker` (`src/resolver.actor.ts`) sits next to a `defineActor` twin
 with the **same** method, so the only variable is what happens when two
 calls reach the same key at once. Each call reports how many others were
 already inside when it entered:
 
 ```
 === 1. defineActor — one activation per key, one turn at a time ===
-  SerialResolver "k": members=[1,1] overlapping=[0,0]  wall=603ms for 2×300ms
+  SerialResolver "k": members=[1,1] overlapping=[0,0]  wall=605ms for 2×300ms
 
 === 2. defineWorker — a pool per key; the second call gets a second member ===
-  Resolver "k": members=[1,2] overlapping=[0,1]  wall=302ms for 2×300ms
+  Resolver "k": members=[2,3] overlapping=[0,1]  wall=302ms for 2×300ms
 ```
+
+The `members` are activation ids from one counter shared by both
+definitions, so a distinct number is a distinct activation whichever lane
+minted it — and the actor only ever shows one per key.
 
 That is the whole contract. An actor has state to protect, so its key is
 one activation taking one turn at a time. A worker has none, so its key is
@@ -344,7 +348,7 @@ activations so far: { SerialResolver: 1, Resolver: 2 }
 activations now: { SerialResolver: 1, Resolver: 4 }
 
 === 4. No pressure, no growth — sequential calls stay on one member ===
-3 sequential calls on "quiet" → members=[5,5,5]
+3 sequential calls on "quiet" → members=[6,6,6]
 ```
 
 **A pool is not threads.** A host is one Node process with one JS thread,
@@ -393,7 +397,7 @@ state changing is not a source edit anyway.
 | `src/reminder.actor.ts` | `ctx.reminders` — durable, and re-activates the actor |
 | `src/gate.actor.ts` | `ctx.publish` — the publishing side, and the topic declared once for both |
 | `src/tally.actor.ts` | `subscriptions:` — the aggregate subscriber, activated by the delivery |
-| `src/resolver.worker.ts` | `defineWorker` beside a `defineActor` twin — one method, two concurrency contracts |
+| `src/resolver.actor.ts` | `defineWorker` beside a `defineActor` twin — one method, two concurrency contracts |
 | `src/static.ts` | resolve a request target inside `dist/`, or refuse |
 | `server.mjs` | production entry: the app handler, then static, then a graceful drain |
 | `cluster-demo.mjs` | three hosts over real sockets — spread, single activation, cross-host stream, failover, ops |

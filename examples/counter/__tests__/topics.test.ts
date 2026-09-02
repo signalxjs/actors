@@ -6,14 +6,14 @@
  * subscriber reports zero rather than failing.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { defineActorApp, memoryStorage, type Host } from '@sigx/actors/host';
+import { defineActorApp, memoryStorage, type ActorAppOptions, type Host } from '@sigx/actors/host';
 import { Gate, gatePassed } from '../src/gate.actor.ts';
 import { Tally } from '../src/tally.actor.ts';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
 const running: Host[] = [];
-async function start(actors: Parameters<typeof defineActorApp>[0]['actors']) {
+async function start(actors: ActorAppOptions['actors']) {
     const host = await defineActorApp({ actors, storage: memoryStorage(), defaults: quiet }).start();
     running.push(host);
     return host;

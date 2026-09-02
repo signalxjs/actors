@@ -35,6 +35,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * once per MEMBER, so a counter in that closure would only ever see itself.
  */
 const inFlight = { Resolver: 0, SerialResolver: 0 };
+/** One counter for both lanes: an activation id, whichever definition minted it. */
 let minted = 0;
 
 async function lookup(lane: keyof typeof inFlight, member: number, latencyMs: number) {
@@ -68,14 +69,22 @@ export const Resolver = defineWorker({
     }
 });
 
-/** The same method under `defineActor`: one activation, and calls take turns. */
+/**
+ * The same method under `defineActor`: one activation, and calls take turns.
+ * The id comes from the same mint as the pool's, so the two lanes' output
+ * reads alike: every distinct number is a distinct activation, and this
+ * one only ever shows a single one per key.
+ */
 export const SerialResolver = defineActor({
     type: 'SerialResolver',
     allowAnonymous: true,
     state: () => ({}),
-    methods: () => ({
-        async lookup(latencyMs: number) {
-            return lookup('SerialResolver', 1, latencyMs);
-        }
-    })
+    methods: () => {
+        const member = ++minted;
+        return {
+            async lookup(latencyMs: number) {
+                return lookup('SerialResolver', member, latencyMs);
+            }
+        };
+    }
 });

@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { defineActorApp, memoryStorage, type Host } from '@sigx/actors/host';
-import { Resolver, SerialResolver } from '../src/resolver.worker.ts';
+import { Resolver, SerialResolver } from '../src/resolver.actor.ts';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 const LATENCY = 30;

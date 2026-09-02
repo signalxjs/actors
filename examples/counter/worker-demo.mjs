@@ -7,11 +7,11 @@
  *     pnpm --filter counter-example worker    # after `pnpm build`
  *
  * Why the difference exists, and when it buys nothing, is in
- * src/resolver.worker.ts and README.md. Every step throws on a wrong
+ * src/resolver.actor.ts and README.md. Every step throws on a wrong
  * result, so this file is an assertion suite that narrates itself.
  */
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
-import { Resolver, SerialResolver } from './src/resolver.worker.ts';
+import { Resolver, SerialResolver } from './src/resolver.actor.ts';
 
 const log = (...args) => console.log(...args);
 const step = (title) => log(`\n=== ${title} ===`);
