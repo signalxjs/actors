@@ -24,10 +24,11 @@ import { memoryStorage } from '@sigx/actors/host';
 import { memoryClusterHub } from '@sigx/actors/cluster';
 import { otelMetricsBridge } from '@sigx/actors-otel';
 import { prometheusOps } from '@sigx/actors-otel/prometheus';
-import { startCluster } from './src/cluster.ts';
+import { envOr, startCluster } from './src/cluster.ts';
 import { parseExposition, sampleValue } from './src/prometheus.ts';
 
-const opsSecret = process.env.PROVIDERS_DEMO_OPS_SECRET ?? 'demo-ops-secret';
+// Passed to the exporter AND the cluster, so read it the way the harness does.
+const opsSecret = envOr(process.env.PROVIDERS_DEMO_OPS_SECRET, 'demo-ops-secret');
 const hub = memoryClusterHub();
 /** One provider + reader PER HOST: a meter's instruments are keyed by
  *  name, and three hosts observing `sigx.actors.calls` on one meter would
