@@ -3007,3 +3007,85 @@ the head side (99 → 126, 1.04 → 1.28 s). Those scenarios are
 duration-bounded, so ~1.4× the throughput is ~1.4× the runs and ~1.4× the
 allocations in the same 400 ms — the same reading the 2026-08-06 section
 gave the `state/dirty-size` counts.
+
+## 2026-09-02 · Tier 3 — the workflow engine on the 5-round-trip runtime (#329, the Go host PoC bar)
+
+| | |
+|---|---|
+| Shape | `wf replicas=3 nodes=3 image=00a9da4 knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` |
+| Cluster | AKS, 3 × 1 vCPU host pods on 3 nodes, one Redis, HTTP host-to-host |
+| Driver | in-cluster `wf-bench` via `cluster-test.yml` dispatch, run **33621360065** (`workflow.json` artifact) |
+| Why | The first recorded Tier-3 run on the runtime with #309 (state-record ledger), #310 (roster liveness) and #311 (auto-pipelined `url`-constructed clients) — the comparison bar for the planned Go host PoC. The 2026-08-26 figures were image `fccf287`/`c6d1b15`, twelve storage round trips per run ago. |
+| Caveat | `main` moved past the measured image the same day (#322–#325, including two runtime fixes: #323 job revert-on-failed-start, #324 deadlines on timer/task turns). Neither touches a hot path measured here, but the shape pins `image=00a9da4` and a comparison against a later image is a different run. |
+| The A/B that is NOT here | #311's before/after is still parked: the old-image leg cannot deploy through the dispatch workflow — the Azure federated credential matches the OIDC subject *including the ref*, so only `main` can log in (AADSTS700213; noted on #311 with two unblock options). |
+
+**Zero anomalies anywhere in the suite**: every rung of every scenario read
+`stuck_ratio 0`, `wakes_lost 0`, `reminder_set_failure_ratio 0`,
+`completed_unreported 0`; the only non-zero error rate in the whole run is
+0.2% at the 50 runs/s rung.
+
+### `workflow/throughput-ladder` — the default mix
+
+| offered runs/s | completed/s | transitions/s | start p50 | task p50 | order p50 | etl p50 (8 children) | approval p50 | saga p50 | wake lag p50 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 4.6 | 36.9 | 9.2 ms | 28 ms | 2.08 s | 260 ms | 2.10 s | 68 ms | 0 ms |
+| 25 | 12.5 | 138.6 | 63.4 ms | 36 ms | 2.16 s | 668 ms | 2.40 s | 142 ms | 1 ms |
+| 50 | 18.9 | 263.9 | 178.3 ms | 58 ms | 6.43 s | 34.2 s | 50.7 s | 262 ms | 5 ms |
+
+The same shape as 2026-08-26 (`c6d1b15`): the knee is compute on the loop
+(task p50 28 → 36 → 58 ms is a 20 ms sha256 task measuring loop occupancy,
+not hash speed — the hash is native `node:crypto`), queueing is a curve
+past it, and nothing breaks at 2× the knee. Not directly comparable rung
+for rung — the recorded scenario runs 60 s arrivals per rung where the
+2026-08-26 hand ladder used different drain accounting — but the
+transitions/s at r=50 (263.9 vs 358 over that run's longer window) and the
+error-free drain say the same thing: **the ceiling of this shape is
+1 vCPU × 3 of native sha256 plus one JS loop per host, not the runtime's
+bookkeeping** — which is now 5 round trips per run instead of 12.
+
+### The rest of the axes, one line each
+
+- **`sleeping-runs`** (90 s durable delay, every run leaving memory):
+  15.5 runs/s completed at r=50 with start p50 **19 ms**, order p50 103.5 s
+  (90 s of that is the sleep), wake lag p50 ~15 s — the shard tick's
+  quantisation at the default 30 s `reminderTickMs` (the 2026-08-26 run
+  set `WF_REMINDER_TICK_MS=1000`; this one records the DEFAULT, which is
+  the honest bar for a stock deployment). Zero reminder CAS failures at
+  50 arms/s + 50 fires/s on the roster-era runtime.
+- **`fanout-width` vs `fanout-pool`**: child runs across hosts beat the
+  local pool at every width again (w=64: task p50 611 ms vs 1 324 ms,
+  etl 4.0 s vs 5.6 s) — burst compute wants the fleet, and the durable
+  join costs 122 ms at w=4.
+- **`signals`**: approval p50 = signal delay + ~90 ms at every d
+  (593 ms / 2.29 s / 11.5 s for d=500/2000/10000), `signal_late_ratio` 0,
+  nothing buffered.
+- **`saga-failure`**: compensation never failed to complete; completed/s
+  falls with the injected failure rate (21.6 → 14.6 → 6.2 at f=.05/.2/.5)
+  while transitions/s HOLDS (~98–111) — retries are work, and the engine
+  does it instead of erroring.
+- **`definition-hotkey`**: 13.9 runs/s at r=25 with the definition cache
+  doing its job (the scenario exists to notice if it stops).
+
+### For the Go host PoC, the bar this run sets
+
+A Go host on this exact shape must: hold **≥ 18.9 completed runs/s /
+≥ 264 transitions/s** at the 50 runs/s rung with zero stuck runs and zero
+lost wakes; wake durable sleeps within a tick; and reproduce the exact
+invariants (directory ops, roster/reminder CAS discipline) this suite
+holds at zero. Where it should win, per the measured shape: the task p50
+inflation (28 → 58 ms of loop occupancy for a 20 ms task) and the
+fan-out burst columns — cores per process — plus whatever the wire rows
+below concede to Node's HTTP stack.
+
+### The HTTP curves are NOT here, and why
+
+The `bench` verb (the `infra/*` read/write ladders from the same-region
+VM) failed before measuring anything: `loadVmUp()` got
+`AuthorizationFailed` — the workflow's OIDC identity has no rights on the
+load-VM resource group (the RUNBOOK §1c role assignment, "Contributor
+scoped to the load-VM resource group, pre-created once out of band", is
+not in place for it). Estate-side, not repo-side. Once the role is
+granted, `cluster-test.yml` → `bench` on the same shape completes this
+section; until then the 2026-08-02/2026-08-06 curves (image `02dded3` /
+`04e6598`, twelve-round-trip runtime) remain the newest HTTP figures and
+must not be quoted as current.
