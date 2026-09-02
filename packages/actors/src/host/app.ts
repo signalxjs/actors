@@ -350,9 +350,10 @@ export interface ActorApp<
     /**
      * Register a plugin. Mutates and returns THIS app, widened by `Ext` and
      * narrowed to the plugin's `Placement` (see `ActorPlugin`). The
-     * intersection is deliberate: a second placement backend with a
-     * different tag narrows `placement` to nothing, because no one strategy
-     * can satisfy two backends.
+     * intersection is deliberate: with two placement backends installed,
+     * `placement` accepts only what BOTH understand — no tagged strategy
+     * can, since `backend` cannot be two literals at once, so only an
+     * untagged one whose shape satisfies both remains assignable.
      */
     use<E extends object, P extends ActorPlacementStrategy = ActorPlacementStrategy>(
         plugin: ActorPlugin<E, P>
