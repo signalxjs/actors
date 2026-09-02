@@ -386,12 +386,12 @@ export function subscribeAll(
             const traceparent = rq.request.headers.get('traceparent');
             // Same edge rule as the unary endpoint: the bag comes only from
             // what this request stamped, never from a header — and identity
-            // rides its own slot. `rqSub` shares the connection's `locals`,
-            // so the take also clears a policy's stamp before a sibling
-            // subscription runs its own guards. The watched METHOD never
-            // sees it, though: a watch turn is shared, and `ctx.bag` inside
-            // one is the empty bag whatever the edge stamped (#137) — the
-            // stamp is a unary-call channel.
+            // rides its own slot. It is lifted here as on every entry point
+            // (`rqSub` shares the connection's `locals`, so a policy's stamp
+            // lands where it always did), but the watched METHOD never sees
+            // it: a watch turn is shared, and `ctx.bag` inside one is the
+            // empty bag whatever the edge stamped (#137) — the stamp is a
+            // unary-call channel.
             const bag = takeCallBag(rqSub.locals);
             const principal = await encodePrincipal(rqSub);
             const iterable = host.dispatchWatch!(
