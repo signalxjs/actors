@@ -37,6 +37,8 @@ const Ledger = defineActor({
     type: 'Ledger',
     internal: true,
     allowAnonymous: true,
+    // A declared read, so the GET path has something it WOULD admit.
+    reads: { peek: { maxAge: 5 } },
     state: () => ({ n: 0 }),
     methods: (ctx) => ({
         async bump() {
@@ -80,6 +82,17 @@ function post(host: Host, symbol: string, args: readonly unknown[]): Promise<Res
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ args })
+        }),
+        { host, origin: false }
+    );
+}
+
+/** A GET straight into the endpoint, args in the query like the proxy sends. */
+function get(host: Host, symbol: string, args: readonly unknown[]): Promise<Response> {
+    const query = encodeURIComponent(JSON.stringify(args));
+    return handleActorRequest(
+        new Request(`${ENDPOINT}/${encodeURIComponent(symbol)}?args=${query}`, {
+            method: 'GET'
         }),
         { host, origin: false }
     );
@@ -184,6 +197,24 @@ describe('internal actors on the public HTTP mount', () => {
         );
     });
 
+    it('refuses a declared GET read exactly as it does an unknown type', async () => {
+        // `reads: { peek }` would make `Ledger#peek` a GET target if the
+        // resolver ever synthesized it. It does not: the not-found wrapper
+        // is what core's GET admission sees, and it is not GET-capable, so
+        // BOTH answer core's own 405 — status, `Allow` and body byte-equal,
+        // and no `max-age` that would betray a declared read behind it.
+        const host = await startHost();
+        const internal = await get(host, 'Ledger#peek', ['k']);
+        const missing = await get(host, 'Nope#peek', ['k']);
+        expect(internal.status).not.toBe(200);
+        expect(internal.status).toBe(missing.status);
+        expect(internal.headers.get('allow')).toBe(missing.headers.get('allow'));
+        expect(internal.headers.get('cache-control')).toBe(missing.headers.get('cache-control'));
+        expect(internal.headers.get('cache-control') ?? '').not.toContain('max-age');
+        expect(await internal.text()).toBe(await missing.text());
+        expect(await host.actor(Ledger, 'k').peek()).toBe(0);
+    });
+
     it('still answers a public actor on the same host', async () => {
         const host = await startHost();
         const response = await post(host, 'Front#ping', ['k']);
@@ -228,10 +259,15 @@ describe('internal actors on the socket session', () => {
         session.handle(JSON.stringify({ i: 1, s: 'Ledger#bump', a: ['k'] }));
         session.handle(JSON.stringify({ i: 2, s: 'Nope#bump', a: ['k'] }));
         await until(() => framesFor(link, 1).length === 1 && framesFor(link, 2).length === 1);
-        const internal = framesFor(link, 1)[0] as { e: { status: number } };
-        const missing = framesFor(link, 2)[0] as { e: { status: number } };
+        type Refusal = { e: { status: number; kind?: string; message: string } };
+        const internal = framesFor(link, 1)[0] as Refusal;
+        const missing = framesFor(link, 2)[0] as Refusal;
         expect(internal.e.status).toBe(404);
         expect(missing.e.status).toBe(404);
+        // Parity on the socket too, not just the status: same kind, same
+        // wording, differing only in the type name it names.
+        expect(internal.e.kind).toBe(missing.e.kind);
+        expect(internal.e.message.replaceAll('Ledger', 'Nope')).toBe(missing.e.message);
         expect(await host.actor(Ledger, 'k').peek()).toBe(0);
     });
 

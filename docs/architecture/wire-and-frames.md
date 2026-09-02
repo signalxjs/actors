@@ -186,6 +186,13 @@ is the whole story:
   current cookies and re-seeds, the same contract as any drop.
   `maxConnectionMs` survives eviction as a per-message-checked deadline in
   the socket attachment; the object's single alarm stays with reminders.
+  The forwarding route (`objectSocketRoute`) is a public entry point that
+  resolves the type **itself**, ahead of any session, so it repays the
+  `internal: true` check (#74) at the upgrade: a flagged type gets the
+  unknown-type 404 and never mints a Durable Object — a 101 there, where a
+  missing type 404s, would tell a probe the type exists. The
+  Worker-terminated mode needs no such line; it only wraps
+  `createActorSocketSession`, which checks per frame.
 
 The object-terminated mode fixes #47 only for the object's **own** actor's
 watches — a session's watches on other actors go object→object over the

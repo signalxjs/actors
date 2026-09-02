@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`objectSocketRoute` refuses `internal: true` types at the upgrade**
+  (#74). The object-terminated socket's forwarding route resolves the type
+  itself, ahead of any session, so it now answers a server-internal type
+  with the same 404 an unknown type gets — and never mints or wakes a
+  Durable Object for it. Without this the upgrade answered 101 and only the
+  first frame 404'd inside the object, which told a probe the type existed.
+  The Worker-terminated `workerSocket()` needed no change: it wraps
+  `createActorSocketSession`, which checks per frame.
+
 ## [0.7.0] - 2026-08-09
 
 ### Added
