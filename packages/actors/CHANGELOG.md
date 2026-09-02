@@ -114,6 +114,23 @@
 
 ### Changed
 
+- **Task liveness is a per-host roster, not a reminder per running task**
+  (#310). A new seam, `ActorTaskLiveness` (`CreateHostOptions.taskLiveness`),
+  answers how a dead host's in-flight detached runs are found again. The
+  default `rosterTaskLiveness()` keeps one `$sigx:tasks-roster` record per
+  host (sub-sharded ×16) plus a small `$hosts` index; the host is its only
+  writer, so a start or finish is **one CAS with no load**, group-committed,
+  and nothing runs per running task per minute any more. A survivor adopts a
+  dead host's roster on the reminder tick — one adopter per dead host, by
+  reminder-shard ownership — touching each actor so it resumes wherever
+  placement puts it. Detection latency (membership TTL + a tick) is
+  unchanged. `reminderTaskLiveness()` is the previous mechanism, kept as an
+  option and selected by `createHostDurableObject`, where an alarm IS the
+  right liveness. Legacy `TASK_REMINDER` entries left in shard tables by a
+  pre-upgrade deployment fire once more and clear themselves. With #309, a
+  job run is **1 load, 4 saves, 0 clears** (was 6 / 5 / 1), and a start no
+  longer rewrites a 16th of the cluster's running jobs (`jobs/many-running`).
+
 - **A job's state record is its task ledger** (#309). `defineJob` no longer
   writes a `$sigx:tasks` record per run: the run to resume, its input and
   its restart count are derived from the job's own `status`/`input`/

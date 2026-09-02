@@ -44,11 +44,11 @@ import {
     type TimerOptions,
     type Topic,
     type TopicEvent,
-    type TopicPublishReport
+    type TopicPublishReport,
+    type ActorTaskLiveness
 } from '../types';
 import {
     TASK_REMINDER,
-    TASK_REMINDER_MS,
     type TaskLedgerApi,
     type TaskLedgerEntry,
     type TaskLedger
@@ -236,6 +236,8 @@ export interface ActivationHost {
      */
     encodeArgs(args: readonly unknown[]): unknown;
     reminders(ref: ActorRef): ReminderApi;
+    /** Task liveness (#310): make a run findable after this host dies, and forget it. */
+    taskLiveness: Pick<ActorTaskLiveness, 'track' | 'untrack'>;
     /** The actor's task ledger — the reserved `$sigx:tasks` record. */
     tasks(ref: ActorRef): TaskLedgerApi;
     actorClient<D extends AnyActorDefinition>(
@@ -1783,11 +1785,13 @@ export class Activation {
     }
 
     /**
-     * Start one detached task run, DURABLY: the ledger entry is written and
-     * the liveness reminder armed before the body launches, so a crash any
-     * time after `start` resolves still resumes the run. Resolves once the
-     * body is launched — settlement is the run's own business.
-     * Single-flight per name.
+     * Start one detached task run, DURABLY: the ledger entry (unless the
+     * definition derives it from state, #309) is written and the actor is
+     * tracked by task liveness (#310 — the host roster by default, a
+     * reminder under `reminderTaskLiveness()`) before the body launches,
+     * so a crash any time after `start` resolves still resumes the run.
+     * Resolves once the body is launched — settlement is the run's own
+     * business. Single-flight per name.
      */
     async #startTask(name: string, input: unknown): Promise<void> {
         if (this.#faulted) throw this.#faulted;
@@ -1831,11 +1835,30 @@ export class Activation {
                     };
                 });
             }
-            await this.#host
-                .reminders(this.ref)
-                .set(TASK_REMINDER, { due: TASK_REMINDER_MS, period: TASK_REMINDER_MS });
+            await this.#host.taskLiveness.track(this.ref);
         } catch (error) {
             this.#release(run);
+            // The ledger write may have landed before the failure. For a
+            // STORED ledger, a caller who sees start() reject must not find
+            // the run resumed by the next activation, so take the entry
+            // back — best-effort (a failure here leaves the documented
+            // at-least-once behaviour), keyed so a raced replacement run is
+            // never deleted. A DERIVED ledger has nothing to take back
+            // here: whether a rejected start leaves resumable state is the
+            // definition's own contract, since it saved that state before
+            // calling tasks.start (see the defineJob follow-up issue).
+            if (!this.def.__sigxActor.resumeTasks) {
+                try {
+                    await this.#ledger.mutate((ledger) => {
+                        const entry = ledger[name];
+                        if (entry && entry.startedAt === run.startedAt && entry.restarts === 0) {
+                            delete ledger[name];
+                        }
+                    });
+                } catch {
+                    // At-least-once: the entry resumes on the next activation.
+                }
+            }
             throw error;
         }
         this.#launch(run, fn, input);
@@ -1967,19 +1990,19 @@ export class Activation {
         })();
     }
 
-    /** Drop one entry; when the ledger empties, disarm the reminder too. */
+    /** Drop one entry; when the ledger empties, untrack from task liveness. */
     async #forgetTask(name: string): Promise<void> {
         // Derived: the settling run's terminal turn already saved the state
         // this reads, so the entry is gone without a write — and if a fresh
         // run of the same name has started since, the state says so and
-        // the reminder stays armed for it.
+        // the actor stays on the task roster for it.
         const ledger =
             this.#derivedLedger() ??
             (await this.#ledger.mutate((l) => {
                 delete l[name];
             }));
         if (Object.keys(ledger).length === 0) {
-            await this.#host.reminders(this.ref).clear(TASK_REMINDER);
+            await this.#host.taskLiveness.untrack(this.ref);
         }
     }
 

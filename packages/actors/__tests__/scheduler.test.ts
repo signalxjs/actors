@@ -102,8 +102,8 @@ describe('the host drives its background work through the seam', () => {
             defaults: { sweepIntervalMs: 1_000, reminderTickMs: 1_000, callTimeoutMs: 0 }
         });
         await host.start();
-        // Sweeper + reminder tick.
-        expect(scheduler.pending).toBe(2);
+        // Sweeper + reminder tick + task-roster adoption (#310).
+        expect(scheduler.pending).toBe(3);
         await host.stop({ timeoutMs: 1_000 });
         expect(scheduler.pending).toBe(0);
     });
@@ -122,8 +122,8 @@ describe('the host drives its background work through the seam', () => {
         });
         await host.start();
         try {
-            // The reminder tick only — no sweeper.
-            expect(scheduler.pending).toBe(1);
+            // The reminder tick and roster adoption only — no sweeper.
+            expect(scheduler.pending).toBe(2);
 
             // And idle collection genuinely does not happen: an activation
             // older than `idleAfterMs` survives an advance that would have

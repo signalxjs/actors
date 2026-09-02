@@ -20,7 +20,8 @@ import {
     defineActorApp,
     type ActorApp,
     type ActorAppOptions,
-    type HostDefaults
+    type HostDefaults,
+    reminderTaskLiveness
 } from '@sigx/actors/host';
 import {
     handleHostRequestForRuntime,
@@ -239,6 +240,10 @@ export function createHostDurableObject<Env = unknown>(
             const appBase: DurableAppOptions = {
                 storage,
                 reminders,
+                // One actor per object and an alarm that IS the wake-up: a
+                // reminder per running task is the right liveness here, and
+                // a per-host roster would be a roster of one.
+                taskLiveness: reminderTaskLiveness(),
                 // No idle sweeper: the platform evicts this whole object when
                 // it goes idle, so a sweeper could never usefully fire — and
                 // a pending interval would hold the object in memory, and

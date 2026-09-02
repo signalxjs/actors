@@ -232,20 +232,20 @@ export interface StorageCounts {
     saves: number;
     clears: number;
     /**
-     * The LAST write to a reminder shard (`$sigx:reminders`): how many actor
-     * entries the table carried and how many bytes went to the store. The
-     * shard table is rewritten WHOLE on every `reminders.set`/`clear`, so
-     * `entries` is the O(running-jobs) term a job start pays (#307).
+     * The LAST write of a record of `type` (a reminder shard, a task-roster
+     * sub-shard): how many top-level entries the table carried and how many
+     * bytes went to the store. Such tables are rewritten WHOLE, so `entries`
+     * is the O(n) term a write pays (#307, #310).
      *
      * Computed HERE, on demand — the storage calls only keep a reference to
-     * what was written. Stringifying and parsing the shard inside the call
+     * what was written. Stringifying and parsing the table inside the call
      * would put the instrumentation inside the timed section, growing with
      * exactly the term the scenario is trying to isolate.
      */
-    reminderWrite(): { entries: number; bytes: number } | null;
+    lastWrite(type: string): { entries: number; bytes: number } | null;
+    /** Zero the counters and forget the last writes — e.g. after a warm-up run, for a steady-state figure. */
+    reset(): void;
 }
-
-const REMINDER_TYPE = '$sigx:reminders';
 
 /**
  * Wrap a storage so every call is counted — the same idea as
@@ -259,22 +259,27 @@ const REMINDER_TYPE = '$sigx:reminders';
  * always declared it would change what is being measured.
  */
 export function countingStorage(inner: ActorStorage): { storage: ActorStorage; counts: StorageCounts } {
-    // Whichever form the last shard write arrived in. Holding the tree by
-    // reference is safe: `save` transfers ownership of its argument to the
-    // store (#25) and `shardedReminders` builds a fresh table per mutation,
-    // so nothing mutates it after the call.
-    let lastReminder: { json: string } | { state: unknown } | null = null;
+    // Whichever form the last write of each type arrived in. Holding a
+    // tree by reference is safe: `save` transfers ownership of its argument
+    // to the store (#25), and the reminder and roster services never mutate
+    // a table they have handed over.
+    const lastByType = new Map<string, { key: string; payload: { json: string } | { state: unknown } }>();
     const counts: StorageCounts = {
         loads: 0,
         saves: 0,
         clears: 0,
-        reminderWrite() {
-            if (!lastReminder) return null;
-            const json = 'json' in lastReminder ? lastReminder.json : JSON.stringify(lastReminder.state);
+        lastWrite(type) {
+            const last = lastByType.get(type)?.payload;
+            if (!last) return null;
+            const json = 'json' in last ? last.json : JSON.stringify(last.state);
             return {
                 entries: Object.keys(JSON.parse(json) as object).length,
                 bytes: Buffer.byteLength(json)
             };
+        },
+        reset() {
+            counts.loads = counts.saves = counts.clears = 0;
+            lastByType.clear();
         }
     };
     const storage: ActorStorage = {
@@ -284,20 +289,32 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
         },
         save(type, key, state, expectedEtag) {
             counts.saves++;
-            if (type === REMINDER_TYPE) lastReminder = { state };
-            return inner.save(type, key, state, expectedEtag);
+            // Recorded only once the write LANDED: a rejected CAS must not
+            // leave a payload the store never held in the cache.
+            return inner.save(type, key, state, expectedEtag).then((etag) => {
+                lastByType.set(type, { key, payload: { state } });
+                return etag;
+            });
         },
         clear(type, key, expectedEtag) {
             counts.clears++;
-            return inner.clear(type, key, expectedEtag);
+            // The record is gone once the clear LANDS; a stale "last write"
+            // for it would report a payload the store no longer holds. A
+            // clear of a DIFFERENT key (or one that fails its CAS) must not
+            // erase it, so this waits and checks the key.
+            return inner.clear(type, key, expectedEtag).then(() => {
+                if (lastByType.get(type)?.key === key) lastByType.delete(type);
+            });
         }
     };
     if (inner.saveText) {
         const saveText = inner.saveText.bind(inner);
         storage.saveText = (type, key, json, expectedEtag) => {
             counts.saves++;
-            if (type === REMINDER_TYPE) lastReminder = { json };
-            return saveText(type, key, json, expectedEtag);
+            return saveText(type, key, json, expectedEtag).then((etag) => {
+                lastByType.set(type, { key, payload: { json } });
+                return etag;
+            });
         };
     }
     return { storage, counts };

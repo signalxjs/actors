@@ -42,7 +42,8 @@ import type {
     HostStats,
     PublishOptions,
     Topic,
-    TopicPublishReport
+    TopicPublishReport,
+    ActorTaskLiveness
 } from '../types';
 import { actorId } from '../types';
 import {
@@ -54,7 +55,10 @@ import {
 } from './activation';
 import { LocalHost } from './local-host';
 import { shardedReminders } from './reminders';
-import { taskLedger } from './tasks';
+import { rosterTaskLiveness } from './task-liveness';
+import { taskLedger,
+    TASK_REMINDER
+} from './tasks';
 import { memoryStorage } from './storage-memory';
 import { timerScheduler } from './scheduler';
 
@@ -129,6 +133,14 @@ export interface CreateHostOptions {
      */
     reminders?: ActorReminders;
     /**
+     * How a dead host's in-flight detached runs are found again (#310).
+     * Default `rosterTaskLiveness()` — one roster record per host, adopted
+     * by a survivor. `reminderTaskLiveness()` is one reminder per running
+     * task, which is right where a reminder is the platform's own wake-up
+     * (a Durable Object's alarm).
+     */
+    taskLiveness?: ActorTaskLiveness;
+    /**
      * The clock for the sweeper, reminder tick, `ctx.timer` and write-behind
      * flushes. Default `timerScheduler()` (host timers). Replace it on a
      * runtime without background execution — a Worker never fires an
@@ -193,6 +205,7 @@ class HostImpl implements Host {
     #bindings: PlacementBindings | undefined;
     #local: LocalHost;
     #reminders: ActorReminders;
+    #taskLiveness: ActorTaskLiveness;
     #registry = new Map<
         string,
         AnyActorDefinition | (() => Promise<AnyActorDefinition | Record<string, unknown>>)
@@ -329,6 +342,10 @@ class HostImpl implements Host {
             encodeArgs: (args: readonly unknown[]): unknown =>
                 encodeWithHandlers(args, this.#types),
             reminders: (ref) => this.#reminders.apiFor(ref),
+            taskLiveness: {
+                track: (ref: ActorRef) => this.#taskLiveness.track(ref),
+                untrack: (ref: ActorRef) => this.#taskLiveness.untrack(ref)
+            },
             tasks: (ref) =>
                 taskLedger(this.#storage, actorId(ref), {
                     encode: (value) => encodeWithHandlers(value, this.#types),
@@ -376,6 +393,25 @@ class HostImpl implements Host {
             ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true,
             deliver: (ref, name) =>
                 this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall())
+        });
+        // Single-node: an id for THIS host instance, never reused — the
+        // roster's key and what a successor tells its predecessor's by.
+        const hostId =
+            this.#bindings?.hostId ??
+            `h.${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}.${mintCallId()}`}`;
+        this.#taskLiveness = options.taskLiveness ?? rosterTaskLiveness();
+        this.#taskLiveness.bind({
+            storage: this.#storage,
+            scheduler: this.#scheduler,
+            tickMs: this.#defaults.reminderTickMs,
+            hostId,
+            isHostLive: (id) => this.#bindings?.isHostLive?.(id) ?? id === hostId,
+            ownsShard: (shard) => this.#bindings?.ownsReminderShard?.(shard) ?? true,
+            // The same delivery the liveness reminder used: activation
+            // resumes the runs, and the reminder branch self-heals.
+            touch: (ref) =>
+                this.dispatch(ref, REMINDER_METHOD, [TASK_REMINDER], this.#externalCall()),
+            reminders: (ref) => this.#reminders.apiFor(ref)
         });
     }
 
@@ -721,6 +757,35 @@ class HostImpl implements Host {
             // that opens an alarm or a connection must be up before
             // start() resolves.
             await this.#reminders.start();
+            try {
+                await this.#taskLiveness.start();
+            } catch (error) {
+                // Reminders are up, and task liveness may be half-started;
+                // take both down again (each on its own, best-effort) so a
+                // rejected start leaves no tick behind, then fall through
+                // to the placement rollback below.
+                try {
+                    await this.#taskLiveness.stop();
+                } catch (stopError) {
+                    if (__DEV__) {
+                        console.error(
+                            '[sigx actors] rolling back a failed start did not stop task liveness:',
+                            stopError
+                        );
+                    }
+                }
+                try {
+                    await this.#reminders.stop();
+                } catch (stopError) {
+                    if (__DEV__) {
+                        console.error(
+                            '[sigx actors] rolling back a failed start did not stop reminders:',
+                            stopError
+                        );
+                    }
+                }
+                throw error;
+            }
         } catch (error) {
             // The placement already joined — undo that rather than leave
             // this host advertised but not really running.
@@ -773,12 +838,20 @@ class HostImpl implements Host {
         this.#stopSweeper = null;
         // Awaited so an async teardown really finishes, but guarded for the
         // same reason `placement.beginStop()` is: failing to stop reminders
-        // must never cost us the drain.
+        // must never cost us the drain — and each seam is stopped on its
+        // own, so one failing cannot leave the other's tick running.
         try {
             await this.#reminders.stop();
         } catch (error) {
             if (__DEV__) {
                 console.error('[sigx actors] reminders.stop() failed:', error);
+            }
+        }
+        try {
+            await this.#taskLiveness.stop();
+        } catch (error) {
+            if (__DEV__) {
+                console.error('[sigx actors] taskLiveness.stop() failed:', error);
             }
         }
         // Announce the departure BEFORE draining, so cluster peers stop

@@ -4,6 +4,8 @@ import {
     createHost,
     memoryStorage,
     REMINDER_TYPE,
+    ROSTER_INDEX_KEY,
+    ROSTER_TYPE,
     TASKS_TYPE,
     TASK_REMINDER,
     type Host,
@@ -79,7 +81,7 @@ const ID = 'Durable\u0000a';
 const SINCE = new Date('2026-07-29T10:00:00.000Z');
 
 describe('task durability', () => {
-    it('start is durable before it resolves: ledger entry + liveness reminder', async () => {
+    it('start is durable before it resolves: ledger entry + roster entry (#310)', async () => {
         const starts: never[] = [];
         const storage = memoryStorage();
         const def = parkingWorker(starts);
@@ -93,7 +95,12 @@ describe('task durability', () => {
         const ledger = record!.state as TaskLedger;
         expect(Object.keys(ledger)).toEqual(['run']);
         expect(ledger.run!.restarts).toBe(0);
-        expect(await client.reminders()).toContain(TASK_REMINDER);
+        // Liveness is the per-host roster now, not a reminder per task.
+        expect(await client.reminders()).not.toContain(TASK_REMINDER);
+        const index = (await storage.load(ROSTER_TYPE, ROSTER_INDEX_KEY))!.state as Record<string, number>;
+        const [hostId] = Object.keys(index);
+        const roster = (await storage.load(ROSTER_TYPE, `${hostId}/${reminderShardOf(ID)}`))!.state as Record<string, number>;
+        expect(Object.keys(roster)).toEqual([ID]);
     });
 
     it('two CONCURRENT starts of one name launch exactly one run', async () => {

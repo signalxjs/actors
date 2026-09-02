@@ -163,7 +163,9 @@ the authenticated internal mount only.
 ## Background work
 
 All of it runs through the [`ActorScheduler` seam](seams.md#actorscheduler--the-clock-seam):
-the idle sweeper, the reminder tick, `ctx.timer`, write-behind flushes. Call
+the idle sweeper, the reminder tick, the task-roster adoption tick
+([`ActorTaskLiveness`](seams.md#actortaskliveness), #310), `ctx.timer`,
+write-behind flushes. Call
 deadlines and the shutdown drain deliberately do not — they are scoped to an
 in-flight request or to `stop()`, and a runtime that redirects them would break
 the drain.

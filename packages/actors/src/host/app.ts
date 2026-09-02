@@ -32,7 +32,8 @@ import type {
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,
-    Host
+    Host,
+    ActorTaskLiveness
 } from '../types';
 import { createHost, type CreateHostOptions, type HostDefaults } from './host';
 import { memoryStorage } from './storage-memory';
@@ -322,6 +323,8 @@ export interface ActorAppOptions {
     scheduler?: ActorScheduler;
     /** Durable-reminder implementation. Default: the sharded table. */
     reminders?: ActorReminders;
+    /** Task-liveness implementation (#310). Default: the per-host roster. */
+    taskLiveness?: ActorTaskLiveness;
     defaults?: HostDefaults;
 }
 
@@ -650,6 +653,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             ...(c.typeHandlers.length ? { types: c.typeHandlers } : {}),
             ...(this.#options.scheduler ? { scheduler: this.#options.scheduler } : {}),
             ...(this.#options.reminders ? { reminders: this.#options.reminders } : {}),
+            ...(this.#options.taskLiveness ? { taskLiveness: this.#options.taskLiveness } : {}),
             ...(c.contextFactories.length
                 ? { extendContext: contextExtender(c.contextFactories) }
                 : {}),
