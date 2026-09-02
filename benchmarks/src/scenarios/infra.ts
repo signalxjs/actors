@@ -339,7 +339,19 @@ const workerPool: Scenario = {
             READ_METHOD: 'summarize',
             READ_ARGS: JSON.stringify(['payload', Number(process.env.INFRA_DIGEST_ITERS ?? 2_000)])
         };
-        const [pool] = driveFromVm({ ...common, ACTOR_TYPE: 'Digest', KEY_PREFIX: 'wp-pool' });
+        // `ROUTE: '0'`: the driver mints its own token (edge-ladder.mjs) and
+        // the client mints NONE for a `defineWorker` call (#148), so the pool
+        // arm must drive the wire the client actually sends. Note what that
+        // does on the reference estate until #342 lands: ingress-nginx hashes
+        // the EMPTY header onto one pod, so this reads ~1 there — one pod for
+        // all workers — not because the fix failed but because the edge has
+        // no empty-key fallback yet.
+        const [pool] = driveFromVm({
+            ...common,
+            ACTOR_TYPE: 'Digest',
+            KEY_PREFIX: 'wp-pool',
+            ROUTE: '0'
+        });
         const [single] = driveFromVm({
             ...common,
             ACTOR_TYPE: 'DigestActor',

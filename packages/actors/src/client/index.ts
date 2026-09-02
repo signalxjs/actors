@@ -122,6 +122,15 @@ export interface ActorCallInit {
      * after acceptance are counted server-side, never delivered.
      */
     oneWay?: boolean;
+    /**
+     * The ref is a `defineWorker`, stamped by the build. A worker has no
+     * owner to route to — it is placed on whichever host the call lands on
+     * — so a transport MUST mint no routing token for it: a token would pin
+     * every call for one key to one pod and cost the pool the fleet-wide
+     * spread that is its whole point (#148). A router may still read it as
+     * "any host is the right host".
+     */
+    worker?: boolean;
 }
 
 /** One actor subscription on a transport's push channel. */
@@ -278,9 +287,11 @@ async function send(
     // The routing token: the actor's type comes from the symbol, its key is
     // wire arg 0 (the proxy splices it there). Both carriers get the SAME
     // token from one call, so a path segment and a header can never disagree.
+    // A worker gets none in ANY mode — `route` chooses the token's shape,
+    // and a worker has no owner for a token to point at (#148).
     const hash = symbol.lastIndexOf('#');
     const token =
-        hash > 0 && typeof args[0] === 'string'
+        hash > 0 && typeof args[0] === 'string' && init?.worker !== true
             ? routeTokenFor(config.route ?? 'hash', symbol.slice(0, hash), args[0])
             : null;
     // The SAME bytes as the path segment — an LB hashes what it sees, so a
@@ -447,7 +458,12 @@ export function __actorRef(
      * them and the response becomes HTTP-cacheable. Read statically by the
      * build from the same object literal the server validates.
      */
-    reads: readonly string[] = []
+    reads: readonly string[] = [],
+    /**
+     * `true` for a `defineWorker`: the transport then mints no routing token
+     * (see `ActorCallInit.worker`).
+     */
+    worker = false
 ): object {
     const streamNames = new Set(streams);
     const readNames = new Set(reads);
@@ -458,13 +474,18 @@ export function __actorRef(
         // GET for declared reads alone, so letting a `.with({ get: true })`
         // reach a write or a stream would turn one into a 405 — a carrier
         // choice silently breaking calls it has no business touching.
-        const { get: carrier, ...rest } = options ?? {};
-        // `ref` LAST so it is authoritative: a caller's `.with({ ref })`
-        // cannot make a proxy route as some other actor.
+        // `worker` is REMOVED too: whether the type is a worker is the
+        // build's fact, not the call's, so a `.with({ worker: true })` on a
+        // stateful actor must not silently drop its routing token (#148).
+        const { get: carrier, worker: _ignored, ...rest } = options ?? {};
+        // `ref` and `worker` LAST so they are authoritative: a caller's
+        // `.with({ ref })` cannot make a proxy route as some other actor, and
+        // a worker cannot be un-flagged.
         const init: ActorCallInit = {
             ...rest,
             endpoint: options?.endpoint ?? endpoint,
-            ref: { type, key }
+            ref: { type, key },
+            ...(worker ? { worker: true } : {})
         };
         return new Proxy(Object.create(null) as object, {
             get(_target, prop) {

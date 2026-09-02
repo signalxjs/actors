@@ -103,12 +103,46 @@ export const Resize = defineWorker({
             type: 'Resize',
             streams: ['chunks'],
             reads: ['probe'],
-            authorized: true
+            authorized: true,
+            worker: true
         });
+        // The stub carries the worker flag: the client mints no routing token
+        // for a worker, so the edge keeps spreading its calls (#148).
         expect(result.clientModule).toContain(
-            `export const Resize = __actorRef("Resize", "/_sigx/actor", ["chunks"], ["probe"]);`
+            `export const Resize = __actorRef("Resize", "/_sigx/actor", ["chunks"], ["probe"], true);`
         );
         expect(result.clientModule).not.toContain('transform');
+    });
+
+    it('a bare worker still gets the flag, with the positional arrays filled in', () => {
+        const code = `
+import { defineWorker as w } from '@sigx/actors';
+export const Digest = w({ type: 'Digest', allowAnonymous: true, methods: () => ({}) });
+`;
+        const result = extractActors(code, 'src/digest.actor.ts', opts());
+        expect(result.errors).toEqual([]);
+        expect(result.actors[0]).toMatchObject({ type: 'Digest', worker: true });
+        expect(result.clientModule).toContain(
+            `export const Digest = __actorRef("Digest", "/_sigx/actor", [], [], true);`
+        );
+    });
+
+    it('a defineActor is NOT a worker — its stub keeps the routing token', () => {
+        const code = `
+import { defineActor, defineWorker } from '@sigx/actors';
+export const Cart = defineActor({ type: 'Cart', allowAnonymous: true, methods: () => ({}) });
+export const Pool = defineWorker({ type: 'Pool', allowAnonymous: true, methods: () => ({}) });
+`;
+        const result = extractActors(code, 'src/mixed.actor.ts', opts());
+        expect(result.errors).toEqual([]);
+        expect(result.actors.map((a) => [a.type, a.worker])).toEqual([
+            ['Cart', false],
+            ['Pool', true]
+        ]);
+        expect(result.clientModule).toContain(`export const Cart = __actorRef("Cart", "/_sigx/actor");`);
+        expect(result.clientModule).toContain(
+            `export const Pool = __actorRef("Pool", "/_sigx/actor", [], [], true);`
+        );
     });
 
     it('the requireAuthorization gate applies to workers too', () => {
