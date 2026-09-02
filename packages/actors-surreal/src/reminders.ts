@@ -33,6 +33,19 @@
  *
  * Delivery failures are `allSettled` — one bad reminder cannot kill the loop
  * — and the loop is single-flight per provider instance.
+ *
+ * A dispatch that FAILS is not a firing (#306, #326). The claim has already
+ * advanced or deleted the row, so a rejected `deliver()` — a deadline, a
+ * host mid-restart, an `onReminder` that threw — would otherwise be the end
+ * of the wake. Instead the row is re-armed one tick out on the DB clock
+ * (`d = time::now() + tickMs`: a one-shot re-created, a periodic one pulled
+ * forward) in ONE transaction per batch, and each failure is reported
+ * through `context.undelivered`. Same rules as `shardedReminders()`: a row
+ * the actor SET again meanwhile is left as the actor set it (a later
+ * decision wins — the re-arm compares against the due time the claim
+ * wrote), a periodic one it CLEARED stays cleared, and a one-shot it
+ * cleared may be retried once — the claim had already deleted it, so absent
+ * is indistinguishable from untouched.
  */
 import type { ActorReminders, ActorRemindersContext, ReminderApi } from '@sigx/actors';
 import { RecordId } from 'surrealdb';
@@ -89,15 +102,33 @@ const ALL_SHARDS: readonly string[] = Array.from({ length: SHARD_COUNT }, (_v, i
 const ABORTED = /The query was not executed due to a failed transaction/;
 const CLAIM_ATTEMPTS = 5;
 
-/** Statement index of the `RETURN $due` row: BEGIN, LET, UPDATE, DELETE,
+/** Statement index of the `RETURN` row: BEGIN, LET, LET, UPDATE, DELETE,
  *  RETURN, COMMIT — a `query()` result carries one entry per statement,
  *  including the transaction-control ones. */
-const DUE_ROW = 4;
+const CLAIM_ROW = 5;
 
+/** A claimed row, as stored. `id` is what the re-arm addresses. */
 interface DueRow {
+    id: RecordId;
     t: string;
     k: string;
     n: string;
+    tk: string;
+    sh: string;
+    /** Period in ms; 0 is a one-shot (see `set`). */
+    p: number;
+}
+
+/**
+ * What the claim returns: the due rows, and the instant it advanced them
+ * from. `at` travels as a STRING — a SurrealDB datetime has nanoseconds and
+ * the SDK decodes to millisecond precision, so an `at` that went through a
+ * `Date` would never compare equal to the stored `d` again. The re-arm
+ * casts it back with `<datetime>`, exactly.
+ */
+interface Claim {
+    at: string;
+    due: DueRow[];
 }
 
 export function surrealReminders(options: SurrealRemindersOptions = {}): ActorReminders {
@@ -110,15 +141,39 @@ export function surrealReminders(options: SurrealRemindersOptions = {}): ActorRe
      * one-shots, atomically. `d` is in the projection because v3 rejects an
      * `ORDER BY` over a field the selection omits; the two writes push their
      * predicates through `SELECT` subqueries because `UPDATE`/`DELETE` do not
-     * use indexes.
+     * use indexes. `$at` is taken ONCE so that what the periodic rows were
+     * advanced to is exactly `$at + p` — the value the re-arm compares
+     * against.
      */
     const CLAIM = `
 BEGIN;
-LET $due = (SELECT id, t, k, n, p, d FROM ${t.reminder}
-            WHERE sh IN $shards AND d <= time::now() ORDER BY d LIMIT $n);
-UPDATE (SELECT VALUE id FROM $due WHERE p > 0) SET d = time::now() + duration::from_millis(p) RETURN NONE;
+LET $at = time::now();
+LET $due = (SELECT id, t, k, n, tk, sh, p, d FROM ${t.reminder}
+            WHERE sh IN $shards AND d <= $at ORDER BY d LIMIT $n);
+UPDATE (SELECT VALUE id FROM $due WHERE p > 0) SET d = $at + duration::from_millis(p) RETURN NONE;
 DELETE (SELECT VALUE id FROM $due WHERE p = 0) RETURN NONE;
-RETURN $due;
+RETURN { at: <string>$at, due: $due };
+COMMIT;
+`;
+    /**
+     * Put the rows whose dispatch failed back, due one tick from now — one
+     * transaction for the batch. A periodic row is pulled forward only while
+     * `d` is still what the claim wrote (`$at + p`) and that is later than
+     * the retry; a one-shot is re-created only if the record is absent.
+     */
+    const REARM = `
+BEGIN;
+LET $claimed = <datetime>$at;
+LET $retry = time::now() + duration::from_millis($tick);
+FOR $f IN $failed {
+    LET $id = $f.id;
+    IF $f.p > 0 {
+        UPDATE $id SET d = $retry WHERE d = $claimed + duration::from_millis($f.p) AND d > $retry RETURN NONE;
+    };
+    IF $f.p = 0 AND !record::exists($id) {
+        CREATE $id CONTENT { t: $f.t, k: $f.k, n: $f.n, tk: $f.tk, sh: $f.sh, d: $retry, p: 0 } RETURN NONE;
+    };
+};
 COMMIT;
 `;
     const SET = `UPSERT $id CONTENT { t: $t, k: $k, n: $n, tk: $tk, sh: $sh,
@@ -131,18 +186,34 @@ COMMIT;
     let ticking = false;
     let stopped = false;
 
-    /** Committed the moment it returns — BEFORE any delivery. */
-    const claim = async (shards: readonly string[]): Promise<DueRow[]> => {
+    /**
+     * Run one of the two idempotent transactions above, re-running it on a
+     * conflict abort (see `ABORTED`).
+     */
+    const transact = async <R>(
+        statement: string,
+        bindings: Record<string, unknown>,
+        row: number
+    ): Promise<R> => {
         for (let attempt = 1; ; attempt++) {
             try {
-                const result = await db.query<unknown[]>(CLAIM, { shards, n: batchSize });
-                return (result[DUE_ROW] ?? []) as DueRow[];
+                const result = await db.query<unknown[]>(statement, bindings);
+                return result[row] as R;
             } catch (error) {
                 const message = String((error as { message?: unknown } | null)?.message ?? error);
                 if (attempt >= CLAIM_ATTEMPTS || !ABORTED.test(message)) throw error;
             }
         }
     };
+
+    /** Committed the moment it returns — BEFORE any delivery. */
+    const claim = async (shards: readonly string[]): Promise<Claim> => {
+        const result = await transact<Claim | undefined>(CLAIM, { shards, n: batchSize }, CLAIM_ROW);
+        return result ?? { at: '', due: [] };
+    };
+
+    const rearm = (at: string, failed: readonly DueRow[], tickMs: number): Promise<void> =>
+        transact<void>(REARM, { at, failed, tick: Math.max(0, tickMs) }, 0);
 
     const tick = async (): Promise<void> => {
         const context = ctx;
@@ -157,13 +228,63 @@ COMMIT;
             // ticking these rows.
             if (shards.length === 0) return;
             for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch++) {
-                const due = await claim(shards);
+                const { at, due } = await claim(shards);
                 if (due.length === 0) return;
                 // The claims above are already durable; deliveries are
-                // isolated so one failing actor cannot starve the rest.
+                // isolated so one failing actor cannot starve the rest. A
+                // dispatch that fails is reported and collected, and the
+                // batch's failures go back in ONE transaction once every
+                // dispatch has settled (#326).
+                const failed: DueRow[] = [];
                 await Promise.allSettled(
-                    due.map((row) => context.deliver({ type: row.t, key: row.k }, row.n))
+                    due.map(async (row) => {
+                        const ref = { type: row.t, key: row.k };
+                        try {
+                            // Awaited INSIDE the try: the context is
+                            // pluggable, and a `deliver` that throws before
+                            // it returns a promise must land here exactly
+                            // like a rejection.
+                            await context.deliver(ref, row.n);
+                        } catch (error) {
+                            // Collected first — the re-arm never depends on
+                            // the reporter behaving.
+                            failed.push(row);
+                            if (__DEV__) {
+                                console.error(
+                                    `[sigx actors-surreal] reminder "${row.n}" on ` +
+                                        `${row.t}/${row.k} failed (retrying next tick):`,
+                                    error
+                                );
+                            }
+                            try {
+                                context.undelivered?.(ref, row.n, error);
+                            } catch (reportError) {
+                                if (__DEV__) {
+                                    console.error(
+                                        '[sigx actors-surreal] ActorRemindersContext.undelivered threw:',
+                                        reportError
+                                    );
+                                }
+                            }
+                        }
+                    })
                 );
+                if (failed.length > 0) {
+                    try {
+                        await rearm(at, failed, context.tickMs);
+                    } catch (error) {
+                        // The database blinked between the claim and now —
+                        // those wakes ARE lost, and the counter above already
+                        // says so. Do not fail the tick over it.
+                        if (__DEV__) {
+                            console.error(
+                                `[sigx actors-surreal] could not re-arm ${failed.length} failed ` +
+                                    'reminder(s):',
+                                error
+                            );
+                        }
+                    }
+                }
                 if (due.length < batchSize) return;
             }
         } finally {

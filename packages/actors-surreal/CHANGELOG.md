@@ -4,6 +4,26 @@
 
 ### Fixed
 
+- **A reminder whose dispatch fails is retried next tick instead of being
+  lost, and counted** (#326). `surrealReminders` claims a due row — advancing
+  a periodic one, deleting a one-shot — *before* it dispatches, and a
+  rejected `deliver()` (a call deadline, a host mid-restart, an `onReminder`
+  that threw) was at most logged: the wake was gone, and
+  `HostStats.remindersUndelivered` read `0`. The default `shardedReminders()`
+  got the retry in #306; this is the same contract here. A rejected (or
+  synchronously throwing) `deliver()` now re-arms its row one tick out on
+  the database clock (`d = time::now() + tickMs`: a one-shot re-created, a
+  periodic one pulled forward) in ONE transaction per claimed batch, and each
+  failed attempt is reported through `ActorRemindersContext.undelivered`, so
+  the host's counter, `ops()`, `metrics()` and the cluster's per-host report
+  now say so on SurrealDB too. Same rules as the sharded table: a row the
+  actor set again meanwhile is left as the actor set it (the re-arm compares
+  against the due time the claim wrote — a later decision wins), a periodic
+  one it cleared stays cleared, and a one-shot it cleared while its dispatch
+  was failing may be retried once — so `onReminder` should be idempotent, the
+  assumption every at-least-once consumer already makes. The claim now takes
+  `time::now()` once per transaction, so what it advances a periodic row to
+  is exactly what the re-arm compares against.
 - **`leave()` no longer races its own heartbeat** (#209). The beat wrote
   the host record with an untracked `void writeSelf()` every
   `heartbeatMs`; `leave()` cleared the interval and issued its `DELETE`,
