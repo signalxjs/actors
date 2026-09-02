@@ -33,9 +33,12 @@ const createRedisStorage: StorageConformanceFactory =
             // text path (#238): the saveText cases must run here, not skip.
             saveText: true,
             async stop() {
-                const keys = await client.keys(`${namespace}*`);
-                if (keys.length) await client.del(...keys);
-                await client.quit();
+                try {
+                    const keys = await client.keys(`${namespace}*`);
+                    if (keys.length) await client.del(...keys);
+                } finally {
+                    await client.quit();
+                }
             }
         };
     };
