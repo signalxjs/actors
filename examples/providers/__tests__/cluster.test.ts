@@ -152,6 +152,17 @@ describe('the exposition reader against the real exporter', () => {
     });
 });
 
+describe('stop()', () => {
+    it('resolves only once every listener has actually closed', async () => {
+        const demo = await start();
+        const closed = demo.members.map((m) => new Promise<boolean>((r) => m.server.once('close', () => r(true))));
+        let settled = 0;
+        for (const p of closed) void p.then(() => settled++);
+        await demo.stop();
+        expect(settled).toBe(3);
+    });
+});
+
 describe('the env knobs', () => {
     it('parsePorts takes exactly three ports and defaults when unset', () => {
         expect(parsePorts(undefined)).toEqual([5591, 5592, 5593]);

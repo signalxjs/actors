@@ -42,6 +42,13 @@ if (!url) process.exit(0);
 
 const namespace = process.env.SURREAL_NS ?? 'sigx_demo';
 const database = process.env.SURREAL_DB ?? 'demo';
+// Both are spliced into DDL below (DEFINE takes an identifier, not a
+// parameter), so they are held to plain identifiers rather than trusted.
+for (const [name, value] of [['SURREAL_NS', namespace], ['SURREAL_DB', database]]) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+        throw new Error(`${name} must be a plain identifier ([A-Za-z_][A-Za-z0-9_]*); got "${value}"`);
+    }
+}
 const db = new Surreal();
 await db.connect(url, {
     namespace,

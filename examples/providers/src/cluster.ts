@@ -317,7 +317,13 @@ export async function startCluster(options: DemoClusterOptions): Promise<DemoClu
             await Promise.all(
                 members.filter((m) => m.server.listening).map((m) => m.app.stop({ timeoutMs: 2000 }))
             );
-            for (const m of members) if (m.server.listening) m.server.close();
+            // Await the close callbacks, or a test's afterEach resolves with
+            // listeners still winding down and the next suite trips over them.
+            await Promise.all(
+                members
+                    .filter((m) => m.server.listening)
+                    .map((m) => new Promise<void>((r) => m.server.close(() => r())))
+            );
         }
     };
     return demo;
