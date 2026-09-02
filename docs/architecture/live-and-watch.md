@@ -378,7 +378,7 @@ reaches 1000). The durable sizing rule, cheapest option first:
    makes the pool arithmetic moot whatever the reads do.
 
 **Calls share that pool with watches, and a call awaited inside a turn is
-the worse tenant (#302).** A turn awaiting a cross-host `ctx.actor()` holds
+the worst tenant (#302).** A turn awaiting a cross-host `ctx.actor()` holds
 its own actor's turn queue AND one pooled connection to the peer until the
 peer answers. When the peer's turns are themselves awaiting calls back
 through the same pool — a parent awaiting `child.start()` on N children
