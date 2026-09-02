@@ -309,6 +309,16 @@ describe('a case that cannot fail is decoration — the suite goes red against a
             }, true)
         ],
         [
+            'saveText is present but not callable',
+            'saveText(json) is save(JSON.parse(json)): the same record either way',
+            // The host gates on truthiness and then calls it — this adapter
+            // crashes the first durable save, and must not pass on a skip.
+            wrap((inner) => ({
+                ...inner,
+                saveText: true as unknown as ActorStorage['saveText']
+            }))
+        ],
+        [
             'saveText stores the JSON text as a string state',
             'saveText(json) is save(JSON.parse(json)): the same record either way',
             wrap((inner) => ({

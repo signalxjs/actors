@@ -205,6 +205,12 @@ function textPath(
     harness: StorageConformanceHarness
 ): NonNullable<ActorStorage['saveText']> | ConformanceSkip {
     if (typeof storage.saveText === 'function') return storage.saveText.bind(storage);
+    // The host gates on truthiness and then CALLS it: a present-but-not-callable
+    // saveText crashes the first durable save, so it is a failure, never a skip.
+    assert(
+        storage.saveText == null,
+        `saveText is present but not a function (${show(storage.saveText)}); the host would call it`
+    );
     assert(
         !harness.saveText,
         'the harness declares saveText, but the storage has none. A decorator that returns ' +
