@@ -1,0 +1,28 @@
+{
+    "name": "providers-example",
+    "private": true,
+    "type": "module",
+    "description": "The provider packages, each as a seam swap on one three-host cluster - Postgres and SurrealDB for storage + membership, the TCP host-to-host transport, and the Prometheus / OpenTelemetry exporters",
+    "scripts": {
+        "pg": "node pg-demo.mjs",
+        "surreal": "node surreal-demo.mjs",
+        "tcp": "node tcp-demo.mjs",
+        "otel": "node otel-demo.mjs",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@opentelemetry/api": "^1.9.0",
+        "@opentelemetry/sdk-metrics": "^2.0.0",
+        "@sigx/actors": "workspace:*",
+        "@sigx/actors-otel": "workspace:*",
+        "@sigx/actors-pg": "workspace:*",
+        "@sigx/actors-surreal": "workspace:*",
+        "@sigx/actors-tcp": "workspace:*",
+        "pg": "^8.13.1",
+        "surrealdb": "^2.0.8"
+    },
+    "devDependencies": {
+        "@types/pg": "^8.11.10",
+        "typescript": "^6.0.3"
+    }
+}

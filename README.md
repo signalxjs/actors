@@ -48,7 +48,7 @@ architecture notes in [`docs/`](docs).
 | [`@sigx/actors-otel`](packages/actors-otel) | Observability exporters — Prometheus text exposition, OpenTelemetry traces and a metrics bridge |
 | [`benchmarks`](benchmarks) | Performance baselines — throughput, latency, heap footprint, leak detection. Run locally, and A/B'd on perf-sensitive PRs: timings inform, metrics marked `exact` gate (not published) |
 
-Four runnable examples, in the order they are worth reading:
+Five runnable examples, in the order they are worth reading:
 
 [`examples/counter`](examples/counter) — the runtime with **no framework at
 all**: plain DOM, one file per idea. The build-time client swap, a `watch`
@@ -89,6 +89,20 @@ secret in it.
 ```sh
 pnpm --filter counter-example cluster:serve   # terminal 1
 pnpm --filter dashboard-example dev           # terminal 2 → http://localhost:5490
+```
+
+[`examples/providers`](examples/providers) — the **provider packages**, each
+as a seam swap on one three-host cluster: `@sigx/actors-pg` and
+`@sigx/actors-surreal` for storage + membership (env-gated, with the DDL
+step explicit), `@sigx/actors-tcp` for the host-to-host link (and a socket
+count that shows why), and `@sigx/actors-otel`'s Prometheus scrape and
+OpenTelemetry bridge read back off one digest. No UI; every step asserts.
+
+```sh
+pnpm --filter providers-example tcp                               # no infrastructure
+pnpm --filter providers-example otel                              # no infrastructure
+PG_URL=postgres://… pnpm --filter providers-example pg            # skips when unset
+SURREAL_URL=ws://127.0.0.1:8000 pnpm --filter providers-example surreal
 ```
 
 ### Performance & deployment rig

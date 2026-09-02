@@ -200,6 +200,43 @@ importers:
         specifier: ^8.0.3
         version: 8.1.5(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)
 
+  examples/providers:
+    dependencies:
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.1
+      '@opentelemetry/sdk-metrics':
+        specifier: ^2.0.0
+        version: 2.10.0(@opentelemetry/api@1.9.1)
+      '@sigx/actors':
+        specifier: workspace:*
+        version: link:../../packages/actors
+      '@sigx/actors-otel':
+        specifier: workspace:*
+        version: link:../../packages/actors-otel
+      '@sigx/actors-pg':
+        specifier: workspace:*
+        version: link:../../packages/actors-pg
+      '@sigx/actors-surreal':
+        specifier: workspace:*
+        version: link:../../packages/actors-surreal
+      '@sigx/actors-tcp':
+        specifier: workspace:*
+        version: link:../../packages/actors-tcp
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+      surrealdb:
+        specifier: ^2.0.8
+        version: 2.0.8(tslib@2.8.1)(typescript@6.0.3)
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.3
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/actors:
     devDependencies:
       '@sigx/reactivity':

@@ -1,0 +1,43 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        // DOM for the fetch types (`HeadersInit`, `RequestInit`) the host source
+        // is written against — every example compiles that source through
+        // `paths`, and Node 24 has the same globals at runtime.
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["node"],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true,
+        // The demo entries import `./src/*.ts` WITH the extension, because
+        // Node runs them directly on its own type stripping.
+        "allowImportingTsExtensions": true,
+        // `@sigx/actors*` resolve from SOURCE, as the root config and every
+        // other example do, so a clean checkout typechecks before anything
+        // is built. Without this the packages' own `exports` send every one
+        // of them at `dist/`, and the root `typecheck` script would depend
+        // on a prior `pnpm build` — which CI runs AFTER it.
+        "paths": {
+            "@sigx/actors": ["../../packages/actors/src/index.ts"],
+            "@sigx/actors/host": ["../../packages/actors/src/host/index.ts"],
+            "@sigx/actors/node": ["../../packages/actors/src/node/index.ts"],
+            "@sigx/actors/server": ["../../packages/actors/src/server/index.ts"],
+            "@sigx/actors/cluster/frames": ["../../packages/actors/src/cluster/frames.ts"],
+            "@sigx/actors/cluster": ["../../packages/actors/src/cluster/index.ts"],
+            "@sigx/actors-otel/prometheus": ["../../packages/actors-otel/src/prometheus.ts"],
+            "@sigx/actors-otel": ["../../packages/actors-otel/src/index.ts"],
+            "@sigx/actors-pg": ["../../packages/actors-pg/src/index.ts"],
+            "@sigx/actors-surreal": ["../../packages/actors-surreal/src/index.ts"],
+            "@sigx/actors-tcp": ["../../packages/actors-tcp/src/index.ts"]
+        }
+    },
+    // `env.d.ts` declares `__DEV__`, the runtime's compile-time flag, pulled
+    // in because `paths` above compiles that source as part of this program.
+    // `__tests__` is in here so the harness tests are typechecked by the
+    // root `typecheck`, not just transpiled by vitest.
+    "include": ["src/**/*.ts", "__tests__/**/*.ts", "../../packages/actors/src/env.d.ts"]
+}
