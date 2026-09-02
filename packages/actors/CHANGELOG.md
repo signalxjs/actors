@@ -104,7 +104,10 @@
   wind-down and its bookkeeping, and the rollback of a start whose durable
   half failed. The grace-timeout warning keeps its split — a body that
   ignored its signal vs. a storage round trip still in flight — with a
-  not-yet-launched start counted as the latter. Closes the gap #313 left.
+  not-yet-launched start counted as the latter. A resume whose input the
+  state codec rejects is rolled back like a failed ledger write, instead of
+  holding its reservation (and, now, every later stop's grace) for good.
+  Closes the gap #313 left.
 
 - **A `defineWorker` call no longer carries a routing token** (#148). The
   client minted a token for a worker call exactly as for an actor call, so

@@ -1332,9 +1332,11 @@ export class Activation {
     }
 
     /**
-     * Wait for every launched run to settle — signalled bodies AND the
-     * bookkeeping of runs whose body already returned — bounded by
-     * `taskGraceMs`. A host timer on purpose (not the scheduler): the grace
+     * Wait for every RESERVED run to settle — signalled bodies, the
+     * bookkeeping of runs whose body already returned, and a start whose
+     * durable half (ledger write / liveness track) is still in flight or
+     * rolling back after failing (#313, #333) — bounded by `taskGraceMs`.
+     * A host timer on purpose (not the scheduler): the grace
      * is part of a stop already in flight, same as the shutdown drain
      * deadline — and on a scheduler that never fires, a signal-ignoring
      * task would otherwise hold deactivation forever.
@@ -2035,6 +2037,7 @@ export class Activation {
         // Same synchronous reservation as #startTask: activation-resume and
         // the reminder self-heal can race for one name.
         this.#reserve(run);
+        let input: unknown;
         try {
             // Derived: the restart count lives in the definition's state
             // (`attempts`, persisted by the run's own first turn).
@@ -2044,17 +2047,21 @@ export class Activation {
                     if (persisted) persisted.restarts = run.restarts;
                 });
             }
+            // A derived entry's input IS live state; a stored one is already
+            // a revived copy. Either way the body gets no reference into
+            // state. Inside the rollback: the codec can throw on an input it
+            // cannot encode, and a run that never launches must not stay
+            // reserved — it would hold the single-flight gate, the keep-alive
+            // and (from #333) every later deactivation's grace wait.
+            input =
+                this.def.__sigxActor.resumeTasks && entry.input !== undefined
+                    ? this.#host.cloneState(entry.input)
+                    : entry.input;
         } catch (error) {
             this.#release(run);
             this.#settle(run);
             throw error;
         }
-        // A derived entry's input IS live state; a stored one is already a
-        // revived copy. Either way the body gets no reference into state.
-        const input =
-            this.def.__sigxActor.resumeTasks && entry.input !== undefined
-                ? this.#host.cloneState(entry.input)
-                : entry.input;
         this.#launch(run, fn, input);
     }
 
