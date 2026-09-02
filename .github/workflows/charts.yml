@@ -10,6 +10,13 @@
 # Cheap on purpose: a kind cluster is ~40s and nothing here deploys an
 # image or waits on a pod — every chart is rendered and then submitted as a
 # server-side dry run, which is validation plus admission and no workload.
+#
+# The second gate here is the render-equivalence suite
+# (`perf/aks/__tests__/chart-equivalence.test.ts`, #59): the two charts were
+# hand-copied from one another and drift, so it renders both and asserts
+# the shared hardening lessons (probes, PDB, spread, resources, drain
+# budget) still agree. It needs `helm`, which only this job installs — the
+# main CI matrix skips it.
 name: Charts
 
 on:
@@ -18,12 +25,14 @@ on:
     paths:
       - 'examples/**/deploy/**'
       - 'perf/**/deploy/**'
+      - 'perf/aks/__tests__/chart-equivalence.test.ts'
       - '.github/workflows/charts.yml'
   push:
     branches: [main]
     paths:
       - 'examples/**/deploy/**'
       - 'perf/**/deploy/**'
+      - 'perf/aks/__tests__/chart-equivalence.test.ts'
       - '.github/workflows/charts.yml'
 
 # Read-only: this renders charts and submits server-side dry runs against a
@@ -42,10 +51,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: pnpm/action-setup@v6.0.10
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Create a kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: charts
+
+      # Here and not later: kind-action is what puts `helm` on PATH, and a
+      # chart that has lost a lesson should fail in seconds — before the 6m
+      # ingress-nginx install below, not after it.
+      - name: The shared hardening lessons agree across both charts
+        run: pnpm test perf/aks/__tests__/chart-equivalence
 
       # Installed from its Helm chart, NOT the kind provider manifest: that
       # manifest pins the controller to a node labelled `ingress-ready=true`
