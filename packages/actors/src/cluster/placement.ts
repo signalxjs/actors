@@ -256,7 +256,7 @@ export interface ClusterPlacement extends ActorPlacement {
      * `transport.onMembership` posture) and must not throw: a throw
      * aborts the remaining subscribers and rejects that refresh.
      *
-     * Optional on the interface (the `members` posture) so a hand-rolled
+     * Optional on the interface, exactly as `members` is, so a hand-rolled
      * placement predating it keeps compiling.
      */
     onChange?(cb: (view: MembershipView) => void): () => void;
