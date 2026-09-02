@@ -8,7 +8,8 @@
  * zeroes for a 401 costs ten minutes debugging a healthy cluster.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { httpSource, OpsRequestError } from '@sigx/actors-monitor';
+import { httpSource, OpsRequestError, withSockets } from '@sigx/actors-monitor';
+import { host } from './fixture';
 
 const SECRET = 'ops-secret';
 
@@ -25,6 +26,27 @@ const opsBody = {
     activations: [{ type: 'Counter', key: 'a', queued: 1, ageMs: 500, idleMs: 0, keptAlive: false }],
     health: { live: true, ready: true, uptimeMs: 65_000, checks: {}, host: null },
     ops: { metrics: { calls: { total: 10, failed: 1, streams: 0 } } }
+};
+
+/** The `sockets` ops section an app with a socket mount publishes (#166). */
+const socketsSection = {
+    connectionsOpened: 7,
+    connectionsClosed: 4,
+    connectionsRefused: 2,
+    callsStarted: 40,
+    callsFailed: 3,
+    subscriptionsOpened: 9,
+    subscriptionsClosed: 5,
+    protocolBreaches: 1,
+    lifetimeCloses: 2,
+    deliveries: 1200,
+    deliveryBytes: 48_000,
+    throttleQuantized: 6,
+    open: 3,
+    inFlight: 1,
+    subscriptions: 4,
+    bufferedBytes: 512,
+    lifetimeMs: null
 };
 
 const clusterBody = {
@@ -121,6 +143,57 @@ describe('httpSource', () => {
         // The one flag that must never be smoothed over.
         expect(snapshot.partial).toBe(true);
         expect(snapshot.cluster?.unreachable).toHaveLength(1);
+    });
+
+    it('carries the sockets section onto the polled host, and nowhere else (#166)', async () => {
+        // Single node: the one row is the polled host.
+        const single = httpSource({
+            url: 'http://host.test',
+            secret: SECRET,
+            fetch: stubFetch({
+                '/_sigx/ops': { status: 200, body: { ...opsBody, ops: { ...opsBody.ops, sockets: socketsSection } } },
+                '/_sigx/ops/cluster': { status: 404 }
+            })
+        });
+        const alone = await single.snapshot();
+        expect(alone.hosts[0]!.sockets?.open).toBe(3);
+        expect(alone.hosts[0]!.sockets?.bufferedBytes).toBe(512);
+
+        // Cluster: the fan-out carries no socket digest, so the section
+        // belongs to `from` — and a peer's null means "said nothing", not
+        // "no sockets there".
+        const clustered = httpSource({
+            url: 'http://host.test',
+            secret: SECRET,
+            fetch: stubFetch({
+                '/_sigx/ops': { status: 200, body: { ...opsBody, ops: { ...opsBody.ops, sockets: socketsSection } } },
+                '/_sigx/ops/cluster': {
+                    status: 200,
+                    body: {
+                        ...clusterBody,
+                        hosts: [
+                            clusterBody.hosts[0],
+                            { ...clusterBody.hosts[0], hostId: 'host-b', address: 'http://b:3000' }
+                        ]
+                    }
+                }
+            })
+        });
+        const fleet = await clustered.snapshot();
+        expect(fleet.hosts.map((h) => h.sockets?.open ?? null)).toEqual([3, null]);
+    });
+
+    it('reports no sockets section as null, never as zeroes', async () => {
+        const source = httpSource({
+            url: 'http://host.test',
+            secret: SECRET,
+            fetch: stubFetch({
+                '/_sigx/ops': { status: 200, body: opsBody },
+                '/_sigx/ops/cluster': { status: 404 }
+            })
+        });
+        const snapshot = await source.snapshot();
+        expect(snapshot.hosts[0]!.sockets).toBeNull();
     });
 
     it('sends the bearer token on every route', async () => {
@@ -225,5 +298,25 @@ describe('httpSource', () => {
     it('labels itself by origin, so it is never ambiguous what is being watched', () => {
         expect(httpSource({ url: 'http://host.test/' }).kind).toBe('http');
         expect(httpSource({ url: 'http://host.test/' }).label).toBe('http://host.test');
+    });
+});
+
+describe('withSockets', () => {
+    it('puts the section on the polled host and clears every other row, by construction (#166)', () => {
+        // Rows that arrive already carrying a section — a reused snapshot,
+        // a caller that guessed — must not leak it onto the wrong host: the
+        // invariant is "exactly one row, the polled one", not "at least".
+        const stale = { ...socketsSection, open: 99 };
+        const rows = withSockets(
+            [host({ hostId: 'a', sockets: stale }), host({ hostId: 'b', sockets: stale })],
+            'b',
+            socketsSection
+        );
+        expect(rows.map((row) => row.sockets?.open ?? null)).toEqual([null, 3]);
+    });
+
+    it('answers null on the polled host too when it published nothing', () => {
+        const rows = withSockets([host({ hostId: 'a', sockets: socketsSection })], 'a', null);
+        expect(rows[0]!.sockets).toBeNull();
     });
 });

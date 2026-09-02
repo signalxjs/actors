@@ -47,7 +47,8 @@ const { source } = vi.hoisted(() => {
                 meta: null,
                 metrics: null,
                 health: null,
-                activations: null
+                activations: null,
+                sockets: null
             }
         ],
         cluster: null,

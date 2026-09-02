@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, health, memoryStorage, metrics, ops } from '@sigx/actors/host';
+import { defineActorApp, health, memoryStorage, metrics, ops, type ActorPlugin } from '@sigx/actors/host';
 import { embeddedSource, EmbeddedSourceError } from '@sigx/actors-cli/source';
 
 const quiet = { sweepIntervalMs: 600_000, reminderTickMs: 600_000, callTimeoutMs: 0 };
@@ -122,6 +122,59 @@ describe('embeddedSource', () => {
             expect((await source.snapshot()).health?.ready).toBe(true);
         } finally {
             await source.close();
+        }
+    });
+
+    it('carries the sockets ops section onto the host row, and null without one (#166)', async () => {
+        // The section an app with a socket mount publishes via
+        // `registry.reportOps('sockets', () => socketStats().snapshot())` —
+        // faked here, because a real socket mount is the transport's concern.
+        const section = {
+            connectionsOpened: 7,
+            connectionsClosed: 4,
+            connectionsRefused: 2,
+            callsStarted: 40,
+            callsFailed: 3,
+            subscriptionsOpened: 9,
+            subscriptionsClosed: 5,
+            protocolBreaches: 1,
+            lifetimeCloses: 2,
+            deliveries: 1200,
+            deliveryBytes: 48_000,
+            throttleQuantized: 6,
+            open: 3,
+            inFlight: 1,
+            subscriptions: 4,
+            bufferedBytes: 512,
+            lifetimeMs: null
+        };
+        const sockets: ActorPlugin = {
+            name: 'test:sockets',
+            setup: (registry) => registry.reportOps('sockets', () => section)
+        };
+        const observe = ops({ secret: 'test' });
+        const app = defineActorApp({ actors: [Counter], storage: memoryStorage(), defaults: quiet })
+            .use(observe)
+            .use(sockets);
+        const source = await embeddedSource({
+            module: 'test://app',
+            load: () => Promise.resolve({ app, ops: observe } as Record<string, unknown>)
+        });
+        try {
+            const snapshot = await source.snapshot();
+            expect(snapshot.hosts).toHaveLength(1);
+            expect(snapshot.hosts[0]!.sockets).toEqual(section);
+        } finally {
+            await source.close();
+        }
+
+        // Without the section, the row says nothing — `null`, never zeroes:
+        // a host with no socket mount is not a host with zero sessions.
+        const bare = await embeddedSource({ module: 'test://app', load: moduleWith().load });
+        try {
+            expect((await bare.snapshot()).hosts[0]!.sockets).toBeNull();
+        } finally {
+            await bare.close();
         }
     });
 

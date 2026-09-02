@@ -8,8 +8,18 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, metrics, type ActorApp, type MetricsDigest } from '@sigx/actors/host';
-import { prometheusOps, renderPrometheus } from '@sigx/actors-otel/prometheus';
+import {
+    defineActorApp,
+    metrics,
+    type ActorApp,
+    type ActorPlugin,
+    type MetricsDigest
+} from '@sigx/actors/host';
+import {
+    prometheusOps,
+    renderPrometheus,
+    type SocketStatsDigest
+} from '@sigx/actors-otel/prometheus';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -34,6 +44,36 @@ const digest: MetricsDigest = {
     byType: { Counter: { calls: 10, failed: 1 }, '(other)': { calls: 2, failed: 1 } },
     byMethod: { 'Counter#increment': { calls: 10, failed: 1 }, '(other)': { calls: 2, failed: 1 } }
 };
+
+/**
+ * A `socketStats().digest()` as the app would publish it (#166): 7 sessions
+ * opened, 4 closed, so 3 open now; two lifetimes in bucket 1 (2µs) and two
+ * in bucket 20 (21µs), the same shape as the metrics histogram above.
+ */
+const socketDigest: SocketStatsDigest = {
+    connectionsOpened: 7,
+    connectionsClosed: 4,
+    connectionsRefused: 2,
+    callsStarted: 40,
+    callsFailed: 3,
+    subscriptionsOpened: 9,
+    subscriptionsClosed: 5,
+    protocolBreaches: 1,
+    lifetimeCloses: 2,
+    deliveries: 1200,
+    deliveryBytes: 48_000,
+    throttleQuantized: 6,
+    layout: 'll-4-26',
+    lifetime: { count: 4, sumUs: 46, minUs: 2, maxUs: 21, idx: [1, 20], n: [2, 2] }
+};
+
+/** A plugin publishing a fixed socket digest, the way an app with a socket mount does. */
+const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
+    name: 'fake-sockets',
+    setup(registry) {
+        registry.reportDigest('sockets', () => digest);
+    }
+});
 
 describe('renderPrometheus', () => {
     it('renders counters, histograms and gauges from a known digest', () => {
@@ -96,6 +136,61 @@ describe('renderPrometheus', () => {
         expect(lines).toContain('# TYPE sigx_actors_call_duration_seconds histogram');
     });
 
+    it('renders the socket families from the sockets digest (#166)', () => {
+        const text = renderPrometheus(digest, null, { sockets: socketDigest });
+        const lines = text.split('\n');
+
+        // Counters, one-to-one with the totals.
+        expect(lines).toContain('sigx_actors_socket_connections_opened_total 7');
+        expect(lines).toContain('sigx_actors_socket_connections_closed_total 4');
+        expect(lines).toContain('sigx_actors_socket_connections_refused_total 2');
+        expect(lines).toContain('sigx_actors_socket_calls_total 40');
+        expect(lines).toContain('sigx_actors_socket_calls_failed_total 3');
+        expect(lines).toContain('sigx_actors_socket_subscriptions_opened_total 9');
+        expect(lines).toContain('sigx_actors_socket_subscriptions_closed_total 5');
+        expect(lines).toContain('sigx_actors_socket_protocol_breaches_total 1');
+        expect(lines).toContain('sigx_actors_socket_lifetime_closes_total 2');
+        expect(lines).toContain('sigx_actors_socket_deliveries_total 1200');
+        expect(lines).toContain('sigx_actors_socket_delivery_bytes_total 48000');
+        expect(lines).toContain('sigx_actors_socket_throttle_quantized_total 6');
+        expect(lines).toContain('# TYPE sigx_actors_socket_deliveries_total counter');
+        // The unit caveat is on the family, not hidden in a README.
+        expect(text).toContain('UTF-16 code units');
+
+        // Gauges: opened − closed IS the live count.
+        expect(lines).toContain('# TYPE sigx_actors_socket_sessions gauge');
+        expect(lines).toContain('sigx_actors_socket_sessions 3');
+        expect(lines).toContain('sigx_actors_socket_subscriptions 4');
+
+        // The lifetime histogram, on the same exact-at-native-bounds grid.
+        expect(lines).toContain('# TYPE sigx_actors_socket_connection_duration_seconds histogram');
+        expect(lines).toContain('sigx_actors_socket_connection_duration_seconds_bucket{le="0.000001"} 0');
+        expect(lines).toContain('sigx_actors_socket_connection_duration_seconds_bucket{le="0.000002"} 2');
+        expect(lines).toContain('sigx_actors_socket_connection_duration_seconds_bucket{le="0.000032"} 4');
+        expect(lines).toContain('sigx_actors_socket_connection_duration_seconds_bucket{le="+Inf"} 4');
+        expect(lines).toContain('sigx_actors_socket_connection_duration_seconds_count 4');
+    });
+
+    it('emits no socket family at all without a sockets digest', () => {
+        // A host with no socket mount is not a host with zero connections.
+        expect(renderPrometheus(digest, null, {})).not.toContain('socket');
+    });
+
+    it('renders socket counters but no lifetime histogram before any session closed', () => {
+        const text = renderPrometheus(digest, null, { sockets: { ...socketDigest, lifetime: null } });
+        expect(text).toContain('sigx_actors_socket_connections_opened_total 7');
+        expect(text).not.toContain('socket_connection_duration');
+    });
+
+    it('checks the sockets digest layout on its own', () => {
+        // The two digests come from different providers; a foreign layout
+        // on one must not cost the other its distribution, and vice versa.
+        const text = renderPrometheus(digest, null, { sockets: { ...socketDigest, layout: 'll-5-30' } });
+        expect(text).toContain('sigx_actors_call_duration_seconds_count 8');
+        expect(text).toContain('sigx_actors_socket_sessions 3');
+        expect(text).not.toContain('socket_connection_duration');
+    });
+
     it('degrades an unknown layout to counters only', () => {
         const foreign = { ...digest, layout: 'll-5-30' };
         const text = renderPrometheus(foreign, null, {});
@@ -144,9 +239,10 @@ afterEach(async () => {
     running = null;
 });
 
-async function startApp(secret?: string, withMetrics = true) {
+async function startApp(secret?: string, withMetrics = true, sockets?: SocketStatsDigest) {
     let app = defineActorApp({ actors: [Counter], defaults: quiet });
     if (withMetrics) app = app.use(metrics());
+    if (sockets) app = app.use(socketsPlugin(sockets));
     app = app.use(prometheusOps(secret !== undefined ? { secret } : {}));
     running = app;
     const host = await app.start();
@@ -170,6 +266,18 @@ describe('prometheusOps endpoint', () => {
         const text = await response.text();
         expect(text).toContain('sigx_actors_calls_total{type="Counter"} 1');
         expect(text).toContain('sigx_actors_activations{type="Counter"} 1');
+    });
+
+    it('reads the sockets digest through the registry, beside metrics (#166)', async () => {
+        const { route } = await startApp('s3cret', true, socketDigest);
+        const response = await get(route, { authorization: 'Bearer s3cret' });
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        expect(text).toContain('sigx_actors_socket_sessions 3');
+        expect(text).toContain('sigx_actors_socket_deliveries_total 1200');
+        // And the metrics families are still there — a second read, not a
+        // replacement.
+        expect(text).toContain('sigx_actors_metrics_window_seconds');
     });
 
     it('answers one 401 for missing and wrong bearer alike', async () => {

@@ -8,4 +8,5 @@
  */
 export { otelTraces, type OtelTracesOptions } from './traces';
 export { otelMetricsBridge, type OtelMetricsBridgeOptions } from './metrics-bridge';
+export type { SocketStatsDigest } from './prometheus';
 export { formatTraceparent, parseTraceparent, type TraceparentFields } from './traceparent';

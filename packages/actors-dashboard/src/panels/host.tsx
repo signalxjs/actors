@@ -8,8 +8,9 @@
  */
 import { component } from '@sigx/runtime-core';
 import { alertLines, hostTone, type HostView } from '@sigx/actors-monitor';
-import { count, durationMs, uptime } from '@sigx/actors-monitor/format';
+import { bytes, count, durationMs, uptime } from '@sigx/actors-monitor/format';
 import { digestSnapshot } from '@sigx/actors/host';
+import type { SocketStatsSnapshot } from '@sigx/actors/server';
 import { Awaiting, Alerts, DataTable, DetailList, Section, type DetailRow } from '../parts/primitives';
 import { activationColumns, activationTone } from './actors';
 import { awaitingReason,
@@ -55,6 +56,16 @@ export const HostPanel = component<PanelProps & { hostId: string }>((ctx) => () 
             </p>
             <DetailList rows={identityRows(host)} />
             {host.metrics ? <DetailList rows={metricsRows(host)} /> : <p class="sxad-empty">no metrics from this host</p>}
+            {/* Socket sessions (#166) — only when this host reported them.
+                "Said nothing" is not "no sockets": a host without a socket
+                mount and one whose sessions all closed are different
+                findings, and today only the polled host can say anything. */}
+            {host.sockets ? (
+                <section class="sxad-section">
+                    <h3>socket sessions</h3>
+                    <DetailList rows={socketRows(host.sockets)} />
+                </section>
+            ) : null}
 
             <Section title="checks" lines={checkLines(host.health)} />
             <Section title="errors by kind" lines={errorKindLines(host.metrics)} />
@@ -121,6 +132,46 @@ function metricsRows(host: HostView): DetailRow[] {
                 `${count(digest.storage.conflicts)} conflicts`,
             // Every etag conflict discarded an activation's work.
             tone: digest.storage.conflicts > 0 ? 'warn' : null
+        }
+    ];
+}
+
+function socketRows(sockets: SocketStatsSnapshot): DetailRow[] {
+    return [
+        {
+            label: 'sockets',
+            value:
+                `${count(sockets.open)} open  ${count(sockets.inFlight)} in flight  ${count(sockets.subscriptions)} subs` +
+                (sockets.throttleQuantized > 0
+                    ? `  ${count(sockets.throttleQuantized)} throttle-quantized`
+                    : '')
+        },
+        {
+            label: 'deliveries',
+            // `~`: deliveryBytes counts UTF-16 code units — exact for ASCII,
+            // an under-count otherwise — not bytes on the wire.
+            value: `${count(sockets.deliveries)} frames  ~${bytes(sockets.deliveryBytes)}`
+        },
+        // `—` is "no adapter could tell us", which is not `0 B` (#208).
+        { label: 'buffered', value: bytes(sockets.bufferedBytes) },
+        {
+            label: 'connections',
+            value: `${count(sockets.connectionsOpened)} opened  ${count(sockets.connectionsClosed)} closed  ${count(sockets.connectionsRefused)} refused`,
+            // A refused upgrade is a client that could not get in.
+            tone: sockets.connectionsRefused > 0 ? 'warn' : null
+        },
+        {
+            // Closes the HOST decided on — a lifetime cap or a protocol
+            // breach — as opposed to a client hanging up.
+            label: 'evicted',
+            value: `${count(sockets.lifetimeCloses)} lifetime  ${count(sockets.protocolBreaches)} protocol breach`,
+            tone: sockets.protocolBreaches > 0 ? 'warn' : null
+        },
+        {
+            label: 'lifetime',
+            value: sockets.lifetimeMs
+                ? `p50 ${durationMs(sockets.lifetimeMs.p50Ms)}  p99 ${durationMs(sockets.lifetimeMs.p99Ms)}`
+                : 'no samples'
         }
     ];
 }

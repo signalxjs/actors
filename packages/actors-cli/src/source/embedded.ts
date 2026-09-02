@@ -20,8 +20,10 @@ import type {
     Host
 } from '@sigx/actors/host';
 import type { ClusterPlugin } from '@sigx/actors/cluster';
+import type { SocketStatsSnapshot } from '@sigx/actors/server';
 import {
     hostViewFromReport,
+    withSockets,
     type ClusterView,
     type MonitorSnapshot,
     type MonitorSource,
@@ -134,8 +136,12 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
             // and health plugins, both of which stamp it in `onStart`. With
             // neither, a single-node view honestly reports 0 rather than
             // inventing one from when the CLI happened to attach.
-            const health = ops?.snapshot().health ?? healthPlugin?.status() ?? null;
+            const opsSnapshot = ops?.snapshot() ?? null;
+            const health = opsSnapshot?.health ?? healthPlugin?.status() ?? null;
             const uptimeMs = health?.uptimeMs ?? 0;
+            // This host's socket sessions (#166), from the same ops sections
+            // the HTTP source reads — null without `ops()` or a socket mount.
+            const sockets = (opsSnapshot?.ops.sockets as SocketStatsSnapshot | undefined) ?? null;
 
             let hosts: readonly HostView[];
             let clusterView: ClusterView | null = null;
@@ -151,7 +157,7 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                         ? { detail: ask.hostId ? { hosts: [ask.hostId] } : true }
                         : {})
                 });
-                hosts = report.hosts.map(hostViewFromReport);
+                hosts = withSockets(report.hosts.map(hostViewFromReport), report.from, sockets);
                 partial = report.partial;
                 clusterView = {
                     from: report.from,
@@ -175,7 +181,8 @@ export async function embeddedSource(options: EmbeddedSourceOptions): Promise<Mo
                         meta: null,
                         metrics: null,
                         health: null,
-                        activations: null
+                        activations: null,
+                        sockets
                     }
                 ];
             }

@@ -25,6 +25,7 @@
         "paths": {
             "@sigx/actors": ["../actors/src/index.ts"],
             "@sigx/actors/host": ["../actors/src/host/index.ts"],
+            "@sigx/actors/server": ["../actors/src/server/index.ts"],
             "@sigx/actors/cluster": ["../actors/src/cluster/index.ts"],
             "@sigx/actors-monitor/format": ["../actors-monitor/src/format.ts"],
             "@sigx/actors-monitor": ["../actors-monitor/src/index.ts"],

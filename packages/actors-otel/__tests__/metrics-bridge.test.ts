@@ -12,8 +12,14 @@ import {
     type ResourceMetrics
 } from '@opentelemetry/sdk-metrics';
 import { defineActor } from '@sigx/actors';
-import { defineActorApp, metrics, type ActorApp, type MetricsDigest } from '@sigx/actors/host';
-import { otelMetricsBridge } from '@sigx/actors-otel';
+import {
+    defineActorApp,
+    metrics,
+    type ActorApp,
+    type ActorPlugin,
+    type MetricsDigest
+} from '@sigx/actors/host';
+import { otelMetricsBridge, type SocketStatsDigest } from '@sigx/actors-otel';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
@@ -28,6 +34,31 @@ const Counter = defineActor({
             return ctx.state.count;
         }
     })
+});
+
+/** A `socketStats().digest()` as an app with a socket mount publishes it (#166). */
+const socketDigest: SocketStatsDigest = {
+    connectionsOpened: 7,
+    connectionsClosed: 4,
+    connectionsRefused: 2,
+    callsStarted: 40,
+    callsFailed: 3,
+    subscriptionsOpened: 9,
+    subscriptionsClosed: 5,
+    protocolBreaches: 1,
+    lifetimeCloses: 2,
+    deliveries: 1200,
+    deliveryBytes: 48_000,
+    throttleQuantized: 6,
+    layout: 'll-4-26',
+    lifetime: { count: 4, sumUs: 46, minUs: 2, maxUs: 21, idx: [1, 20], n: [2, 2] }
+};
+
+const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
+    name: 'fake-sockets',
+    setup(registry) {
+        registry.reportDigest('sockets', () => digest);
+    }
 });
 
 let running: ActorApp | null = null;
@@ -85,6 +116,84 @@ describe('otelMetricsBridge', () => {
         const p99 = dataPoints(resourceMetrics, 'sigx.actors.call_duration.p99');
         expect(p99).toHaveLength(1);
         expect(p99[0]!.value as number).toBeGreaterThanOrEqual(0);
+    });
+
+    it('observes the sockets digest beside the metrics one (#166)', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(socketsPlugin(socketDigest))
+            .use(otelMetricsBridge({ meterProvider: provider }));
+        running = app;
+        await app.start();
+
+        const { resourceMetrics } = await reader.collect();
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.connections.opened')[0]?.value).toBe(7);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.deliveries')[0]?.value).toBe(1200);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.delivery_bytes')[0]?.value).toBe(48_000);
+        // Derived gauges: opened − closed is the live count.
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.sessions')[0]?.value).toBe(3);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.subscriptions')[0]?.value).toBe(4);
+        // Lifetime percentiles, seconds, this host only.
+        const p99 = dataPoints(resourceMetrics, 'sigx.actors.socket.connection_duration.p99');
+        expect(p99).toHaveLength(1);
+        expect(p99[0]!.value as number).toBeGreaterThan(0);
+        // The metrics families are still observed — a second read, not a
+        // replacement.
+        expect(dataPoints(resourceMetrics, 'sigx.actors.activations.created')).toHaveLength(1);
+    });
+
+    it('observes no socket family when no sockets digest is published', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(otelMetricsBridge({ meterProvider: provider }));
+        running = app;
+        const host = await app.start();
+        await host.actor(Counter, 'k1').increment(1);
+
+        const { resourceMetrics } = await reader.collect();
+        expect(dataPoints(resourceMetrics, 'sigx.actors.calls')).not.toHaveLength(0);
+        // A host with no socket mount is not a host with zero sockets.
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.sessions')).toHaveLength(0);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.connections.opened')).toHaveLength(0);
+    });
+
+    it('treats a null sockets digest as absent, not as a digest to read', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        // `registry.digest()` answers whatever the provider returned — a
+        // provider that says `null` is "nothing to report", and must not
+        // become a field read off `null` inside the observable callback.
+        const nullSockets: ActorPlugin = {
+            name: 'null-sockets',
+            setup(registry) {
+                registry.reportDigest('sockets', () => null);
+            }
+        };
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(nullSockets)
+            .use(otelMetricsBridge({ meterProvider: provider }));
+        running = app;
+        const host = await app.start();
+        await host.actor(Counter, 'k1').increment(1);
+
+        const { resourceMetrics, errors } = await reader.collect();
+        expect(errors).toEqual([]);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.calls')).not.toHaveLength(0);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.sessions')).toHaveLength(0);
     });
 
     it('detaches the callback on stop', async () => {

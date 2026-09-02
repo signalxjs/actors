@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Socket sessions on the host drill-down and in the Hosts table (#166).**
+  A host that publishes the `sockets` ops section gets a `socket sessions`
+  block on its panel — open sessions and calls in flight, live
+  subscriptions, deliveries with their size (`~`: UTF-16 code units, exact
+  for ASCII), buffered bytes, connections
+  opened/closed/refused, evictions (lifetime-cap and protocol-breach
+  closes), and the lifetime percentiles once anything has closed — and the
+  Hosts table gains a `sockets` column (open sessions) once some host
+  reported, so a fleet that never said does not read as "no sockets
+  anywhere". Same figures as the terminal, by construction: both read
+  `HostView.sockets` from `@sigx/actors-monitor`, which attaches the section
+  to the polled host only because the fan-out carries no socket digest yet.
+  Buffered bytes no session could report draw as `—`, not `0 B` (#208).
+
 - **`locality` on the cluster panel (#52).** The header now shows
   `locality  67% local  (3.84k dispatches)`, derived from the placement's
   new per-request pair `dispatchesLocal` / `dispatchesRemote` — the fraction

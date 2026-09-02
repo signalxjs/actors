@@ -22,6 +22,16 @@ import {
     type PluginRegistry
 } from '@sigx/actors/host';
 import type { Host } from '@sigx/actors';
+import type { SocketStats } from '@sigx/actors/server';
+
+/**
+ * What `registry.digest('sockets')` answers when the app publishes
+ * `socketStats().digest()` under that name (#166): the flat monotonic
+ * totals plus the connection-lifetime histogram in the runtime's own
+ * layout. Named here rather than in `@sigx/actors/server` because the
+ * runtime only ever hands it out as the factory's return type.
+ */
+export type SocketStatsDigest = ReturnType<SocketStats['digest']>;
 
 export interface RenderPrometheusOptions {
     /** Metric-name prefix. Default `'sigx_actors_'`. */
@@ -34,9 +44,18 @@ export interface RenderPrometheusOptions {
      * are dropped. Default: a per-octave grid, 1µs → ~134s (~28 bounds).
      */
     bucketsSeconds?: readonly number[];
+    /**
+     * The socket-session digest (#166), when the app publishes one
+     * (`registry.reportDigest('sockets', () => stats.digest())`). Absent or
+     * null renders no socket family at all — a host that serves no sockets
+     * is not a host with zero connections, and a scraper that sees the
+     * family appear knows the transport is mounted.
+     */
+    sockets?: SocketStatsDigest | null;
 }
 
-export interface PrometheusOpsOptions extends RenderPrometheusOptions {
+/** `prometheusOps` reads the socket digest off the registry itself. */
+export interface PrometheusOpsOptions extends Omit<RenderPrometheusOptions, 'sockets'> {
     /** Route path. Default `'/_sigx/metrics'`. */
     path?: string;
     /**
@@ -152,6 +171,9 @@ function renderHistogram(
  * but lose the increments between the reset and the next scrape — do not
  * combine `reset()`-based polling with scraping. The `_metrics_window_seconds`
  * gauge is how an operator notices a reset happened.
+ *
+ * `options.sockets` is the socket-session digest (#166); see
+ * `RenderPrometheusOptions`.
  */
 export function renderPrometheus(
     digest: MetricsDigest,
@@ -159,6 +181,7 @@ export function renderPrometheus(
     options: RenderPrometheusOptions = {}
 ): string {
     const prefix = options.prefix ?? DEFAULT_PREFIX;
+    const sockets = options.sockets ?? null;
     const out = new Lines();
 
     // --- counters -----------------------------------------------------
@@ -275,6 +298,9 @@ export function renderPrometheus(
         out.family(`${prefix}queued_messages`, 'gauge', 'Turns waiting to run.');
         out.push(`${prefix}queued_messages ${stats.queued}`);
     }
+
+    // --- socket sessions -----------------------------------------------
+    if (sockets) renderSockets(out, prefix, sockets, options.bucketsSeconds);
     out.family(
         `${prefix}metrics_window_seconds`,
         'gauge',
@@ -286,12 +312,100 @@ export function renderPrometheus(
 }
 
 /**
+ * The socket-session families (#166), from the `'sockets'` digest.
+ *
+ * Counters are the digest's totals one-to-one. The two gauges are DERIVED:
+ * `opened − closed` is exactly the number of sessions open right now (the
+ * recorder counts a close only for a session it counted open, so the
+ * difference cannot drift), and the same holds for subscriptions. They are
+ * emitted rather than left to a recording rule because "how many sockets
+ * are open" is the first thing anyone alerts on.
+ *
+ * `delivery_bytes_total` is UTF-16 code units, not encoded bytes — exact
+ * for ASCII, an under-count otherwise. The runtime measures it that way on
+ * purpose (a UTF-8 pass per frame on the hot path, to sharpen a number
+ * nobody bills on), and the HELP text says so rather than the metric name
+ * pretending otherwise.
+ *
+ * The lifetime histogram has its own `layout`, checked separately from the
+ * metrics digest's: the two digests come from different providers and a
+ * mismatch in one must not cost the other its distribution.
+ */
+function renderSockets(
+    out: Lines,
+    prefix: string,
+    sockets: SocketStatsDigest,
+    bucketsSeconds: readonly number[] | undefined
+): void {
+    const counters: Array<[string, string, number]> = [
+        ['socket_connections_opened_total', 'Socket sessions that completed the upgrade.', sockets.connectionsOpened],
+        ['socket_connections_closed_total', 'Socket sessions torn down.', sockets.connectionsClosed],
+        [
+            'socket_connections_refused_total',
+            'Socket upgrades refused before serving a byte (origin, auth).',
+            sockets.connectionsRefused
+        ],
+        ['socket_calls_total', 'Calls dispatched over sockets (unary, stream and one-way).', sockets.callsStarted],
+        ['socket_calls_failed_total', 'Socket calls that answered an error frame.', sockets.callsFailed],
+        ['socket_subscriptions_opened_total', 'Live subscriptions opened over sockets.', sockets.subscriptionsOpened],
+        ['socket_subscriptions_closed_total', 'Live subscriptions closed over sockets.', sockets.subscriptionsClosed],
+        [
+            'socket_protocol_breaches_total',
+            'Socket sessions closed for speaking outside the vocabulary (1003/1009).',
+            sockets.protocolBreaches
+        ],
+        [
+            'socket_lifetime_closes_total',
+            'Socket sessions closed by revalidateMs/maxConnectionMs (1008).',
+            sockets.lifetimeCloses
+        ],
+        ['socket_deliveries_total', 'Subscription frames pushed to socket clients.', sockets.deliveries],
+        [
+            'socket_delivery_bytes_total',
+            'Outbound subscription-frame size, in UTF-16 code units — exact for ASCII, under-reports otherwise.',
+            sockets.deliveryBytes
+        ],
+        [
+            'socket_throttle_quantized_total',
+            'Subscriptions whose requested delivery window the throttle policy moved.',
+            sockets.throttleQuantized
+        ]
+    ];
+    for (const [name, help, value] of counters) {
+        out.family(`${prefix}${name}`, 'counter', help);
+        out.push(`${prefix}${name} ${value}`);
+    }
+
+    out.family(`${prefix}socket_sessions`, 'gauge', 'Socket sessions open right now.');
+    out.push(`${prefix}socket_sessions ${sockets.connectionsOpened - sockets.connectionsClosed}`);
+    out.family(`${prefix}socket_subscriptions`, 'gauge', 'Live subscriptions held over sockets right now.');
+    out.push(
+        `${prefix}socket_subscriptions ${sockets.subscriptionsOpened - sockets.subscriptionsClosed}`
+    );
+
+    if (!sockets.lifetime) return;
+    const boundsUs = bucketUpperBoundsUs(sockets.layout);
+    if (boundsUs === null) return;
+    const gridUs = bucketsSeconds ? snapGridUs(bucketsSeconds, boundsUs) : defaultGridUs();
+    renderHistogram(
+        out,
+        `${prefix}socket_connection_duration_seconds`,
+        'Lifetime of completed socket sessions.',
+        sockets.lifetime,
+        gridUs,
+        boundsUs
+    );
+}
+
+/**
  * Mount the exposition beside `ops()`: `GET /_sigx/metrics` with the same
  * bearer posture — secret mandatory outside development, auth before any
  * path logic, one 401 for missing and wrong alike.
  *
  * Reads the digest through the registry (`registry.digest('metrics')`), so
  * it composes with `metrics()` by registration and holds no direct handle.
+ * The `'sockets'` digest is read the same way, and its absence is normal:
+ * a host that serves no sockets simply emits no socket family.
  */
 export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
     const raw = options.path ?? '/_sigx/metrics';
@@ -372,7 +486,13 @@ export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
                                 'prometheusOps()'
                         );
                     }
-                    const body = renderPrometheus(digest, host?.stats() ?? null, render);
+                    // `undefined` is "no provider"; `null` is a provider with
+                    // nothing to report. Both render no socket family.
+                    const sockets = registry.digest('sockets') as SocketStatsDigest | null | undefined;
+                    const body = renderPrometheus(digest, host?.stats() ?? null, {
+                        ...render,
+                        sockets: sockets ?? null
+                    });
                     return new Response(method === 'HEAD' ? null : body, {
                         status: 200,
                         headers: {

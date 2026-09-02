@@ -41,7 +41,8 @@ function snapshotAt(at: number, activations = 1, calls = 10): MonitorSnapshot {
                 meta: null,
                 metrics: null,
                 health: null,
-                activations: null
+                activations: null,
+                sockets: null
             }
         ],
         cluster: null,

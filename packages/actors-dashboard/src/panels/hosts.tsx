@@ -22,15 +22,33 @@ import { awaitingReason, panelState, readyWord, type PanelProps } from './shared
 
 /**
  * The table's columns. A function of the fleet, not a constant, because the
- * node cell is a label derived across every host (below).
+ * node cell is a label derived across every host (below), and because the
+ * sockets column exists only when some host reported one.
  */
-const columns = (labels: ReadonlyMap<string, string>): readonly Column<HostView>[] => [
+const columns = (
+    labels: ReadonlyMap<string, string>,
+    sockets: boolean
+): readonly Column<HostView>[] => [
     { key: 'id', header: 'host', value: (h) => h.hostId, key_: true },
     { key: 'status', header: 'status', value: (h) => h.status },
     { key: 'ready', header: 'ready', value: readyWord },
     { key: 'up', header: 'up', value: (h) => uptime(h.uptimeMs), numeric: true },
     { key: 'acts', header: 'acts', value: (h) => count(h.stats.activations), numeric: true },
     { key: 'queue', header: 'queue', value: (h) => count(h.stats.queued), numeric: true },
+    // Open socket sessions (#166), only when some host reported them — a
+    // column of `—` would say "no sockets anywhere" about a fleet that never
+    // said. `—` on a peer means the fan-out carried nothing for it, which
+    // today it never does: only the polled host can report.
+    ...(sockets
+        ? [
+              {
+                  key: 'sockets',
+                  header: 'sockets',
+                  value: (h: HostView) => (h.sockets ? count(h.sockets.open) : '—'),
+                  numeric: true
+              }
+          ]
+        : []),
     {
         key: 'view',
         header: 'view',
@@ -92,7 +110,10 @@ export const HostsPanel = component<PanelProps>((ctx) => () => {
         <div>
             <Alerts alerts={alertLines(state.view)} />
             <DataTable
-                columns={columns(nodeLabels(snapshot.hosts))}
+                columns={columns(
+                    nodeLabels(snapshot.hosts),
+                    snapshot.hosts.some((host) => host.sockets !== null)
+                )}
                 rows={snapshot.hosts}
                 tone={rowTone}
                 onPick={(host) => state.focus(host.hostId)}

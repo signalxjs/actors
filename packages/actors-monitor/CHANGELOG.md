@@ -4,6 +4,19 @@
 
 ### Added
 
+- **`HostView.sockets` — the host's socket sessions, when it published them
+  (#166).** The `sockets` ops section an app registers from `socketStats()`
+  (`registry.reportOps('sockets', () => stats.snapshot())`) now rides
+  through `httpSource` onto the POLLED host's row: the only row it can
+  belong to, because the cluster fan-out carries no socket digest yet. Every
+  other host is `null`, which means "said nothing" — the same rule as
+  `metrics` — and never "no sockets there". `withSockets(hosts, hostId,
+  sockets)` is the one place that attaches it, shared with the CLI's
+  embedded source so the rule is made once. `format.bytes()` renders byte
+  counts (`950 B`, `12.4 kB`, `3.1 MB`) with `null` as an em dash, because a
+  host whose sessions could not report their buffers has not said `0 B`
+  (#208).
+
 - **`HostView.meta` — each host's placement hints, and the node count derived
   from them (#51).** A `HostReport` has carried `PlacementOptions.meta` for a
   while; the monitor now keeps it (`null` when the host published none, as
