@@ -175,6 +175,7 @@ function selfView(body: OpsBody, local: HostReport | undefined, origin: string):
         reminderShards: [],
         membershipVersion: null,
         transports: null,
+        meta: null,
         metrics: null,
         health: body.health ? { ready: body.health.ready, fatal: body.health.fatal, checks: body.health.checks } : null,
         activations: body.activations ?? null

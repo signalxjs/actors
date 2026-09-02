@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The node each host runs on, and how many nodes the fleet spans (#51).**
+  The Hosts table has a `NODE` column, the host drill-down a `node` row, the
+  Overview a `nodes` row under `hosts`, and every `cluster · N host(s)` heading
+  now reads `cluster · 3 host(s) / 1 node(s)` once any host reports where it
+  runs. `sigx actors stats` prints `nodes` under `hosts` and `node <name>` on
+  each host line; the non-TTY `top` summary uses the same spread. All of it
+  comes from `HostView.meta.node`, which the perf charts now publish via the
+  downward API — so three replicas packed onto one node is visible from the
+  ops output instead of `kubectl top pods` joined against `kubectl get pods
+  -o wide` by hand. A fleet that reports no node shows `—` in the column and
+  no `nodes` row at all, rather than a count nobody measured. The `NODE` cell
+  is the monitor's label — `…vmss000001`, the tail that differs — because
+  the table shrinks from the right and two different AKS nodes cut to
+  `aks-sigxacto…` would read as one; the full name is in the drill-down.
+
 ### Changed
 
 - **HTTP mode no longer requires the cwd project to depend on

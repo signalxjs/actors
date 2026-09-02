@@ -47,7 +47,9 @@ const clusterBody = {
             counters: { membershipVersion: 4, status: 'active', routedLocal: 5 },
             reminderShards: ['p0'],
             uptimeMs: 1000,
-            transports: ['http']
+            transports: ['http'],
+            // What a Kubernetes chart publishes from `spec.nodeName` (#51).
+            meta: { node: 'aks-agentpool-1' }
         }
     ],
     unreachable: [{ hostId: 'host-b', address: 'http://b:3000', reason: 'timeout', message: 'x' }],
@@ -87,6 +89,9 @@ describe('httpSource', () => {
         expect(snapshot.hosts).toHaveLength(1);
         expect(snapshot.hosts[0]!.status).toBe('unknown');
         expect(snapshot.hosts[0]!.stats.activations).toBe(3);
+        // No cluster means no descriptor, so no placement hints — null, not
+        // an empty object that would render as "on no node".
+        expect(snapshot.hosts[0]!.meta).toBeNull();
         expect(snapshot.activations).toHaveLength(1);
         expect(snapshot.health?.ready).toBe(true);
         expect(snapshot.metrics?.calls.total).toBe(10);
@@ -110,6 +115,9 @@ describe('httpSource', () => {
         // they are per-host facts a total would destroy.
         expect(snapshot.hosts[0]!.membershipVersion).toBe(4);
         expect(snapshot.hosts[0]!.counters).not.toHaveProperty('membershipVersion');
+        // The placement hints ride through untouched — `node` is how a
+        // packed fleet becomes visible (#51).
+        expect(snapshot.hosts[0]!.meta).toEqual({ node: 'aks-agentpool-1' });
         // The one flag that must never be smoothed over.
         expect(snapshot.partial).toBe(true);
         expect(snapshot.cluster?.unreachable).toHaveLength(1);

@@ -69,7 +69,12 @@ export interface HostDescriptor extends HostIdentity {
      * or lose a type without also being a NEW host.
      */
     readonly types?: readonly string[];
-    /** Free-form placement hints (zone, appVersion, weight …). */
+    /**
+     * Free-form placement hints (zone, appVersion, weight …). `node` is the
+     * one key with an agreed meaning: the machine the host runs on, which
+     * a Kubernetes chart fills from `spec.nodeName` and a dashboard counts
+     * to tell a spread fleet from a packed one (#51).
+     */
     readonly meta?: Readonly<Record<string, string>>;
 }
 

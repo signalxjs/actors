@@ -19,6 +19,7 @@
 import {
     alertLines,
     coverageNote,
+    nodeCount,
     percentileCeiling,
     percentilePoints,
     scopeOf
@@ -48,8 +49,13 @@ export const OverviewPanel = component<PanelProps>((ctx) => () => {
     // ONE ceiling across all three groups.
     const ceiling = percentileCeiling([latencyMs, queueMs, turnMs]);
 
+    // Distinct machines under those hosts, when the chart says. Three hosts
+    // on one node is the finding this row exists for (#51); no row at all
+    // when nothing reported a node, rather than a guess either way.
+    const nodes = nodeCount(snapshot.hosts);
     const rows: DetailRow[] = [
         { label: 'hosts', value: `${snapshot.hosts.length}` },
+        ...(nodes !== null ? [{ label: 'nodes', value: `${nodes}` }] : []),
         { label: 'activations', value: count(activations) },
         { label: 'queued', value: count(queued) }
     ];

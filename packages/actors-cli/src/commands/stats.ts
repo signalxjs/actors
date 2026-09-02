@@ -10,7 +10,7 @@ import type { ActorsCommandContext } from './context';
 import { out, outJson } from './out';
 import { resolveSource } from '../resolve';
 import { count, durationMs, percent, uptime } from '@sigx/actors-monitor/format';
-import type { MonitorSnapshot } from '@sigx/actors-monitor';
+import { nodeCount, type MonitorSnapshot } from '@sigx/actors-monitor';
 
 export async function runStats(ctx: ActorsCommandContext): Promise<void> {
     const source = await resolveSource(ctx.cwd, ctx.args);
@@ -47,7 +47,15 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         lines.push(
             '',
             'cluster',
-            `  hosts        ${cluster.totals.hosts} (${cluster.view.active} active of ${cluster.view.size}, view #${cluster.view.version})`,
+            `  hosts        ${cluster.totals.hosts} (${cluster.view.active} active of ${cluster.view.size}, view #${cluster.view.version})`
+        );
+        // Distinct machines under those hosts, when the chart publishes
+        // `meta.node`. `hosts 3` over `nodes 1` is the packed fleet that
+        // reads as `3/3` everywhere else (#51); the line is absent, not
+        // `nodes 0`, when no host said where it runs.
+        const nodes = nodeCount(snapshot.hosts);
+        if (nodes !== null) lines.push(`  nodes        ${nodes}`);
+        lines.push(
             `  activations  ${count(cluster.totals.activations)}`,
             `  queued       ${count(cluster.totals.queued)}`
         );
@@ -75,7 +83,8 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
         lines.push(
             `  ${marker} ${host.hostId}  ${host.status}  up ${uptime(host.uptimeMs)}  ` +
                 `${count(host.stats.activations)} act  ${count(host.stats.queued)} queued` +
-                (host.membershipVersion !== null ? `  view #${host.membershipVersion}` : '')
+                (host.membershipVersion !== null ? `  view #${host.membershipVersion}` : '') +
+                (host.meta?.node ? `  node ${host.meta.node}` : '')
         );
         const { activating, deactivating } = host.stats.transitional;
         if (activating > 0 || deactivating > 0) {

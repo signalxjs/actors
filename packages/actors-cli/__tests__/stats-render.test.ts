@@ -32,6 +32,7 @@ function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
                 reminderShards: [],
                 membershipVersion: null,
                 transports: null,
+                meta: null,
                 metrics: null,
                 health: null,
                 activations: null
@@ -117,6 +118,63 @@ describe('renderStats', () => {
         expect(output).toMatch(/1 reminder shard\(s\) unclaimed: p1/);
         // Two claimants is safe but means views diverged.
         expect(output).toMatch(/1 reminder shard\(s\) claimed twice/);
+    });
+
+    it('says how many nodes the hosts span, and which node each is on (#51)', () => {
+        const base = snapshot().hosts[0]!;
+        const output = render(
+            snapshot({
+                hosts: [
+                    { ...base, meta: { node: 'node-1' } },
+                    { ...base, hostId: 'host-b', meta: { node: 'node-1' } },
+                    { ...base, hostId: 'host-c', meta: { node: 'node-2' } }
+                ],
+                cluster: {
+                    from: 'host-a',
+                    view: { version: 3, size: 3, active: 3 },
+                    totals: {
+                        hosts: 3,
+                        activations: 0,
+                        queued: 0,
+                        perType: {},
+                        counters: {} as never,
+                        metrics: null,
+                        health: { ready: 3, notReady: 0, fatal: 0, unknown: 0 }
+                    },
+                    reminderShards: { p0: ['host-a'] },
+                    unreachable: []
+                }
+            })
+        );
+        // `hosts 3` over `nodes 2` — packing vs spread, without kubectl.
+        expect(output).toMatch(/hosts {8}3/);
+        expect(output).toMatch(/nodes {8}2/);
+        expect(output).toMatch(/host-b .*node node-1/);
+        expect(output).toMatch(/host-c .*node node-2/);
+    });
+
+    it('prints no nodes line when no host reports one', () => {
+        const output = render(
+            snapshot({
+                cluster: {
+                    from: 'host-a',
+                    view: { version: 3, size: 1, active: 1 },
+                    totals: {
+                        hosts: 1,
+                        activations: 0,
+                        queued: 0,
+                        perType: {},
+                        counters: {} as never,
+                        metrics: null,
+                        health: { ready: 1, notReady: 0, fatal: 0, unknown: 0 }
+                    },
+                    reminderShards: { p0: ['host-a'] },
+                    unreachable: []
+                }
+            })
+        );
+        expect(output).not.toMatch(/nodes/);
+        expect(output).not.toMatch(/node /);
     });
 
     it('says how to get metrics rather than silently showing nothing', () => {

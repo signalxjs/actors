@@ -78,6 +78,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            # The node under this pod, published as the host's `meta.node`
+            # so `clusterStats()` and `sigx actors top` can say "3 hosts /
+            # 1 node" — a packed fleet reads as `3/3` everywhere else (#51).
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: REDIS_URL
               value: "redis://{{ include "chat.fullname" . }}-redis:6379"
             - name: SIGX_NAMESPACE

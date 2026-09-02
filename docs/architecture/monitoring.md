@@ -71,6 +71,17 @@ claims the second. Same rule for an empty histogram: three zeroed bars assert
 different scope. Cluster-wide calls and this host's calls are both correct and
 are not the same fact.
 
+**Where the hosts run is derived once, from `meta.node`.** `nodeCount` /
+`hostSpread` turn each host's placement hints into `3 host(s) / 1 node(s)` —
+the packed fleet that reads as `3/3` in every replica readout (#51). A host
+that reports no node is not counted as a node, and a fleet where nobody
+reports one gets no node figure at all rather than a guess in either
+direction. A renderer that counted nodes itself would re-make both calls.
+`nodeLabels` is the same rule for the table cell: real node names differ only
+in their tail and every table truncates from the right, so the cell shows the
+tail that differs (`…vmss000001`) rather than two different nodes cut to the
+same prefix — a spread fleet posing as a packed one.
+
 **Three shard states, three meanings.** One claimant is healthy. *None* means
 nothing is ticking that shard, those reminders are not firing, and nothing
 else in the system surfaces it. *Two or more* means membership views have
@@ -84,8 +95,8 @@ the distinction that matters.
    `ops()` yourself: the back-pressure (abandon the in-flight request rather
    than queue behind a slow host) and the keep-the-last-good-snapshot rule are
    not obvious and are already written.
-2. Use `alertLines`, `scopeOf`, `polledLabel`, `coverageNote`, `shardStates`
-   and `percentilePoints` as given. Map their severities into your own
+2. Use `alertLines`, `scopeOf`, `hostSpread`, `nodeLabels`, `polledLabel`,
+   `coverageNote`, `shardStates` and `percentilePoints` as given. Map their severities into your own
    vocabulary — `@sigx/actors-cli/src/tui/bars.ts` is the worked example, and
    it is about ten lines.
 3. Assert against `packages/actors-monitor/__tests__/fixture.ts`. Both

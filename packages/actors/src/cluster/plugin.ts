@@ -90,7 +90,14 @@ export interface ClusterPluginOptions {
     retries?: number;
     /** Linear backoff between UNREACHABLE retries, ms. Default 100. */
     retryBackoffMs?: number;
-    /** Free-form placement hints published in the membership descriptor. */
+    /**
+     * Free-form placement hints published in the membership descriptor and
+     * on the ops channel (`HostReport.meta`). One key has an agreed meaning:
+     * `node`, the machine this host runs on — fill it from the downward
+     * API's `spec.nodeName` and the monitor counts distinct values into
+     * `3 host(s) / 1 node(s)`, the packed fleet every replica readout
+     * reports as `3/3` (#51).
+     */
     meta?: Record<string, string>;
     /**
      * Forwarded to the internal HTTP mount (body caps, `onError`,

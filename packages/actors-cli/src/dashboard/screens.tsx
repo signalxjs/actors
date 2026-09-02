@@ -47,6 +47,8 @@ import {
     alertLines,
     coverageNote,
     hostTone,
+    nodeCount,
+    nodeLabels,
     polledLabel,
     scopeOf,
     type Alert,
@@ -172,6 +174,10 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     const turnMs = clusterMetrics?.turnMs ?? metrics?.turnMs ?? null;
     const coverage = coverageNote(snapshot);
     const scale = histogramScale([latencyMs, queueMs, turnMs]);
+    // Distinct machines under those hosts, when the chart says. Three hosts
+    // on one node is the finding this row exists for (#51); no row at all
+    // when nothing reported a node, rather than a guess either way.
+    const nodes = nodeCount(snapshot.hosts);
 
     // The series occupy the width the pane has, less the label column and
     // the value that trails each one — but never more than the history
@@ -192,6 +198,7 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
                 labelWidth={LABEL_WIDTH}
                 rows={[
                     { label: 'hosts', value: `${snapshot.hosts.length}` },
+                    ...(nodes !== null ? [{ label: 'nodes', value: `${nodes}` }] : []),
                     { label: 'activations', value: count(activations) },
                     { label: 'queued', value: count(queued) },
                     ...(clusterCalls
@@ -323,7 +330,11 @@ function percentiles(
     );
 }
 
-const hostColumns: TableColumn<HostView>[] = [
+/**
+ * The host table's columns. A function of the fleet, not a constant,
+ * because the NODE cell is a label derived across every host (below).
+ */
+const hostColumns = (labels: ReadonlyMap<string, string>): TableColumn<HostView>[] => [
     { key: 'id', header: 'HOST', value: (s) => s.hostId, min: 8 },
     { key: 'status', header: 'STATUS', value: (s) => s.status },
     {
@@ -347,7 +358,21 @@ const hostColumns: TableColumn<HostView>[] = [
         value: (s) => (s.membershipVersion === null ? '—' : `#${s.membershipVersion}`),
         align: 'right'
     },
-    { key: 'tx', header: 'TRANSPORTS', value: (s) => s.transports?.join(',') ?? '—' }
+    { key: 'tx', header: 'TRANSPORTS', value: (s) => s.transports?.join(',') ?? '—' },
+    {
+        // The machine under the pod, from `PlacementOptions.meta.node` —
+        // the column that turns `3/3 replicas` into "all three on one
+        // node" (#51). Last, because node names are long and `DataTable`
+        // shrinks from the right — which is exactly why the cell is the
+        // monitor's LABEL (`…vmss000001`, the tail that differs) and not
+        // the raw name: real node names differ only in their tail, and two
+        // different nodes truncated to `aks-sigxacto…` would read as one,
+        // the inverse of the finding. The same label repeated down the
+        // column is still the finding; the full name is in the drill-down.
+        key: 'node',
+        header: 'NODE',
+        value: (s) => (s.meta?.node ? (labels.get(s.meta.node) ?? s.meta.node) : '—')
+    }
 ];
 
 /**
@@ -384,7 +409,7 @@ export function HostsScreen(props: { state: DashboardState; cursor?: Model<numbe
         <Col>
             {alerts(props.state, pane)}
             <DataTable
-                columns={hostColumns}
+                columns={hostColumns(nodeLabels(snapshot.hosts))}
                 rows={snapshot.hosts}
                 model={props.cursor}
                 width={pane.width - TABLE_GUTTER}
@@ -507,10 +532,12 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
             `${entry.kind}: ${entry.message}`
     );
     const actors = host.activations ?? [];
+    const node = host.meta?.node;
     const spent =
         alertHeight(props.state, pane) +
         1 +
         (host.health ? 4 : 3) +
+        (node ? 1 : 0) +
         (digest ? 3 : 1) +
         blockHeight(checks) +
         blockHeight(kinds) +
@@ -526,6 +553,7 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
                 rows={[
                     { label: 'status', value: host.status, tone: hostColor(host.status) },
                     { label: 'address', value: host.address },
+                    ...(node ? [{ label: 'node', value: node }] : []),
                     { label: 'up', value: uptime(host.uptimeMs) },
                     ...(host.health
                         ? [

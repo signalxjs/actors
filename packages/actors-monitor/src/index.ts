@@ -40,7 +40,10 @@ export { rateBetween, RateTracker, Series, type Rate, type RateSample } from './
 export {
     alertLines,
     coverageNote,
+    hostSpread,
     hostTone,
+    nodeCount,
+    nodeLabels,
     polledLabel,
     scopeOf,
     type Alert,

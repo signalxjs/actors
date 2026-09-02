@@ -44,6 +44,7 @@ const { source } = vi.hoisted(() => {
                 reminderShards: [],
                 membershipVersion: null,
                 transports: null,
+                meta: null,
                 metrics: null,
                 health: null,
                 activations: null

@@ -63,6 +63,13 @@ export interface HostReport {
      * field.
      */
     types?: string[];
+    /**
+     * The host's placement hints, verbatim from `ClusterPluginOptions.meta`
+     * — absent when it was started without any. Free-form, with one agreed
+     * key: `meta.node` is the machine the host runs on (a Kubernetes chart
+     * fills it from `spec.nodeName`), and it is what a dashboard counts to
+     * tell `3 host(s) / 3 node(s)` from `3 host(s) / 1 node(s)` (#51).
+     */
     meta?: Record<string, string>;
     /**
      * This host's mergeable metrics, when it has `metrics()` attached and

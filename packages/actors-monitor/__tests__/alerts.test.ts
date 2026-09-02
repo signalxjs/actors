@@ -13,7 +13,10 @@ import {
     alertLines,
     coverageNote,
     DashboardState,
+    hostSpread,
     hostTone,
+    nodeCount,
+    nodeLabels,
     polledLabel,
     scopeOf,
     type MonitorSnapshot
@@ -138,8 +141,113 @@ describe('scopeOf', () => {
         expect(scopeOf(demoSnapshot)).toBe('cluster · 2 host(s)');
     });
 
+    it('says how many nodes those hosts span, once any host reports one', () => {
+        // The finding behind #51: three replicas on one node read as `3/3`
+        // everywhere. `3 host(s) / 1 node(s)` is that fact at a glance.
+        const packed = snapshotWith({
+            hosts: [
+                host({ meta: { node: 'node-1' } }),
+                host({ hostId: 's.b', meta: { node: 'node-1' } }),
+                host({ hostId: 's.c', meta: { node: 'node-1' } })
+            ]
+        });
+        expect(scopeOf(packed)).toBe('cluster · 3 host(s) / 1 node(s)');
+    });
+
     it('says "this host" when there is no cluster, rather than implying one', () => {
         expect(scopeOf(snapshotWith({ cluster: null }))).toBe('this host');
+    });
+});
+
+describe('nodeCount / hostSpread', () => {
+    it('counts DISTINCT nodes, not hosts', () => {
+        const hosts = [
+            host({ meta: { node: 'node-1' } }),
+            host({ hostId: 's.b', meta: { node: 'node-1' } }),
+            host({ hostId: 's.c', meta: { node: 'node-2' } })
+        ];
+        expect(nodeCount(hosts)).toBe(2);
+        expect(hostSpread(hosts)).toBe('3 host(s) / 2 node(s)');
+    });
+
+    it('is null — and says nothing — when no host reports a node', () => {
+        // A fleet outside Kubernetes has not said where it runs. Guessing
+        // "one node" would claim a packed fleet; guessing "one per host"
+        // would claim a spread one. Neither was measured.
+        expect(nodeCount(demoSnapshot.hosts)).toBeNull();
+        expect(hostSpread(demoSnapshot.hosts)).toBe('2 host(s)');
+    });
+
+    it('does not count a host with no node as a node of its own', () => {
+        // Mid-rollout: one host is on the chart that publishes `node`, the
+        // other is not yet. The node count covers what was reported; the
+        // host count still covers everyone.
+        const hosts = [host({ meta: { node: 'node-1' } }), host({ hostId: 's.b' })];
+        expect(nodeCount(hosts)).toBe(1);
+        expect(hostSpread(hosts)).toBe('2 host(s) / 1 node(s)');
+    });
+
+    it('ignores an empty node string, which the downward API never sets', () => {
+        // `meta` is free-form, so a host could publish `node: ""` — that is
+        // "no node", not a node named nothing.
+        expect(nodeCount([host({ meta: { node: '' } })])).toBeNull();
+    });
+});
+
+describe('nodeLabels', () => {
+    // Both renderers truncate a cell from the RIGHT, and real node names
+    // differ only in their tail: two hosts on two different AKS nodes read
+    // `aks-sigxacto…` twice — a spread fleet posing as a packed one, the
+    // inverse of the finding this column exists for (#51). The label keeps
+    // the part that tells the nodes apart.
+    const aks = (n: number) => `aks-sigxactors-12345678-vmss00000${n}`;
+
+    it('drops the prefix every node shares, cut at a separator', () => {
+        const labels = nodeLabels([
+            host({ meta: { node: aks(0) } }),
+            host({ hostId: 's.b', meta: { node: aks(1) } })
+        ]);
+        expect(labels.get(aks(0))).toBe('…vmss000000');
+        expect(labels.get(aks(1))).toBe('…vmss000001');
+    });
+
+    it('keeps the whole segment where the names diverge, not just the differing characters', () => {
+        // Two pools: the shared prefix is `aks-`, so the pool name — the
+        // distinguishing part — leads the label and survives right-truncation.
+        const a = 'aks-pool1-12345678-vmss000000';
+        const b = 'aks-pool2-87654321-vmss000000';
+        const labels = nodeLabels([host({ meta: { node: a } }), host({ hostId: 's.b', meta: { node: b } })]);
+        expect(labels.get(a)).toBe('…pool1-12345678-vmss000000');
+        expect(labels.get(b)).toBe('…pool2-87654321-vmss000000');
+    });
+
+    it('leaves a lone node its full name', () => {
+        // One node shares nothing with anyone; the same full name down the
+        // column IS the packed-fleet finding.
+        const labels = nodeLabels([
+            host({ meta: { node: aks(0) } }),
+            host({ hostId: 's.b', meta: { node: aks(0) } }),
+            host({ hostId: 's.c' })
+        ]);
+        expect([...labels]).toEqual([[aks(0), aks(0)]]);
+    });
+
+    it('does not cut where the shared prefix has no separator', () => {
+        // `node1` / `node2` would otherwise label as `…1` / `…2`.
+        const labels = nodeLabels([host({ meta: { node: 'node1' } }), host({ hostId: 's.b', meta: { node: 'node2' } })]);
+        expect(labels.get('node1')).toBe('node1');
+        expect(labels.get('node2')).toBe('node2');
+    });
+
+    it('never labels a node as nothing at all', () => {
+        // A name that IS the shared prefix would come out as a bare `…`.
+        const labels = nodeLabels([host({ meta: { node: 'pool-' } }), host({ hostId: 's.b', meta: { node: 'pool-b' } })]);
+        expect(labels.get('pool-')).toBe('pool-');
+        expect(labels.get('pool-b')).toBe('pool-b');
+    });
+
+    it('is empty when no host reports a node', () => {
+        expect(nodeLabels(demoSnapshot.hosts).size).toBe(0);
     });
 });
 

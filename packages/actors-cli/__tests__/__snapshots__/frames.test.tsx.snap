@@ -134,10 +134,10 @@ actors on this host
 exports[`rendered frames > Hosts 1`] = `
 "! 1 reminder shard(s) UNCLAIMED (p3) — nothing is ticking them
 
- HOST        STATUS   READY     UP  ACTS  QUEUE  VIEW  TRANSPORTS
- ────────────────────────────────────────────────────────────────
-❯s.2sme5hx2  active   yes    2m22s    30      2    #5  http
- s.ikfugf49  leaving  NO     2m22s     2      0    #5  http
+ HOST        STATUS   READY     UP  ACTS  QUEUE  VIEW  TRANSPORTS  NODE
+ ──────────────────────────────────────────────────────────────────────
+❯s.2sme5hx2  active   yes    2m22s    30      2    #5  http        —
+ s.ikfugf49  leaving  NO     2m22s     2      0    #5  http        —
 
 
 

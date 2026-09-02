@@ -94,6 +94,12 @@ export interface Column<T> {
      * viewport and push every number out of sight.
      */
     key_?: boolean;
+    /**
+     * The cell's tooltip, when it should say more than the cell does — a
+     * full node name behind its abbreviated label. A `key_` cell otherwise
+     * repeats its own text, so an ellipsised key is still readable in full.
+     */
+    title?: (row: T) => string | undefined;
 }
 
 /**
@@ -161,7 +167,7 @@ export function DataTable<T>(props: {
                                                   ? 'sxad-key'
                                                   : undefined
                                         }
-                                        title={column.key_ ? text : undefined}
+                                        title={column.title?.(row) ?? (column.key_ ? text : undefined)}
                                     >
                                         {actionable ? (
                                             <button

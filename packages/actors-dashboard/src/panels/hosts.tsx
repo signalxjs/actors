@@ -15,12 +15,16 @@
  * local view state.
  */
 import { component } from '@sigx/runtime-core';
-import { alertLines, hostTone, type HostView } from '@sigx/actors-monitor';
+import { alertLines, hostTone, nodeLabels, type HostView } from '@sigx/actors-monitor';
 import { count, uptime } from '@sigx/actors-monitor/format';
 import { Awaiting, Alerts, DataTable, Section, type Column, type Tone } from '../parts/primitives';
 import { awaitingReason, panelState, readyWord, type PanelProps } from './shared';
 
-const columns: readonly Column<HostView>[] = [
+/**
+ * The table's columns. A function of the fleet, not a constant, because the
+ * node cell is a label derived across every host (below).
+ */
+const columns = (labels: ReadonlyMap<string, string>): readonly Column<HostView>[] => [
     { key: 'id', header: 'host', value: (h) => h.hostId, key_: true },
     { key: 'status', header: 'status', value: (h) => h.status },
     { key: 'ready', header: 'ready', value: readyWord },
@@ -41,6 +45,22 @@ const columns: readonly Column<HostView>[] = [
         // A disagreement here is a half-rolled transport deploy, which is
         // usually the whole story.
         value: (h) => h.transports?.join(',') ?? '—'
+    },
+    {
+        key: 'node',
+        header: 'node',
+        // The machine under the pod, from `PlacementOptions.meta.node` — the
+        // column that turns `3/3 replicas` into "all three on one node"
+        // (#51). The cell is the monitor's LABEL (`…vmss000001`, the tail
+        // that differs), not the raw name: a `key_` cell ellipsises from
+        // the right at 28ch, real node names differ only in their tail,
+        // and two different nodes cut to `aks-sigxactors-12345678-vms…`
+        // would read as one — the inverse of the finding. The same label
+        // repeated down the column is still the finding; the full name is
+        // the tooltip and the drill-down.
+        value: (h) => (h.meta?.node ? (labels.get(h.meta.node) ?? h.meta.node) : '—'),
+        title: (h) => h.meta?.node,
+        key_: true
     }
 ];
 
@@ -72,7 +92,7 @@ export const HostsPanel = component<PanelProps>((ctx) => () => {
         <div>
             <Alerts alerts={alertLines(state.view)} />
             <DataTable
-                columns={columns}
+                columns={columns(nodeLabels(snapshot.hosts))}
                 rows={snapshot.hosts}
                 tone={rowTone}
                 onPick={(host) => state.focus(host.hostId)}
