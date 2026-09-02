@@ -486,7 +486,9 @@ export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
                                 'prometheusOps()'
                         );
                     }
-                    const sockets = registry.digest('sockets') as SocketStatsDigest | undefined;
+                    // `undefined` is "no provider"; `null` is a provider with
+                    // nothing to report. Both render no socket family.
+                    const sockets = registry.digest('sockets') as SocketStatsDigest | null | undefined;
                     const body = renderPrometheus(digest, host?.stats() ?? null, {
                         ...render,
                         sockets: sockets ?? null
