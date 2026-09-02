@@ -263,8 +263,10 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
 
                     // Absent is normal — a host with no socket mount — and
                     // observes nothing, so the families never appear for it.
-                    const sockets = registry.digest('sockets') as SocketStatsDigest | undefined;
-                    if (sockets === undefined) return;
+                    // `undefined` is "no provider"; `null` is a provider with
+                    // nothing to report. Both are absent.
+                    const sockets = registry.digest('sockets') as SocketStatsDigest | null | undefined;
+                    if (!sockets) return;
                     for (const [instrument, field] of socketCounters) {
                         result.observe(instrument, sockets[field]);
                     }

@@ -167,6 +167,35 @@ describe('otelMetricsBridge', () => {
         expect(dataPoints(resourceMetrics, 'sigx.actors.socket.connections.opened')).toHaveLength(0);
     });
 
+    it('treats a null sockets digest as absent, not as a digest to read', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        // `registry.digest()` answers whatever the provider returned — a
+        // provider that says `null` is "nothing to report", and must not
+        // become a field read off `null` inside the observable callback.
+        const nullSockets: ActorPlugin = {
+            name: 'null-sockets',
+            setup(registry) {
+                registry.reportDigest('sockets', () => null);
+            }
+        };
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(nullSockets)
+            .use(otelMetricsBridge({ meterProvider: provider }));
+        running = app;
+        const host = await app.start();
+        await host.actor(Counter, 'k1').increment(1);
+
+        const { resourceMetrics, errors } = await reader.collect();
+        expect(errors).toEqual([]);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.calls')).not.toHaveLength(0);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.socket.sessions')).toHaveLength(0);
+    });
+
     it('detaches the callback on stop', async () => {
         const reader = new PeriodicExportingMetricReader({
             exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
