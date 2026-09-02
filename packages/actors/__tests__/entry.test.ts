@@ -161,7 +161,7 @@ describe('actor() entry', () => {
     });
 
     it('the ambient seam returning { request, locals } shares the locals store with guards', async () => {
-        // Core 0.14 (#494): a request scope resolves to a Partial<ServerFnContext>
+        // Core 0.14 (signalxjs/core#494): a request scope resolves to a Partial<ServerFnContext>
         // whose `locals` IS the per-request store. Pin that an actor guard both
         // reads it and that its writes land back in the same store.
         const request = new Request('https://example.test/scoped');

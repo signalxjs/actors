@@ -5,7 +5,7 @@
  * The ambient read uses core's documented `__SIGX_SERVERFN_CONTEXT__` seam
  * (docs/seams.md: stamped by every scope entry, contract
  * `() => Request | Partial<ServerFnContext> | undefined`). Since core 0.14
- * (#494) a scope resolves to a `Partial<ServerFnContext>` whose `locals` IS
+ * (signalxjs/core#494) a scope resolves to a `Partial<ServerFnContext>` whose `locals` IS
  * the per-request store — it must be passed through by reference, so a guard
  * writing `rq.locals` here is visible to every other call in the flow. A
  * bare `Request` stays legal in the contract (an app may stamp its own

@@ -985,14 +985,14 @@
 
 ### Fixed
 
-- **Actor wire calls 404'd once core enforced the mount base (#563).**
+- **Actor wire calls 404'd once core enforced the mount base (signalxjs/core#563).**
   `handleActorRequest` passed `base` to its resolver but never to
   `handleServerFnRequest`, so core matched the path against its own
   `/_sigx/fn` default. Latent until core made the prefix load-bearing, then
   fatal for **every** actor call. The internal cluster mount and the
   Cloudflare Durable Object mount had the same omission.
 - **A routing token was read as part of the actor type.** Under "everything
-  after the base IS the symbol" (#543), `{base}/r/{token}/{Type}#{method}`
+  after the base IS the symbol" (signalxjs/core#543), `{base}/r/{token}/{Type}#{method}`
   resolved a type literally named `r/{token}/{Type}`. The hint is now
   stripped from the RAW path, before core decodes it: core decodes each
   path segment separately, and a `'key'`-mode or custom token may contain a

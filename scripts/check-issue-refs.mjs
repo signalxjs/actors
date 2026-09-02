@@ -51,11 +51,30 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 /**
  * Paths under the guard. This list is deliberately narrower than the repo:
- * the CHANGELOGs and much of `packages/` still carry pre-promotion numbers,
- * and a check that starts red is a check people learn to ignore. Widen it as
- * each area is cleaned — that is the point of it being a list.
+ * the CHANGELOGs and `packages/` still carry pre-promotion numbers that need
+ * a judgement pass (#122), and a check that starts red is a check people
+ * learn to ignore. Widen it as each area is cleaned — that is the point of
+ * it being a list.
  */
-const DEFAULT_PATHS = ['benchmarks', 'docs', 'README.md', 'AGENTS.md', 'SECURITY.md', 'CONTRIBUTING.md'];
+const DEFAULT_PATHS = [
+    'benchmarks',
+    'docs',
+    'examples',
+    'perf',
+    'scripts',
+    '.github',
+    'README.md',
+    'AGENTS.md',
+    'SECURITY.md',
+    'CONTRIBUTING.md'
+];
+
+/**
+ * Files whose `#N` are placeholders by design, not references. The PR
+ * template's "Closes" / "Refs" examples are for the contributor to replace;
+ * whether the numbers in them happen to resolve is noise either way.
+ */
+const EXEMPT_FILES = new Set(['.github/pull_request_template.md']);
 
 const args = process.argv.slice(2);
 const list = args.includes('--list');
@@ -73,7 +92,8 @@ function trackedFiles() {
     return out
         .split('\0')
         .filter(Boolean)
-        .filter((f) => !/pnpm-lock|\.(svg|png|ico|jpg|jpeg|gif|woff2?)$/i.test(f));
+        .filter((f) => !/pnpm-lock|\.(svg|png|ico|jpg|jpeg|gif|woff2?)$/i.test(f))
+        .filter((f) => !EXEMPT_FILES.has(f));
 }
 
 /**

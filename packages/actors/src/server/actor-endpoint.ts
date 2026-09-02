@@ -131,15 +131,15 @@ export async function handleActorRequest(
         ...(maxLiveSubscriptions !== undefined ? { maxLiveSubscriptions } : {})
     };
     const actorBase = resolverOptions.base ?? DEFAULT_BASE;
-    // Everything after the base IS the symbol (#543), so the routing hint
+    // Everything after the base IS the symbol (signalxjs/core#543), so the routing hint
     // has to come off the path before core reads it.
     const routed = stripRouteSegments(request, actorBase);
     const response = await handleServerFnRequest(routed, {
         ...rest,
         // The mount's base has to reach CORE, not just the resolver. Core
-        // checks the path prefix itself (#563) and defaults to `/_sigx/fn`,
+        // checks the path prefix itself (signalxjs/core#563) and defaults to `/_sigx/fn`,
         // so leaving it out 404s every actor call before resolution — the
-        // failure that silently ate the whole wire surface until #563 made
+        // failure that silently ate the whole wire surface until signalxjs/core#563 made
         // it say so. Same value the resolver keys on, deliberately.
         base: actorBase,
         resolve: resolverFor(host, resolverOptions)

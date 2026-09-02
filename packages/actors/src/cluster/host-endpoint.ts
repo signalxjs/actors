@@ -68,7 +68,7 @@ export interface HostRuntimeRequestOptions extends HostEndpointOptions {
 }
 
 /** The internal mount's default path — must agree with `matchesHostRequest`
- *  and with what reaches core (#563). */
+ *  and with what reaches core (signalxjs/core#563). */
 export const DEFAULT_HOST_BASE = '/_sigx/host';
 
 export function matchesHostRequest(request: Request, base = DEFAULT_HOST_BASE): boolean {
@@ -300,7 +300,7 @@ export async function handleHostRequestForRuntime(
         }
     }
     return handleServerFnRequest(request, {
-        // Same #563 rule as the public mount: core checks the path prefix
+        // Same signalxjs/core#563 rule as the public mount: core checks the path prefix
         // itself and defaults to `/_sigx/fn`, so the internal mount must
         // name its own base or every host-to-host call 404s before it
         // resolves.
