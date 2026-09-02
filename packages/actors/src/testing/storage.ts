@@ -468,6 +468,7 @@ const saveTextEquivalence: ConformanceCase<StorageConformanceFactory> = {
             const viaText = await saveText(T, 'text', JSON.stringify(state), null);
             assertEtag(viaText, 'saveText');
             const viaTree = await s.save(T, 'tree', state, null);
+            assertEtag(viaTree, 'save');
             await assertRecord(s, T, 'text', state, viaText, 'the record saveText wrote');
             const text = await s.load(T, 'text');
             const tree = await s.load(T, 'tree');
@@ -487,6 +488,7 @@ const saveTextHonoursCas: ConformanceCase<StorageConformanceFactory> = {
             const saveText = textPath(s, h);
             if (typeof saveText !== 'function') return saveText;
             const etag = await saveText(T, 'k', '{"n":1}', null);
+            assertEtag(etag, 'saveText');
             await assertConflict(() => saveText(T, 'k', '{"n":2}', 'stale'), 'saveText with a stale etag');
             await assertConflict(() => saveText(T, 'k', '{"n":2}', null), 'saveText create over existing');
             await assertConflict(
