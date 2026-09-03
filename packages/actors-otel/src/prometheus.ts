@@ -22,6 +22,7 @@ import {
     type PluginRegistry
 } from '@sigx/actors/host';
 import type { Host } from '@sigx/actors';
+import type { ClusterCounterTotals } from '@sigx/actors/cluster';
 import type { SocketStats } from '@sigx/actors/server';
 
 /**
@@ -52,12 +53,35 @@ export interface RenderPrometheusOptions {
      * family appear knows the transport is mounted.
      */
     sockets?: SocketStatsDigest | null;
+    /**
+     * This host's cluster counters (`placement.counters()`), when the host
+     * is clustered (#346). Renders the `{prefix}cluster_dispatches_total`
+     * pair, labelled `locality="local"` / `"remote"` — the per-request
+     * locality fraction is a PromQL ratio over the two, never a precomputed
+     * gauge, so it aggregates across a fleet. Absent or null renders no
+     * cluster family at all: a single host is not a cluster with zero
+     * dispatches. `Partial`: only the dispatch pair is read, and a host
+     * still on a build predating it renders `0` rather than failing to
+     * type-check.
+     */
+    cluster?: Partial<ClusterCounterTotals> | null;
 }
 
-/** `prometheusOps` reads the socket digest off the registry itself. */
-export interface PrometheusOpsOptions extends Omit<RenderPrometheusOptions, 'sockets'> {
+/**
+ * `prometheusOps` reads the socket digest off the registry itself, and the
+ * cluster counters through a thunk read on every scrape.
+ */
+export interface PrometheusOpsOptions extends Omit<RenderPrometheusOptions, 'sockets' | 'cluster'> {
     /** Route path. Default `'/_sigx/metrics'`. */
     path?: string;
+    /**
+     * How to read this host's cluster counters on each scrape — typically
+     * `() => plugin.placement.counters()` from the `cluster()` plugin
+     * (#346). A thunk rather than the placement itself so the endpoint
+     * holds no cluster handle and `@sigx/actors` stays size-neutral. Answer
+     * `undefined` for "not clustered (yet)": no cluster family is emitted.
+     */
+    cluster?: () => Partial<ClusterCounterTotals> | undefined;
     /**
      * Bearer token. MANDATORY outside development — this endpoint reports
      * your actor types and traffic, so it must not be servable by omission
@@ -182,6 +206,7 @@ export function renderPrometheus(
 ): string {
     const prefix = options.prefix ?? DEFAULT_PREFIX;
     const sockets = options.sockets ?? null;
+    const cluster = options.cluster ?? null;
     const out = new Lines();
 
     // --- counters -----------------------------------------------------
@@ -301,6 +326,9 @@ export function renderPrometheus(
 
     // --- socket sessions -----------------------------------------------
     if (sockets) renderSockets(out, prefix, sockets, options.bucketsSeconds);
+
+    // --- cluster locality ----------------------------------------------
+    if (cluster) renderCluster(out, prefix, cluster);
     out.family(
         `${prefix}metrics_window_seconds`,
         'gauge',
@@ -398,6 +426,28 @@ function renderSockets(
 }
 
 /**
+ * The cluster dispatch pair (#52, #346): calls THIS host initiated, split
+ * by whether this host or a peer served them. Two counter series under one
+ * family, so `local / (local + remote)` — the per-request locality fraction
+ * the CLI and dashboard show as `locality` — is a `rate()` ratio Prometheus
+ * derives, and `sum by (...)` across hosts stays meaningful. A precomputed
+ * ratio would be neither.
+ *
+ * `?? 0`: a host still on a build predating the pair reports totals without
+ * it, and a missing series parses worse than a zero one.
+ */
+function renderCluster(out: Lines, prefix: string, totals: Partial<ClusterCounterTotals>): void {
+    out.family(
+        `${prefix}cluster_dispatches_total`,
+        'counter',
+        'Calls this host initiated, by whether this host (local) or a peer (remote) served them — ' +
+            'once per call, stream or watch subscriber.'
+    );
+    out.push(`${prefix}cluster_dispatches_total{locality="local"} ${totals.dispatchesLocal ?? 0}`);
+    out.push(`${prefix}cluster_dispatches_total{locality="remote"} ${totals.dispatchesRemote ?? 0}`);
+}
+
+/**
  * Mount the exposition beside `ops()`: `GET /_sigx/metrics` with the same
  * bearer posture — secret mandatory outside development, auth before any
  * path logic, one 401 for missing and wrong alike.
@@ -405,7 +455,9 @@ function renderSockets(
  * Reads the digest through the registry (`registry.digest('metrics')`), so
  * it composes with `metrics()` by registration and holds no direct handle.
  * The `'sockets'` digest is read the same way, and its absence is normal:
- * a host that serves no sockets simply emits no socket family.
+ * a host that serves no sockets simply emits no socket family. The cluster
+ * counters come through `options.cluster`, a thunk read on every scrape;
+ * absent, or answering `undefined`, emits no cluster family.
  */
 export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
     const raw = options.path ?? '/_sigx/metrics';
@@ -416,6 +468,7 @@ export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
     }
     const path = raw.endsWith('/') ? raw.slice(0, -1) : raw;
     const secret = options.secret;
+    const readCluster = options.cluster;
     if (!secret && !__DEV__) {
         throw new Error(
             '[sigx actors] prometheusOps() requires a secret outside development — this ' +
@@ -491,7 +544,8 @@ export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
                     const sockets = registry.digest('sockets') as SocketStatsDigest | null | undefined;
                     const body = renderPrometheus(digest, host?.stats() ?? null, {
                         ...render,
-                        sockets: sockets ?? null
+                        sockets: sockets ?? null,
+                        cluster: readCluster?.() ?? null
                     });
                     return new Response(method === 'HEAD' ? null : body, {
                         status: 200,

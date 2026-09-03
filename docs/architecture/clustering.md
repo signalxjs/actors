@@ -265,6 +265,24 @@ it received: reminder and task-tick firings and topic deliveries go through
 dispatchesRemote` runs ahead of an inbound request count on a host with
 timers armed. Read the fraction, not the sum, against a request rate.
 
+On the Prometheus endpoint the same pair is
+`sigx_actors_cluster_dispatches_total{locality="local"|"remote"}` (and
+`sigx.actors.cluster.dispatches` with a `locality` attribute on the OTel
+bridge), reached by handing `prometheusOps` / `otelMetricsBridge` a
+`cluster: () => plugin.placement.counters()` thunk (#346). Two counter
+series, deliberately no ratio gauge: the fraction is
+
+```promql
+sum by (instance) (rate(sigx_actors_cluster_dispatches_total{locality="local"}[5m]))
+  / sum by (instance) (rate(sigx_actors_cluster_dispatches_total[5m]))
+```
+
+and dropping the `by (instance)` gives the fleet-wide number, which a
+per-host precomputed ratio could never be averaged into. The thunk seam keeps
+`@sigx/actors` out of it: neither `MetricsDigest` nor `HostStats` carries the
+cluster counters, and growing `HostStats` for one exporter would have cost
+every host the field.
+
 The warm fast path pays exactly this one increment and nothing else; the
 `cluster/locality-warm` bench keeps deriving its `local_fraction` from
 `remoteDispatches` against its own call count so its `exact` gates stay as
