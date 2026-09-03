@@ -5,7 +5,9 @@
 ### Added
 
 - **`redisStorage` implements `appendText`** (#312): the record's log is a
-  LIST beside the HASH (`{ns}:st:{type}<NUL>{key}:l`), appended by a new
+  LIST beside the HASH, under its own prefix (`{ns}:sl:{type}<NUL>{key}` —
+  a prefix, not a suffix, because actor keys are opaque and `{key}:l` is
+  another actor's key), appended by a new
   `APPEND_CAS` script under the record's etag; the save and clear scripts
   now `DEL` the list in the same atomic step, and `load` is one script
   returning the etag, the state and `LRANGE` in a single round trip. Keys

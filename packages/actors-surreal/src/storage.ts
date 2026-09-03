@@ -102,9 +102,14 @@ export function surrealStorage(options: SurrealStorageOptions): ActorStorage {
         save: (type, key, state, expectedEtag) =>
             put(type, key, JSON.stringify(state), expectedEtag),
         saveText: put,
-        async appendText(type, key, l, expectedEtag): Promise<string> {
+        async appendText(type, key, json, expectedEtag): Promise<string> {
             const etag = globalThis.crypto.randomUUID();
-            const [written] = await db.query<[boolean]>(APPEND, { id: rid(type, key), e: etag, l, x: expectedEtag });
+            const [written] = await db.query<[boolean]>(APPEND, {
+                id: rid(type, key),
+                e: etag,
+                l: json,
+                x: expectedEtag
+            });
             if (written !== true) throw new ActorStorageConflict(type, key);
             return etag;
         },

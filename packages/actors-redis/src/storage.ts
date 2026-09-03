@@ -4,8 +4,12 @@
  * actor under the shared `{namespace}` prefix, plus one LIST for the
  * append log (#312),
  *
- *   {ns}:st:{type}<NUL>{key}      HASH { e: etag, s: state JSON }
- *   {ns}:st:{type}<NUL>{key}:l    LIST [ entry JSON, … ]  (oldest first)
+ *   {ns}:st:{type}<NUL>{key}    HASH { e: etag, s: state JSON }
+ *   {ns}:sl:{type}<NUL>{key}    LIST [ entry JSON, … ]  (oldest first)
+ *
+ * Its own PREFIX, not a suffix on the record key: actor keys are opaque,
+ * so `{key}:l` is a key some other actor may have, and a suffix would make
+ * one actor's log another actor's record.
  *
  * no TTL — durability is the point. Etags are client-minted UUIDs
  * (equality-compared only), so an etag can never be the empty string —
@@ -108,11 +112,9 @@ export function redisStorage(options: RedisStorageOptions): ActorStorage {
     const ns = options.namespace ?? 'sigx';
     // actorId embeds a NUL — Redis keys are binary-safe, no escaping layer.
     const stKey = (type: string, key: string): string => `${ns}:st:${type}\u0000${key}`;
-    // The log's key is the record's plus a suffix a key cannot produce
-    // ambiguously: `stKey` ends in the caller's key, but the two are told
-    // apart by the whole string, and a record key ending in `:l` names a
-    // hash while this names a list — Redis keeps the types distinct.
-    const logKey = (type: string, key: string): string => `${stKey(type, key)}:l`;
+    // A sibling prefix (see the header): the log of `k` and the record of
+    // `k:l` must be different keys, and only a prefix of its own does that.
+    const logKey = (type: string, key: string): string => `${ns}:sl:${type}\u0000${key}`;
 
     // Re-registering the same script on a shared client is an overwrite, so
     // several redisStorage instances (or a redisStorage next to the cluster

@@ -466,8 +466,56 @@ describe('a case that cannot fail is decoration — the suite goes red against a
             })
         ],
         [
+            'the log lives under the record key plus a suffix',
+            'appended entries load in append order, oldest first, whatever their JSON shape — and only on their own record',
+            // One keyspace for records and logs, the log at `${record}:l` —
+            // so the log of "k" IS the record of "k:l".
+            wrap(() => {
+                const space = new Map<string, unknown>();
+                const rec = (type: string, key: string) => `${type}\0${key}`;
+                const log = (type: string, key: string) => `${rec(type, key)}:l`;
+                let n = 0;
+                type Rec = { state: unknown; etag: string };
+                return {
+                    load: async (type, key) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if (!r) return null;
+                        const l = space.get(log(type, key));
+                        return {
+                            state: structuredClone(r.state),
+                            etag: r.etag,
+                            log: Array.isArray(l) ? structuredClone(l) : []
+                        };
+                    },
+                    save: async (type, key, state, expected) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if ((r?.etag ?? null) !== expected) throw new ActorStorageConflict(type, key);
+                        const etag = String(++n);
+                        space.set(rec(type, key), { state, etag });
+                        space.delete(log(type, key));
+                        return etag;
+                    },
+                    appendText: async (type, key, json, expected) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if (!r || r.etag !== expected) throw new ActorStorageConflict(type, key);
+                        const l = space.get(log(type, key));
+                        space.set(log(type, key), [...(Array.isArray(l) ? l : []), JSON.parse(json)]);
+                        r.etag = String(++n);
+                        return r.etag;
+                    },
+                    clear: async (type, key, expected) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if (!r && expected === null) return;
+                        if ((r?.etag ?? null) !== expected) throw new ActorStorageConflict(type, key);
+                        space.delete(rec(type, key));
+                        space.delete(log(type, key));
+                    }
+                };
+            })
+        ],
+        [
             'load returns the log newest first',
-            'appended entries load in append order, oldest first, whatever their JSON shape',
+            'appended entries load in append order, oldest first, whatever their JSON shape — and only on their own record',
             wrap((inner) => ({
                 ...inner,
                 load: async (type, key) => {

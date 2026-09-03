@@ -48,7 +48,10 @@ brand, and the two paths share one etag chain. The last six pin the optional
 `appendText` path (#312): a missing record conflicts and creates nothing; a
 stale etag appends nothing; an append mints a fresh etag and `load` shows the
 unchanged state plus the one entry; entries load oldest first whatever their
-JSON shape; a full save (via `save`, via `saveText` where present) truncates
+JSON shape and only on their own record — neighbours under `k:l`, `k<NUL>l`,
+`k/l` keep their own log, because keys are opaque and a store deriving a log
+key by suffix would make one actor's log another's record; a full save (via
+`save`, via `saveText` where present) truncates
 the log, `clear` removes it and a re-created record starts empty; and the
 etag an append returns is what the next save or clear must present, while
 the one it was given is stale from then on.
@@ -89,12 +92,13 @@ cases, six append cases), so a required case that started skipping, or an
 optional path an adapter quietly gained, both fail.
 
 The sabotage table in `packages/actors/__tests__/storage-conformance.test.ts`
-is rule 2 made permanent: twenty-three deliberately broken adapters — a miss
+is rule 2 made permanent: twenty-four deliberately broken adapters — a miss
 that loads as `undefined`, a save that ignores the etag, an unbranded
 conflict, an upsert, a load that hands out the stored tree by reference, a
 key-trimming layer, a non-injective NUL escape, a three-method decorator
 over a text adapter, a `saveText` with its own etag chain, an `appendText`
-that creates the record it is asked to append to, a load that hands out the
+that creates the record it is asked to append to, a log keyed by a suffix of
+the record key (so `k`'s log is `k:l`'s record), a load that hands out the
 log by reference or returns it newest first, a full save that keeps the log
 — each named against the
 case that must catch it, and the test asserts that case goes red with a

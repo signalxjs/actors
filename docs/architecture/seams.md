@@ -123,9 +123,10 @@ The contract, pinned by the six append cases of `storageConformance`:
    DO shape with a key per entry is #375). The host is correct either way:
    without it, an append is a full save at today's cost.
 
-Per adapter, the log is a Redis LIST beside the HASH (one Lua script per
-operation covers both keys, and `load` returns etag, state and `LRANGE` in
-one round trip), a `log text[]` column on the Postgres row (`array_append`
+Per adapter, the log is a Redis LIST beside the HASH under its own prefix
+(`{ns}:sl:…` — a suffix on the record key would collide with another actor's
+opaque key; one Lua script per operation covers both keys, and `load`
+returns etag, state and `LRANGE` in one round trip), a `log text[]` column on the Postgres row (`array_append`
 under the row-count CAS; `ensurePgSchema` adds the column to an existing
 schema with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`), a sibling
 `{table}_log` table in SQLite (the version bump is the CAS, one

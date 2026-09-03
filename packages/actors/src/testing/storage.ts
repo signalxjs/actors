@@ -673,13 +673,24 @@ const appendReturnsANewEtag: ConformanceCase<StorageConformanceFactory> = {
 };
 
 const appendsAreOrdered: ConformanceCase<StorageConformanceFactory> = {
-    name: 'appended entries load in append order, oldest first, whatever their JSON shape',
-    why: 'the host folds the log through a reducer — an entry out of order, or an object where a scalar was appended, folds to the wrong state',
+    name: 'appended entries load in append order, oldest first, whatever their JSON shape — and only on their own record',
+    why: 'the host folds the log through a reducer — an entry out of order, an object where a scalar was appended, or a neighbour\'s entry, folds to the wrong state',
     run: (create) =>
         withHarness(create, async (s, h) => {
             const appendText = appendPath(s, h);
             if (typeof appendText !== 'function') return appendText;
             let etag = await s.save(T, 'k', { n: 0 }, null);
+            // Neighbours whose keys are what a store might DERIVE a log
+            // key from — a suffix, a separator, a NUL — each with one
+            // entry of its own. Keys are opaque; a log that lives under
+            // `${key}:l` is another actor's record.
+            const NUL = String.fromCharCode(0);
+            const neighbours = ['k:l', 'k:log', `k${NUL}l`, 'k/l', 'k_log', 'kl'];
+            const neighbourEtags = new Map<string, string>();
+            for (const key of neighbours) {
+                const created = await s.save(T, key, { neighbour: key }, null);
+                neighbourEtags.set(key, await appendText(T, key, JSON.stringify({ own: key }), created));
+            }
             const entries: unknown[] = [
                 { step: 1 },
                 [2, 'two'],
@@ -701,6 +712,19 @@ const appendsAreOrdered: ConformanceCase<StorageConformanceFactory> = {
                 etags.add(etag);
             }
             await assertRecordWithLog(s, T, 'k', { n: 0 }, etag, entries, 'after eight appends');
+            for (const key of neighbours) {
+                await assertRecordWithLog(
+                    s,
+                    T,
+                    key,
+                    { neighbour: key },
+                    neighbourEtags.get(key)!,
+                    [{ own: key }],
+                    `the neighbour ${show(key)}, after eight appends to "k"`
+                );
+            }
+            // And the same type under another type: a different record.
+            await assertAbsent(s, `${T}Other`, 'k', 'the key "k" under another type');
         })
 };
 
