@@ -56,11 +56,14 @@ afterEach(async () => {
     host = null;
 });
 
-async function listen(origin: Parameters<typeof attachActorSocket>[1]['origin']): Promise<number> {
+async function listen(
+    origin: Parameters<typeof attachActorSocket>[1]['origin'],
+    extra: Partial<Parameters<typeof attachActorSocket>[1]> = {}
+): Promise<number> {
     host = createHost({ actors: [Cart], defaults: quiet });
     await host.start();
     server = createServer((_req, res) => res.end('no'));
-    attachActorSocket(server, { host, origin, pingMs: 0 });
+    attachActorSocket(server, { host, origin, pingMs: 0, ...extra });
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     return (server.address() as { port: number }).port;
 }
@@ -118,6 +121,21 @@ describe('attachActorSocket over real sockets', () => {
         // …a cross-site one is refused before a single message is read.
         const bad = dial(port, 'http://evil.test');
         await expect(bad.call('Cart#total', ['k'])).rejects.toMatchObject({ status: 0 });
+    });
+
+    it('passes maxBufferedBytes through to the session — a bad value closes the upgrade 1011 (#258)', async () => {
+        // The option rides the existing `Omit`; proving it reaches the
+        // session is proving the session's own validation answers on the
+        // wire. (The shed itself is exercised over the fake link in
+        // packages/actors — a real `bufferedAmount` cannot be pushed over a
+        // cap deterministically on loopback.)
+        const port = await listen(false, { maxBufferedBytes: -1 });
+        const ws = new WsClient(`ws://127.0.0.1:${port}${DEFAULT_SOCKET_PATH}`);
+        ws.on('error', () => {});
+        const closed = await new Promise<{ code: number; reason: string }>((resolve) =>
+            ws.on('close', (code, reason) => resolve({ code, reason: String(reason) }))
+        );
+        expect(closed).toEqual({ code: 1011, reason: 'session misconfigured' });
     });
 
     it('leaves other upgrade paths alone when another listener exists', async () => {

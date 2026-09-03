@@ -64,6 +64,7 @@ const socketDigest: SocketStatsDigest = {
     deliveries: 1200,
     deliveryBytes: 48_000,
     throttleQuantized: 6,
+    subscriptionsShed: 3,
     layout: 'll-4-26',
     lifetime: { count: 4, sumUs: 46, minUs: 2, maxUs: 21, idx: [1, 20], n: [2, 2] }
 };
@@ -168,6 +169,7 @@ describe('renderPrometheus', () => {
         expect(lines).toContain('sigx_actors_socket_deliveries_total 1200');
         expect(lines).toContain('sigx_actors_socket_delivery_bytes_total 48000');
         expect(lines).toContain('sigx_actors_socket_throttle_quantized_total 6');
+        expect(lines).toContain('sigx_actors_socket_subscriptions_shed_total 3');
         expect(lines).toContain('# TYPE sigx_actors_socket_deliveries_total counter');
         // The unit caveat is on the family, not hidden in a README.
         expect(text).toContain('UTF-16 code units');

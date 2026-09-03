@@ -397,6 +397,11 @@ function renderSockets(
             'socket_throttle_quantized_total',
             'Subscriptions whose requested delivery window the throttle policy moved.',
             sockets.throttleQuantized
+        ],
+        [
+            'socket_subscriptions_shed_total',
+            'Live subscriptions closed because the connection send buffer was over maxBufferedBytes.',
+            sockets.subscriptionsShed
         ]
     ];
     for (const [name, help, value] of counters) {

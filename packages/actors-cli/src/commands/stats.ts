@@ -226,6 +226,13 @@ export function renderStats(snapshot: MonitorSnapshot, label: string): string[] 
                 `  evicted      ${count(sockets.lifetimeCloses)} lifetime  ${count(sockets.protocolBreaches)} protocol breach`
             );
         }
+        // Subscriptions the host closed for a slow consumer (#258). Only
+        // when any happened: the cap is off by default and inert on an
+        // adapter that cannot report its buffer, and a `0` there would
+        // read as "nobody was slow".
+        if (sockets.subscriptionsShed > 0) {
+            lines.push(`  shed         ${count(sockets.subscriptionsShed)} subscriptions (send buffer over cap)`);
+        }
         if (sockets.lifetimeMs) {
             lines.push(
                 `  lifetime     p50 ${durationMs(sockets.lifetimeMs.p50Ms)}  p90 ${durationMs(sockets.lifetimeMs.p90Ms)}  p99 ${durationMs(sockets.lifetimeMs.p99Ms)}`

@@ -4,6 +4,12 @@
 
 ### Added
 
+- **`shed` row in the sockets section** of `stats` and the `top` host
+  drill-down (#258): subscriptions the host closed because a connection's
+  send buffer was over its `maxBufferedBytes`. Rendered only when non-zero
+  — the cap is off by default and inert on an adapter that cannot report
+  its buffer, and a `0` there would read as "nobody was slow".
+
 - **Socket sessions in `stats` and `top` (#166).** A host that publishes the
   `sockets` ops section — `registry.reportOps('sockets', () =>
   socketStats().snapshot())` — gets a `sockets — host <id> ONLY` block in

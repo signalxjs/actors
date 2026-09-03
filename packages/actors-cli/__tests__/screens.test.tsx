@@ -460,6 +460,7 @@ describe('socket sessions (#166)', () => {
         deliveries: 1200,
         deliveryBytes: 48_000,
         throttleQuantized: 0,
+        subscriptionsShed: 0,
         open: 3,
         inFlight: 1,
         subscriptions: 4,

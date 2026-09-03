@@ -163,6 +163,11 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                             'throttle_quantized',
                             'Subscriptions whose requested delivery window the throttle policy moved.',
                             'throttleQuantized'
+                        ],
+                        [
+                            'subscriptions.shed',
+                            'Live subscriptions closed because the connection send buffer was over maxBufferedBytes.',
+                            'subscriptionsShed'
                         ]
                     ] as const
                 ).map(([name, description, field]) => [

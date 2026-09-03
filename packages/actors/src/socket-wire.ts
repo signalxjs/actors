@@ -85,7 +85,20 @@ export type SocketRequest =
  * per value until the client sends `{i,uns:1}` (closing is silent — no
  * terminal reply) or a terminal `{i,e}` ends it server-side. A one-way call
  * (`w: 1`) and a cancel are answered by nothing at all.
+ *
+ * One terminal `{i,e}` is the SESSION's own decision rather than the
+ * actor's: a subscription shed because the connection's send buffer was
+ * over the session's `maxBufferedBytes` (#258) ends with `status: 503` and
+ * `data: {kind: 'shed'}` ({@link SocketShedReason}). It is a subscription
+ * error like any other to the client — the connection, its calls and its
+ * other subscriptions are untouched — and the `data` is how a client tells
+ * "I was too slow" from "the read failed".
  */
+/** The `e.data` of a subscription the session shed (#258). */
+export interface SocketShedReason {
+    kind: 'shed';
+}
+
 export type SocketReply =
     /** A unary result, a stream chunk, or a live value for `i`. */
     | { i: number; v: unknown }

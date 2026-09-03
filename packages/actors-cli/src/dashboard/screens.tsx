@@ -692,6 +692,18 @@ function socketRows(
             value: `${count(sockets.lifetimeCloses)} lifetime  ${count(sockets.protocolBreaches)} protocol breach`,
             tone: sockets.protocolBreaches > 0 ? 'warn' : undefined
         },
+        // Subscriptions closed for a slow consumer (#258) — only when any
+        // happened; the cap is off by default and inert on an adapter that
+        // cannot report its buffer.
+        ...(sockets.subscriptionsShed > 0
+            ? [
+                  {
+                      label: 'shed',
+                      value: `${count(sockets.subscriptionsShed)} subscriptions (send buffer over cap)`,
+                      tone: 'warn'
+                  }
+              ]
+            : []),
         {
             label: 'lifetime',
             value: sockets.lifetimeMs

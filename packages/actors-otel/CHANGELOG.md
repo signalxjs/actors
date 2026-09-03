@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`socket_subscriptions_shed_total` / `sigx.actors.socket.subscriptions.shed`**
+  (#258): subscriptions the socket session closed because a connection's
+  send buffer was over its `maxBufferedBytes`. One row in each exporter's
+  socket-counter table, mapped from the new `subscriptionsShed` total.
+
 - **The per-request locality fraction reaches both exporters (#346).**
   `prometheusOps({ cluster })` and `otelMetricsBridge({ cluster })` take a
   thunk over this host's cluster counters — typically

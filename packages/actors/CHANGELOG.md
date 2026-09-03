@@ -4,6 +4,27 @@
 
 ### Added
 
+- **`createActorSocketSession({ maxBufferedBytes })` — a slow consumer is
+  shed, not funded from the host's heap** (#258). The Tier-3 run that
+  followed #252 measured what #182 predicted: with 10% of 5 000 subscribers
+  stalled, the hosts queued ~350 MB in their own send buffers while every
+  client-side signal read zero, because `send()` is fire-and-forget and
+  `WATCH_BUFFER` bounds only the fan-out queue into the session. With the
+  new cap (opt-in; default `0` = off; validated at construction like
+  `maxConnectionMs`), after each subscription frame the session reads the
+  adapter's `bufferedBytes()` and, over the cap, closes the subscription
+  that put the most bytes into the buffer since it last drained — with the
+  ordinary per-subscription terminal frame, `{i, e: {status: 503, data:
+  {kind: 'shed'}}}` (`SocketShedReason` in `@sigx/actors/socket-wire`), so a
+  client's live channel sees one subscription fail and nothing else: the
+  connection stays open, calls and the other subscriptions continue. While
+  the buffer stays over the cap each further delivery sheds the next
+  heaviest, which is what bounds the memory. An adapter answering `null`
+  (it cannot report its buffer — the Cloudflare adapters today) never
+  sheds: the cap is inert there and says so, rather than faking a 0.
+  `socketStats()` gains `subscriptionsShed` (recorder method `shed()`), and
+  the `./server` size budget moves 8.1 → 8.25 kB for the check.
+
 - **`job.checkpoint(cp, { durability: 'eventual' })` — a burst of steps
   costs one save** (#320). `jobs/checkpoint-growth` showed every
   `job.checkpoint()` re-encoding and CAS-writing the whole job state, and

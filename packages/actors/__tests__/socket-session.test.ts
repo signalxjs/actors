@@ -39,6 +39,9 @@ const Cart = defineActor({
         async total() {
             return ctx.state.items.length;
         },
+        async items() {
+            return ctx.state.items;
+        },
         async echo(value: unknown) {
             return value;
         },
@@ -849,5 +852,105 @@ describe('sessions must not outlive credentials (#159)', () => {
         // No revalidation ran after close, and the lifetime cap never fired.
         expect(authenticated).toBe(after);
         expect(link.closes).toEqual([]);
+    });
+});
+
+describe('shedding a slow consumer (#258)', () => {
+    /** Two subscriptions: `items` on a key holding a long string (heavy
+     *  frames) and `total` on another (tiny frames). */
+    async function twoSubscriptions(
+        s: Host,
+        overrides: Record<string, unknown>
+    ): Promise<{ session: ActorSocketSession; link: FakeLink }> {
+        const { session, link } = await connect(s, overrides);
+        session.handle(JSON.stringify({ i: 1, s: 'Cart#add', a: ['heavy', 'x'.repeat(200)] }));
+        await until(() => framesFor(link, 1).length === 2);
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'heavy', m: 'items' } }));
+        session.handle(JSON.stringify({ i: 3, sub: { t: 'Cart', k: 'light', m: 'total' } }));
+        await until(() => framesFor(link, 2).length >= 1 && framesFor(link, 3).length >= 1);
+        return { session, link };
+    }
+
+    it('sheds the subscription that filled the buffer — the socket and the other subscription survive', async () => {
+        const s = await start();
+        // Non-zero from the start: the buffer never reports empty, so
+        // every byte since the seed counts towards "who filled it".
+        let depth = 1;
+        const { session, link } = await twoSubscriptions(s, {
+            maxBufferedBytes: 100,
+            bufferedBytes: () => depth
+        });
+        // Over the cap; the LIGHT subscription delivers next. The heavy one
+        // is the one shed — it is the one holding the bytes.
+        depth = 101;
+        session.handle(JSON.stringify({ i: 4, s: 'Cart#add', a: ['light', 'a'] }));
+        await until(() => framesFor(link, 2).some((f) => 'e' in f));
+        const shed = framesFor(link, 2).at(-1) as { e: { status: number; message: string; data: unknown } };
+        expect(shed.e.status).toBe(503);
+        expect(shed.e.message).toMatch(/shed/);
+        expect(shed.e.data).toEqual({ kind: 'shed' });
+        // The connection is untouched: no close, one subscription left.
+        expect(link.closes).toEqual([]);
+        await until(() => session.stats().subscriptions === 1);
+        const heavyFrames = framesFor(link, 2).length;
+        const lightFrames = framesFor(link, 3).length;
+        // The buffer drains; the light subscription keeps flowing, and the
+        // shed one is silent even when its actor changes.
+        depth = 0;
+        session.handle(JSON.stringify({ i: 5, s: 'Cart#add', a: ['heavy', 'y'] }));
+        session.handle(JSON.stringify({ i: 6, s: 'Cart#add', a: ['light', 'b'] }));
+        await until(() => framesFor(link, 3).length > lightFrames);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(framesFor(link, 2).length).toBe(heavyFrames);
+        expect(framesFor(link, 3).every((f) => !('e' in f))).toBe(true);
+        // A call still answers over the same socket.
+        session.handle(JSON.stringify({ i: 7, s: 'Cart#total', a: ['light'] }));
+        await until(() => framesFor(link, 7).length === 2);
+        expect(framesFor(link, 7)).toEqual([{ i: 7, v: 2 }, { i: 7, d: 1 }]);
+        // The id is reusable — the entry is really gone.
+        session.handle(JSON.stringify({ i: 2, sub: { t: 'Cart', k: 'light', m: 'total' } }));
+        await until(() => framesFor(link, 2).length > heavyFrames);
+        expect(framesFor(link, 2).at(-1)).toEqual({ i: 2, v: 2 });
+    });
+
+    it('keeps shedding while the buffer stays over the cap, until nothing delivers', async () => {
+        // The bound is the point: a connection that never drains must end
+        // up with no subscriptions, not with a smaller leak.
+        const s = await start();
+        let depth = 1;
+        const { session, link } = await twoSubscriptions(s, {
+            maxBufferedBytes: 100,
+            bufferedBytes: () => depth
+        });
+        depth = 101;
+        session.handle(JSON.stringify({ i: 4, s: 'Cart#add', a: ['light', 'a'] }));
+        await until(() => framesFor(link, 2).some((f) => 'e' in f));
+        session.handle(JSON.stringify({ i: 5, s: 'Cart#add', a: ['light', 'b'] }));
+        await until(() => framesFor(link, 3).some((f) => 'e' in f));
+        await until(() => session.stats().subscriptions === 0);
+        expect(link.closes).toEqual([]);
+    });
+
+    it('never sheds when the adapter cannot report its buffer (null), or with the cap off', async () => {
+        const s = await start();
+        const cannot = await twoSubscriptions(s, {
+            maxBufferedBytes: 1,
+            bufferedBytes: () => null
+        });
+        const off = await twoSubscriptions(s, { bufferedBytes: () => 1e9 });
+        for (const { session, link } of [cannot, off]) {
+            const before = framesFor(link, 3).length;
+            session.handle(JSON.stringify({ i: 4, s: 'Cart#add', a: ['light', 'a'] }));
+            await until(() => framesFor(link, 3).length > before);
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            expect(link.sent.some((f) => 'e' in f)).toBe(false);
+            expect(session.stats().subscriptions).toBe(2);
+        }
+    });
+
+    it('rejects a typo-disabled cap at construction, like every other bound', async () => {
+        const s = await start();
+        await expect(connect(s, { maxBufferedBytes: -1 })).rejects.toThrow(/non-negative integer/);
+        await expect(connect(s, { maxBufferedBytes: 0.5 })).rejects.toThrow(/non-negative integer/);
     });
 });

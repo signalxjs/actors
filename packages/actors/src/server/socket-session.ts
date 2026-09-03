@@ -80,6 +80,16 @@ import {
 import type { ActorCallContext, AnyActorDefinition, Host } from '../types';
 import type { SocketSessionRecorder } from './socket-stats';
 
+/** One open subscription's bookkeeping. */
+interface Watch {
+    ctrl: AbortController;
+    iterator: AsyncIterator<unknown> | null;
+    /** Code units delivered for this subscription in `drainEpoch` (#258);
+     *  stale — and read as 0 — once the epoch has moved on. */
+    bytes: number;
+    epoch: number;
+}
+
 /** The upgrade-time operation the prelude runs against. */
 const CONNECT_INFO: ServerFnInfo = {
     symbol: '$socket#connect',
@@ -175,6 +185,34 @@ export interface ActorSocketSessionOptions {
      * measurement and is reported as one.
      */
     bufferedBytes?(): number | null;
+    /**
+     * Shed subscriptions once the HOST's send buffer for this connection
+     * is over this many bytes (#258). Default `0` = off.
+     *
+     * The measured failure mode: a subscriber that stops reading costs
+     * nothing on the wire and everything on the host — 350 MB queued across
+     * three pods in the Tier-3 run that filed #258 — because `send()` is
+     * fire-and-forget and `WATCH_BUFFER` bounds only the fan-out queue
+     * INTO the session, not the socket's buffer. With a cap, each
+     * subscription frame is followed by a read of {@link bufferedBytes};
+     * over the cap, the subscription that put the most bytes into the
+     * buffer since it last drained is closed with a terminal
+     * `{i, e: {status: 503, data: {kind: 'shed'}}}` — the ordinary
+     * per-subscription error frame, so a client sees one subscription fail
+     * and nothing else: the connection stays open, calls and the other
+     * subscriptions continue. While the buffer stays over the cap each
+     * further delivery sheds the next heaviest, which is what bounds the
+     * memory: a stalled connection ends up holding no subscriptions and at
+     * most cap + one frame. The socket equivalent of the fan-out's
+     * drop-oldest rule, and the same posture — a consumer that cannot keep
+     * up loses data rather than funding it from the host's heap.
+     *
+     * Needs {@link bufferedBytes}: an adapter that cannot report its buffer
+     * (`null` — the Cloudflare adapters supply none today) never sheds,
+     * and the cap is documented as inert there rather than faked with a 0.
+     * Validated at construction like every other bound.
+     */
+    maxBufferedBytes?: number;
     /** Masked-failure observability — defaults to `posture.onError`. */
     onError?(error: unknown, info: ServerFnInfo, ctx: ServerFnContext): void | Promise<void>;
     /**
@@ -217,12 +255,12 @@ function originAllowed(request: Request, policy: ActorSocketSessionOptions['orig
     return origin === self.origin;
 }
 
-/** A lifetime bound must not be disabled by a typo — the same contract as
+/** A bound must not be disabled by a typo — the same contract as
  *  `resolveMaxSubscriptions`. `0` is the documented off switch. */
-function nonNegativeMs(name: string, value: number): number {
+function nonNegativeInt(name: string, value: number, unit: string): number {
     if (!Number.isInteger(value) || value < 0) {
         throw new Error(
-            `[sigx actors] ${name} must be a non-negative integer of milliseconds — got ` +
+            `[sigx actors] ${name} must be a non-negative integer of ${unit} — got ` +
                 `${String(value)}. Use 0 to disable it deliberately.`
         );
     }
@@ -263,14 +301,16 @@ export async function createActorSocketSession(
     let maxSubscriptions: number;
     let revalidateMs: number;
     let maxConnectionMs: number;
+    let maxBufferedBytes: number;
     let throttlePolicy: LiveThrottlePolicy;
     try {
         maxSubscriptions = resolveMaxSubscriptions(
             options.maxSubscriptions ?? DEFAULT_MAX_LIVE_SUBSCRIPTIONS
         );
         throttlePolicy = resolveThrottlePolicy(options.throttlePolicy ?? DEFAULT_THROTTLE_POLICY);
-        revalidateMs = nonNegativeMs('revalidateMs', options.revalidateMs ?? 0);
-        maxConnectionMs = nonNegativeMs('maxConnectionMs', options.maxConnectionMs ?? 0);
+        revalidateMs = nonNegativeInt('revalidateMs', options.revalidateMs ?? 0, 'milliseconds');
+        maxConnectionMs = nonNegativeInt('maxConnectionMs', options.maxConnectionMs ?? 0, 'milliseconds');
+        maxBufferedBytes = nonNegativeInt('maxBufferedBytes', options.maxBufferedBytes ?? 0, 'bytes');
     } catch (error) {
         try {
             options.close(1011, 'session misconfigured');
@@ -317,10 +357,7 @@ export async function createActorSocketSession(
     const inFlight = new Map<number, { ctrl: AbortController }>();
     /** Open subscriptions by client id — the SAME id namespace as calls,
      *  because replies carry only `i`. */
-    const watches = new Map<
-        number,
-        { ctrl: AbortController; iterator: AsyncIterator<unknown> | null }
-    >();
+    const watches = new Map<number, Watch>();
     let pingTimer: ReturnType<typeof setTimeout> | undefined;
     let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
     let revalidateTimer: ReturnType<typeof setInterval> | undefined;
@@ -481,12 +518,76 @@ export async function createActorSocketSession(
         }
     };
 
-    const stopWatch = (watch: { ctrl: AbortController; iterator: AsyncIterator<unknown> | null }): void => {
+    const stopWatch = (watch: Watch): void => {
         watch.ctrl.abort();
         // `return()` forwarded inward too — the abort wakes a parked
         // `next()`, the return releases the activation's keep-alive; the
         // same belt-and-braces pairing the `$live` endpoint uses.
         void watch.iterator?.return?.(undefined);
+    };
+
+    /**
+     * The slow-consumer bound (#258): after a subscription frame, is the
+     * host's send buffer for this connection over `maxBufferedBytes`? If
+     * so, shed the subscription that filled it.
+     *
+     * "Filled it" is bytes delivered since the buffer was last observed
+     * EMPTY. A draining `ws` socket reports 0 after almost every write, so
+     * on a healthy connection the window is one frame wide and the count
+     * costs one field write; on a stalling one the buffer stops reporting
+     * empty and the counts accumulate exactly the bytes that are still
+     * queued — so the heaviest subscription is the one most responsible
+     * for the depth, not merely the one whose frame happened to cross the
+     * line. The epoch makes the reset O(1): a counter whose epoch is stale
+     * reads as 0 rather than being zeroed across every watch per frame.
+     *
+     * `null` from the adapter — it cannot say — never sheds. Faking a 0
+     * there would make the cap look enforced on a transport where it is
+     * not, the #208 misreading with the sign flipped.
+     */
+    let drainEpoch = 0;
+    const shedIfOverCap = (watch: Watch, written: number): void => {
+        if (watch.epoch !== drainEpoch) {
+            watch.epoch = drainEpoch;
+            watch.bytes = 0;
+        }
+        watch.bytes += written;
+        const depth = bufferedBytesOf();
+        if (depth === null) return;
+        if (depth === 0) {
+            drainEpoch++;
+            return;
+        }
+        if (depth <= maxBufferedBytes) return;
+        let heaviestId = -1;
+        let heaviest: Watch | undefined;
+        let most = -1;
+        for (const [wid, w] of watches) {
+            const bytes = w.epoch === drainEpoch ? w.bytes : 0;
+            if (bytes > most) {
+                most = bytes;
+                heaviestId = wid;
+                heaviest = w;
+            }
+        }
+        if (heaviest === undefined) return;
+        // The same teardown as `{i,uns}`, plus the frame the client is owed:
+        // the entry leaves the table first so the loop's own exit path sees
+        // it gone and neither double-counts nor answers a second frame.
+        watches.delete(heaviestId);
+        stopWatch(heaviest);
+        stats?.subscriptionClosed();
+        stats?.shed();
+        // A plain object, not `encodeWire`d: nothing in it needs the codec,
+        // and the client's `reviveWire` hands it back as it is.
+        reply({
+            i: heaviestId,
+            e: {
+                message: `[sigx actors] subscription shed: send buffer at ${depth} bytes, cap ${maxBufferedBytes}`,
+                status: 503,
+                data: { kind: 'shed' }
+            }
+        });
     };
 
     /**
@@ -659,7 +760,7 @@ export async function createActorSocketSession(
      * a guard rejecting one widget costs the page nothing else.
      */
     const dispatchWatchFor = async (id: number, sub: LiveSubscription): Promise<void> => {
-        const watch = { ctrl: new AbortController(), iterator: null as AsyncIterator<unknown> | null };
+        const watch: Watch = { ctrl: new AbortController(), iterator: null, bytes: 0, epoch: 0 };
         watches.set(id, watch);
         stats?.subscriptionOpened();
         const tracked = (): boolean => !closed && watches.get(id) === watch;
@@ -742,7 +843,10 @@ export async function createActorSocketSession(
                 // would inflate `deliveries` with frames the socket never
                 // saw — and desync it from `deliveryBytes`, which cannot
                 // grow by 0. A written frame is never 0 code units.
-                if (written > 0) stats?.delivered(written);
+                if (written > 0) {
+                    stats?.delivered(written);
+                    if (maxBufferedBytes > 0) shedIfOverCap(watch, written);
+                }
             }
             // A fired deadline ends the aborted subscriber CLEANLY (`done`),
             // so the starvation must be re-raised to become the frame the
