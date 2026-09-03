@@ -166,7 +166,7 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                         ],
                         [
                             'subscriptions.shed',
-                            'Live subscriptions closed because the connection send buffer was over maxBufferedBytes.',
+                            "Live subscriptions closed because the connection's send buffer was over maxBufferedBytes.",
                             'subscriptionsShed'
                         ]
                     ] as const

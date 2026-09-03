@@ -400,7 +400,7 @@ function renderSockets(
         ],
         [
             'socket_subscriptions_shed_total',
-            'Live subscriptions closed because the connection send buffer was over maxBufferedBytes.',
+            "Live subscriptions closed because the connection's send buffer was over maxBufferedBytes.",
             sockets.subscriptionsShed
         ]
     ];

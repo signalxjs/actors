@@ -256,9 +256,11 @@ function originAllowed(request: Request, policy: ActorSocketSessionOptions['orig
 }
 
 /** A bound must not be disabled by a typo — the same contract as
- *  `resolveMaxSubscriptions`. `0` is the documented off switch. */
+ *  `resolveMaxSubscriptions`. `0` is the documented off switch. Safe
+ *  integers only: past 2^53 a comparison against the bound is no longer
+ *  exact, and a bound that is only approximately enforced is a typo too. */
 function nonNegativeInt(name: string, value: number, unit: string): number {
-    if (!Number.isInteger(value) || value < 0) {
+    if (!Number.isSafeInteger(value) || value < 0) {
         throw new Error(
             `[sigx actors] ${name} must be a non-negative integer of ${unit} — got ` +
                 `${String(value)}. Use 0 to disable it deliberately.`

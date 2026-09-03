@@ -952,5 +952,7 @@ describe('shedding a slow consumer (#258)', () => {
         const s = await start();
         await expect(connect(s, { maxBufferedBytes: -1 })).rejects.toThrow(/non-negative integer/);
         await expect(connect(s, { maxBufferedBytes: 0.5 })).rejects.toThrow(/non-negative integer/);
+        // Past 2^53 a comparison against the cap is no longer exact.
+        await expect(connect(s, { maxBufferedBytes: 2 ** 53 })).rejects.toThrow(/non-negative integer/);
     });
 });
