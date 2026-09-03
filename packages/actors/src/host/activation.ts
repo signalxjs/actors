@@ -346,19 +346,24 @@ async function seedFromStorage(
     let stored = await host.loadState(ref);
     if (!stored) return { state: opts.state(ref.key) as object, etag: null };
     const spec = opts.migrateState;
-    if (!spec) return { state: stored.state, etag: stored.etag };
+    if (!spec) return { state: replayLog(ref, opts, stored), etag: stored.etag };
 
     const migrate = typeof spec === 'function' ? spec : spec.migrate;
     const migrated = checkMigrated(ref, migrate(stored.state, { raw: stored.raw, key: ref.key }));
     // Identity IS the "nothing to migrate" signal — the documented fast path.
-    if (migrated === stored.state) return { state: stored.state, etag: stored.etag };
+    if (migrated === stored.state) return { state: replayLog(ref, opts, stored), etag: stored.etag };
+    // The log replays onto the MIGRATED shape (#312): the reducer is the
+    // current definition's, so it expects the current shape — and the eager
+    // write-back below must carry the fold, because a full save truncates
+    // the log it would otherwise have left behind.
+    const state = replayLog(ref, opts, stored, migrated);
     if (typeof spec === 'function' || spec.persist !== 'eager') {
         // Lazy: the etag must stay the one the migration was derived from, or
         // the next save becomes a blind create and clobbers a concurrent winner.
-        return { state: migrated, etag: stored.etag };
+        return { state, etag: stored.etag };
     }
     try {
-        return { state: migrated, etag: await host.saveState(ref, migrated, stored.etag) };
+        return { state, etag: await host.saveState(ref, state, stored.etag) };
     } catch (error) {
         if (!isStorageConflict(error)) throw error;
         // A peer migrated first. That is EXPECTED rather than exceptional —
@@ -370,10 +375,45 @@ async function seedFromStorage(
         stored = await host.loadState(ref);
         if (!stored) return { state: opts.state(ref.key) as object, etag: null };
         return {
-            state: checkMigrated(ref, migrate(stored.state, { raw: stored.raw, key: ref.key })),
+            state: replayLog(
+                ref,
+                opts,
+                stored,
+                checkMigrated(ref, migrate(stored.state, { raw: stored.raw, key: ref.key }))
+            ),
             etag: stored.etag
         };
     }
+}
+
+/**
+ * Fold the record's append log onto its snapshot (#312) — `state` is the
+ * snapshot, or the migrated shape derived from it. In append order, through
+ * the same reducer `ctx.append` ran at write time, so the result is the
+ * state as it stood after the last append; nothing is written. A log with
+ * no reducer to fold it is the one shape that cannot be made whole, and it
+ * is loud: the record was written by a definition that HAD one.
+ */
+function replayLog(
+    ref: ActorRef,
+    opts: AnyActorDefinition['__sigxActor'],
+    stored: { state: object; log?: unknown[] },
+    state: object = stored.state
+): object {
+    const log = stored.log;
+    if (log && log.length > 0) {
+        const apply = opts.applyEntry;
+        if (!apply) {
+            throw new Error(
+                `[sigx actors] the stored record of actor "${ref.type}" carries ${log.length} ` +
+                    `appended ${log.length === 1 ? 'entry' : 'entries'} but the definition declares ` +
+                    `no \`applyEntry\` — it was written by a definition that had one. Restore ` +
+                    `the reducer (a full save from it compacts the record).`
+            );
+        }
+        for (const entry of log) apply(state, entry);
+    }
+    return state;
 }
 
 /**
@@ -1817,7 +1857,7 @@ export class Activation {
      * would otherwise CAS against the same etag and the loser would fault
      * the activation on its own sibling's write.
      */
-    async #gatedSave(wanted: number): Promise<void> {
+    async #gatedSave(wanted: number, append?: [entry: unknown]): Promise<void> {
         while (this.#savedVersion < wanted) {
             if (this.#savePending) {
                 // The in-flight save's failure belongs to ITS caller; a
@@ -1825,13 +1865,17 @@ export class Activation {
                 await this.#savePending.catch(() => {});
                 continue;
             }
-            const run = this.#doSave();
+            const run = this.#doSave(append && [append[0], wanted]);
             this.#savePending = run;
             try {
                 await run;
             } finally {
                 this.#savePending = null;
             }
+            // An append is done once it ran: it makes its ENTRY durable,
+            // and #savedVersion only follows when nothing unsaved preceded
+            // it (see #doSave) — looping until it did would loop forever.
+            if (append) return;
         }
     }
 
@@ -1860,10 +1904,29 @@ export class Activation {
         return false;
     }
 
-    async #doSave(): Promise<void> {
+    /**
+     * The one storage write, in two shapes. Plain: the whole state, as the
+     * snapshot — which also truncates the record's log. With `append`
+     * (#312): ONE entry onto the record's log under the record's etag, the
+     * O(entry) path — taken only when there is a record to append to and
+     * the storage has the seam; otherwise the entry's fold rides a full
+     * save, same result. Either way the etag the store mints is adopted,
+     * and either way a conflict ends the same: fault, or the #368 reload.
+     */
+    async #doSave(append?: [entry: unknown, wanted: number]): Promise<void> {
         if (this.#faulted) throw this.#faulted;
         const version = this.#version;
         try {
+            const appendText = this.#host.appendStateText;
+            if (append && appendText && this.#etag !== null) {
+                this.#etag = await appendText(this.ref, append[0], this.#etag);
+                // The entry is durable. The VERSION is, only if the one
+                // before it already was: state written directly since the
+                // last full save is not in the log, and claiming it would
+                // let a flush that owes it find nothing to do.
+                if (this.#savedVersion === append[1] - 1) this.#savedVersion = append[1];
+                return;
+            }
             const wantsSnapshot = this.#wantsSnapshotAt(version);
             const saveText = this.#host.saveStateText;
             if (saveText && !wantsSnapshot) {
@@ -2446,7 +2509,7 @@ export class Activation {
         // Hard errors, not dev warnings: these WRITE. A detached save
         // captures whatever half-mutated state a concurrent turn left, and
         // races the etag another save is carrying — `turn()` is the door.
-        for (const member of ['save', 'clearState'] as const) {
+        for (const member of ['save', 'append', 'clearState'] as const) {
             Object.defineProperty(derived, member, {
                 value: () =>
                     Promise.reject(
@@ -2522,7 +2585,7 @@ export class Activation {
                     `workers have no state, persistence, reminders or tasks.`
             );
         };
-        for (const member of ['save', 'clearState', 'snapshot', 'changes']) {
+        for (const member of ['save', 'append', 'clearState', 'snapshot', 'changes']) {
             Object.defineProperty(base, member, {
                 value: guard(member),
                 enumerable: true,
@@ -2642,6 +2705,25 @@ export class Activation {
                 // Through the gate: resolves once a snapshot at-or-after
                 // this caller's mutations is durable.
                 await self.#gatedSave(wanted);
+            },
+            async append(entry: unknown): Promise<void> {
+                const apply = opts.applyEntry;
+                if (!apply) {
+                    throw new Error(
+                        `[sigx actors] ctx.append() on ${actorLabel(self.ref)}: the definition ` +
+                            `declares no \`applyEntry\` reducer (\`apply\` on a job) to fold the ` +
+                            `entry into state.`
+                    );
+                }
+                // Fold what came before, as `save` does; then the reducer's
+                // own writes are ONE version — folded through tracking when
+                // it is on (the boundary's walk, taken early), bumped by
+                // hand when it is off, exactly as `save` bumps.
+                self.#consumeDirty();
+                apply(self.#state, entry);
+                if (self.#dirty) self.#consumeDirty();
+                else self.#version++;
+                await self.#gatedSave(self.#version, [entry]);
             },
             async clearState(): Promise<void> {
                 // Serialized through the save gate — a clear racing a save
