@@ -362,6 +362,104 @@ describe('persistence', () => {
         await expect(client.get()).resolves.toBe(99);
     });
 
+    it('retryQueuedOnConflict: the losing turn emits no change-feed boundary for its stale writes', async () => {
+        const Feed = defineActor({
+            type: 'RetryFeed',
+            allowAnonymous: true,
+            retryQueuedOnConflict: true,
+            state: () => ({ count: 0 }),
+            methods: (ctx) => ({
+                async increment(by: number) {
+                    ctx.state.count += by;
+                    await ctx.save();
+                    return ctx.state.count;
+                }
+            }),
+            streams: (ctx) => ({
+                async *watch() {
+                    for await (const s of ctx.changes({ initial: true })) yield s.count;
+                }
+            })
+        });
+        const storage = memoryStorage();
+        const host = createHost({ actors: [Feed], storage, defaults: quiet });
+        const client = host.actor(Feed, 'c');
+        await client.increment(1);
+        const feed = host.dispatchStream!(
+            { type: 'RetryFeed', key: 'c' },
+            'watch',
+            [],
+            { callChain: [], callId: 'test' }
+        )[Symbol.asyncIterator]();
+        const next = () =>
+            Promise.race([
+                feed.next().then((r) => r.value),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('nothing arrived within 2000ms')), 2000)
+                )
+            ]);
+        await expect(next()).resolves.toBe(1);
+        const record = await storage.load('RetryFeed', 'c');
+        await storage.save('RetryFeed', 'c', { count: 99 }, record!.etag);
+
+        const first = client.increment(1);
+        const queued = client.increment(1);
+        await expect(first).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+        await expect(queued).resolves.toBe(100);
+        // The loser's writes (count 2) were discarded, so no subscriber
+        // ever saw them: the next boundary is the winning state plus the
+        // queued turn's write.
+        await expect(next()).resolves.toBe(100);
+        await feed.return?.(undefined);
+    });
+
+    it('retryQueuedOnConflict: an armed write-behind debounce does not flush the stale state', async () => {
+        const events: string[] = [];
+        const Wb = defineActor({
+            type: 'RetryWb',
+            allowAnonymous: true,
+            retryQueuedOnConflict: true,
+            persistence: { mode: 'write-behind', debounceMs: 5 },
+            state: () => ({ count: 0 }),
+            onDeactivate(_ctx, reason) {
+                events.push(`deactivate:${reason}`);
+            },
+            methods: (ctx) => ({
+                async bump() {
+                    ctx.state.count++;
+                    return ctx.state.count;
+                },
+                async incrementSaved(by: number) {
+                    ctx.state.count += by;
+                    await ctx.save();
+                    return ctx.state.count;
+                },
+                async get() {
+                    return ctx.state.count;
+                }
+            })
+        });
+        const storage = memoryStorage();
+        const host = createHost({ actors: [Wb], storage, defaults: quiet });
+        const client = host.actor(Wb, 'w');
+        await client.incrementSaved(1); // etag "1"
+        const record = await storage.load('RetryWb', 'w');
+        await storage.save('RetryWb', 'w', { count: 99 }, record!.etag);
+        await client.bump(); // arms the debounce — for state that is already stale
+        await expect(client.incrementSaved(1)).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+        // The debounce fires: the flush turn reloads first and finds nothing
+        // dirty, instead of writing the stale state back (which would lose
+        // the CAS again and, being a flush conflict, deactivate).
+        await new Promise((r) => setTimeout(r, 40));
+        expect(events).toEqual([]);
+        await expect(client.get()).resolves.toBe(99);
+        expect((await storage.load('RetryWb', 'w'))!.state).toEqual({ count: 99 });
+    });
+
     it('write-behind persists after the debounce without explicit save()', async () => {
         const wb = defineActor({
             type: 'WB',

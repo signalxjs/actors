@@ -1168,6 +1168,8 @@ export interface ActorOptions<
      * runs, the winning record is reloaded in place (through `migrateState`,
      * as on activation) and the queued turns then run in their original
      * order against it, as if they had arrived after the other writer.
+     * Change-feed subscribers never see the losing turn's writes: its
+     * boundary is suppressed and the winning state is the next one.
      *
      * Only for methods that are idempotent or commutative: a queued turn
      * is re-run against state it did not see when it was queued, so a

@@ -86,7 +86,12 @@ Two conflict paths exist, and they end differently:
   `seedFromStorage` load activation uses (so `migrateState` runs), the same
   in-place state reset `clearState` uses, the winning etag adopted, and the
   version bookkeeping set to "clean at the loaded record" so a change-feed
-  subscriber sees the winning state as the next boundary. Queued turns then run
+  subscriber sees the winning state as the next boundary — and only that: the
+  losing turn's own `#afterTurn` boundary is suppressed while the reload is
+  pending, which also keeps it from arming the write-behind debounce for
+  writes about to be discarded (a debounce armed *before* the conflict finds
+  nothing dirty, because the flush turn reloads at entry like every other
+  serial turn). Queued turns then run
   in their original order against it; nothing is deactivated, re-activated or
   re-dispatched. A deactivation landing while the reload is pending skips the
   final flush, as the `'conflict'` reason does. If the reload itself fails, the

@@ -1573,7 +1573,13 @@ export class Activation {
         // re-subscribes anything this turn added happens here, once per
         // dirty boundary, before the comparisons below read #version.
         this.#consumeDirty();
-        const boundary = this.#version > this.#notifiedVersion;
+        // No boundary for a turn whose save lost the CAS under
+        // `retryQueuedOnConflict` (#368): its writes are discarded by the
+        // reload the next turn runs, so subscribers must not see them, and
+        // the write-behind debounce below must not be armed for them. The
+        // reload bumps the version, so the winning state IS the next
+        // boundary.
+        const boundary = this.#version > this.#notifiedVersion && !this.#reloadPending;
         // The boundary is consumed BEFORE the fan-out and stays consumed if
         // the snapshot throws (#338): a boundary snapshot whose codec fails is
         // rethrown to this turn's caller, and retrying it from the next turn
@@ -1705,6 +1711,11 @@ export class Activation {
             this.turns
                 .run(async () => {
                     try {
+                        // A serial turn like any other: a debounce armed
+                        // before a turn-path conflict was parked would
+                        // otherwise write the stale state back (#368) —
+                        // after the reload nothing is dirty.
+                        if (this.#reloadPending) await this.#reload();
                         // A write-behind actor flushes whatever is dirty. An
                         // explicit actor flushes only what an eventual save
                         // ASKED for — and a clearState() that ran between

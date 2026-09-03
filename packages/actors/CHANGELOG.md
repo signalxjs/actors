@@ -38,8 +38,11 @@
   `migrateState` included — and the queued turns run in their original
   order against it, as if they had arrived after the other writer. No
   deactivation, no re-activation, no replay list: the serial lane already
-  holds the turns. A stream opened, a task's `ctx.turn()` or a timer tick
-  landing after the conflict reloads the same way. Turn-path saves only:
+  holds the turns. A stream opened, a task's `ctx.turn()`, a timer tick or
+  a write-behind flush landing after the conflict reloads the same way,
+  and the losing turn emits no change-feed boundary — subscribers see the
+  winning state as the next one, never the discarded writes. Turn-path
+  saves only:
   a write-behind / eventual-save flush conflict still deactivates
   (#336/#367), and a reload that fails falls back to the fault path
   exactly as without the option. Serial actors only: on an interleaving
