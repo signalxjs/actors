@@ -163,6 +163,23 @@
 
 ### Fixed
 
+- **An etag conflict inside the scheduled write-behind flush now discards the
+  activation** (#336). The debounced flush runs as a system turn, not a user
+  turn, so when its save lost the CAS the activation was faulted with
+  `ActorStateConflictError` but the fault was never handed to the host: the
+  `#afterTurn` step that reports it only ran for user turns. The activation
+  sat `active` and faulted — holding its slot and its idle/capacity
+  accounting — until its next call tripped over the fault and forgot it, or
+  the idle sweep / `deactivateType` / `stop()` took it down some other way.
+  An actor that received no further calls was a zombie, and the documented
+  `'conflict'` contract ("the activation is discarded and the next call
+  reloads the winning state") was honoured only lazily. The flush's own
+  settlement now reports the fault, right after `onStateError` (`phase:
+  'flush'`, `kind: 'state-conflict'`) has heard about it: `onDeactivate` fires
+  with `reason: 'conflict'` without any further call, the final flush is
+  skipped as before (a stale activation never overwrites the winner), and the
+  next call activates fresh against the winning state.
+
 - **A boundary snapshot that throws no longer leaves the turn half-bookkept**
   (#338). When the post-turn change-feed fan-out failed — a host codec or
   `TypeHandler` throwing while cloning state for a `ctx.changes()` value
