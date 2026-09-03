@@ -1656,7 +1656,15 @@ export class Activation {
             this.turns
                 .run(async () => {
                     try {
-                        await this.#gatedSave(this.#version);
+                        // A write-behind actor flushes whatever is dirty. An
+                        // explicit actor flushes only what an eventual save
+                        // ASKED for — and a clearState() that ran between
+                        // this timer firing and this turn starting has
+                        // zeroed that, so the queued flush writes nothing
+                        // back over the record it just deleted.
+                        await this.#gatedSave(
+                            this.#isWriteBehind() ? this.#version : this.#eventualWanted
+                        );
                     } catch (error) {
                         // Inside the same system turn, so a hook reading
                         // ctx.state sees the frame the save failed on. A
@@ -2503,10 +2511,12 @@ export class Activation {
                     await self.#host.clearStoredState(self.ref, self.#etag);
                     self.#etag = null;
                     // An eventual save still outstanding was for the record
-                    // just deleted — neither the debounce it armed nor the
-                    // deactivation flush may resurrect it. (A write-behind
-                    // actor keeps its timer: the reset below is a dirty
-                    // boundary of its own, and that mode saves every one.)
+                    // just deleted — neither the debounce it armed (nor its
+                    // flush turn, if the timer already fired and it is
+                    // queued behind this one) nor the deactivation flush may
+                    // resurrect it. (A write-behind actor keeps its timer:
+                    // the reset below is a dirty boundary of its own, and
+                    // that mode saves every one.)
                     self.#eventualWanted = 0;
                     if (self.#cancelWriteBehind && !self.#isWriteBehind()) {
                         self.#cancelWriteBehind();

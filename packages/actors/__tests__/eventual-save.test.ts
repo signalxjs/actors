@@ -153,6 +153,47 @@ describe("ctx.save({ durability: 'eventual' }) on an explicit-persistence actor 
         expect(counts.saves).toBe(1);
     });
 
+    it('a flush already queued behind the turn that clearState()s is a no-op — no resurrection in that window either', async () => {
+        // The window: the debounce timer has FIRED (so there is nothing left
+        // to cancel) and its system turn is queued behind a user turn that
+        // goes on to clearState(). The flush must then write nothing.
+        const { storage, inner, counts } = countingStorage('Queued');
+        let release!: () => void;
+        const held = new Promise<void>((r) => (release = r));
+        const def = defineActor({
+            type: 'Queued',
+            allowAnonymous: true,
+            state: () => ({ n: 0 }),
+            persistence: 'explicit',
+            methods: (ctx) => ({
+                async bump() {
+                    ctx.state.n++;
+                    await ctx.save({ durability: 'eventual' });
+                },
+                async wipeSlowly() {
+                    await held;
+                    await ctx.clearState();
+                }
+            })
+        });
+        clock = manualScheduler();
+        const host = createHost({ actors: [def], storage, scheduler: clock, defaults: quiet });
+        running = host;
+        const client = host.actor(def, 'k');
+        await client.bump();
+        const wiping = client.wipeSlowly();
+        await new Promise((r) => setTimeout(r, 0)); // the turn is in, parked on `held`
+        clock.advance(50); // the timer fires; its flush turn queues behind it
+        release();
+        await wiping;
+        await new Promise((r) => setTimeout(r, 0));
+        expect(counts.saves).toBe(0);
+        expect(await stored(inner, 'Queued')).toBeUndefined();
+        await host.deactivateType('Queued');
+        expect(counts.saves).toBe(0);
+        expect(await stored(inner, 'Queued')).toBeUndefined();
+    });
+
     it("a failing eventual flush reports through onStateError('flush'); the next save() carries the state", async () => {
         const seen: Seen[] = [];
         const { storage, inner, counts, failing } = countingStorage('Flaky');
