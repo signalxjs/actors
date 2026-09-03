@@ -1578,6 +1578,13 @@ export class Activation {
                             snap = this.#takeBoundarySnapshot();
                         } catch (cause) {
                             snapError = { cause };
+                            // `#deferToWindow` just opened this subscriber's
+                            // leading-edge window for an emit that never
+                            // happened; left open, it would defer the next
+                            // boundary into a trailing emit. The window
+                            // belongs to the boundary it received, so the
+                            // next one is a leading edge of its own.
+                            this.#closeWindow(sub);
                             continue;
                         }
                     }

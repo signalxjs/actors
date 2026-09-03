@@ -87,6 +87,30 @@ const WbCounter = defineActor({
     })
 });
 
+/**
+ * A throttled value feed: the leading-edge window `#deferToWindow` opens is
+ * the one thing the fan-out does for a value subscriber BEFORE it asks the
+ * codec, so a snapshot failure could leave a window open for a boundary the
+ * subscriber never received (#338). Wide enough that a boundary wrongly
+ * deferred into it is never seen by the test.
+ */
+const ThrottledCounter = defineActor({
+    type: 'ObservedThrottledCounter',
+    allowAnonymous: true,
+    state: () => ({ n: 0, marker: new Marker() }),
+    methods: (ctx) => ({
+        bump() {
+            ctx.state.n++;
+            return ctx.state.n;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            for await (const s of ctx.changes({ initial: true, throttleMs: 60_000 })) yield s.n;
+        }
+    })
+});
+
 const deactivations: string[] = [];
 
 const Quitter = defineActor({
@@ -270,11 +294,56 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
 
         // Raced against a timer rather than awaited bare: a lost tick parks
         // `next()` forever, and the failure should say so, not time the test
-        // out.
-        const noTick = new Promise<string>((r) => setTimeout(() => r('no tick'), 1000));
-        expect(await Promise.race([watch.next(), noTick])).toEqual({ value: 1, done: false });
+        // out (`raceTimer`, below).
+        expect(await raceTimer(watch.next(), 'no tick')).toEqual({ value: 1, done: false });
 
         abort.abort();
         await watch.return?.();
     });
+
+    it('does not leave a throttle window open for the value subscriber whose snapshot threw (#338)', async () => {
+        host = createHost({
+            actors: [ThrottledCounter],
+            storage: memoryStorage(),
+            types: [probe],
+            defaults: quiet
+        });
+        const tRef = { type: ThrottledCounter.type, key: 'k' };
+        const feed = host.dispatchStream!(tRef, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+
+        // The failed boundary would have been this subscriber's leading
+        // edge: `#deferToWindow` opened its window, then the snapshot
+        // threw. That window is closed again on the failure — a boundary
+        // the subscriber never received must not defer the next one.
+        poisoned = true;
+        await expect(host.dispatch(tRef, 'bump', [], call)).rejects.toThrow('poisoned snapshot');
+        poisoned = false;
+
+        // So the next boundary is a leading edge of its own and emits at
+        // once, instead of parking behind the 60s window as a trailing emit.
+        await expect(host.dispatch(tRef, 'bump', [], call)).resolves.toBe(2);
+        expect(await raceTimer(feed.next(), 'deferred into the window')).toEqual({
+            value: 2,
+            done: false
+        });
+    });
 });
+
+/**
+ * Race a pull against a timer, clearing the timer either way: a lost tick
+ * parks `next()` forever, and the failure should say so rather than time the
+ * test out — but the guard must not keep the event loop alive once the pull
+ * has won.
+ */
+async function raceTimer<T>(pull: Promise<T>, label: string): Promise<T | string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<string>((r) => {
+        timer = setTimeout(() => r(label), 1000);
+    });
+    try {
+        return await Promise.race([pull, timeout]);
+    } finally {
+        clearTimeout(timer);
+    }
+}

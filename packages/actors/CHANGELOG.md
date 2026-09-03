@@ -152,8 +152,9 @@
   which never touch the codec and kept serving stale state until the next
   mutation. The fan-out now runs to the end (ticks are still delivered, the
   remaining value subscribers are skipped rather than asking the codec
-  again) inside a `try/finally`, so all of that bookkeeping completes before
-  the snapshot error is rethrown. The failed boundary itself is consumed,
+  again, and a throttled subscriber's window opened for the failed emit is
+  closed so its next boundary is not deferred) inside a `try/finally`, so
+  all of that bookkeeping completes before the snapshot error is rethrown. The failed boundary itself is consumed,
   not retried — the value subscribers that missed it see the next mutating
   boundary, whose whole-state snapshot carries everything the missed one did
   — so a read-only turn never rejects for a write it did not make. The
