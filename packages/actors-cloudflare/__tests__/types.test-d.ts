@@ -33,7 +33,7 @@ const placedBase = {
 describe('durableObjects() narrows placement to never', () => {
     it('rejects every strategy on a durableObjects() app', () => {
         const app = defineActorApp({ actors: [] }).use(durableObjects({ namespace }));
-        expectTypeOf(app).toMatchTypeOf<ActorApp<Record<never, never>, never>>();
+        expectTypeOf(app).toExtend<ActorApp<Record<never, never>, never>>();
         // `Placement` is `never`, so the option collapses to "absent".
         expectTypeOf<Parameters<typeof app.defineActor>[0]['placement']>().toEqualTypeOf<
             undefined
