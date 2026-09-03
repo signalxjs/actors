@@ -311,7 +311,10 @@ export class HostConnection {
             done = true;
             bump();
         };
-        call.abortSignal?.addEventListener('abort', onAbort, { once: true });
+        // Only for a stream that is actually on the wire: an unsent one has
+        // nothing to cancel, and its consumer may never pull — so never
+        // reach the `finally` below that takes the listener off again.
+        if (sent) call.abortSignal?.addEventListener('abort', onAbort, { once: true });
 
         async function* run(): AsyncGenerator<unknown> {
             try {
