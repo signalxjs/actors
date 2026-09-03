@@ -93,7 +93,9 @@ Two conflict paths exist, and they end differently:
   parked conflict faults the activation and the default path takes over. The
   reload runs only at the entry of a *serial* turn, which is what makes it
   safe with no further locking: `Activation.create` refuses the option on an
-  interleaving activation (`reentrant: 'always'`, `methodReentrancy`) — such
+  interleaving activation (`declaresInterleaving`: `reentrant: 'always'`, or a
+  `methodReentrancy` map naming any method — an empty map interleaves nothing
+  and is accepted) — such
   an activation queues no turns, so there is nothing to re-run, and a reload
   landing under an in-flight sibling would wipe that sibling's writes and let
   its save succeed on the new etag, a silent lost update where the default
