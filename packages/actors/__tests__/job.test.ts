@@ -9,6 +9,7 @@ import {
 } from '@sigx/actors/job';
 import {
     createHost,
+    manualScheduler,
     memoryStorage,
     ROSTER_INDEX_KEY,
     ROSTER_TYPE,
@@ -915,16 +916,18 @@ describe('defineJob: eventual checkpoints ride the write-behind debounce (#320)'
                 return 'done';
             }
         });
-        const host = createHost({ actors: [Burst], storage, defaults: quiet });
+        // A hand-driven clock, never advanced: the debounce cannot fire
+        // inside the burst, so the count is exact rather than "2 or 3
+        // depending on how long 50 checkpoints took on this runner".
+        const host = createHost({ actors: [Burst], storage, scheduler: manualScheduler(), defaults: quiet });
         running = host;
         const client = host.actor(Burst, 'run-1');
         await client.start(undefined as never);
         await until(async () => (await client.status()).status === 'completed');
-        // `start` and the terminal save. A debounce that happens to fire
-        // inside the burst adds at most one more; 50 immediate checkpoints
-        // would have added 50.
-        expect(counts.saves).toBeGreaterThanOrEqual(2);
-        expect(counts.saves).toBeLessThanOrEqual(3);
+        // `start` and the terminal save — 50 immediate checkpoints would
+        // have added 50 more. (eventual-save.test.ts drives the debounce
+        // itself and proves the window flushes.)
+        expect(counts.saves).toBe(2);
         // The terminal record is never eventual: it is durable when
         // `status()` says completed, and it carries the last checkpoint.
         const record = (await inner.load('Burst', 'run-1'))?.state as { status: string; checkpoint: unknown };
