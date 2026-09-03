@@ -18,11 +18,11 @@
         "@sigx/actors-pg": "workspace:*",
         "@sigx/actors-surreal": "workspace:*",
         "@sigx/actors-tcp": "workspace:*",
-        "pg": "^8.13.1",
+        "pg": "^8.23.0",
         "surrealdb": "^2.0.8"
     },
     "devDependencies": {
-        "@types/pg": "^8.11.10",
+        "@types/pg": "^8.23.1",
         "typescript": "^6.0.3"
     }
 }
