@@ -43,7 +43,7 @@ describe.skipIf(!SURREAL_URL)('surrealStorage', () => {
             const state = { n: 1, deep: { list: [1, 2] }, tag: 'x' };
             const etag = await s.save(t, 'k', state, null);
             expect(etag).not.toBe('');
-            await expect(s.load(t, 'k')).resolves.toEqual({ state, etag });
+            await expect(s.load(t, 'k')).resolves.toEqual({ state, etag, log: [] });
         });
 
         it('a top-level ARRAY state survives', async () => {
@@ -53,7 +53,7 @@ describe.skipIf(!SURREAL_URL)('surrealStorage', () => {
             const t = type();
             const state = [1, 'two', { three: 3 }, [4]];
             const etag = await s.save(t, 'k', state, null);
-            await expect(s.load(t, 'k')).resolves.toEqual({ state, etag });
+            await expect(s.load(t, 'k')).resolves.toEqual({ state, etag, log: [] });
         });
 
         it('null and scalar states stay distinguishable from absent', async () => {
@@ -62,9 +62,9 @@ describe.skipIf(!SURREAL_URL)('surrealStorage', () => {
             const s = storage();
             const t = type();
             const nullEtag = await s.save(t, 'nul', null, null);
-            await expect(s.load(t, 'nul')).resolves.toEqual({ state: null, etag: nullEtag });
+            await expect(s.load(t, 'nul')).resolves.toEqual({ state: null, etag: nullEtag, log: [] });
             const numEtag = await s.save(t, 'num', 0, null);
-            await expect(s.load(t, 'num')).resolves.toEqual({ state: 0, etag: numEtag });
+            await expect(s.load(t, 'num')).resolves.toEqual({ state: 0, etag: numEtag, log: [] });
             await expect(s.load(t, 'absent')).resolves.toBeNull();
         });
 
@@ -82,7 +82,7 @@ describe.skipIf(!SURREAL_URL)('surrealStorage', () => {
             const second = await s.save(t, 'k', { n: 2 }, first);
             expect(second).not.toBe(first);
             await expect(s.save(t, 'k', { n: 3 }, first)).rejects.toSatisfy(isStorageConflict);
-            await expect(s.load(t, 'k')).resolves.toEqual({ state: { n: 2 }, etag: second });
+            await expect(s.load(t, 'k')).resolves.toEqual({ state: { n: 2 }, etag: second, log: [] });
         });
 
         it('update of a missing record conflicts', async () => {
@@ -134,7 +134,7 @@ describe.skipIf(!SURREAL_URL)('surrealStorage', () => {
                 path: 'C:\\backslashes\\stay\\distinct'
             };
             const etag = await s.save(t, ledgerKey, shardState, null);
-            await expect(s.load(t, ledgerKey)).resolves.toEqual({ state: shardState, etag });
+            await expect(s.load(t, ledgerKey)).resolves.toEqual({ state: shardState, etag, log: [] });
             // Injective: neither an escaped-looking key nor a different split
             // of the same characters is the same record.
             await expect(s.load(t, 'Cart\\0user-42')).resolves.toBeNull();

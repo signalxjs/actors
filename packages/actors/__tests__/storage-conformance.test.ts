@@ -439,6 +439,33 @@ describe('a case that cannot fail is decoration — the suite goes red against a
             }))
         ],
         [
+            'load hands out the log by reference',
+            'appendText mints a fresh etag and load shows the unchanged state plus the one entry',
+            wrap(() => {
+                const inner = memoryStorage();
+                const logs = new Map<string, unknown[]>();
+                return {
+                    ...inner,
+                    // The state is cloned (inner does that); the log is the
+                    // store's own array, handed out as-is.
+                    load: async (type, key) => {
+                        const record = await inner.load(type, key);
+                        return record ? { ...record, log: logs.get(`${type}/${key}`) ?? [] } : null;
+                    },
+                    save: async (type, key, state, expected) => {
+                        const etag = await inner.save(type, key, state, expected);
+                        logs.set(`${type}/${key}`, []);
+                        return etag;
+                    },
+                    appendText: async (type, key, json, expected) => {
+                        const etag = await inner.appendText!(type, key, json, expected);
+                        logs.get(`${type}/${key}`)!.push(JSON.parse(json));
+                        return etag;
+                    }
+                };
+            })
+        ],
+        [
             'load returns the log newest first',
             'appended entries load in append order, oldest first, whatever their JSON shape',
             wrap((inner) => ({

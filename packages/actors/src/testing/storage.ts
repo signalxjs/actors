@@ -662,6 +662,13 @@ const appendReturnsANewEtag: ConformanceCase<StorageConformanceFactory> = {
             assertEtag(next, 'appendText');
             assert(next !== etag, 'appendText returned the etag it was given');
             await assertRecordWithLog(s, T, 'k', state, next, [entry], 'after one append');
+            // The log is the caller's to mutate, like the state (#25): the
+            // host revives entries in place before folding them.
+            const loaded = (await s.load(T, 'k'))!;
+            (loaded.log![0] as { step: number }).step = 99;
+            loaded.log!.push('mutated');
+            loaded.log = [];
+            await assertRecordWithLog(s, T, 'k', state, next, [entry], 'after mutating a loaded log');
         })
 };
 

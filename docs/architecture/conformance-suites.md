@@ -89,13 +89,14 @@ cases, six append cases), so a required case that started skipping, or an
 optional path an adapter quietly gained, both fail.
 
 The sabotage table in `packages/actors/__tests__/storage-conformance.test.ts`
-is rule 2 made permanent: twenty-two deliberately broken adapters — a miss
+is rule 2 made permanent: twenty-three deliberately broken adapters — a miss
 that loads as `undefined`, a save that ignores the etag, an unbranded
 conflict, an upsert, a load that hands out the stored tree by reference, a
 key-trimming layer, a non-injective NUL escape, a three-method decorator
 over a text adapter, a `saveText` with its own etag chain, an `appendText`
-that creates the record it is asked to append to, a load that returns the
-log newest first, a full save that keeps the log — each named against the
+that creates the record it is asked to append to, a load that hands out the
+log by reference or returns it newest first, a full save that keeps the log
+— each named against the
 case that must catch it, and the test asserts that case goes red with a
 `[storage conformance]` message. A case added without an entry there has not
 been shown to fail.
