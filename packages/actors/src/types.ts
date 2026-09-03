@@ -248,7 +248,8 @@ export interface ActorPlacementStrategy {
      * This exists because the type here is deliberately OPAQUE — choosing a
      * host needs a membership view, which is a cluster concept, and core must
      * not depend on `./cluster`. That opacity is load-bearing (it is what lets
-     * a Durable Objects backend define its own strategies) but it left a
+     * a backend define its own strategies — or, like `durableObjects()`,
+     * declare that it reads none) but it left a
      * backend unable to tell two very different things apart: a strategy meant
      * for someone ELSE, which must be ignored silently, and one meant for IT
      * but malformed, which must fail.
@@ -1151,11 +1152,13 @@ export interface ActorOptions<
      * central `typePolicies` map; ignored single-node.
      *
      * Through an app-bound `defineActor` this is narrowed to what the app's
-     * placement plugin understands (`cluster()` → `PlacementPolicy`), so a
-     * strategy tagged for another backend is a compile error where the
-     * runtime would have ignored it silently, and a malformed untagged one
-     * is a compile error where the runtime would have thrown (#58). The
-     * bare `defineActor` accepts any strategy.
+     * placement plugin understands (`cluster()` → `PlacementPolicy`; a
+     * backend that reads no strategy, like `durableObjects()`, carries
+     * `never`, so the option must be omitted), so a strategy tagged for
+     * another backend is a compile error where the runtime would have
+     * ignored it silently, and a malformed untagged one is a compile error
+     * where the runtime would have thrown (#58, #351). The bare
+     * `defineActor` accepts any strategy.
      */
     placement?: Placement;
     /** Runs before the first message; throwing fails all queued callers. */
