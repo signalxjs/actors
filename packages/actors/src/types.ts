@@ -656,9 +656,9 @@ export interface TaskApi {
  * pressure); `'explicit'` a `ctx.deactivate()` / `host.deactivate()`
  * request; `'shutdown'` the host stopping; `'conflict'` a storage etag
  * mismatch (the activation is discarded and the next call reloads the
- * winning state — unless the type opts into `retryQueuedOnConflict`,
- * which reloads in place on a TURN-path conflict and never reaches this
- * reason; a flush conflict deactivates either way); `'activation-failed'`
+ * winning state; under `retryQueuedOnConflict` a TURN-path conflict
+ * instead reloads in place and reaches this reason only if that reload
+ * fails — a flush conflict deactivates either way); `'activation-failed'`
  * an `onActivate` throw (nothing to tear down — `onDeactivate` is
  * skipped); `'migrated'` a cluster handoff or rebalance — a peer will
  * re-place the actor.

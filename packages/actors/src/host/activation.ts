@@ -1717,7 +1717,16 @@ export class Activation {
                         // `#afterTurn`'s hand-off never runs for it — the
                         // fault is reported from here, still inside the
                         // turn, and the host's deactivation drains it
-                        // before `onDeactivate('conflict')` runs.
+                        // before `onDeactivate('conflict')` runs. A
+                        // conflict `retryQueuedOnConflict` parked is
+                        // promoted to the fault first (#368): the option
+                        // covers the turn path only — a flush's writes
+                        // belong to no caller and have no queue order to
+                        // preserve, so this path deactivates either way.
+                        if (this.#reloadPending) {
+                            this.#faulted = this.#reloadPending;
+                            this.#reloadPending = null;
+                        }
                         this.#reportFault();
                     }
                 })
@@ -1841,7 +1850,9 @@ export class Activation {
             if (isStorageConflict(error)) {
                 const conflict = new ActorStateConflictError(actorLabel(this.ref));
                 // The losing turn rejects either way. With the option the
-                // activation survives it: the next turn reloads (#368).
+                // activation survives it: the next turn reloads (#368). The
+                // flush turn's catch promotes the parked conflict back to a
+                // fault — that path deactivates regardless of the option.
                 if (this.def.__sigxActor.retryQueuedOnConflict) this.#reloadPending = conflict;
                 else this.#faulted = conflict;
                 throw conflict;
