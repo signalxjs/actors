@@ -233,4 +233,48 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
             expect(deactivations).toEqual(['explicit']);
         });
     });
+
+    it('still ticks the subscribers behind the failing value subscriber (#338)', async () => {
+        host = createHost({
+            actors: [Counter],
+            storage: memoryStorage(),
+            types: [probe],
+            defaults: quiet
+        });
+        // The value subscriber FIRST, so it is the one whose snapshot throws
+        // mid-fan-out ...
+        const feed = host.dispatchStream!(ref, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+        // ... and a shared watch BEHIND it in subscription order. A watch is
+        // a ticks-only subscriber: its notification never touches the codec,
+        // and it re-reads through a turn of its own (`total()` returns a
+        // number, so the poison is invisible to that read). Before the fix
+        // the fan-out aborted at the throw, and every subscriber after it
+        // lost the boundary outright — the watch kept serving 0 until the
+        // next mutation.
+        const abort = new AbortController();
+        const watch = host
+            .dispatchWatch!(
+                ref,
+                'total',
+                [],
+                { ...call, abortSignal: abort.signal },
+                { throttleMs: 0 }
+            )
+            [Symbol.asyncIterator]();
+        expect(await watch.next()).toEqual({ value: 0, done: false });
+
+        poisoned = true;
+        await expect(host.dispatch(ref, 'bump', [], call)).rejects.toThrow('poisoned snapshot');
+        poisoned = false;
+
+        // Raced against a timer rather than awaited bare: a lost tick parks
+        // `next()` forever, and the failure should say so, not time the test
+        // out.
+        const noTick = new Promise<string>((r) => setTimeout(() => r('no tick'), 1000));
+        expect(await Promise.race([watch.next(), noTick])).toEqual({ value: 1, done: false });
+
+        abort.abort();
+        await watch.return?.();
+    });
 });
