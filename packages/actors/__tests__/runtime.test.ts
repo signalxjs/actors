@@ -271,12 +271,9 @@ describe('persistence', () => {
     it('retryQueuedOnConflict: the losing turn rejects, queued turns re-run against the reloaded state', async () => {
         const events: string[] = [];
         const storage = memoryStorage();
-        const host = createHost({
-            actors: [counterActor(events, { retryQueuedOnConflict: true })],
-            storage,
-            defaults: quiet
-        });
-        const client = host.actor(counterActor(), 'c');
+        const retrying = counterActor(events, { retryQueuedOnConflict: true });
+        const host = createHost({ actors: [retrying], storage, defaults: quiet });
+        const client = host.actor(retrying, 'c');
         await client.increment(1); // etag now "1"
         // A second writer clobbers the record behind the activation's back.
         const record = await storage.load('Counter', 'c');
@@ -301,14 +298,12 @@ describe('persistence', () => {
     it('retryQueuedOnConflict: two hosts on one storage — the loser re-runs its queue against the winner', async () => {
         const eventsA: string[] = [];
         const storage = memoryStorage();
-        const hostA = createHost({
-            actors: [counterActor(eventsA, { retryQueuedOnConflict: true })],
-            storage,
-            defaults: quiet
-        });
-        const hostB = createHost({ actors: [counterActor()], storage, defaults: quiet });
-        const a = hostA.actor(counterActor(), 'k');
-        const b = hostB.actor(counterActor(), 'k');
+        const retrying = counterActor(eventsA, { retryQueuedOnConflict: true });
+        const plain = counterActor();
+        const hostA = createHost({ actors: [retrying], storage, defaults: quiet });
+        const hostB = createHost({ actors: [plain], storage, defaults: quiet });
+        const a = hostA.actor(retrying, 'k');
+        const b = hostB.actor(plain, 'k');
         await a.increment(1); // A holds etag "1"
         await b.increment(10); // B loads 1, writes 11 — A's etag is now stale
 
@@ -340,12 +335,9 @@ describe('persistence', () => {
             save: (type, key, state, etag) => inner.save(type, key, state, etag),
             clear: (type, key, etag) => inner.clear(type, key, etag)
         };
-        const host = createHost({
-            actors: [counterActor(events, { retryQueuedOnConflict: true })],
-            storage,
-            defaults: quiet
-        });
-        const client = host.actor(counterActor(), 'c');
+        const retrying = counterActor(events, { retryQueuedOnConflict: true });
+        const host = createHost({ actors: [retrying], storage, defaults: quiet });
+        const client = host.actor(retrying, 'c');
         await client.increment(1);
         const record = await inner.load('Counter', 'c');
         await inner.save('Counter', 'c', { count: 99 }, record!.etag);
