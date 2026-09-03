@@ -137,6 +137,22 @@
 
 ### Fixed
 
+- **A boundary snapshot that throws no longer leaves the turn half-bookkept**
+  (#338). When the post-turn change-feed fan-out failed — a host codec or
+  `TypeHandler` throwing while cloning state for a `ctx.changes()` value
+  subscriber — the error reached the caller as documented (#53), but
+  everything `#afterTurn` does after the fan-out was skipped: a write-behind
+  actor's flush was not scheduled, so its dirty state sat until the next
+  mutating turn or deactivation; a `ctx.deactivate()` made in that turn was
+  never acted on; a prepared whole-state snapshot could linger until the next
+  save; a pending fault report waited for the next turn. The fan-out now runs
+  inside a `try/finally`, so all of that bookkeeping completes before the
+  snapshot error is rethrown. The failed boundary itself is consumed, not
+  retried — a value subscriber that missed it sees the next mutating
+  boundary, whose whole-state snapshot carries everything the missed one did
+  — so a read-only turn never rejects for a write it did not make. The
+  observer-before-bookkeeping ordering pinned in #53 is unchanged.
+
 - **`host.stop()` now waits for a task run it interrupts mid-start** (#333).
   A run entered the activation's task table the moment `tasks.start` was
   called, but only joined the set deactivation awaits once its body launched

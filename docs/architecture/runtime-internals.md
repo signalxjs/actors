@@ -191,7 +191,16 @@ boundary out to `ctx.changes()` subscribers and schedules a write-behind flush
 — so `elapsedMs` stops at the method too, and a bookkeeping failure (a
 boundary snapshot whose codec throws) reaches the caller for a turn the
 observer already reported with `failed: false`. That ordering is deliberate
-and test-pinned (`turn-observer-failed.test.ts`; what `#afterTurn` leaves
-undone when the snapshot throws is tracked in #338). "The caller errored" is
+and test-pinned (`turn-observer-failed.test.ts`). "The caller errored" is
 measured at the dispatch seam, where a middleware sees every rejection and the
 `metrics` plugin's `calls.failed` already counts it.
+
+A snapshot that throws does not leave the turn half-bookkept (#338). The
+fan-out runs inside a `try/finally`: the write-behind debounce is still
+armed, a prepared whole-state snapshot nobody took is still released, and a
+pending fault report or `ctx.deactivate()` request is still handed to the
+host before the error is rethrown. The boundary itself is consumed *before*
+the fan-out and stays consumed — retrying it from the next turn would make a
+read-only turn reject for a write it never made — so a value subscriber that
+missed it catches up on the next mutating boundary, whose snapshot is
+whole-state and carries everything the missed one did.

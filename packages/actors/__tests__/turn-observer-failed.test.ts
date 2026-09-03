@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import { createHost, memoryStorage, type ActorTurnObserver } from '@sigx/actors/host';
 import type { TypeHandler } from '@sigx/serialize';
@@ -63,6 +63,52 @@ const Counter = defineActor({
     })
 });
 
+/**
+ * Same shape under write-behind: the boundary snapshot is still the first
+ * codec touch of a mutating turn (the flush runs out of turn, after
+ * `#afterTurn`), so the poison surfaces in the same place — and the flush
+ * it must not cost is observable through storage (#338).
+ */
+const WbCounter = defineActor({
+    type: 'ObservedWbCounter',
+    allowAnonymous: true,
+    state: () => ({ n: 0, marker: new Marker() }),
+    persistence: { mode: 'write-behind', debounceMs: 5 },
+    methods: (ctx) => ({
+        bump() {
+            ctx.state.n++;
+            return ctx.state.n;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            for await (const s of ctx.changes({ initial: true })) yield s.n;
+        }
+    })
+});
+
+const deactivations: string[] = [];
+
+const Quitter = defineActor({
+    type: 'ObservedQuitter',
+    allowAnonymous: true,
+    state: () => ({ n: 0, marker: new Marker() }),
+    onDeactivate(_ctx, reason) {
+        deactivations.push(reason);
+    },
+    methods: (ctx) => ({
+        bumpAndQuit() {
+            ctx.state.n++;
+            ctx.deactivate();
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            for await (const s of ctx.changes({ initial: true })) yield s.n;
+        }
+    })
+});
+
 const call = { callChain: [], callId: 'test' };
 const ref = { type: Counter.type, key: 'k' };
 
@@ -74,6 +120,7 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
     let host: ReturnType<typeof createHost> | undefined;
     beforeEach(() => {
         poisoned = false;
+        deactivations.length = 0;
     });
     afterEach(async () => {
         poisoned = false;
@@ -123,5 +170,67 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
         // The control: a method that throws is what `failed:true` means.
         await expect(host.dispatch(ref, 'missing', [], call)).rejects.toThrow();
         expect(seen.at(-1)).toEqual({ method: 'missing', failed: true });
+    });
+
+    // #338: the snapshot failure reaches the caller, but it must not take
+    // the REST of the turn's bookkeeping down with it. The two pieces a test
+    // can observe from outside are the write-behind flush and the
+    // `ctx.deactivate()` hand-off; both used to be skipped.
+
+    it('still schedules the write-behind flush when the boundary snapshot threw (#338)', async () => {
+        const storage = memoryStorage();
+        host = createHost({
+            actors: [WbCounter],
+            storage,
+            types: [probe],
+            defaults: quiet
+        });
+        const wbRef = { type: WbCounter.type, key: 'k' };
+        const feed = host.dispatchStream!(wbRef, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+
+        poisoned = true;
+        await expect(host.dispatch(wbRef, 'bump', [], call)).rejects.toThrow('poisoned snapshot');
+        poisoned = false;
+
+        // The debounce was armed by the failed boundary itself: with the
+        // codec healthy again the flush lands with no further turn. Before
+        // the fix nothing was scheduled, and the dirty state sat until the
+        // next mutating boundary (or deactivation).
+        await vi.waitFor(async () => {
+            const record = await storage.load(WbCounter.type, 'k');
+            expect(record?.state).toMatchObject({ n: 1 });
+        });
+
+        // The failed boundary is consumed, not retried: the watcher missed
+        // version 1, and the NEXT mutating boundary delivers as normal —
+        // whole-state, so it carries everything the missed one did.
+        await expect(host.dispatch(wbRef, 'bump', [], call)).resolves.toBe(2);
+        expect(await feed.next()).toEqual({ value: 2, done: false });
+    });
+
+    it('still honours ctx.deactivate() when the boundary snapshot threw (#338)', async () => {
+        host = createHost({
+            actors: [Quitter],
+            storage: memoryStorage(),
+            types: [probe],
+            defaults: quiet
+        });
+        const quitRef = { type: Quitter.type, key: 'k' };
+        const feed = host.dispatchStream!(quitRef, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+
+        poisoned = true;
+        await expect(host.dispatch(quitRef, 'bumpAndQuit', [], call)).rejects.toThrow(
+            'poisoned snapshot'
+        );
+        poisoned = false;
+
+        // `ctx.deactivate()` is acted on in the same post-turn step that
+        // threw; before the fix the request was left pending and the
+        // activation stayed up until the host stopped.
+        await vi.waitFor(() => {
+            expect(deactivations).toEqual(['explicit']);
+        });
     });
 });
