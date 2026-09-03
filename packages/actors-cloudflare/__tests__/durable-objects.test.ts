@@ -298,6 +298,206 @@ describe('durableObjectReminders', () => {
         }
     });
 
+    describe('a dispatch that fails (#326)', () => {
+        // The alarm advanced or deleted the entry BEFORE `deliver()`, so a
+        // rejected dispatch — a deadline, an `onReminder` that threw — used
+        // to be the end of the wake. It is now re-armed one tick out and
+        // reported through `context.undelivered`, as `shardedReminders()`
+        // has done since #306.
+        const TICK = 30_000;
+        const ref = { type: 'Waking', key: 'retry' };
+
+        function failing(clock: () => number, fail: (name: string) => boolean | Promise<boolean>) {
+            const storage = fakeStorage();
+            const alarms = fakeAlarms();
+            const attempts: string[] = [];
+            const undelivered: { name: string; error: unknown }[] = [];
+            const reminders = durableObjectReminders({ storage, alarms, now: clock });
+            reminders.bind({
+                storage: durableObjectStorage(storage),
+                scheduler: manualScheduler(),
+                tickMs: TICK,
+                ownsShard: () => true,
+                deliver: async (_ref, name) => {
+                    attempts.push(name);
+                    if (await fail(name)) throw new Error('dispatch deadline');
+                },
+                undelivered: (_ref, name, error) => void undelivered.push({ name, error })
+            });
+            const table = () =>
+                storage.map.get('sigx:reminders') as {
+                    entries: Record<string, { nextDue: number; period?: number }>;
+                };
+            return { reminders, alarms, attempts, undelivered, api: reminders.apiFor(ref), table };
+        }
+
+        it('re-arms a one-shot whose dispatch failed one tick out, and reports it', async () => {
+            let clock = 1_000;
+            let fail = true;
+            const { reminders, alarms, attempts, undelivered, api, table } = failing(
+                () => clock,
+                () => fail
+            );
+            await api.set('wake', { due: 500 });
+            expect(alarms.at).toBe(1_500);
+
+            clock = 1_500;
+            alarms.at = null;
+            await reminders.onAlarm();
+            expect(attempts).toEqual(['wake']);
+            // Reported once, with the error…
+            expect(undelivered).toHaveLength(1);
+            expect(undelivered[0]!.name).toBe('wake');
+            expect((undelivered[0]!.error as Error).message).toBe('dispatch deadline');
+            // …and still registered, due one tick out — not dropped.
+            await expect(api.list()).resolves.toEqual(['wake']);
+            expect(table().entries['wake']).toEqual({ nextDue: 1_500 + TICK });
+            expect(alarms.at).toBe(1_500 + TICK);
+
+            fail = false;
+            clock = 1_500 + TICK;
+            alarms.at = null;
+            await reminders.onAlarm();
+            expect(attempts).toEqual(['wake', 'wake']);
+            // A one-shot that finally fired clears itself, alarm and all.
+            await expect(api.list()).resolves.toEqual([]);
+            expect(alarms.at).toBeNull();
+            expect(undelivered).toHaveLength(1);
+        });
+
+        it('retries a periodic reminder one tick out, then resumes its cadence', async () => {
+            let clock = 0;
+            let fail = true;
+            const { reminders, alarms, attempts, undelivered, api, table } = failing(
+                () => clock,
+                () => fail
+            );
+            await api.set('beat', { due: 60_000, period: 60_000 });
+            expect(alarms.at).toBe(60_000);
+
+            clock = 60_000;
+            alarms.at = null;
+            await reminders.onAlarm();
+            expect(attempts).toEqual(['beat']);
+            expect(undelivered).toHaveLength(1);
+            // Pulled forward to the next tick, not left a whole period out.
+            expect(table().entries['beat']).toEqual({ nextDue: 60_000 + TICK, period: 60_000 });
+            expect(alarms.at).toBe(60_000 + TICK);
+
+            fail = false;
+            clock = 60_000 + TICK;
+            alarms.at = null;
+            await reminders.onAlarm();
+            expect(attempts).toEqual(['beat', 'beat']);
+            // A SUCCESSFUL firing advances by the period, as before.
+            expect(table().entries['beat']).toEqual({ nextDue: clock + 60_000, period: 60_000 });
+            expect(alarms.at).toBe(clock + 60_000);
+            expect(undelivered).toHaveLength(1);
+        });
+
+        it('a permanently failing target costs one attempt per alarm, each reported', async () => {
+            let clock = 0;
+            const { reminders, alarms, attempts, undelivered, api } = failing(
+                () => clock,
+                () => true
+            );
+            await api.set('wake', { due: 0 });
+            for (let attempt = 1; attempt <= 4; attempt++) {
+                clock = alarms.at!;
+                alarms.at = null;
+                await reminders.onAlarm();
+                expect(attempts).toHaveLength(attempt);
+                expect(undelivered).toHaveLength(attempt);
+                // Never a hot loop: the next attempt is a full tick away.
+                expect(alarms.at).toBe(clock + TICK);
+            }
+            await expect(api.list()).resolves.toEqual(['wake']);
+        });
+
+        it('leaves a reminder the actor set or cleared during the failing dispatch alone', async () => {
+            // A later decision wins: the re-arm only touches an entry that is
+            // still exactly as the alarm left it.
+            let clock = 0;
+            const { reminders, alarms, attempts, api, table } = failing(
+                () => clock,
+                async (name) => {
+                    // `onReminder` rescheduling itself, then timing out.
+                    if (name === 'wake') await api.set('wake', { due: 5_000 });
+                    if (name === 'beat') await api.clear('beat');
+                    return true;
+                }
+            );
+            await api.set('wake', { due: 1_000 });
+            await api.set('beat', { due: 1_000, period: 60_000 });
+
+            clock = 1_000;
+            alarms.at = null;
+            await reminders.onAlarm();
+            expect([...attempts].sort()).toEqual(['beat', 'wake']);
+            // The one-shot is as the actor re-set it, not one tick out…
+            expect(table().entries['wake']).toEqual({ nextDue: 6_000 });
+            // …and the cleared periodic stays cleared.
+            expect(table().entries['beat']).toBeUndefined();
+            expect(alarms.at).toBe(6_000);
+        });
+
+        it('counts on the host: HostStats.remindersUndelivered', async () => {
+            // End to end through `createHost` — the real `deliver` rejects
+            // when `onReminder` throws, and the real `undelivered` is the
+            // host's counter.
+            let clock = 0;
+            let throws = true;
+            const Flaky = defineActor({
+                type: 'Flaky',
+                allowAnonymous: true,
+                state: () => ({ woke: 0 }),
+                onReminder(ctx) {
+                    if (throws) throw new Error('not yet');
+                    ctx.state.woke++;
+                },
+                methods: (ctx) => ({
+                    async arm() {
+                        await ctx.reminders.set('wake', { due: 1_000 });
+                    },
+                    async woke() {
+                        return ctx.state.woke;
+                    }
+                })
+            });
+            const storage = fakeStorage();
+            const alarms = fakeAlarms();
+            const reminders = durableObjectReminders({ storage, alarms, now: () => clock });
+            const host = createHost({
+                actors: [Flaky],
+                storage: durableObjectStorage(storage),
+                reminders,
+                scheduler: manualScheduler(),
+                defaults: { sweepIntervalMs: 60_000, callTimeoutMs: 0, reminderTickMs: TICK }
+            });
+            await host.start();
+            try {
+                await host.actor(Flaky, 'f').arm();
+                expect(host.stats().remindersUndelivered).toBe(0);
+
+                clock = 1_000;
+                alarms.at = null;
+                await reminders.onAlarm();
+                expect(host.stats().remindersUndelivered).toBe(1);
+                expect(alarms.at).toBe(1_000 + TICK);
+
+                throws = false;
+                clock = 1_000 + TICK;
+                alarms.at = null;
+                await reminders.onAlarm();
+                await expect(host.actor(Flaky, 'f').woke()).resolves.toBe(1);
+                expect(host.stats().remindersUndelivered).toBe(1);
+                expect(alarms.at).toBeNull();
+            } finally {
+                await host.stop({ timeoutMs: 1000 });
+            }
+        });
+    });
+
     it('refuses a second actor in the same Durable Object', async () => {
         let clock = 0;
         const { host } = await hostWithAlarms(() => clock);

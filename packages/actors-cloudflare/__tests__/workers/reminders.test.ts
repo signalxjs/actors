@@ -93,6 +93,19 @@ describe('reminders on the real alarm API', () => {
         await expect(until('Counter#woke', 'r3', 2)).resolves.toBe(2);
     });
 
+    it('re-arms a reminder whose delivery failed, one tick out on the real alarm', async () => {
+        // The alarm deleted the one-shot BEFORE delivering it, and the
+        // handler threw. Before #326 that was the end of the wake; now the
+        // entry is re-armed `reminderTickMs` (500ms in the fixture) out and
+        // the platform fires it again.
+        await expect(invoke('Counter#armFlaky', ['r6'])).resolves.toBe(true);
+        await expect(until('Counter#woke', 'r6', 1, 6_000)).resolves.toBe(1);
+        // A one-shot that finally fired leaves nothing armed.
+        await runInDurableObject(stubFor('r6'), async (_instance, state) => {
+            expect(await state.storage.getAlarm()).toBeNull();
+        });
+    }, 10_000);
+
     it('recovers the owner from storage after a real eviction', async () => {
         // The most important claim in reminders.ts: the owner ref is
         // persisted alongside the entries precisely because an evicted object

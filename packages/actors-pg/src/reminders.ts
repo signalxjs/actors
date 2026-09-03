@@ -26,6 +26,19 @@
  *
  * Delivery failures are `allSettled` — one bad reminder cannot kill the
  * loop — and the loop is single-flight per provider instance.
+ *
+ * A dispatch that FAILS is not a firing (#306, #326). The claim has already
+ * advanced or deleted the row, so a rejected `deliver()` — a deadline, a
+ * host mid-restart, an `onReminder` that threw — would otherwise be the end
+ * of the wake. Instead the row is re-armed one tick out on the DB clock
+ * (`next_due = now() + tickMs`: a one-shot re-inserted, a periodic one
+ * pulled forward) in ONE statement per batch, and each failure is reported
+ * through `context.undelivered`. Same rules as `shardedReminders()`: a row
+ * the actor SET again meanwhile is left as the actor set it (a later
+ * decision wins — the re-arm compares against the `next_due` the claim
+ * wrote), a periodic one it CLEARED stays cleared, and a one-shot it
+ * cleared may be retried once — the claim had already deleted it, so absent
+ * is indistinguishable from untouched.
  */
 import pg from 'pg';
 import type { ActorReminders, ActorRemindersContext, ReminderApi } from '@sigx/actors';
@@ -50,6 +63,17 @@ const MIN_PERIOD_MS = 60_000;
 /** Claim batches per tick — a backlog drains fast without an unbounded
  *  loop if rows keep becoming due mid-tick. */
 const MAX_BATCHES_PER_TICK = 10;
+
+/**
+ * A row the claim took, as stored (`pgText`-encoded); `advanced` is the
+ * `next_due` it wrote for a periodic row, `null` for a deleted one-shot.
+ */
+interface Claimed {
+    type: string;
+    key: string;
+    name: string;
+    advanced: string | null;
+}
 
 /** Same identifier rule as the other providers. */
 function checkSchema(schema: string): string {
@@ -83,19 +107,30 @@ export function pgReminders(options: PgRemindersOptions = {}): ActorReminders {
      * The whole claim in one atomic statement: select-and-lock the due
      * rows, advance the periodic ones, delete the one-shots. Committed the
      * moment it returns — BEFORE any delivery.
+     *
+     * `advanced` is the `next_due` the claim wrote for a periodic row and
+     * `null` for a deleted one-shot, so a failed dispatch can tell "still
+     * as I left it" from "the actor has since set or cleared it". It
+     * travels as TEXT: `timestamptz` has microseconds and a JS `Date` has
+     * milliseconds, so the driver's own decoding would never compare equal
+     * to the stored value again.
      */
-    const claim = async (): Promise<{ type: string; key: string; name: string }[]> => {
+    const claim = async (): Promise<Claimed[]> => {
         const result = await pool.query(
             `WITH due AS (
-                 SELECT type, key, name, period_ms FROM ${s}.reminders
+                 SELECT type, key, name, period_ms,
+                     CASE WHEN period_ms IS NULL THEN NULL
+                          ELSE GREATEST(next_due, now())
+                              + make_interval(secs => period_ms::float8 / 1000.0)
+                     END AS advanced
+                 FROM ${s}.reminders
                  WHERE next_due <= now()
                  ORDER BY next_due
                  LIMIT $1
                  FOR UPDATE SKIP LOCKED
              ), advanced AS (
                  UPDATE ${s}.reminders r
-                 SET next_due = GREATEST(r.next_due, now())
-                     + make_interval(secs => d.period_ms::float8 / 1000.0)
+                 SET next_due = d.advanced
                  FROM due d
                  WHERE r.type = d.type AND r.key = d.key AND r.name = d.name
                      AND d.period_ms IS NOT NULL
@@ -105,14 +140,57 @@ export function pgReminders(options: PgRemindersOptions = {}): ActorReminders {
                  WHERE r.type = d.type AND r.key = d.key AND r.name = d.name
                      AND d.period_ms IS NULL
              )
-             SELECT type, key, name FROM due`,
+             SELECT type, key, name, advanced::text AS advanced FROM due`,
             [batchSize]
         );
         return result.rows.map((row) => ({
-            type: pgTextDecode(row['type'] as string),
-            key: pgTextDecode(row['key'] as string),
-            name: pgTextDecode(row['name'] as string)
+            type: row['type'] as string,
+            key: row['key'] as string,
+            name: row['name'] as string,
+            advanced: (row['advanced'] as string | null) ?? null
         }));
+    };
+
+    /**
+     * Put the rows whose dispatch failed this tick back, due one tick from
+     * now on the DB clock — so the retry is the next tick and never sooner,
+     * whatever the failure was. One statement for the whole batch: a
+     * periodic row is pulled forward only while its `next_due` is still
+     * the one the claim wrote (an actor that set it again meanwhile made a
+     * later decision, and that decision wins; one that cleared it left
+     * nothing to pull forward); a one-shot is re-inserted only if absent
+     * (`ON CONFLICT DO NOTHING` — the actor set it again). Also the known
+     * exception: a one-shot the actor CLEARED meanwhile is absent too, so
+     * it is re-armed and delivered once more — see the module header.
+     */
+    const rearm = async (failed: readonly Claimed[], tickMs: number): Promise<void> => {
+        await pool.query(
+            `WITH failed AS (
+                 SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[])
+                     AS f(type, key, name, advanced)
+             ), retry AS (
+                 SELECT now() + make_interval(secs => $5::float8 / 1000.0) AS due
+             ), pulled AS (
+                 UPDATE ${s}.reminders r
+                 SET next_due = LEAST(r.next_due, retry.due)
+                 FROM failed f, retry
+                 WHERE f.advanced IS NOT NULL
+                     AND r.type = f.type AND r.key = f.key AND r.name = f.name
+                     AND r.next_due = f.advanced::timestamptz
+             )
+             INSERT INTO ${s}.reminders (type, key, name, next_due, period_ms)
+             SELECT f.type, f.key, f.name, retry.due, NULL
+             FROM failed f, retry
+             WHERE f.advanced IS NULL
+             ON CONFLICT (type, key, name) DO NOTHING`,
+            [
+                failed.map((row) => row.type),
+                failed.map((row) => row.key),
+                failed.map((row) => row.name),
+                failed.map((row) => row.advanced),
+                Math.max(0, tickMs)
+            ]
+        );
     };
 
     const tick = async (): Promise<void> => {
@@ -124,12 +202,61 @@ export function pgReminders(options: PgRemindersOptions = {}): ActorReminders {
                 const due = await claim();
                 if (due.length === 0) return;
                 // The claims above are already durable; deliveries are
-                // isolated so one failing actor cannot starve the rest.
+                // isolated so one failing actor cannot starve the rest. A
+                // dispatch that fails is reported and collected, and the
+                // batch's failures go back in ONE write once every dispatch
+                // has settled (#326).
+                const failed: Claimed[] = [];
                 await Promise.allSettled(
-                    due.map((row) =>
-                        context.deliver({ type: row.type, key: row.key }, row.name)
-                    )
+                    due.map(async (row) => {
+                        const ref = { type: pgTextDecode(row.type), key: pgTextDecode(row.key) };
+                        const name = pgTextDecode(row.name);
+                        try {
+                            // Awaited INSIDE the try: the context is
+                            // pluggable, and a `deliver` that throws before
+                            // it returns a promise must land here exactly
+                            // like a rejection.
+                            await context.deliver(ref, name);
+                        } catch (error) {
+                            // Collected first — the re-arm never depends on
+                            // the reporter behaving.
+                            failed.push(row);
+                            if (__DEV__) {
+                                console.error(
+                                    `[sigx actors-pg] reminder "${name}" on ${ref.type}/${ref.key} ` +
+                                        'failed (retrying next tick):',
+                                    error
+                                );
+                            }
+                            try {
+                                context.undelivered?.(ref, name, error);
+                            } catch (reportError) {
+                                if (__DEV__) {
+                                    console.error(
+                                        '[sigx actors-pg] ActorRemindersContext.undelivered threw:',
+                                        reportError
+                                    );
+                                }
+                            }
+                        }
+                    })
                 );
+                if (failed.length > 0) {
+                    try {
+                        await rearm(failed, context.tickMs);
+                    } catch (error) {
+                        // The database blinked between the claim and now —
+                        // those wakes ARE lost, and the counter above already
+                        // says so. Do not fail the tick over it.
+                        if (__DEV__) {
+                            console.error(
+                                `[sigx actors-pg] could not re-arm ${failed.length} failed ` +
+                                    'reminder(s):',
+                                error
+                            );
+                        }
+                    }
+                }
                 if (due.length < batchSize) return;
             }
         } finally {

@@ -153,7 +153,13 @@ interface ActorRemindersContext {
 `HostStats.remindersUndelivered`, so `ops()`, `metrics()` gauges and the
 cluster's per-host report all carry it (#306). Call it per failed attempt;
 an implementation that does not call it leaves the counter at a `0` that
-means "said nothing" (the provider packages do not yet — #326).
+means "said nothing". The three provider implementations all call it and all
+retry a failed dispatch one tick out under the rules below (#326) — each
+against what its own claim wrote: `pgReminders` compares the row's `next_due`
+with the value the claim set, in one statement per claimed batch;
+`surrealReminders` compares `d` with `$at + p` for the `$at` its claim took
+once per transaction; `durableObjectReminders` re-arms in the alarm's final
+gated write, so the platform alarm is re-scheduled for the retry.
 
 The default `shardedReminders()` keeps the table in `ActorStorage` under a
 reserved type, split into 16 hash shards that hosts divide between them by

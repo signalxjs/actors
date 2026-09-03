@@ -4,10 +4,12 @@
  * floor), the claim semantics (one-shot fires once and disappears; periodic
  * advances before delivery; no catch-up bursts), the shard-ownership
  * partitioning that stands in for `SKIP LOCKED`, at-most-once across two
- * concurrently-ticking providers, and an end-to-end `createHost` wiring where
- * a real actor's `onReminder` fires.
+ * concurrently-ticking providers, the retry of a dispatch that failed (#326),
+ * and an end-to-end `createHost` wiring where a real actor's `onReminder`
+ * fires.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { RecordId } from 'surrealdb';
 import { defineActor, type ActorRef, type ActorRemindersContext } from '@sigx/actors';
 import { createHost, manualScheduler, memoryStorage } from '@sigx/actors/host';
 import { ensureSurrealSchema, surrealReminders, surrealStorage } from '@sigx/actors-surreal';
@@ -29,26 +31,42 @@ describe.skipIf(!SURREAL_URL)('surrealReminders', () => {
         await dropNamespace(db, namespace);
     });
 
-    /** A provider bound to a manual clock and a recording deliver. */
+    /**
+     * A provider bound to a manual clock and a recording deliver. `fail`
+     * decides per attempt whether the dispatch rejects; every attempt is
+     * recorded in `delivered`, every failure in `undelivered`.
+     */
     function bound(
         tickMs = 1_000,
-        ownsShard: (shard: string) => boolean = () => true
+        ownsShard: (shard: string) => boolean = () => true,
+        fail: (ref: ActorRef, name: string) => boolean | Promise<boolean> = () => false
     ) {
         const scheduler = manualScheduler();
         const delivered: { ref: ActorRef; name: string }[] = [];
+        const undelivered: { ref: ActorRef; name: string; error: unknown }[] = [];
         const provider = surrealReminders({ db });
         const context: ActorRemindersContext = {
             storage: memoryStorage(),
             scheduler,
             tickMs,
             ownsShard,
-            deliver: (ref, name) => {
+            deliver: async (ref, name) => {
                 delivered.push({ ref, name });
-                return Promise.resolve();
-            }
+                if (await fail(ref, name)) throw new Error('dispatch deadline');
+            },
+            undelivered: (ref, name, error) => void undelivered.push({ ref, name, error })
         };
         provider.bind(context);
-        return { provider, scheduler, delivered };
+        return { provider, scheduler, delivered, undelivered };
+    }
+
+    /** The row as stored — `dueInMs` is `d - time::now()` on the DB clock. */
+    async function rowOf(ref: ActorRef, name: string) {
+        const [row] = await db.query<[{ p: number; d: number; now: number } | null]>(
+            `SELECT p, time::millis(d) AS d, time::millis(time::now()) AS now FROM ONLY $id`,
+            { id: new RecordId('sigx_reminder', [ref.type, ref.key, name]) }
+        );
+        return row ? { dueInMs: row.d - row.now, period: row.p === 0 ? undefined : row.p } : undefined;
     }
 
     it('set/list/clear round-trip, with NUL and backslashes in the ref and name', async () => {
@@ -162,6 +180,144 @@ describe.skipIf(!SURREAL_URL)('surrealReminders', () => {
         expect(a.delivered.length + b.delivered.length).toBe(1);
         await a.provider.stop();
         await b.provider.stop();
+    });
+
+    describe('a dispatch that fails (#326)', () => {
+        // The claim advances or deletes the row BEFORE `deliver()`, so a
+        // rejected dispatch — a deadline, an `onReminder` that threw — used
+        // to be the end of the wake. It is now re-armed one tick out on the
+        // DB clock and reported through `context.undelivered`, with the same
+        // rules as `shardedReminders()` (#306).
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+        const TICK = 200;
+        const failing = (fail: (ref: ActorRef, name: string) => boolean | Promise<boolean>) =>
+            bound(TICK, () => true, fail);
+
+        it('re-arms a one-shot whose dispatch failed one tick out, and reports it', async () => {
+            let fail = true;
+            const { provider, scheduler, delivered, undelivered } = failing(() => fail);
+            const ref = { type: 'Retry', key: `shot${NUL}1` };
+            const api = provider.apiFor(ref);
+            await api.set('wake', { due: 0 });
+            provider.start();
+            try {
+                scheduler.advance(TICK); // tick 1: deliver rejects
+                await vi.waitFor(() => expect(delivered).toHaveLength(1));
+                expect(undelivered).toHaveLength(1);
+                expect(undelivered[0]).toMatchObject({ ref, name: 'wake' });
+                expect((undelivered[0]!.error as Error).message).toBe('dispatch deadline');
+                // Still registered — one tick out, not dropped.
+                await vi.waitFor(async () => {
+                    const row = await rowOf(ref, 'wake');
+                    expect(row).toBeDefined();
+                    expect(row!.period).toBeUndefined();
+                    expect(row!.dueInMs).toBeGreaterThan(0);
+                    expect(row!.dueInMs).toBeLessThanOrEqual(TICK);
+                });
+                fail = false;
+                await sleep(TICK);
+                scheduler.advance(TICK); // tick 2: delivered
+                await vi.waitFor(() => expect(delivered).toHaveLength(2));
+                expect(delivered[1]).toEqual({ ref, name: 'wake' });
+                // A one-shot that finally fired clears itself.
+                await expect(api.list()).resolves.toEqual([]);
+                expect(undelivered).toHaveLength(1);
+            } finally {
+                await provider.stop();
+            }
+        });
+
+        it('retries a periodic reminder one tick out, then resumes its cadence', async () => {
+            let fail = true;
+            const { provider, scheduler, delivered, undelivered } = failing(() => fail);
+            const ref = { type: 'Retry', key: 'beat' };
+            const api = provider.apiFor(ref);
+            await api.set('beat', { due: 0, period: 60_000 });
+            provider.start();
+            try {
+                scheduler.advance(TICK);
+                await vi.waitFor(() => expect(delivered).toHaveLength(1));
+                expect(undelivered).toHaveLength(1);
+                // Pulled forward to the next tick, not left a period out.
+                await vi.waitFor(async () => {
+                    const row = await rowOf(ref, 'beat');
+                    expect(row!.period).toBe(60_000);
+                    expect(row!.dueInMs).toBeLessThanOrEqual(TICK);
+                });
+
+                fail = false;
+                await sleep(TICK);
+                scheduler.advance(TICK);
+                await vi.waitFor(() => expect(delivered).toHaveLength(2));
+                // A SUCCESSFUL firing advances by the period, as before.
+                const row = await rowOf(ref, 'beat');
+                expect(row!.dueInMs).toBeGreaterThan(60_000 - TICK * 2);
+                expect(undelivered).toHaveLength(1);
+            } finally {
+                await provider.stop();
+                await api.clear('beat');
+            }
+        });
+
+        it('a permanently failing target costs one attempt per tick, each reported', async () => {
+            const { provider, scheduler, delivered, undelivered } = failing(() => true);
+            const ref = { type: 'Retry', key: 'never' };
+            const api = provider.apiFor(ref);
+            await api.set('wake', { due: 0 });
+            provider.start();
+            try {
+                for (let tick = 1; tick <= 3; tick++) {
+                    scheduler.advance(TICK);
+                    await vi.waitFor(() => expect(delivered).toHaveLength(tick));
+                    // Never a hot loop: nothing more until the row is due
+                    // again AND the clock ticks.
+                    await sleep(TICK + 50);
+                    expect(delivered).toHaveLength(tick);
+                }
+                expect(undelivered).toHaveLength(3);
+                await expect(api.list()).resolves.toEqual(['wake']);
+            } finally {
+                await provider.stop();
+                await api.clear('wake');
+            }
+        });
+
+        it('leaves a reminder the actor set or cleared during the failing dispatch alone', async () => {
+            // A later decision wins: the re-arm only touches a row that is
+            // still exactly as the claim left it.
+            const ref = { type: 'Retry', key: 'meanwhile' };
+            const { provider, scheduler, delivered } = failing(async (_ref, name) => {
+                // `onReminder` rescheduling itself, then timing out.
+                if (name === 'wake') await provider.apiFor(ref).set('wake', { due: 3_600_000 });
+                if (name === 'beat') await provider.apiFor(ref).clear('beat');
+                return true;
+            });
+            const api = provider.apiFor(ref);
+            await api.set('wake', { due: 0 });
+            await api.set('beat', { due: 0, period: 60_000 });
+            // A third failing one-shot the actor leaves alone: the batch's
+            // failures go back in ONE statement, so its row reappearing one
+            // tick out is the DB-side proof that the re-arm has landed — and
+            // therefore already decided against touching the other two.
+            await api.set('canary', { due: 0 });
+            provider.start();
+            try {
+                scheduler.advance(TICK);
+                await vi.waitFor(() => expect(delivered).toHaveLength(3));
+                // (The claim deleted the canary before `deliver` ran, so the
+                // row being back at all means the re-arm's write is in.)
+                await vi.waitFor(async () => expect(await rowOf(ref, 'canary')).toBeDefined());
+                // The one-shot is as the actor re-set it, not one tick out…
+                const wake = await rowOf(ref, 'wake');
+                expect(wake!.dueInMs).toBeGreaterThan(3_600_000 - TICK * 2);
+                // …and the cleared periodic stays cleared.
+                await expect(rowOf(ref, 'beat')).resolves.toBeUndefined();
+            } finally {
+                await provider.stop();
+                await api.clear('wake');
+                await api.clear('canary');
+            }
+        });
     });
 
     it('bind() twice is refused — one provider per host', () => {
