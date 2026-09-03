@@ -1178,10 +1178,11 @@ export interface ActorOptions<
      * Applies to the turn-path save only. A write-behind / eventual-save
      * flush conflict still deactivates (`StateErrorPhase`). If the reload
      * itself fails, the activation faults exactly as without the option.
-     * Serial actors only: with `reentrant: 'always'` or a
-     * `methodReentrancy` map the first activation fails — interleaved
-     * turns are never queued, so there is nothing to re-run, and a reload
-     * landing under an in-flight turn would silently discard its writes.
+     * Serial actors only: on an interleaving activation — `reentrant:
+     * 'always'`, or a `methodReentrancy` map naming any method — the first
+     * activation fails: interleaved turns are never queued, so there is
+     * nothing to re-run, and a reload landing under an in-flight turn
+     * would silently discard its writes.
      * `reentrant: 'call-chain'` is fine (an in-chain call runs inside its
      * caller's turn and never reloads).
      */

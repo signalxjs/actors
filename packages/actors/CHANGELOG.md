@@ -42,9 +42,10 @@
   landing after the conflict reloads the same way. Turn-path saves only:
   a write-behind / eventual-save flush conflict still deactivates
   (#336/#367), and a reload that fails falls back to the fault path
-  exactly as without the option. Serial actors only: declared together
-  with `reentrant: 'always'` or a `methodReentrancy` map the first
-  activation fails — interleaved turns are never queued, so there is
+  exactly as without the option. Serial actors only: on an interleaving
+  activation (`reentrant: 'always'`, or a `methodReentrancy` map naming
+  any method) the first activation fails — interleaved turns are never
+  queued, so there is
   nothing to re-run, and a reload landing under an in-flight turn would
   silently discard its writes where the default contract rejects its
   save. Only for methods that are safe to re-run against state they did
