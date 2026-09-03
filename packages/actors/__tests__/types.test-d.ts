@@ -4,6 +4,7 @@
  */
 import { describe, expectTypeOf, it } from 'vitest';
 import { actor, defineActor, defineWorker, publishTopic, topic } from '@sigx/actors';
+import { defineJob } from '@sigx/actors/job';
 import type {
     ActorContext,
     ActorContextBase,
@@ -597,5 +598,37 @@ describe('topics typing', () => {
         expectTypeOf(client.seen).returns.toEqualTypeOf<Promise<number>>();
         // @ts-expect-error subscription handlers are not client-callable
         void client.chat;
+    });
+});
+
+describe('defineJob: job.append is typed by apply (#312)', () => {
+    it('is uncallable without a reducer, and takes the reducer\'s entry type with one', () => {
+        type Row = { id: number };
+        void defineJob({
+            type: 'NoApply',
+            allowAnonymous: true,
+            run: async (job) => {
+                expectTypeOf(job.append).parameter(0).toEqualTypeOf<never>();
+                // @ts-expect-error no `apply` — nothing folds an entry
+                await job.append({ id: 1 });
+                return 0;
+            }
+        });
+        void defineJob({
+            type: 'WithApply',
+            allowAnonymous: true,
+            apply: (cp: Row[] | undefined, row: Row) => {
+                (cp ??= []).push(row);
+                return cp;
+            },
+            run: async (job) => {
+                expectTypeOf(job.append).parameter(0).toEqualTypeOf<Row>();
+                expectTypeOf(job.resumedFrom).toEqualTypeOf<Row[] | undefined>();
+                await job.append({ id: 1 });
+                // @ts-expect-error not a Row
+                await job.append({ nope: true });
+                return 0;
+            }
+        });
     });
 });

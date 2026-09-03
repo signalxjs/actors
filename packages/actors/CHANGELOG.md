@@ -4,6 +4,39 @@
 
 ### Added
 
+- **`ctx.append(entry)` + `applyEntry`, and `job.append(entry)` + `apply`
+  — O(entry) writes on the `appendText` seam** (#312, PR 2 of 2; closes the
+  issue). `ActorOptions.applyEntry?(state, entry)` is the reducer: it folds
+  one entry into the state in place, at `append` time on the live state and
+  at every activation replaying the record's log onto the stored snapshot —
+  after `migrateState` (an eager write-back persists the folded state) and
+  before `onActivate`. `ActorContextBase.append(entry)` — typed away and
+  guarded on `ActorTaskContext` and `WorkerContext` like `save` — runs the
+  reducer and appends the entry alone under the record's etag; durable when
+  it resolves, a conflict faults the activation (or parks the #368 reload)
+  exactly as a save's does, and a stale peer's later save conflicts on the
+  etag the append minted. Where there is no record yet or the storage has
+  no `appendText` (`fileStorage`, Durable Objects), an append IS a full save.
+  A full save is the compaction: it stores the fold and truncates the log;
+  nothing keeps an in-memory log. A record with a non-empty log under a
+  definition without `applyEntry` fails activation naming the type; `append`
+  without the reducer throws. `#savedVersion` follows an append only when the
+  version before it was already saved, so a write-behind or eventual flush
+  still carries state written directly since the last full save.
+  On `@sigx/actors/job`: `JobOptions.apply?(checkpoint: C | undefined,
+  entry: E): C | void` (return replaces the checkpoint, `undefined` means
+  mutated in place — a checkpoint still `undefined` is created by returning
+  one) and `JobHandle.append(entry: E)`; `defineJob`, `JobOptions` and
+  `JobHandle` take a trailing `E = never` inferred from `apply`, so `append`
+  is uncallable without a reducer at compile time and throws at runtime.
+  `checkpoint()`, `pause()` and the terminal transition are the compaction
+  points; `resumedFrom` is the folded checkpoint — and now a DETACHED copy
+  (one clone per resume) rather than the live `state.checkpoint`, which
+  `apply` moves under a running body. A late `append` from a winding-down
+  body is dropped like a late `progress()`. `jobs/checkpoint-growth` gains
+  the `watch=0,append` and `watch=0,append,text` arms: flat at ~8–10 µs per
+  step, head ≈ tail, where `watch=0` grows ~5× over a 300-step run.
+
 - **`ActorStorage.appendText` — an O(entry) append seam, with the log
   truncated by every full save** (#312, PR 1 of 2). `jobs/checkpoint-growth`
   measured a per-step checkpoint at 19.8 µs at the head of a 300-step run

@@ -863,6 +863,23 @@ export interface ActorContextBase<S extends object> {
      * caller.
      */
     save(options?: SaveOptions): Promise<void>;
+    /**
+     * Persist ONE entry instead of the whole state (#312): the entry is
+     * folded into `ctx.state` through the definition's `applyEntry` reducer
+     * and appended to the record's log under the record's etag — O(entry),
+     * where `save()` is O(state). Durable when the promise resolves, and a
+     * write like any other: a stale peer's later `save()` conflicts, and a
+     * conflict here faults the activation (or parks the #368 reload)
+     * exactly as a save's would. Throws if the definition declares no
+     * `applyEntry`. Where there is no record yet, or the storage has no
+     * `appendText`, this IS a full save — same result, today's cost.
+     *
+     * What it makes durable is the entry. State written directly (not
+     * through the reducer) since the last full save is not in the log; the
+     * next `save()` — or the write-behind / eventual flush that owes it —
+     * carries it, so nothing is lost, only not yet O(entry).
+     */
+    append(entry: unknown): Promise<void>;
     /** Delete the stored record; in-memory state resets to `state(key)`. */
     clearState(): Promise<void>;
     /** Volatile timer — dies with the activation; ticks are ordinary turns. */
@@ -992,8 +1009,8 @@ export type ActorTaskTable = Record<string, ActorTask>;
 
 /**
  * What a `tasks:` body sees. Tasks run DETACHED, outside any turn, so the
- * live-state members are typed away: no `state`, no `save()`, no
- * `clearState()`. State access goes through `turn()` — one ordinary
+ * live-state members are typed away: no `state`, no `save()`/`append()`,
+ * no `clearState()`. State access goes through `turn()` — one ordinary
  * serialized turn with the full context — and reads through
  * `snapshot()` / `changes()`. `abortSignal` is the RUN's own signal: it
  * fires on `ctx.tasks.cancel()` (reason `'cancelled'`) and on deactivation
@@ -1003,7 +1020,7 @@ export type ActorTaskTable = Record<string, ActorTask>;
 export type ActorTaskContext<
     S extends object,
     Ext extends object = Record<never, never>
-> = Omit<ActorContextBase<S>, 'state' | 'save' | 'clearState' | 'abortSignal'> & {
+> = Omit<ActorContextBase<S>, 'state' | 'save' | 'append' | 'clearState' | 'abortSignal'> & {
     /** Re-enter: run `fn` as one ordinary serialized turn. */
     turn<T>(fn: (ctx: ActorContext<S, Ext>) => T | Promise<T>): Promise<T>;
     /** This run's signal — see the type doc. */
@@ -1194,6 +1211,27 @@ export interface ActorOptions<
      * versioning an actor's INTERFACE across a mixed-version fleet.
      */
     migrateState?: MigrateState<S>;
+    /**
+     * The reducer behind `ctx.append(entry)` (#312): fold one entry into the
+     * state, IN PLACE. An entry is whatever `append` was handed — a step's
+     * output, an event — anything the state codec carries. It runs twice
+     * per entry over the record's life: once at `append`, on the live
+     * state, and once per activation, replaying the record's log onto the
+     * stored snapshot in append order, AFTER `migrateState` and before
+     * `onActivate`. So it must be a pure function of (state, entry): same
+     * state and entry, same result, on any host.
+     *
+     * A full save (`ctx.save()`, a write-behind or eventual flush, the
+     * deactivation flush) stores the folded state and truncates the log —
+     * a full save is the compaction, and there is no other. On a storage
+     * without `appendText` (`fileStorage`, Durable Objects) every append
+     * IS a full save; the reducer still runs, the log is simply never
+     * longer than nothing.
+     *
+     * A record carrying a non-empty log fails activation under a
+     * definition without this — it was written by one that had it.
+     */
+    applyEntry?(state: S, entry: unknown): void;
     /**
      * `'explicit'` (default): only `ctx.save()` writes. `'write-behind'`:
      * a deep watch schedules a debounced save; acked ≠ persisted — use only
@@ -1420,7 +1458,7 @@ export interface ActorOptions<
  */
 export type WorkerContext<Ext extends object = Record<never, never>> = Omit<
     ActorContextBase<Record<never, never>>,
-    'state' | 'save' | 'clearState' | 'reminders' | 'tasks' | 'snapshot' | 'changes'
+    'state' | 'save' | 'append' | 'clearState' | 'reminders' | 'tasks' | 'snapshot' | 'changes'
 > &
     Ext;
 

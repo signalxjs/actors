@@ -54,14 +54,16 @@ export type JobPaused = typeof JOB_PAUSED;
  * The handle a `run()` body works through — the ONLY door into the actor
  * from detached code (each method is a serialized turn inside).
  */
-export interface JobHandle<In, C, Extra extends object> {
+export interface JobHandle<In, C, Extra extends object, E = never> {
     readonly key: string;
     readonly input: In;
     /** Fires on cancel/shutdown/migrate — observe it in every long await. */
     readonly signal: AbortSignal;
     /** 1 on the first run; crash-resumes count up. */
     readonly attempt: number;
-    /** The last checkpoint, when this run is any kind of resume. */
+    /** The last checkpoint, when this run is any kind of resume — with
+     *  every `append`ed entry since folded in. A detached copy: mutating
+     *  it changes nothing, and nothing changes it. */
     readonly resumedFrom: C | undefined;
     /** The payload `resume(data)` carried, on a pause-resume. */
     readonly resumeData: unknown;
@@ -97,6 +99,22 @@ export interface JobHandle<In, C, Extra extends object> {
      * deactivation (Cloudflare) there is no final flush to narrow it.
      */
     checkpoint(c: C, options?: SaveOptions): Promise<void>;
+    /**
+     * Persist ONE step's worth instead of the whole checkpoint (#312):
+     * `apply(checkpoint, entry)` folds the entry into the checkpoint, and
+     * the entry alone is appended to the state record — O(entry) where
+     * `checkpoint()` is O(checkpoint). Durable when the promise resolves,
+     * etag-CAS like every write. After a crash, `resumedFrom` is the
+     * checkpoint with every appended entry folded in, in order — the same
+     * value the body saw — so nothing about resume changes. `checkpoint()`,
+     * `pause()` and the terminal transition are full saves and therefore
+     * the compaction points: append per step, checkpoint every N. Typed by
+     * `apply`'s entry parameter, and uncallable (`never`) without one; on a
+     * storage without `appendText` every append is a full save — the
+     * recipe still holds, at the old cost. A late append from a winding-
+     * down body is dropped like a late `progress()`.
+     */
+    append(entry: E): Promise<void>;
     /** Mutate the job's `extra` fields (pushed to watchers, not saved). */
     update(fn: (extra: Extra) => void): Promise<void>;
     /**
@@ -125,7 +143,7 @@ export interface JobControl<Extra extends object = Record<never, never>> {
     readonly reminders: ReminderApi;
 }
 
-export interface JobOptions<In, Out, C, Extra extends object> {
+export interface JobOptions<In, Out, C, Extra extends object, E = never> {
     /** Stable type id — wire, directory and storage name. */
     type: string;
     /**
@@ -161,7 +179,19 @@ export interface JobOptions<In, Out, C, Extra extends object> {
      * `return job.pause(c)` (→ `paused`). `In`, `Out` and `C` must survive
      * the state codec.
      */
-    run(job: JobHandle<In, C, Extra>, input: In): Promise<Out | JobPaused>;
+    run(job: JobHandle<In, C, Extra, E>, input: In): Promise<Out | JobPaused>;
+    /**
+     * The reducer behind `job.append(entry)` (#312): fold one entry into
+     * the checkpoint. Return a value to REPLACE the checkpoint; return
+     * nothing to say it was mutated in place. A checkpoint that is still
+     * `undefined` (no `checkpoint()` or `append()` yet) can only be created
+     * by returning one. Runs at every `append` on the live checkpoint and,
+     * on every activation, replaying the record's appended entries onto the
+     * stored checkpoint in order — so it must be a pure function of its two
+     * arguments. `E` is inferred from this parameter; without `apply`,
+     * `job.append` takes `never`.
+     */
+    apply?(checkpoint: C | undefined, entry: E): C | void;
     /** Durable-reminder passthrough — HITL timeouts, scheduled nudges.
      *  Reserved runtime names never reach it. */
     onReminder?(control: JobControl<Extra>, name: string): void | Promise<void>;

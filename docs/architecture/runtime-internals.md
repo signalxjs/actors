@@ -73,6 +73,47 @@ storage.
 Saves are single-flighted per activation, so even `reentrant: 'always'` actors
 cannot interleave their compare-and-sets within one activation.
 
+### Snapshot + log: `ctx.append` and the replay on load (#312)
+
+A record is a **snapshot plus a log**. `ctx.save()` writes the snapshot —
+the whole state, O(state) — and, on a storage with `appendText`, truncates
+the log in the same write. `ctx.append(entry)` folds one entry into the live
+state through the definition's `applyEntry(state, entry)` reducer and appends
+the entry alone to the record's log under the record's etag — O(entry). Both
+mint a new etag; a stale peer's later save conflicts either way. The
+activation keeps **no in-memory log**: entries are folded at append time, so
+the live state is exactly what the next full save writes, and the log's
+truncation on save follows from that rather than needing bookkeeping.
+
+Loading (`seedFromStorage`) is therefore *snapshot, then `migrateState`, then
+replay*: the log's entries run through `applyEntry` in append order onto the
+migrated shape, before `onActivate`. The reducer is the current definition's
+and expects the current shape, which is why migration comes first — and why
+an eager migration write-back persists the *folded* state: a full save
+truncates the log it would otherwise have left behind. A record whose log is
+non-empty under a definition without `applyEntry` fails activation, loudly
+and without touching the record; it was written by a definition that had one.
+
+The append rides the same single-flight slot as a save (`#gatedSave` with an
+append argument, `#doSave` in its append shape), so on an interleaving
+activation an append waits for an in-flight save and chains on the etag it
+minted, and a save behind an append writes the fold and compacts. A conflict
+on the append ends exactly as a save's: fault by default, or the parked
+reload under `retryQueuedOnConflict`. The fast path needs two things — a
+record to append to (`#etag !== null`) and the storage seam
+(`ActivationHost.appendStateText`, present only when the storage implements
+`appendText`); missing either, the append **is a full save**: same fold,
+same result, the O(state) cost `save()` has always had. `fileStorage` and
+`durableObjectStorage` decline the seam, so every append there is a save.
+
+Version bookkeeping is honest about what an append makes durable: the entry.
+`#savedVersion` advances to the append's version only when the version before
+it was already saved; state written *directly* since the last full save is
+not in the log, and claiming it would let a write-behind or eventual flush
+that owes it find nothing to do. In the intended shape (append per step, no
+unsaved direct writes) the flush finds nothing and the append costs exactly
+one write; with a direct write ahead of it, the next full save carries both.
+
 Two conflict paths exist, and they end differently:
 
 - **Turn path** — `ctx.save()` inside a method loses the CAS. `#doSave` mints
