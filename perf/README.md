@@ -33,6 +33,15 @@ Two rules the rig is built around, both learned the hard way:
   it is missing; in CI the values come from Actions secrets. `perf/aks`'s
   `__tests__/testenv-config.test.ts` runs on every `pnpm test` to keep it
   that way.
+- **Two charts, one set of lessons.** `aks/deploy/chart` and
+  `app/deploy/chart` were hand-copied from one another and drift (#59).
+  `aks/__tests__/chart-equivalence.test.ts` renders both with `helm
+  template` and asserts the hardening outcomes agree — probes, a
+  PodDisruptionBudget on the hosts, a node spread of some kind, resource
+  requests and limits, a grace period that covers the drain. It runs
+  wherever `helm` is on PATH — the CI matrix has one, and
+  `.github/workflows/charts.yml` runs it ahead of the cluster on a chart
+  change — and skips, saying why, where there is none.
 
 ## Cost
 
