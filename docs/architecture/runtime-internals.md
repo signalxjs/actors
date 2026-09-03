@@ -73,6 +73,34 @@ storage.
 Saves are single-flighted per activation, so even `reentrant: 'always'` actors
 cannot interleave their compare-and-sets within one activation.
 
+Two conflict paths exist, and they end differently:
+
+- **Turn path** — `ctx.save()` inside a method loses the CAS. `#doSave` mints
+  `ActorStateConflictError` and, by default, faults the activation: the losing
+  turn rejects, every queued turn dies at `#turn`'s fault guard, and
+  `#reportFault` hands the activation to the host (`deactivateOne(…,
+  'conflict')`). With `retryQueuedOnConflict: true` (#368) the same conflict is
+  *parked* instead (`#reloadPending`), the losing turn still rejects, and the
+  next turn to enter the serial lane — `#turn`, a non-inline stream open, a
+  task's `ctx.turn()`, a timer tick — runs `#reload` first: the same
+  `seedFromStorage` load activation uses (so `migrateState` runs), the same
+  in-place state reset `clearState` uses, the winning etag adopted, and the
+  version bookkeeping set to "clean at the loaded record" so a change-feed
+  subscriber sees the winning state as the next boundary. Queued turns then run
+  in their original order against it; nothing is deactivated, re-activated or
+  re-dispatched. The reload is serialized with an in-flight save through the
+  same single-flight slot (`#savePending`) `clearState` uses. A deactivation
+  landing while the reload is pending skips the final flush, as the
+  `'conflict'` reason does. If the reload itself fails, the parked conflict
+  faults the activation and the default path takes over. Interleaved siblings
+  already in flight keep the default contract either way — they see the
+  conflict on their own save.
+- **Flush path** — the debounced write-behind / eventual save (#320) loses the
+  CAS with no caller to throw to. `onStateError('flush')` hears about it, then
+  the activation deactivates with `'conflict'` (#336) regardless of the option:
+  the flush is a system turn, its writes belong to no caller, and re-running
+  "whatever was dirty" has no order to preserve.
+
 `ctx.save({ durability: 'eventual' })` (#320) is the same write, deferred: it
 bumps the version and arms the write-behind debounce (`#scheduleWriteBehind`,
 50 ms) instead of awaiting the CAS, so a burst of eventual saves is one write.

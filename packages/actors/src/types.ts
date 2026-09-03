@@ -656,9 +656,12 @@ export interface TaskApi {
  * pressure); `'explicit'` a `ctx.deactivate()` / `host.deactivate()`
  * request; `'shutdown'` the host stopping; `'conflict'` a storage etag
  * mismatch (the activation is discarded and the next call reloads the
- * winning state); `'activation-failed'` an `onActivate` throw (nothing to
- * tear down — `onDeactivate` is skipped); `'migrated'` a cluster handoff
- * or rebalance — a peer will re-place the actor.
+ * winning state — unless the type opts into `retryQueuedOnConflict`,
+ * which reloads in place on a TURN-path conflict and never reaches this
+ * reason; a flush conflict deactivates either way); `'activation-failed'`
+ * an `onActivate` throw (nothing to tear down — `onDeactivate` is
+ * skipped); `'migrated'` a cluster handoff or rebalance — a peer will
+ * re-place the actor.
  */
 export type DeactivationReason =
     | 'idle'
@@ -1154,6 +1157,32 @@ export interface ActorOptions<
      * for lossy-tolerant state.
      */
     persistence?: 'explicit' | { mode: 'write-behind'; debounceMs?: number };
+    /**
+     * Re-run queued turns after an etag conflict instead of failing them
+     * (#368). Default (off): a turn whose `ctx.save()` loses the CAS rejects
+     * with `ActorStateConflictError`, every turn queued behind it rejects
+     * the same way, the activation is discarded (`onDeactivate('conflict')`)
+     * and the next call re-activates on the winning state. With `true` the
+     * losing turn still rejects — its writes were computed on stale state
+     * and are discarded — but the activation stays: before the next turn
+     * runs, the winning record is reloaded in place (through `migrateState`,
+     * as on activation) and the queued turns then run in their original
+     * order against it, as if they had arrived after the other writer.
+     *
+     * Only for methods that are idempotent or commutative: a queued turn
+     * is re-run against state it did not see when it was queued, so a
+     * method whose effect depends on what was there before (read-then-
+     * decide) can act twice or act on the wrong premise. The losing turn
+     * itself is never re-run.
+     *
+     * Applies to the turn-path save only. A write-behind / eventual-save
+     * flush conflict still deactivates (`StateErrorPhase`); an interleaved
+     * sibling turn (`reentrant: 'always'`, `methodReentrancy`) already in
+     * flight when the conflict lands keeps the default contract and sees
+     * the conflict on its own save. If the reload itself fails, the
+     * activation faults exactly as without the option.
+     */
+    retryQueuedOnConflict?: true;
     /**
      * Reentrancy. Default `false`: turns are strictly serial and A→B→A
      * throws `ActorDeadlockError`.

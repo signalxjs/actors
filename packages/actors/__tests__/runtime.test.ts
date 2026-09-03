@@ -13,10 +13,11 @@ import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
 
 const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 0 };
 
-function counterActor(events: string[] = []) {
+function counterActor(events: string[] = [], extra: { retryQueuedOnConflict?: true } = {}) {
     return defineActor({
         type: 'Counter',
         allowAnonymous: true,
+        ...extra,
         state: () => ({ count: 0 }),
         onActivate(ctx) {
             events.push(`activate:${ctx.key}`);
@@ -264,6 +265,108 @@ describe('persistence', () => {
             (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
         );
         // Fresh activation loads the winning state.
+        await expect(client.get()).resolves.toBe(99);
+    });
+
+    it('retryQueuedOnConflict: the losing turn rejects, queued turns re-run against the reloaded state', async () => {
+        const events: string[] = [];
+        const storage = memoryStorage();
+        const host = createHost({
+            actors: [counterActor(events, { retryQueuedOnConflict: true })],
+            storage,
+            defaults: quiet
+        });
+        const client = host.actor(counterActor(), 'c');
+        await client.increment(1); // etag now "1"
+        // A second writer clobbers the record behind the activation's back.
+        const record = await storage.load('Counter', 'c');
+        await storage.save('Counter', 'c', { count: 99 }, record!.etag);
+
+        const first = client.increment(1);
+        const queued = client.increment(1);
+        // The turn whose save lost the race still rejects — its writes were
+        // computed on stale state and are discarded.
+        await expect(first).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+        // The queued turn ran against the winning state, in place: no
+        // deactivation, no re-activation.
+        await expect(queued).resolves.toBe(100);
+        expect(events.filter((e) => e.startsWith('deactivate:'))).toEqual([]);
+        expect(events.filter((e) => e.startsWith('activate:'))).toEqual(['activate:c']);
+        await expect(client.get()).resolves.toBe(100);
+        expect((await storage.load('Counter', 'c'))!.state).toEqual({ count: 100 });
+    });
+
+    it('retryQueuedOnConflict: two hosts on one storage — the loser re-runs its queue against the winner', async () => {
+        const eventsA: string[] = [];
+        const storage = memoryStorage();
+        const hostA = createHost({
+            actors: [counterActor(eventsA, { retryQueuedOnConflict: true })],
+            storage,
+            defaults: quiet
+        });
+        const hostB = createHost({ actors: [counterActor()], storage, defaults: quiet });
+        const a = hostA.actor(counterActor(), 'k');
+        const b = hostB.actor(counterActor(), 'k');
+        await a.increment(1); // A holds etag "1"
+        await b.increment(10); // B loads 1, writes 11 — A's etag is now stale
+
+        const first = a.increment(1);
+        const q1 = a.increment(2);
+        const q2 = a.increment(3);
+        await expect(first).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+        // Original order, against B's state: 11 + 2, then + 3.
+        await expect(q1).resolves.toBe(13);
+        await expect(q2).resolves.toBe(16);
+        expect(eventsA.filter((e) => e.startsWith('deactivate:'))).toEqual([]);
+        // Their effects are durable and visible to a fresh activation on B.
+        expect((await storage.load('Counter', 'k'))!.state).toEqual({ count: 16 });
+        await hostB.deactivateType('Counter');
+        await expect(b.get()).resolves.toBe(16);
+    });
+
+    it('retryQueuedOnConflict: a reload that fails falls back to the fault path', async () => {
+        const events: string[] = [];
+        const inner = memoryStorage();
+        let failLoads = false;
+        const storage: ActorStorage = {
+            async load(type, key) {
+                if (failLoads) throw new Error('storage down');
+                return inner.load(type, key);
+            },
+            save: (type, key, state, etag) => inner.save(type, key, state, etag),
+            clear: (type, key, etag) => inner.clear(type, key, etag)
+        };
+        const host = createHost({
+            actors: [counterActor(events, { retryQueuedOnConflict: true })],
+            storage,
+            defaults: quiet
+        });
+        const client = host.actor(counterActor(), 'c');
+        await client.increment(1);
+        const record = await inner.load('Counter', 'c');
+        await inner.save('Counter', 'c', { count: 99 }, record!.etag);
+
+        failLoads = true;
+        const first = client.increment(1);
+        const queued = client.increment(1);
+        const behind = client.increment(1);
+        await expect(first).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+        // The turn that attempted the reload sees the load failure; the
+        // activation is faulted and discarded as without the option, so
+        // everything behind it fails with the conflict.
+        await expect(queued).rejects.toThrow('storage down');
+        await expect(behind).rejects.toSatisfy(
+            (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
+        );
+        expect(events.filter((e) => e.startsWith('deactivate:'))).toEqual(['deactivate:c:conflict']);
+        // Storage back: a fresh activation loads the winning state.
+        failLoads = false;
         await expect(client.get()).resolves.toBe(99);
     });
 
