@@ -177,10 +177,48 @@ minute — the levers, in the order they pay:
   connection per peer instead of a pooled request each.
 - **Throttle observers.** `job.watch({ throttleMs })` — an unthrottled
   watcher multiplies every checkpoint by the boundary snapshot.
-- **Checkpoint size is the other axis**: a checkpoint re-encodes the whole
-  job state, so cost grows with the run (`jobs/checkpoint-growth`,
-  ~20 µs small → ~113 µs at 300 rows). Keep checkpoints to a cursor where
-  you can; the O(delta) seam is #312.
+- **Append per step, checkpoint every N** (#312). `job.checkpoint(cp)`
+  re-encodes the whole checkpoint, so its cost grows with the run
+  (`jobs/checkpoint-growth` `watch=0`: ~20 µs at the head → ~110 µs at the
+  tail of 300 rows). `job.append(entry)` writes the *step* instead: declare
+  `apply(checkpoint, entry)` — fold the entry into the checkpoint, return a
+  value to replace it (a checkpoint that is still `undefined` must be created
+  that way) or nothing when mutated in place — and each `append` runs the
+  reducer on the live checkpoint and appends the entry alone to the state
+  record, durable when it resolves, etag-CAS like every write. On resume,
+  `resumedFrom` is the checkpoint with every appended entry folded in, in
+  order — nothing about resume changes. The `watch=0,append` arm is flat
+  (~8–10 µs, head ≈ tail) where `watch=0` grows ~5×.
+  ```ts
+  const Sync = defineJob({
+      type: 'Sync',
+      apply: (rows: Row[] | undefined, row: Row) => {
+          (rows ??= []).push(row);
+          return rows;
+      },
+      run: async (job, input: Input) => {
+          const rows = job.resumedFrom ?? []; // a detached copy — yours to keep folding
+          for (let page = rows.length; page < input.pages; page++) {
+              const row = await fetchPage(input, page);
+              rows.push(row); // your fold…
+              await job.append(row); // …and the durable one: O(row), not O(rows)
+              if (page % 100 === 99) await job.checkpoint(rows); // compaction every N
+          }
+          return rows.length;
+      }
+  });
+  ```
+  A full save is the compaction: `checkpoint()`, `pause()` and the terminal
+  transition each store the folded checkpoint and empty the log, so
+  `checkpoint()` every N steps bounds what a resume has to replay.
+  `resumedFrom` is a copy taken at resume, not a live view of the fold, which
+  is why the body above keeps its own `rows` for the periodic `checkpoint()`.
+  Mutating the checkpoint *only* through `apply` is the whole discipline: a
+  direct write to state is not in the log and lands with the next full save.
+  On a storage without `appendText` — `fileStorage`, Durable
+  Objects — every `append` is a full save: the recipe still holds and resume
+  is identical, just at the old O(checkpoint) cost. Redis, Postgres, SQLite,
+  SurrealDB and `memoryStorage` implement the seam.
 - **`job.checkpoint(cp, { durability: 'eventual' })` makes a burst of steps
   cost one save** (#320). The default (`'immediate'`) is durable when the
   promise resolves — one encode and one etag-CAS per step. `'eventual'`
