@@ -642,6 +642,18 @@ export class Activation {
                 validateReentrancy(ref.type, opts, def.streamNames);
             }
             if (declaresInterleaving(opts)) {
+                // The option re-runs QUEUED turns, and an interleaving
+                // activation queues none — while a reload landing under an
+                // in-flight sibling would silently discard that sibling's
+                // writes, where the default contract rejects its save (#368).
+                if (opts.retryQueuedOnConflict) {
+                    throw new Error(
+                        `[sigx actors] actor "${ref.type}" declares retryQueuedOnConflict with ` +
+                            `reentrant: 'always' / methodReentrancy — the option needs a serial ` +
+                            `actor: interleaved turns are never queued, so there is nothing to ` +
+                            `re-run, and a reload under an in-flight turn would drop its writes.`
+                    );
+                }
                 const Store = await loadCallStore();
                 a.#als = new Store<ActorCallContext | null>();
             }
@@ -1869,34 +1881,28 @@ export class Activation {
      * (`seedFromStorage`, `migrateState` included), the same in-place reset
      * `clearState` uses, and the version bookkeeping reset to "clean at
      * the loaded record" — a subscriber sees the winning state as the next
-     * boundary. Serialized with an in-flight save the way `clearState` is:
-     * on an interleaving activation a sibling's save could otherwise land
-     * between the load and the etag adoption. A reload that fails falls
-     * back to the fault path the option opted out of: the parked conflict
-     * faults the activation, the host discards it, and the caller sees the
-     * load failure.
+     * boundary. Runs only at the entry of a serial turn (`create` refuses
+     * the option on an interleaving activation), so nothing else touches
+     * the state or the etag while the load is in flight — no save can be
+     * pending here, and the in-place reset is synchronous once it lands. A
+     * reload that fails falls back to the fault path the option opted out
+     * of: the parked conflict faults the activation, the host discards it,
+     * and the caller sees the load failure.
      */
     async #reload(): Promise<void> {
         const conflict = this.#reloadPending!;
         this.#reloadPending = null;
-        while (this.#savePending) await this.#savePending.catch(() => {});
-        const run = (async () => {
+        try {
             const seed = await seedFromStorage(this.ref, this.def.__sigxActor, this.#host);
             this.#etag = seed.etag;
             this.#resetState(seed.state as Record<string, unknown>);
             this.#consumeDirty();
             this.#savedVersion = ++this.#version;
             this.#eventualWanted = 0;
-        })();
-        this.#savePending = run;
-        try {
-            await run;
         } catch (error) {
             this.#faulted = conflict;
             this.#reportFault();
             throw error;
-        } finally {
-            this.#savePending = null;
         }
     }
 

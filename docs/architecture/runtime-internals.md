@@ -88,13 +88,18 @@ Two conflict paths exist, and they end differently:
   version bookkeeping set to "clean at the loaded record" so a change-feed
   subscriber sees the winning state as the next boundary. Queued turns then run
   in their original order against it; nothing is deactivated, re-activated or
-  re-dispatched. The reload is serialized with an in-flight save through the
-  same single-flight slot (`#savePending`) `clearState` uses. A deactivation
-  landing while the reload is pending skips the final flush, as the
-  `'conflict'` reason does. If the reload itself fails, the parked conflict
-  faults the activation and the default path takes over. Interleaved siblings
-  already in flight keep the default contract either way — they see the
-  conflict on their own save.
+  re-dispatched. A deactivation landing while the reload is pending skips the
+  final flush, as the `'conflict'` reason does. If the reload itself fails, the
+  parked conflict faults the activation and the default path takes over. The
+  reload runs only at the entry of a *serial* turn, which is what makes it
+  safe with no further locking: `Activation.create` refuses the option on an
+  interleaving activation (`reentrant: 'always'`, `methodReentrancy`) — such
+  an activation queues no turns, so there is nothing to re-run, and a reload
+  landing under an in-flight sibling would wipe that sibling's writes and let
+  its save succeed on the new etag, a silent lost update where the default
+  contract rejects the save. Call-chain reentrancy is unaffected: an in-chain
+  call runs through `runInline` → `#invoke`, never `#turn`, so it never
+  reloads under its caller.
 - **Flush path** — the debounced write-behind / eventual save (#320) loses the
   CAS with no caller to throw to. `onStateError('flush')` hears about it, then
   the activation deactivates with `'conflict'` (#336) regardless of the option:
