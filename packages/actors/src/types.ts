@@ -803,11 +803,14 @@ export interface ActorContextBase<S extends object> {
      * activation's write-behind debounce carry the state — a burst of
      * eventual saves costs one write. A later immediate `save()` or the
      * deactivation flush picks up whatever is still pending, so an
-     * explicit-persistence actor stays explicit: nothing writes that was
-     * not asked for. What it gives up is the acknowledgement: a host death
-     * inside the debounce window loses the eventual saves since the last
-     * durable one, and a flush failure reports through `onStateError`
-     * rather than to a caller.
+     * explicit-persistence actor stays explicit: no WRITE happens that was
+     * not asked for. The write itself is like any other save — it stores
+     * the state as it stands when it runs, not a snapshot taken at the
+     * call, so mutations made between the call and the flush ride along.
+     * What it gives up is the acknowledgement: a host death inside the
+     * debounce window loses the eventual saves since the last durable one,
+     * and a flush failure reports through `onStateError` rather than to a
+     * caller.
      */
     save(options?: SaveOptions): Promise<void>;
     /** Delete the stored record; in-memory state resets to `state(key)`. */

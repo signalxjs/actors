@@ -76,8 +76,10 @@ cannot interleave their compare-and-sets within one activation.
 `ctx.save({ durability: 'eventual' })` (#320) is the same write, deferred: it
 bumps the version and arms the write-behind debounce (`#scheduleWriteBehind`,
 50 ms) instead of awaiting the CAS, so a burst of eventual saves is one write.
-The explicit-persistence contract holds — nothing is written that was not asked
-for — but `deactivate()` now flushes an explicit actor too when an eventual save
+The explicit-persistence contract holds — no write happens that was not asked
+for; like every save, the one that does happen stores the state as it stands
+when it runs, so mutations made before the flush ride along — but
+`deactivate()` now flushes an explicit actor too when an eventual save
 is still ahead of `#savedVersion` (`#eventualWanted`), `clearState()` drops that
 marker and cancels the armed debounce on an explicit actor so a deleted record
 is not written back, and a debounce failure reports through `onStateError`
