@@ -12,6 +12,7 @@ import {
     type ResourceMetrics
 } from '@opentelemetry/sdk-metrics';
 import { defineActor } from '@sigx/actors';
+import type { ClusterCounterTotals } from '@sigx/actors/cluster';
 import {
     defineActorApp,
     metrics,
@@ -53,6 +54,14 @@ const socketDigest: SocketStatsDigest = {
     layout: 'll-4-26',
     lifetime: { count: 4, sumUs: 46, minUs: 2, maxUs: 21, idx: [1, 20], n: [2, 2] }
 };
+
+/** A placement's `counters()` (#52, #346): 90 served locally, 10 by a peer. */
+const clusterCounters = {
+    dispatchesLocal: 90,
+    dispatchesRemote: 10,
+    routedLocal: 4,
+    remoteDispatches: 12
+} as ClusterCounterTotals;
 
 const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
     name: 'fake-sockets',
@@ -194,6 +203,76 @@ describe('otelMetricsBridge', () => {
         expect(errors).toEqual([]);
         expect(dataPoints(resourceMetrics, 'sigx.actors.calls')).not.toHaveLength(0);
         expect(dataPoints(resourceMetrics, 'sigx.actors.socket.sessions')).toHaveLength(0);
+    });
+
+    it('observes the cluster dispatch pair by locality through the thunk (#346)', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        let totals: ClusterCounterTotals | undefined = clusterCounters;
+        const placement = { counters: () => totals };
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(otelMetricsBridge({ meterProvider: provider, cluster: () => placement.counters() }));
+        running = app;
+        await app.start();
+
+        let { resourceMetrics } = await reader.collect();
+        let points = dataPoints(resourceMetrics, 'sigx.actors.cluster.dispatches');
+        expect(points.find((p) => p.attributes['locality'] === 'local')?.value).toBe(90);
+        expect(points.find((p) => p.attributes['locality'] === 'remote')?.value).toBe(10);
+        expect(points).toHaveLength(2);
+        // The metrics families are still observed — an addition, not a
+        // replacement.
+        expect(dataPoints(resourceMetrics, 'sigx.actors.activations.created')).toHaveLength(1);
+
+        // Read on every collection: the counters move.
+        totals = { ...clusterCounters, dispatchesLocal: 91 };
+        ({ resourceMetrics } = await reader.collect());
+        points = dataPoints(resourceMetrics, 'sigx.actors.cluster.dispatches');
+        expect(points.find((p) => p.attributes['locality'] === 'local')?.value).toBe(91);
+    });
+
+    it('observes 0, not NaN, for cluster totals predating the pair', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        const legacy = { routedLocal: 4, remoteDispatches: 12 } as ClusterCounterTotals;
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(otelMetricsBridge({ meterProvider: provider, cluster: () => legacy }));
+        running = app;
+        await app.start();
+
+        const { resourceMetrics, errors } = await reader.collect();
+        expect(errors).toEqual([]);
+        const points = dataPoints(resourceMetrics, 'sigx.actors.cluster.dispatches');
+        expect(points.find((p) => p.attributes['locality'] === 'local')?.value).toBe(0);
+        expect(points.find((p) => p.attributes['locality'] === 'remote')?.value).toBe(0);
+    });
+
+    it('observes no cluster family without a cluster thunk, or when it answers undefined', async () => {
+        const reader = new PeriodicExportingMetricReader({
+            exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+            exportIntervalMillis: 3_600_000
+        });
+        const provider = new MeterProvider({ readers: [reader] });
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(otelMetricsBridge({ meterProvider: provider, cluster: () => undefined }));
+        running = app;
+        const host = await app.start();
+        await host.actor(Counter, 'k1').increment(1);
+
+        const { resourceMetrics, errors } = await reader.collect();
+        expect(errors).toEqual([]);
+        expect(dataPoints(resourceMetrics, 'sigx.actors.calls')).not.toHaveLength(0);
+        // A single host is not a cluster with zero dispatches.
+        expect(dataPoints(resourceMetrics, 'sigx.actors.cluster.dispatches')).toHaveLength(0);
     });
 
     it('detaches the callback on stop', async () => {

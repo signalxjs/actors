@@ -24,9 +24,14 @@
  * the app publishes one. The instruments exist either way — an instrument
  * with no observations exports nothing, and creating them lazily on the
  * first digest would race the reader.
+ *
+ * The cluster dispatch pair (#346) comes through `options.cluster`, a thunk
+ * over `placement.counters()` read in the same callback — observed only
+ * when it answers, so an unclustered host never grows the family.
  */
 import { metrics as otelMetrics, type BatchObservableResult, type MeterProvider, type Observable } from '@opentelemetry/api';
 import type { Host } from '@sigx/actors';
+import type { ClusterCounterTotals } from '@sigx/actors/cluster';
 import type { SocketStatsTotals } from '@sigx/actors/server';
 import {
     digestSnapshot,
@@ -47,12 +52,22 @@ export interface OtelMetricsBridgeOptions {
      * endpoint's histograms instead.
      */
     percentileGauges?: boolean;
+    /**
+     * How to read this host's cluster counters on each collection —
+     * typically `() => plugin.placement.counters()` from the `cluster()`
+     * plugin (#346). Observes `sigx.actors.cluster.dispatches` with
+     * `locality="local"` / `"remote"`, the pair whose ratio is the
+     * per-request locality fraction. Answer `undefined` for "not clustered
+     * (yet)": nothing is observed.
+     */
+    cluster?: () => ClusterCounterTotals | undefined;
 }
 
 const METER_NAME = '@sigx/actors-otel';
 
 export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): ActorPlugin {
     const percentileGauges = options.percentileGauges !== false;
+    const readCluster = options.cluster;
 
     return {
         name: 'otel-metrics-bridge',
@@ -161,6 +176,18 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                     { description: 'Live subscriptions held over sockets right now.' }
                 );
 
+                // Cluster locality (#346): two series under one counter,
+                // the same shape the Prometheus renderer emits, so the
+                // fraction is derived downstream in both exporters.
+                const clusterDispatches = meter.createObservableCounter(
+                    'sigx.actors.cluster.dispatches',
+                    {
+                        description:
+                            'Calls this host initiated, by whether this host (local) or a peer ' +
+                            '(remote) served them — once per call, stream or watch subscriber.'
+                    }
+                );
+
                 const instruments: Observable[] = [
                     calls,
                     callsFailed,
@@ -176,7 +203,8 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                     queued,
                     ...socketCounters.map(([instrument]) => instrument),
                     socketSessions,
-                    socketSubscriptions
+                    socketSubscriptions,
+                    clusterDispatches
                 ];
 
                 type DistributionKey = 'latency' | 'queue' | 'turn' | 'storageLatency';
@@ -259,6 +287,18 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
                         result.observe(p50, snapshot.p50Ms / 1000);
                         result.observe(p90, snapshot.p90Ms / 1000);
                         result.observe(p99, snapshot.p99Ms / 1000);
+                    }
+
+                    // `?? 0`: a build predating the pair reports totals
+                    // without it; a zero observation beats a missing one.
+                    const cluster: Partial<ClusterCounterTotals> | undefined = readCluster?.();
+                    if (cluster) {
+                        result.observe(clusterDispatches, cluster.dispatchesLocal ?? 0, {
+                            locality: 'local'
+                        });
+                        result.observe(clusterDispatches, cluster.dispatchesRemote ?? 0, {
+                            locality: 'remote'
+                        });
                     }
 
                     // Absent is normal — a host with no socket mount — and

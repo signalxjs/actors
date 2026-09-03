@@ -4,6 +4,22 @@
 
 ### Added
 
+- **The per-request locality fraction reaches both exporters (#346).**
+  `prometheusOps({ cluster })` and `otelMetricsBridge({ cluster })` take a
+  thunk over this host's cluster counters — typically
+  `() => plugin.placement.counters()` from the `cluster()` plugin — read on
+  every scrape / collection. `renderPrometheus()` takes the totals as
+  `options.cluster` and emits `{prefix}cluster_dispatches_total` as two
+  counter series, `locality="local"` and `locality="remote"`
+  (`dispatchesLocal` / `dispatchesRemote` from #52); `otelMetricsBridge()`
+  observes the same pair as `sigx.actors.cluster.dispatches` with a
+  `locality` attribute. No precomputed ratio gauge: the fraction is
+  `rate(local) / (rate(local) + rate(remote))` in PromQL, which is what
+  makes it sum across a fleet. Without the option, or with a thunk answering
+  `undefined` (not clustered yet), no cluster family is emitted — a single
+  host is not a cluster with zero dispatches. Totals from a build predating
+  the pair render `0`, not `NaN`.
+
 - **Socket sessions reach both exporters (#166).** When the app publishes
   `socketStats().digest()` as the `'sockets'` digest
   (`registry.reportDigest('sockets', () => stats.digest())`), `prometheusOps`

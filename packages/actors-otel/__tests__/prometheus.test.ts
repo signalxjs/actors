@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
+import type { ClusterCounterTotals } from '@sigx/actors/cluster';
 import {
     defineActorApp,
     metrics,
@@ -66,6 +67,25 @@ const socketDigest: SocketStatsDigest = {
     layout: 'll-4-26',
     lifetime: { count: 4, sumUs: 46, minUs: 2, maxUs: 21, idx: [1, 20], n: [2, 2] }
 };
+
+/**
+ * A placement's `counters()` as `cluster()` would answer it (#52, #346):
+ * 90 calls this host initiated were served locally, 10 went to a peer — a
+ * 0.9 locality fraction, which Prometheus derives from the two series.
+ * Only the pair matters to the renderer; the rest of the totals are not
+ * exposed, so a fake carrying just the pair is the honest fixture.
+ */
+const clusterCounters = {
+    dispatchesLocal: 90,
+    dispatchesRemote: 10,
+    routedLocal: 4,
+    remoteDispatches: 12
+} as ClusterCounterTotals;
+
+/** The thunk the endpoint takes — what `() => placement.counters()` is. */
+const fakePlacement = (totals: ClusterCounterTotals | undefined) => ({
+    counters: () => totals
+});
 
 /** A plugin publishing a fixed socket digest, the way an app with a socket mount does. */
 const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
@@ -191,6 +211,39 @@ describe('renderPrometheus', () => {
         expect(text).not.toContain('socket_connection_duration');
     });
 
+    it('renders the cluster dispatch pair by locality (#346)', () => {
+        const text = renderPrometheus(digest, null, { cluster: clusterCounters });
+        const lines = text.split('\n');
+        expect(lines).toContain('# TYPE sigx_actors_cluster_dispatches_total counter');
+        expect(lines).toContain('sigx_actors_cluster_dispatches_total{locality="local"} 90');
+        expect(lines).toContain('sigx_actors_cluster_dispatches_total{locality="remote"} 10');
+        // Two counter series, no precomputed ratio: the fraction is a
+        // PromQL expression over them, so it aggregates across hosts.
+        expect(text).not.toContain('locality_ratio');
+        expect(text).not.toContain('locality_fraction');
+        // The per-attempt view is a different number and is NOT on this
+        // family — `remoteDispatches` counts retries, the pair does not.
+        expect(text).not.toContain('sigx_actors_cluster_dispatches_total{locality="remote"} 12');
+        const helps = lines.filter((l) => l.startsWith('# HELP sigx_actors_cluster_dispatches_total '));
+        expect(helps).toHaveLength(1);
+    });
+
+    it('emits no cluster family at all without cluster counters', () => {
+        // A single host is not a cluster with zero dispatches.
+        expect(renderPrometheus(digest, null, {})).not.toContain('cluster_dispatches');
+        expect(renderPrometheus(digest, null, { cluster: null })).not.toContain('cluster_dispatches');
+    });
+
+    it('renders 0, not NaN, for totals from a build predating the pair', () => {
+        // A fleet still on a build before #52 reports totals without
+        // `dispatchesLocal` / `dispatchesRemote`; the series must still be
+        // there and parse, not read `undefined`.
+        const legacy = { routedLocal: 4, remoteDispatches: 12 } as ClusterCounterTotals;
+        const lines = renderPrometheus(digest, null, { cluster: legacy }).split('\n');
+        expect(lines).toContain('sigx_actors_cluster_dispatches_total{locality="local"} 0');
+        expect(lines).toContain('sigx_actors_cluster_dispatches_total{locality="remote"} 0');
+    });
+
     it('degrades an unknown layout to counters only', () => {
         const foreign = { ...digest, layout: 'll-5-30' };
         const text = renderPrometheus(foreign, null, {});
@@ -278,6 +331,37 @@ describe('prometheusOps endpoint', () => {
         // And the metrics families are still there — a second read, not a
         // replacement.
         expect(text).toContain('sigx_actors_metrics_window_seconds');
+    });
+
+    it('reads the cluster counters through the thunk, per scrape (#346)', async () => {
+        let totals: ClusterCounterTotals | undefined = clusterCounters;
+        const placement = fakePlacement(undefined);
+        placement.counters = () => totals;
+        const app = defineActorApp({ actors: [Counter], defaults: quiet })
+            .use(metrics())
+            .use(prometheusOps({ secret: 's3cret', cluster: () => placement.counters() }));
+        running = app;
+        await app.start();
+        const route = app.routes.find((r) => r.name === 'prometheus-ops')!;
+
+        let text = await (await get(route, { authorization: 'Bearer s3cret' })).text();
+        expect(text).toContain('sigx_actors_cluster_dispatches_total{locality="local"} 90');
+        expect(text).toContain('sigx_actors_cluster_dispatches_total{locality="remote"} 10');
+        // The metrics families are still there — an addition, not a
+        // replacement.
+        expect(text).toContain('sigx_actors_metrics_window_seconds');
+
+        // Read on every scrape, not captured once at start: the counters
+        // move.
+        totals = { ...clusterCounters, dispatchesLocal: 91 };
+        text = await (await get(route, { authorization: 'Bearer s3cret' })).text();
+        expect(text).toContain('sigx_actors_cluster_dispatches_total{locality="local"} 91');
+
+        // A thunk answering `undefined` (placement not up yet, or a host
+        // that left the cluster) renders no family rather than zeroes.
+        totals = undefined;
+        text = await (await get(route, { authorization: 'Bearer s3cret' })).text();
+        expect(text).not.toContain('cluster_dispatches');
     });
 
     it('answers one 401 for missing and wrong bearer alike', async () => {
