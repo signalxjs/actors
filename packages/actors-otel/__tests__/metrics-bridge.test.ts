@@ -113,6 +113,9 @@ describe('otelMetricsBridge', () => {
         const activations = dataPoints(resourceMetrics, 'sigx.actors.activations');
         expect(activations.find((p) => p.attributes['type'] === 'Counter')?.value).toBe(2);
 
+        // No `cluster` option → no cluster family at all (#346).
+        expect(dataPoints(resourceMetrics, 'sigx.actors.cluster.dispatches')).toHaveLength(0);
+
         const created = dataPoints(resourceMetrics, 'sigx.actors.activations.created');
         expect(created[0]?.value).toBe(digest.activations.created);
 

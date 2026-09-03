@@ -82,11 +82,6 @@ const clusterCounters = {
     remoteDispatches: 12
 } as ClusterCounterTotals;
 
-/** The thunk the endpoint takes — what `() => placement.counters()` is. */
-const fakePlacement = (totals: ClusterCounterTotals | undefined) => ({
-    counters: () => totals
-});
-
 /** A plugin publishing a fixed socket digest, the way an app with a socket mount does. */
 const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
     name: 'fake-sockets',
@@ -335,8 +330,8 @@ describe('prometheusOps endpoint', () => {
 
     it('reads the cluster counters through the thunk, per scrape (#346)', async () => {
         let totals: ClusterCounterTotals | undefined = clusterCounters;
-        const placement = fakePlacement(undefined);
-        placement.counters = () => totals;
+        // What `() => plugin.placement.counters()` is at the seam.
+        const placement = { counters: () => totals };
         const app = defineActorApp({ actors: [Counter], defaults: quiet })
             .use(metrics())
             .use(prometheusOps({ secret: 's3cret', cluster: () => placement.counters() }));
