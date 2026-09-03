@@ -105,6 +105,25 @@ cases are link-hygiene cases HTTP skips because it holds no connections;
 `@sigx/actors-tcp` runs them all. (The retired host-to-host WebSocket
 transport passed the full suite too — #151.)
 
+The at-most-once case is the one written *after* a connection-oriented
+transport shipped, and it is the suite's own coverage hole made into a case
+(#353): every earlier case used the `selfHost` policy, under which the first
+caller owns the key and nobody dials anyone until the second call — so a
+simultaneous dial was never exercised, and `tcpTransport()` passed the full
+suite while re-dispatching calls its peer had already run. "A concurrent first
+activation reached through mutual dials applies every call exactly once" uses
+a *spreading* policy instead (each host cycles its calls through its peers,
+never itself, so every ordered pair dials at once), fires two concurrent
+`increment(1)` per host at one unactivated key, and asserts the results are
+exactly `1..6` and there was one activation — with a 5 s bound per attempt, so
+a call parked on a closed connection is a failure rather than a stall, and
+twenty fresh clusters per run, because the race is a window on the first dial
+and cannot be re-armed on a cluster whose links are already up. It is the
+reason `ConformanceCase` has an optional `timeoutMs`: a runner passes it
+through, and a case that legitimately needs twenty clusters says so instead
+of relying on the framework's default. Still the first rule: it asserts the
+six results and the activation count, never how the transport arbitrates.
+
 Heterogeneous registration (#212) is part of the contract the suite pins:
 `ConformanceClusterOptions.actorsFor` lets a case register different actors
 per host, and the registration-aware case dispatches a type from a host that
@@ -147,5 +166,6 @@ a conversation about the contract — not a reason to skip it locally.
 Both new-transport packages also inherit the frame codec from
 `@sigx/actors/cluster/frames` rather than copying it; see
 [wire-and-frames.md](wire-and-frames.md) for the behaviours the suite pins
-(cancellation as a frame, backpressure at the generator, no retry of in-flight
-calls on a dropped connection).
+(cancellation as a frame, backpressure at the generator, `unreachable` only for
+a call that provably never left the process, a retired rather than cut
+simultaneous-dial loser).

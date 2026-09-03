@@ -126,6 +126,22 @@ function nonNegative(value: number, name: string): number {
     return value;
 }
 
+/**
+ * `promise`, unless `signal` fires first — then its reason, at once. A call
+ * that has given up must not sit behind a dial or a signature it no longer
+ * wants; without this a connect that never completes parked the caller
+ * past its own deadline (#353).
+ */
+function until<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+    if (!signal) return promise;
+    if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'));
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = (): void => reject(signal.reason ?? new Error('aborted'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+}
+
 function nonNegativeInteger(value: number, name: string): number {
     if (!Number.isInteger(value) || value < 0) {
         throw new Error(
@@ -181,31 +197,62 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
             handshakeTimers.delete(connection);
         };
 
+        /**
+         * Connections out of `links` but not yet closed: a simultaneous-dial
+         * loser draining its calls (ours or the peer's — both ends retire
+         * the same socket and it closes when both are done), or a link the
+         * peer retired under us. Held only so `stop()` can close them; each
+         * removes itself on close.
+         */
+        const retired = new Set<HostConnection>();
+
+        const retire = (connection: HostConnection, reason: string): void => {
+            retired.add(connection);
+            connection.retire(reason);
+        };
+
+        /**
+         * Make `connection` the link for `hostId`, or retire it if a better
+         * one is already there. Called with the peer's id from the frame
+         * that named it (HELLO on an accepted socket, WELCOME on a dialled
+         * one) and, for a dialled socket, once more the moment it connects —
+         * so an inbound that arrived while we were connecting meets it here
+         * rather than being silently displaced by `dial()`.
+         */
         const register = (hostId: string, connection: HostConnection): void => {
+            if (connection.closed || connection.retiring) return;
             const existing = links.get(hostId);
             if (existing && existing !== connection && !existing.closed) {
-                // Simultaneous dial: both sides opened at once. Settled
-                // without an extra round trip — the
-                // LEXICOGRAPHICALLY SMALLER hostId is the designated
-                // dialer and its outbound connection wins. Both ends compute
-                // the same answer from ids they already exchanged, so
-                // exactly one connection survives.
-                const weDial = config.hostId < hostId;
-                const keepExisting = weDial
-                    ? existing.peerHostId === hostId && isOutbound(existing)
-                    : !isOutbound(existing);
-                if (keepExisting) {
-                    connection.send({
-                        type: FrameType.GOAWAY,
-                        flags: 0,
-                        status: 409,
-                        corrId: 0,
-                        payload: { m: 'duplicate connection' }
-                    });
-                    connection.close('duplicate');
-                    return;
+                if (existing.retiring) {
+                    // The peer retired it under us; nothing arbitrates
+                    // against a connection on its way out, but `stop()` must
+                    // still find it.
+                    retired.add(existing);
+                } else {
+                    // Simultaneous dial: both sides opened at once. Settled
+                    // without an extra round trip — the LEXICOGRAPHICALLY
+                    // SMALLER hostId is the designated dialer and its
+                    // outbound connection wins. Both ends compute the same
+                    // answer from ids they already exchanged, so exactly
+                    // one connection survives. Judged on the direction of
+                    // each socket alone: `peerHostId` is only set once the
+                    // peer's frame lands, which on a dialled socket is
+                    // AFTER the calls that raced onto it (#353). Two the
+                    // same way (a peer re-dialling a link it gave up on)
+                    // is not a race: the newer one is the live one.
+                    const weDial = config.hostId < hostId;
+                    const sameWay = isOutbound(existing) === isOutbound(connection);
+                    const keepExisting = !sameWay && weDial === isOutbound(existing);
+                    // The loser is RETIRED, never cut: calls already on it
+                    // are answered, and it closes once both ends are done.
+                    // Closing it outright is what re-dispatched calls the
+                    // owner had already run.
+                    if (keepExisting) {
+                        retire(connection, 'lost the simultaneous-dial arbitration');
+                        return;
+                    }
+                    retire(existing, 'superseded by the designated dialer');
                 }
-                existing.close('superseded by the designated dialer');
             }
             links.set(hostId, connection);
         };
@@ -247,8 +294,11 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
                 },
                 onClose: () => {
                     pendingInbound.delete(connection);
+                    retired.delete(connection);
                     clearHandshakeTimer(connection);
-                    const id = connection.peerHostId;
+                    // A dialled socket is linked under the id we dialled,
+                    // which it may close before ever learning from WELCOME.
+                    const id = connection.peerHostId || expectedHostId;
                     if (id && links.get(id) === connection) links.delete(id);
                 }
             });
@@ -264,8 +314,27 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
             const connection = adopt(socket, true, target.hostId);
             try {
                 await new Promise<void>((resolve, reject) => {
-                    socket.once('connect', resolve);
-                    socket.once('error', reject);
+                    // Settled on EVERY way a connect can end. A socket that
+                    // closes without an error event, or one that never
+                    // answers the SYN, otherwise parks every caller sharing
+                    // this dial for as long as the kernel cares to wait.
+                    const timer =
+                        handshakeTimeoutMs > 0
+                            ? setTimeout(
+                                  () => reject(new Error(`connect timed out after ${handshakeTimeoutMs} ms`)),
+                                  handshakeTimeoutMs
+                              )
+                            : undefined;
+                    timer?.unref?.();
+                    const settle =
+                        <T>(fn: (value: T) => void) =>
+                        (value: T): void => {
+                            if (timer !== undefined) clearTimeout(timer);
+                            fn(value);
+                        };
+                    socket.once('connect', settle(resolve));
+                    socket.once('error', settle(reject));
+                    socket.once('close', settle(() => reject(new Error('closed before connect'))));
                 });
             } catch (cause) {
                 // A refused or timed-out connect must arrive as UNREACHABLE,
@@ -276,13 +345,20 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
                 throw new ActorUnreachableError(`${target.hostId} (${address})`, { cause });
             }
             hello(connection, FrameType.HELLO);
-            links.set(target.hostId, connection);
-            return connection;
+            // Through the arbitration, not a bare `links.set`: an inbound
+            // from this peer may have registered while we were connecting,
+            // and whichever of the two loses is retired rather than
+            // orphaned. Hand back the survivor — it may not be ours.
+            register(target.hostId, connection);
+            const survivor = links.get(target.hostId);
+            return survivor && !survivor.closed ? survivor : connection;
         };
 
         const linkTo = (target: HostDescriptor): Promise<HostConnection> => {
             const existing = links.get(target.hostId);
-            if (existing && !existing.closed) return Promise.resolve(existing);
+            // A retiring link still answers what is on it but takes nothing
+            // new; the replacement is either already registered or dialled.
+            if (existing && !existing.closed && !existing.retiring) return Promise.resolve(existing);
             const inFlight = dialing.get(target.hostId);
             if (inFlight) return inFlight;
             // One dial per peer however many callers arrive at once — the
@@ -310,7 +386,11 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
                 envelope: string;
                 auth: string | undefined;
             }> => {
-                const connection = await linkTo(target);
+                // Both awaits honour the caller's abort: a deadline that
+                // fires during the dial or the signature must fail the call
+                // now, not after a connect the caller has already given up on.
+                const signal = call.abortSignal;
+                const connection = await until(linkTo(target), signal);
                 return {
                     connection,
                     symbol,
@@ -319,7 +399,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
                     auth:
                         config.secret === undefined
                             ? undefined
-                            : await signAuth(config.secret, symbol, call.callId)
+                            : await until(signAuth(config.secret, symbol, call.callId), signal)
                 };
             };
 
@@ -466,6 +546,8 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
                 links.clear();
                 for (const connection of [...pendingInbound]) connection.close('host stopping');
                 pendingInbound.clear();
+                for (const connection of [...retired]) connection.close('host stopping');
+                retired.clear();
                 // `close()` above fires onClose, which clears each timer — but
                 // a connection that was already closed by other means would
                 // not, so sweep the map rather than trusting the callback to

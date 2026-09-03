@@ -71,7 +71,7 @@
   {
     "name": "@sigx/actors/cluster/frames",
     "path": "packages/actors/dist/cluster-frames.prod.js",
-    "limit": "4.1 KB"
+    "limit": "4.5 KB"
   },
   {
     "name": "@sigx/actors/socket-wire",

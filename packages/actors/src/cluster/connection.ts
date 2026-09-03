@@ -86,11 +86,29 @@ interface InboundStream {
     wake?: () => void;
 }
 
+/**
+ * The ONE failure the placement may re-dispatch on, and therefore the one
+ * this connection may only raise for a call it can PROVE never left this
+ * process: nothing was written, so nothing can have run (#353).
+ */
+function unreachable(reason: string): Error {
+    return Object.assign(new Error(`[sigx actors] host connection unavailable (${reason})`), {
+        __sigxActorError: true as const,
+        kind: 'unreachable' as const
+    });
+}
+
 export class HostConnection {
     readonly #o: ConnectionOptions;
     readonly #reader: FrameReader;
     #nextCorr: number;
     #closed = false;
+    /** Set by `retire()`: no new outbound calls; closes once both ends are done. */
+    #retiring: string | null = null;
+    /** We told the peer our outbound work on this connection is finished. */
+    #sentDone = false;
+    /** The peer told us the same (GOAWAY 0). */
+    #peerDone = false;
     #peerHostId = '';
     /** Backpressure at the connection level: stop pumping until `drain`. */
     #writable = true;
@@ -124,6 +142,11 @@ export class HostConnection {
         return this.#closed;
     }
 
+    /** Taken out of service by `retire()`: the transport must not route on it. */
+    get retiring(): boolean {
+        return this.#retiring !== null;
+    }
+
     // -----------------------------------------------------------------------
     // Outbound
 
@@ -134,8 +157,18 @@ export class HostConnection {
         auth: string | undefined,
         call: ActorCallContext
     ): Promise<unknown> {
-        const corrId = this.#allocate();
+        // Refused BEFORE anything is written, so `unreachable` is honest: the
+        // placement re-dispatches on it, and a re-dispatch of a call that
+        // was on the wire is the double execution of #353. Closed and
+        // retiring both mean "the transport has (or will dial) a replacement".
+        if (this.#closed) throw unreachable('closed');
+        if (this.#retiring) throw unreachable(this.#retiring);
         const signal = call.abortSignal;
+        // A signal that already fired never fires again, so the listener
+        // below would never run: the call would go out and could not be
+        // cancelled. Refuse it here, with the caller's own reason, unsent.
+        if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+        const corrId = this.#allocate();
         return await new Promise<unknown>((resolve, reject) => {
             // The listener MUST come off when the call settles. Left attached
             // it leaks on a long-lived signal, and — worse — a later abort
@@ -148,7 +181,7 @@ export class HostConnection {
             const done = settle(resolve as (v: never) => void);
             const fail = settle(reject as (v: never) => void);
             const onAbort = (): void => {
-                if (!this.#unary.delete(corrId)) return;
+                if (!this.#forgetUnary(corrId)) return;
                 this.#send({
                     type: FrameType.CANCEL,
                     flags: 0,
@@ -158,18 +191,30 @@ export class HostConnection {
                 });
                 fail((signal?.reason ?? new Error('aborted')) as never);
             };
-            this.#unary.set(corrId, {
-                resolve: done as (v: unknown) => void,
-                reject: fail as (e: unknown) => void
-            });
             signal?.addEventListener('abort', onAbort, { once: true });
-            this.#send({
+            // Written FIRST, registered second: a write that fails closes the
+            // connection, which rejects everything registered as "in flight,
+            // outcome unknown" — and this call, provably unsent, is not that.
+            const sent = this.#send({
                 type: FrameType.CALL,
                 flags: 0,
                 status: 0,
                 corrId,
                 payload: { s: symbol, e: envelope, a: args, ...(auth ? { h: auth } : {}) }
             });
+            if (!sent) {
+                fail(unreachable('frame not written') as never);
+                return;
+            }
+            this.#unary.set(corrId, {
+                resolve: done as (v: unknown) => void,
+                reject: fail as (e: unknown) => void
+            });
+            // Synchronous from the preflight to here, so nothing can fire
+            // the signal in between today; this keeps the abort honoured if
+            // an await ever lands in that window — the CALL is on the wire
+            // now, so the answer is a CANCEL, exactly what the listener sends.
+            if (signal?.aborted) onAbort();
         });
     }
 
@@ -180,6 +225,16 @@ export class HostConnection {
         auth: string | undefined,
         call: ActorCallContext
     ): AsyncGenerator<unknown> {
+        // Same rule as `dispatch`: refused before the CALL is written, so the
+        // placement's re-route (it retries a stream only before its first
+        // chunk) never re-issues one that may already be producing.
+        const refusal: unknown = this.#closed
+            ? unreachable('closed')
+            : this.#retiring !== null
+              ? unreachable(this.#retiring)
+              : call.abortSignal?.aborted
+                ? (call.abortSignal.reason ?? new Error('aborted'))
+                : undefined;
         const corrId = this.#allocate();
         const queue: unknown[] = [];
         let done = false;
@@ -209,24 +264,33 @@ export class HostConnection {
             }
         });
 
-        this.#send({
-            type: FrameType.CALL,
-            flags: FLAG_STREAM,
-            status: 0,
-            corrId,
-            payload: {
-                s: symbol,
-                e: envelope,
-                a: args,
-                c: this.#o.credit,
-                ...(auth ? { h: auth } : {})
-            }
-        });
+        const sent =
+            refusal === undefined &&
+            this.#send({
+                type: FrameType.CALL,
+                flags: FLAG_STREAM,
+                status: 0,
+                corrId,
+                payload: {
+                    s: symbol,
+                    e: envelope,
+                    a: args,
+                    c: this.#o.credit,
+                    ...(auth ? { h: auth } : {})
+                }
+            });
+        if (!sent) {
+            // Never registered as in flight, so `close()` cannot re-classify
+            // it: the first pull throws `unreachable`, and nothing was sent.
+            this.#forgetStream(corrId);
+            failure = refusal ?? unreachable('frame not written');
+            done = true;
+        }
 
         // Captured rather than aliasing `this`: `run()` is a free generator,
         // so the instance must not leak into it.
-        const send = (frame: Frame): void => this.#send(frame);
-        const forget = (): boolean => this.#streams.delete(corrId);
+        const send = (frame: Frame): void => void this.#send(frame);
+        const forget = (): boolean => this.#forgetStream(corrId);
         const isClosed = (): boolean => this.#closed;
         const window = this.#o.credit;
 
@@ -247,7 +311,10 @@ export class HostConnection {
             done = true;
             bump();
         };
-        call.abortSignal?.addEventListener('abort', onAbort, { once: true });
+        // Only for a stream that is actually on the wire: an unsent one has
+        // nothing to cancel, and its consumer may never pull — so never
+        // reach the `finally` below that takes the listener off again.
+        if (sent) call.abortSignal?.addEventListener('abort', onAbort, { once: true });
 
         async function* run(): AsyncGenerator<unknown> {
             try {
@@ -308,16 +375,34 @@ export class HostConnection {
         this.#send(frame);
     }
 
-    #send(frame: Frame): void {
-        if (this.#closed) return;
+    /** True once the link has taken the bytes; false means nothing was written. */
+    #send(frame: Frame): boolean {
+        if (this.#closed) return false;
         try {
             const bytes = this.#o.link.messageOriented
                 ? encodeFrameBody(frame)
                 : encodeFrame(frame);
             this.#writable = this.#o.link.send(bytes);
+            return true;
         } catch {
             this.close('write failed');
+            return false;
         }
+    }
+
+    #forgetUnary(corrId: number): PendingUnary | undefined {
+        const pending = this.#unary.get(corrId);
+        if (pending) {
+            this.#unary.delete(corrId);
+            this.#settleRetirement();
+        }
+        return pending;
+    }
+
+    #forgetStream(corrId: number): boolean {
+        const had = this.#streams.delete(corrId);
+        if (had) this.#settleRetirement();
+        return had;
     }
 
     /** Wait for the socket to drain. Connection-level, on top of per-stream
@@ -361,7 +446,15 @@ export class HostConnection {
             this.close(oversized ? 'frame too large' : 'malformed frame');
             return;
         }
-        for (const frame of frames) void this.#onFrame(frame);
+        // HELLO and the first CALLs usually share one `data` event. A frame
+        // in this batch may close the connection (a GOAWAY, a handshake
+        // refusal); the CALLs behind it must then NOT run — their REPLY
+        // could never be delivered, and the caller's "outcome unknown" would
+        // have been a silent execution.
+        for (const frame of frames) {
+            if (this.#closed) return;
+            void this.#onFrame(frame);
+        }
     }
 
     async #onFrame(frame: Frame): Promise<void> {
@@ -381,17 +474,23 @@ export class HostConnection {
             case FrameType.PONG:
                 return;
             case FrameType.GOAWAY:
+                // Status 0 is HTTP/2's NO_ERROR: the peer has retired this
+                // connection and finished its outbound work on it, not an
+                // error. Anything else is a refusal, effective at once.
+                if (frame.status === 0) {
+                    this.#peerDone = true;
+                    this.retire('peer retired it');
+                    this.#settleRetirement();
+                    return;
+                }
                 this.close(`peer sent GOAWAY ${frame.status}`);
                 return;
             case FrameType.CALL:
                 await this.#onCall(frame);
                 return;
-            case FrameType.REPLY: {
-                const pending = this.#unary.get(frame.corrId);
-                this.#unary.delete(frame.corrId);
-                pending?.resolve(frame.payload);
+            case FrameType.REPLY:
+                this.#forgetUnary(frame.corrId)?.resolve(frame.payload);
                 return;
-            }
             case FrameType.ERROR: {
                 const wire = frame.payload as { message?: string; status?: number; data?: unknown };
                 const error = this.#o.config.fromWireError(
@@ -399,9 +498,8 @@ export class HostConnection {
                     wire,
                     wire?.message ?? '[sigx actors] host call failed'
                 );
-                const unary = this.#unary.get(frame.corrId);
+                const unary = this.#forgetUnary(frame.corrId);
                 if (unary) {
-                    this.#unary.delete(frame.corrId);
                     unary.reject(error);
                     return;
                 }
@@ -477,6 +575,11 @@ export class HostConnection {
                 return;
             }
             const { call, ref, args } = this.#prepare(target, p);
+            // Resolving awaited; the connection may have closed meanwhile.
+            // A call this connection can no longer answer must not run:
+            // the caller was told "outcome unknown", and the one outcome
+            // this side can still make true is "it did not execute".
+            if (this.#closed) return;
             if ((frame.flags & FLAG_STREAM) !== 0) {
                 // The flag says the REPLY is a chunk stream; the symbol says
                 // what produced it. A watch is a stream on the wire and
@@ -619,19 +722,54 @@ export class HostConnection {
         });
     }
 
+    /**
+     * Take this connection out of service without cutting what is on it —
+     * the simultaneous-dial loser's exit (#353). New outbound calls are
+     * refused as `unreachable` (provably unsent; the transport routes them
+     * over the surviving link), the calls already on the wire run to their
+     * answers, and the socket closes only once BOTH ends have said they are
+     * finished: each sends GOAWAY 0 when its own outbound work has drained,
+     * and closes when it has both sent and received one. A CALL the peer
+     * wrote before it learned of the retirement is ordered before its
+     * GOAWAY, so it is always answered. A peer that never says it is done
+     * holds the socket until its calls settle or the transport stops —
+     * which is what the calls' own deadlines already bound.
+     */
+    retire(reason: string): void {
+        if (this.#closed || this.#retiring !== null) return;
+        this.#retiring = reason;
+        this.#settleRetirement();
+    }
+
+    #settleRetirement(): void {
+        if (this.#closed || this.#retiring === null) return;
+        if (!this.#sentDone && this.#unary.size === 0 && this.#streams.size === 0) {
+            this.#sentDone = true;
+            this.#send({ type: FrameType.GOAWAY, flags: 0, status: 0, corrId: 0 });
+        }
+        if (this.#sentDone && this.#peerDone) this.close(`retired: ${this.#retiring}`);
+    }
+
+    /**
+     * The retry contract, stated once: `unreachable` means PROVABLY NOT
+     * EXECUTED, and the placement re-dispatches on it. A unary call whose
+     * CALL frame was written is not that — the peer may have run it and the
+     * REPLY died with the socket — so it fails with an ordinary error the
+     * placement does not classify, and the caller decides. Re-sending a
+     * non-idempotent actor method on a guess is the double execution of
+     * #353, not a retry. Streams keep `unreachable`: the placement re-issues
+     * a stream only before its first chunk, and a watch is a read.
+     */
     close(reason: string): void {
         if (this.#closed) return;
         this.#closed = true;
-        // Every in-flight call fails as UNREACHABLE, and is never retried
-        // here: the placement already evicts, refreshes and re-resolves, and
-        // silently re-sending a non-idempotent actor method to a host that
-        // may no longer own the actor is a correctness bug, not a retry.
-        const error = Object.assign(
-            new Error(`[sigx actors] host connection lost (${reason})`),
-            { __sigxActorError: true as const, kind: 'unreachable' as const }
+        const lost = new Error(
+            `[sigx actors] host connection closed with this call in flight (${reason}): ` +
+                `outcome unknown, not retried`
         );
-        for (const pending of this.#unary.values()) pending.reject(error);
+        for (const pending of this.#unary.values()) pending.reject(lost);
         this.#unary.clear();
+        const error = unreachable(reason);
         for (const stream of this.#streams.values()) stream.fail(error);
         this.#streams.clear();
         // Snapshot first: #cancelInbound deletes from #inbound, so iterating

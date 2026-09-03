@@ -101,6 +101,12 @@ export interface ConformanceCase {
     readonly name: string;
     /** One line: what breaks in production when this case fails. */
     readonly why: string;
+    /**
+     * Runner timeout, ms, for a case that legitimately outlasts a test
+     * framework's default — a race that needs many fresh clusters to be
+     * worth asserting. A runner passes it through; absent means the default.
+     */
+    readonly timeoutMs?: number;
     run(create: TransportConformanceFactory): Promise<void | ConformanceSkip>;
 }
 
@@ -402,6 +408,86 @@ const singleActivation: ConformanceCase = {
                 assertEqual(activations.length, 1, 'exactly one activation of the key');
             }
         );
+    }
+};
+
+/**
+ * Every host sends each of its calls to a DIFFERENT peer, cycling, and never
+ * to itself. With n hosts and n-1 calls per host every ordered pair of hosts
+ * dials the other at the same instant — the simultaneous-dial arbitration a
+ * connection-oriented transport has to survive with calls already on the
+ * wire. `selfHost` can never reach it: the first caller owns the key and
+ * nobody dials anyone until the second call, which is exactly the gap #353
+ * fell through.
+ */
+function spreadingPolicy(): PlacementPolicy {
+    const turns = new Map<string, number>();
+    return {
+        name: 'conformance-spread',
+        choose: (_ref, view, self) => {
+            const peers = view.hosts
+                .filter((h) => h.hostId !== self.hostId)
+                .sort((a, b) => (a.hostId < b.hostId ? -1 : 1));
+            if (peers.length === 0) return self;
+            const turn = turns.get(self.hostId) ?? 0;
+            turns.set(self.hostId, turn + 1);
+            return peers[turn % peers.length]!;
+        }
+    };
+}
+
+const concurrentFirstActivation: ConformanceCase = {
+    name: 'a concurrent first activation reached through mutual dials applies every call exactly once',
+    why: 'a call re-sent after its frame was on the wire runs a non-idempotent method twice — and a call left on a connection that closed underneath it never settles at all (#353)',
+    // Twenty real-socket clusters: well inside a second here, but not
+    // inside a 5 s default on a slow CI leg.
+    timeoutMs: 60_000,
+    run: async (create) => {
+        // The race is a timing window on the first dial, so it needs a
+        // FRESH cluster per attempt — once the links are up, nothing here
+        // can dial again. ~1 in 7 attempts hit it unfixed; twenty make a
+        // miss vanishingly unlikely while a fix passes every one.
+        const attempts = 20;
+        const perHost = 2;
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const log: string[] = [];
+            await withCluster(
+                create,
+                { hosts: 3, actors: [echoActor(log)], policy: spreadingPolicy(), retryBackoffMs: 1 },
+                async (h) => {
+                    const key = `mutual${attempt}`;
+                    const calls: Promise<unknown>[] = [];
+                    for (const host of h.hosts) {
+                        for (let i = 0; i < perHost; i++) {
+                            calls.push(host.dispatch({ type: ECHO, key }, 'increment', [1], call()));
+                        }
+                    }
+                    // Bounded: a call parked on a closed connection would
+                    // otherwise hang the suite rather than fail it.
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    const hung = new Promise<never>((_, reject) => {
+                        timer = setTimeout(
+                            () => reject(new Error(`[transport conformance] attempt ${attempt}: a call never settled`)),
+                            5000
+                        );
+                    });
+                    let results: number[];
+                    try {
+                        results = (await Promise.race([Promise.all(calls), hung])) as number[];
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                    const expected = Array.from({ length: h.hosts.length * perHost }, (_, i) => i + 1);
+                    assertEqual(
+                        [...results].sort((a, b) => a - b),
+                        expected,
+                        `attempt ${attempt}: every increment applied exactly once`
+                    );
+                    const activations = log.filter((e) => e === `activate:${key}`);
+                    assertEqual(activations.length, 1, `attempt ${attempt}: exactly one activation`);
+                }
+            );
+        }
     }
 };
 
@@ -1061,6 +1147,7 @@ const selfHost: PlacementPolicy = {
 export const transportConformance: readonly ConformanceCase[] = [
     unaryRoundTrip,
     singleActivation,
+    concurrentFirstActivation,
     streamRoundTrip,
     streamCancellation,
     watchRoundTrip,

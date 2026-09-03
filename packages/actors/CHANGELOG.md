@@ -184,6 +184,32 @@
 
 ### Fixed
 
+- **`HostConnection` only says `unreachable` for a call it can prove never
+  left the process** (#353). `close()` rejected every in-flight unary call as
+  `kind: 'unreachable'` — with a comment saying it must never be retried —
+  while `ClusterPlacement` treats `unreachable` as "provably not executed"
+  and re-dispatches it (default `retries: 3`). A call that was on the wire
+  was therefore re-sent, and over `tcpTransport()` a concurrent first
+  activation applied increments twice. Now `dispatch()`/`dispatchStream()`
+  answer `unreachable` only when the CALL frame provably was not written
+  (already closed, retiring, or the write failed) — which also fixes a call
+  parked forever on a connection that closed between `linkTo` and
+  `signAuth` — and a unary call whose frame *was* written fails on `close()`
+  with an ordinary, un-branded `Error` ("closed with this call in flight:
+  outcome unknown, not retried"), the shape `@sigx/actors-ws` already uses,
+  so the placement surfaces it and the caller decides. Streams keep
+  `unreachable` (the placement re-issues a stream only before its first
+  chunk, and a watch is a read). A CALL that arrives behind a frame which
+  closed the connection is no longer executed, and `#onCall` re-checks after
+  its awaits, so a call the caller was told "outcome unknown" about did not
+  in fact run. New `retire()`: take a connection out of service without
+  cutting what is on it — no new outbound calls, in-flight ones answered,
+  closed once both ends have sent `GOAWAY 0` (HTTP/2's NO_ERROR, now the
+  graceful signal; any other status still closes at once). `ConformanceCase`
+  gained an optional `timeoutMs`, and `transportConformance` the case that
+  reproduces the race: a spreading policy, three hosts dialling each other at
+  once, six concurrent increments at one new key, twenty fresh clusters.
+
 - **An etag conflict inside the scheduled write-behind flush now discards the
   activation** (#336). The debounced flush runs as a system turn, not a user
   turn, so when its save lost the CAS the activation was faulted with

@@ -220,7 +220,27 @@ transport existed, so it describes the contract rather than one implementation:
   generator parked at `yield` never runs its `finally` from a signal alone.
 - **Backpressure is applied at the generator**, before `next()` is pulled, so a
   slow consumer stops the producer rather than filling a buffer behind it.
-- **A dropped connection fails its in-flight calls as `unreachable` and never
-  retries them.** The placement already evicts, refreshes and re-resolves;
-  silently re-sending a non-idempotent actor method to a host that may no
-  longer own the actor would be a correctness bug.
+- **`unreachable` means provably not executed — and only that.** The
+  placement re-dispatches on it (see
+  [clustering.md](clustering.md#when-a-dispatch-may-be-retried)), so a
+  connection may raise it only for a call whose CALL frame it can prove was
+  never written: already closed, retiring, or the write itself failed. A
+  unary call that WAS on the wire when the connection dropped fails with an
+  ordinary, un-branded error ("closed with this call in flight: outcome
+  unknown, not retried") that the placement does not classify and the caller
+  decides about. Before #353 the two were conflated: `close()` said
+  `unreachable` for everything in flight, the placement took it at its word,
+  and a concurrent first activation over `tcpTransport()` applied increments
+  twice. Streams keep `unreachable` on close — the placement re-issues a
+  stream only before its first chunk, and a watch is a read.
+- **A losing simultaneous dial is retired, not cut.** Both ends compute the
+  same winner (the lexicographically smaller hostId's outbound socket), judged
+  on each socket's direction alone — never on `peerHostId`, which a dialled
+  socket learns from WELCOME only *after* the calls that raced onto it. The
+  loser takes no new calls, answers what is already on it, and closes once
+  BOTH ends have sent `GOAWAY` with status `0` (HTTP/2's NO_ERROR: "I am done
+  sending on this", not a refusal). A CALL the peer wrote before it learned of
+  the retirement is ordered before its GOAWAY, so it is always answered. Any
+  other GOAWAY status closes at once, and a callee never executes a CALL that
+  arrived behind a frame which closed the connection — HELLO and the first
+  CALLs usually share one `data` event.
