@@ -87,8 +87,14 @@ function message(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-export function defineJob<In, Out, C = unknown, Extra extends object = Record<never, never>>(
-    options: JobOptions<In, Out, C, Extra>
+export function defineJob<
+    In,
+    Out,
+    C = unknown,
+    Extra extends object = Record<never, never>,
+    E = never
+>(
+    options: JobOptions<In, Out, C, Extra, E>
 ): ActorDefinition<JobState<Extra>, JobMethodTable<In, Out, Extra>, JobStreamTable<Extra>> {
     const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     type S = JobState<Extra>;
@@ -247,6 +253,17 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         ...(options.internal !== undefined ? { internal: options.internal } : {}),
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.placement ? { placement: options.placement } : {}),
+        // The append reducer (#312), wired only when declared: `ctx.append`
+        // without one throws, and a record with a log under a definition
+        // without one fails activation — both by the runtime's own guards.
+        ...(options.apply
+            ? {
+                  applyEntry: (s: S, entry: unknown) => {
+                      const next = options.apply!((s.checkpoint ?? undefined) as C | undefined, entry as E);
+                      if (next !== undefined) s.checkpoint = next;
+                  }
+              }
+            : {}),
         persistence: 'explicit',
         // The state record IS the ledger (#309): a job is `running` exactly
         // while its one task should be in flight, `attempts` is what the
@@ -382,7 +399,11 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                         });
                         return;
                     }
-                    resumedFrom = (s.checkpoint ?? undefined) as C | undefined;
+                    // DETACHED (#312): the live checkpoint is what `apply`
+                    // folds every `append` into, so an alias would move under
+                    // the body — and a body pushing into it would mutate live
+                    // state from outside any turn. One clone per resume.
+                    resumedFrom = s.checkpoint == null ? undefined : c.snapshot(s.checkpoint as C);
                     resumeData = s.resumeData ?? undefined;
                     principal = s.principal;
                     s.resumeData = null;
@@ -390,7 +411,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                 });
                 if (refused) return;
 
-                const job: JobHandle<In, C, Extra> = {
+                const job: JobHandle<In, C, Extra, E> = {
                     key: tctx.key,
                     input: input as In,
                     signal: tctx.abortSignal,
@@ -409,6 +430,12 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                             // `durability` is the host's own knob (#320):
                             // eventual = the write-behind debounce.
                             await c.save(o);
+                        }),
+                    append: (entry) =>
+                        tctx.turn((c) => {
+                            // Same late-write guard as progress: the fold
+                            // stays in memory, nothing is written.
+                            if (c.state.status === 'running') return c.append(entry);
                         }),
                     update: (fn) =>
                         tctx.turn((c) => {

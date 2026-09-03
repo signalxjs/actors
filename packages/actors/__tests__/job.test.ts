@@ -1005,3 +1005,267 @@ describe('defineJob: eventual checkpoints ride the write-behind debounce (#320)'
         expect(attempts).toEqual([undefined, { cursor: 20 }]);
     });
 });
+
+describe('defineJob: job.append(entry) — O(delta) checkpoints on the append seam (#312)', () => {
+    type Row = { id: number; out: string };
+    /** The reducer every fixture shares: a checkpoint that starts undefined is CREATED by returning one. */
+    const apply = (cp: Row[] | undefined, row: Row): Row[] => {
+        (cp ??= []).push(row);
+        return cp;
+    };
+    /** The job's record as storage holds it. */
+    async function record(storage: ReturnType<typeof memoryStorage>, type: string) {
+        const r = await storage.load(type, 'run-1');
+        return r && { checkpoint: (r.state as { checkpoint: unknown }).checkpoint, log: r.log };
+    }
+
+    it('appends per step; a crash resumes with resumedFrom = the folded checkpoint', async () => {
+        const storage = memoryStorage();
+        const attempts: { attempt: number; resumedFrom: unknown }[] = [];
+        let appended = 0;
+        const Appending = defineJob({
+            type: 'Appending',
+            allowAnonymous: true,
+            apply,
+            run: async (job, input: number) => {
+                attempts.push({ attempt: job.attempt, resumedFrom: job.resumedFrom });
+                if (job.attempt > 1) return job.resumedFrom!.map((r) => r.out);
+                for (let id = 0; id < input; id++) {
+                    await job.append({ id, out: `step-${id}` });
+                    appended++;
+                }
+                await aborted(job.signal);
+                return undefined as never;
+            }
+        });
+        const hostA = createHost({ actors: [Appending], storage, defaults: quiet });
+        await hostA.actor(Appending, 'run-1').start(3);
+        await until(() => appended === 3);
+        // The snapshot is what `start` saved (no checkpoint); the steps are the log.
+        expect(await record(storage, 'Appending')).toEqual({
+            checkpoint: null,
+            log: [
+                { id: 0, out: 'step-0' },
+                { id: 1, out: 'step-1' },
+                { id: 2, out: 'step-2' }
+            ]
+        });
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
+
+        const hostB = createHost({ actors: [Appending], storage, defaults: quiet });
+        running = hostB;
+        const client = hostB.actor(Appending, 'run-1');
+        await until(async () => (await client.status()).status === 'completed');
+        expect(attempts[1]).toEqual({
+            attempt: 2,
+            resumedFrom: [
+                { id: 0, out: 'step-0' },
+                { id: 1, out: 'step-1' },
+                { id: 2, out: 'step-2' }
+            ]
+        });
+        expect(await client.result()).toEqual(['step-0', 'step-1', 'step-2']);
+        // The terminal save compacted: the fold is the snapshot, the log is empty.
+        expect(await record(storage, 'Appending')).toEqual({
+            checkpoint: [
+                { id: 0, out: 'step-0' },
+                { id: 1, out: 'step-1' },
+                { id: 2, out: 'step-2' }
+            ],
+            log: []
+        });
+    });
+
+    it('checkpoint() after appends is the compaction — the log is empty and the snapshot holds the fold', async () => {
+        const storage = memoryStorage();
+        const compacted = gate();
+        const Compacting = defineJob({
+            type: 'Compacting',
+            allowAnonymous: true,
+            apply,
+            run: async (job) => {
+                const rows: Row[] = [];
+                for (let id = 0; id < 3; id++) {
+                    rows.push({ id, out: `s${id}` });
+                    await job.append(rows[id]!);
+                }
+                // The body keeps its own copy — the handle has no getter for
+                // the fold; the fold IS what a resume would hand back.
+                await job.checkpoint(rows);
+                await job.append({ id: 3, out: 's3' });
+                compacted.open();
+                await aborted(job.signal);
+                return undefined as never;
+            }
+        });
+        const host = createHost({ actors: [Compacting], storage, defaults: quiet });
+        running = host;
+        await host.actor(Compacting, 'run-1').start(undefined as never);
+        await compacted.opened;
+        expect(await record(storage, 'Compacting')).toEqual({
+            checkpoint: [
+                { id: 0, out: 's0' },
+                { id: 1, out: 's1' },
+                { id: 2, out: 's2' }
+            ],
+            log: [{ id: 3, out: 's3' }]
+        });
+    });
+
+    it('pause(cp) compacts and resume keeps the fold — appends after the resume chain on it', async () => {
+        const storage = memoryStorage();
+        const seen: unknown[] = [];
+        const Pausing = defineJob({
+            type: 'Pausing',
+            allowAnonymous: true,
+            apply,
+            run: async (job) => {
+                seen.push(job.resumedFrom);
+                if (job.resumeData === undefined) {
+                    const rows: Row[] = [];
+                    for (let id = 0; id < 2; id++) {
+                        rows.push({ id, out: `p${id}` });
+                        await job.append(rows[id]!);
+                    }
+                    return job.pause(rows);
+                }
+                await job.append({ id: 2, out: 'p2' });
+                return job.resumedFrom!.length;
+            }
+        });
+        const host = createHost({ actors: [Pausing], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(Pausing, 'run-1');
+        await client.start(undefined as never);
+        await until(async () => (await client.status()).status === 'paused');
+        expect(await record(storage, 'Pausing')).toEqual({
+            checkpoint: [
+                { id: 0, out: 'p0' },
+                { id: 1, out: 'p1' }
+            ],
+            log: []
+        });
+        // Resume on a FRESH activation, so the checkpoint comes from storage.
+        await host.deactivateType('Pausing');
+        await client.resume('go');
+        await until(async () => (await client.status()).status === 'completed');
+        expect(seen).toEqual([
+            undefined,
+            [
+                { id: 0, out: 'p0' },
+                { id: 1, out: 'p1' }
+            ]
+        ]);
+        expect(await client.result()).toBe(2);
+        expect(await record(storage, 'Pausing')).toEqual({
+            checkpoint: [
+                { id: 0, out: 'p0' },
+                { id: 1, out: 'p1' },
+                { id: 2, out: 'p2' }
+            ],
+            log: []
+        });
+    });
+
+    it('on a storage without the seam every append is a full save — the recipe still holds, at the old cost', async () => {
+        const inner = memoryStorage();
+        const counts = { saves: 0 };
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: (t, k, s, e) => {
+                if (t === 'Seamless') counts.saves++;
+                return inner.save(t, k, s, e);
+            },
+            clear: (t, k, e) => inner.clear(t, k, e)
+        };
+        const attempts: unknown[] = [];
+        let appended = 0;
+        const Seamless = defineJob({
+            type: 'Seamless',
+            allowAnonymous: true,
+            apply,
+            run: async (job) => {
+                attempts.push(job.resumedFrom);
+                if (job.attempt > 1) return job.resumedFrom!.length;
+                for (let id = 0; id < 3; id++) {
+                    await job.append({ id, out: `f${id}` });
+                    appended++;
+                }
+                await aborted(job.signal);
+                return undefined as never;
+            }
+        });
+        const hostA = createHost({ actors: [Seamless], storage, defaults: quiet });
+        await hostA.actor(Seamless, 'run-1').start(undefined as never);
+        await until(() => appended === 3);
+        // `start` + three full saves: each append carried the whole fold.
+        expect(counts.saves).toBe(4);
+        expect(await record(inner, 'Seamless')).toEqual({
+            checkpoint: [
+                { id: 0, out: 'f0' },
+                { id: 1, out: 'f1' },
+                { id: 2, out: 'f2' }
+            ],
+            log: []
+        });
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
+        const hostB = createHost({ actors: [Seamless], storage, defaults: quiet });
+        running = hostB;
+        const client = hostB.actor(Seamless, 'run-1');
+        await until(async () => (await client.status()).status === 'completed');
+        expect(attempts[1]).toEqual([
+            { id: 0, out: 'f0' },
+            { id: 1, out: 'f1' },
+            { id: 2, out: 'f2' }
+        ]);
+        expect(await client.result()).toBe(3);
+    });
+
+    it('append() without apply throws — the run fails with the reducer named', async () => {
+        const NoReducer = defineJob({
+            type: 'NoReducer',
+            allowAnonymous: true,
+            run: async (job) => {
+                // Uncallable by type (E = never); the runtime guard is what
+                // catches an untyped caller.
+                await (job as unknown as { append(e: unknown): Promise<void> }).append({ id: 0 });
+                return 'unreachable';
+            }
+        });
+        const host = createHost({ actors: [NoReducer], defaults: quiet });
+        running = host;
+        const client = host.actor(NoReducer, 'run-1');
+        await client.start(undefined as never);
+        await until(async () => (await client.status()).status === 'failed');
+        expect((await client.status()).error?.message).toMatch(/apply/);
+    });
+
+    it('a late append from a winding-down body is dropped, like progress()', async () => {
+        const storage = memoryStorage();
+        const parked = gate();
+        const Late = defineJob({
+            type: 'Late',
+            allowAnonymous: true,
+            apply,
+            run: async (job) => {
+                await job.append({ id: 0, out: 'first' });
+                parked.open();
+                await aborted(job.signal);
+                await job.append({ id: 1, out: 'late' }); // cancelled: must not land
+                return undefined as never;
+            }
+        });
+        const host = createHost({ actors: [Late], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(Late, 'run-1');
+        await client.start(undefined as never);
+        await parked.opened;
+        await client.cancel();
+        await until(async () => (await client.status()).status === 'cancelled');
+        await new Promise((r) => setTimeout(r, 20));
+        expect(await record(storage, 'Late')).toEqual({
+            checkpoint: [{ id: 0, out: 'first' }],
+            log: []
+        });
+    });
+});
