@@ -73,6 +73,15 @@ storage.
 Saves are single-flighted per activation, so even `reentrant: 'always'` actors
 cannot interleave their compare-and-sets within one activation.
 
+`ctx.save({ durability: 'eventual' })` (#320) is the same write, deferred: it
+bumps the version and arms the write-behind debounce (`#scheduleWriteBehind`,
+50 ms) instead of awaiting the CAS, so a burst of eventual saves is one write.
+The explicit-persistence contract holds — nothing is written that was not asked
+for — but `deactivate()` now flushes an explicit actor too when an eventual save
+is still ahead of `#savedVersion`, and a debounce failure reports through
+`onStateError` (`'flush'`) rather than to a caller. `defineJob`'s
+`checkpoint(cp, { durability })` is a pass-through to this.
+
 ## Change detection
 
 Persistence and the change feed both need one bit — *did anything under

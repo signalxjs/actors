@@ -38,6 +38,7 @@ import {
     type AnyActorDefinition,
     type DeactivationReason,
     type ReminderApi,
+    type SaveOptions,
     type StateErrorPhase,
     type TaskApi,
     type TaskInfo,
@@ -509,6 +510,11 @@ export class Activation {
     #version = 0;
     #notifiedVersion = 0;
     #savedVersion = 0;
+    /** The version the latest `save({ durability: 'eventual' })` asked for
+     *  (#320). Deactivation flushes an explicit-persistence actor only while
+     *  this is still ahead of `#savedVersion` — the one write it was asked
+     *  for and has not made yet. */
+    #eventualWanted = 0;
     /** Set synchronously by the tracking effect's scheduler on the first
      *  write since the last fold — the one bit change detection needs. */
     #dirty = false;
@@ -1305,7 +1311,11 @@ export class Activation {
         // amended state above — so the flush check sees them.
         this.#consumeDirty();
         // A stale activation must not overwrite the winning state.
-        if (reason !== 'conflict' && this.#version > this.#savedVersion && this.#isWriteBehind()) {
+        if (
+            reason !== 'conflict' &&
+            this.#version > this.#savedVersion &&
+            (this.#isWriteBehind() || this.#savedVersion < this.#eventualWanted)
+        ) {
             try {
                 await this.#gatedSave(this.#version);
             } catch (error) {
@@ -1627,6 +1637,12 @@ export class Activation {
         return typeof p === 'object' && p.mode === 'write-behind';
     }
 
+    /**
+     * Arm the debounced flush — from `#afterTurn` on a write-behind actor,
+     * and from `ctx.save({ durability: 'eventual' })` on any actor (#320),
+     * where the default 50ms window applies. Idempotent while armed: a
+     * burst of dirty boundaries or eventual saves is one write.
+     */
     #scheduleWriteBehind(): void {
         if (this.#cancelWriteBehind) return;
         const p = this.def.__sigxActor.persistence as { debounceMs?: number };
@@ -2455,16 +2471,24 @@ export class Activation {
                 self.#principalMemo.set(encoded, value);
                 return value;
             },
-            async save(): Promise<void> {
+            async save(options?: SaveOptions): Promise<void> {
                 // Fold any tracked mutations first so `wanted` sits above
                 // them and savedVersion bookkeeping stays consistent when a
                 // subscriber's tracking runs alongside explicit saves.
                 self.#consumeDirty();
                 // Explicit-mode saves don't need change tracking; bump the
                 // version so savedVersion bookkeeping stays consistent.
+                const wanted = ++self.#version;
+                if (options?.durability === 'eventual') {
+                    // Hand the write to the debounce (#320): resolves now,
+                    // and the flush — or the next immediate save, or
+                    // deactivation, whichever comes first — carries it.
+                    self.#eventualWanted = wanted;
+                    self.#scheduleWriteBehind();
+                    return;
+                }
                 // Through the gate: resolves once a snapshot at-or-after
                 // this caller's mutations is durable.
-                const wanted = ++self.#version;
                 await self.#gatedSave(wanted);
             },
             async clearState(): Promise<void> {
@@ -2475,6 +2499,9 @@ export class Activation {
                 const run = (async () => {
                     await self.#host.clearStoredState(self.ref, self.#etag);
                     self.#etag = null;
+                    // An eventual save still outstanding was for the record
+                    // just deleted — deactivation must not resurrect it.
+                    self.#eventualWanted = 0;
                     const fresh = opts.state(self.ref.key) as Record<string, unknown>;
                     const live = self.#state as Record<string, unknown>;
                     // Reset in place — the proxy identity is captured by

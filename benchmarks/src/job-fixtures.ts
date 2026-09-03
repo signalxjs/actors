@@ -65,7 +65,9 @@ function nextCommand(key: string): Promise<StepCommand> {
     return new Promise((resolve) => ch.commandWaiters.push(resolve));
 }
 
-/** Release one step; resolves once that step's checkpoint save completed. */
+/** Release one step; resolves once that step's checkpoint turn completed —
+ *  the durable save for `BenchStepJob`, the deferred mark for
+ *  `BenchEventualStepJob`. */
 export function sendStep(key: string): Promise<void> {
     const ch = channel(key);
     const ack = new Promise<void>((resolve) => ch.ackWaiters.push(resolve));
@@ -82,28 +84,42 @@ export function resetStepChannel(key: string): void {
     channels.delete(key);
 }
 
-export const BenchStepJob = defineJob<null, number, StepRow[]>({
-    type: 'BenchStepJob',
-    allowAnonymous: true,
-    run: async (job) => {
-        const steps: StepRow[] = [];
-        for (;;) {
-            const cmd = await nextCommand(job.key);
-            if (cmd === 'stop') return steps.length;
-            const id = steps.length;
-            // The date derives from the step index, not a clock: state a
-            // benchmark measures must not vary run to run.
-            steps.push({
-                id,
-                label: `step-${id}`,
-                output: `output of step ${id}`,
-                at: new Date(1_700_000_000_000 + id)
-            });
-            await job.checkpoint(steps);
-            channel(job.key).ackWaiters.shift()?.();
+function stepJob(type: string, durability: 'immediate' | 'eventual') {
+    return defineJob<null, number, StepRow[]>({
+        type,
+        allowAnonymous: true,
+        run: async (job) => {
+            const steps: StepRow[] = [];
+            for (;;) {
+                const cmd = await nextCommand(job.key);
+                if (cmd === 'stop') return steps.length;
+                const id = steps.length;
+                // The date derives from the step index, not a clock: state a
+                // benchmark measures must not vary run to run.
+                steps.push({
+                    id,
+                    label: `step-${id}`,
+                    output: `output of step ${id}`,
+                    at: new Date(1_700_000_000_000 + id)
+                });
+                await job.checkpoint(steps, { durability });
+                channel(job.key).ackWaiters.shift()?.();
+            }
         }
-    }
-});
+    });
+}
+
+export const BenchStepJob = stepJob('BenchStepJob', 'immediate');
+
+/**
+ * `BenchStepJob` with `{ durability: 'eventual' }` checkpoints (#320): a
+ * step marks the state for the write-behind debounce and acks at once, so
+ * under `manualScheduler` — where the debounce never fires — the whole run
+ * is one save at deactivation and every step is the turn alone. The
+ * `watch=0,eventual` arm reads against `watch=0`: the gap is the per-step
+ * encode+CAS an eventual checkpoint defers.
+ */
+export const BenchEventualStepJob = stepJob('BenchEventualStepJob', 'eventual');
 
 /**
  * The lifecycle fixture (#307): a job whose body does nothing, so a run is

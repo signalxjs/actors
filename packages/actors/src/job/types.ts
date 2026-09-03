@@ -6,7 +6,7 @@
  * machine, progress, checkpoints and the client surface around it.
  */
 import type { ActorPolicy } from '../types';
-import type { ActorPlacementStrategy, ReminderApi } from '../types';
+import type { ActorPlacementStrategy, ReminderApi, SaveOptions } from '../types';
 
 export type JobStatus =
     /** The actor exists (virtually) but `start()` has not been called. */
@@ -84,8 +84,19 @@ export interface JobHandle<In, C, Extra extends object> {
      *  `checkpoint()` (or terminal) save, so after a crash, progress
      *  honestly regresses to the last checkpoint. */
     progress(p: JobProgress): Promise<void>;
-    /** Persist a durable resume point (state save, etag-CAS). */
-    checkpoint(c: C): Promise<void>;
+    /**
+     * Persist a resume point (state save, etag-CAS). `'immediate'`
+     * (default): durable when the promise resolves. `'eventual'` (#320):
+     * resolves at once and lets the host's write-behind debounce carry it,
+     * so a burst of N steps costs one save instead of N; `pause()`, the
+     * terminal transition and deactivation still flush synchronously, so
+     * the record that matters is never eventual. The trade is crash
+     * distance: a host death between an eventual checkpoint and its flush
+     * resumes from the last checkpoint that reached storage, which may be
+     * more than one step back — and on a platform where eviction is not
+     * deactivation (Cloudflare) there is no final flush to narrow it.
+     */
+    checkpoint(c: C, options?: SaveOptions): Promise<void>;
     /** Mutate the job's `extra` fields (pushed to watchers, not saved). */
     update(fn: (extra: Extra) => void): Promise<void>;
     /**

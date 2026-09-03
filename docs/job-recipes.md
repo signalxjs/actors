@@ -143,7 +143,10 @@ differ from a Node host:
   not every N) and size `maxAttempts` accordingly (think 20, not 3).
 - **Eviction is not deactivation**: `onDeactivate` never runs and there is
   no grace window — the last durable thing wins. Never buffer more than
-  one step's work between checkpoints.
+  one step's work between checkpoints. That includes
+  `checkpoint(cp, { durability: 'eventual' })`: there is no final flush on
+  eviction, so an eventual checkpoint there is only as durable as the
+  debounce window — prefer the default `'immediate'` on this backend.
 - **`watch()` streams are cut on eviction.** Clients must resubscribe (the
   `$live` channel already retries); treat a dropped stream as routine.
 - Progress regressing to the last checkpoint after a gap is *more visible*
@@ -178,6 +181,20 @@ minute — the levers, in the order they pay:
   job state, so cost grows with the run (`jobs/checkpoint-growth`,
   ~20 µs small → ~113 µs at 300 rows). Keep checkpoints to a cursor where
   you can; the O(delta) seam is #312.
+- **`job.checkpoint(cp, { durability: 'eventual' })` makes a burst of steps
+  cost one save** (#320). The default (`'immediate'`) is durable when the
+  promise resolves — one encode and one etag-CAS per step. `'eventual'`
+  marks the state for the host's write-behind debounce (50 ms) and resolves
+  at once, so N steps inside the window are one write; `pause()`, the
+  terminal transition and a graceful deactivation still flush synchronously,
+  so the record that decides the job's fate is never eventual. **The trade
+  is crash distance:** a host death between an eventual checkpoint and its
+  flush resumes from the last checkpoint that *reached storage*, which may
+  be several steps back — the usual "one step's work" bound becomes "one
+  debounce window's work". Use it for step loops whose steps are cheap to
+  redo and idempotent; keep `'immediate'` for a step that commits an
+  external side effect (an email sent, a payment posted). The
+  `watch=0,eventual` arm of `jobs/checkpoint-growth` is the measured gap.
 
 ## Which shape for which problem
 

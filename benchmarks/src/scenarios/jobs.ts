@@ -32,6 +32,7 @@ import {
 import { settleGc } from '../memory.ts';
 import { openSubscribers, type Subscribers } from '../subscribers.ts';
 import {
+    BenchEventualStepJob,
     BenchLifecycleJob,
     BenchParkedJob,
     BenchStatusJob,
@@ -139,20 +140,32 @@ const checkpointGrowth: Scenario = {
         // whole #124 thread was reported against. Both new arms are
         // UNWATCHED, so they read against `watch=0` and against each other
         // without the change feed in the way.
+        // `watch=0,eventual` is `watch=0` with `{ durability: 'eventual' }`
+        // checkpoints (#320): the per-step save is deferred to the debounce,
+        // which `manualScheduler` never fires, so the run costs one save at
+        // stop and the step is the turn alone — expected head ≈ tail.
         const arms = [
             { label: 'watch=0', count: 0, args: [] as unknown[], storage: undefined },
             { label: 'watch=0,stringify', count: 0, args: [] as unknown[], storage: stringifyStorage },
             { label: 'watch=0,text', count: 0, args: [] as unknown[], storage: textStorage },
+            { label: 'watch=0,eventual', count: 0, args: [] as unknown[], job: BenchEventualStepJob },
             { label: 'watch=1', count: 1, args: [] as unknown[], storage: undefined },
             { label: 'watch=throttled', count: 1, args: [{ throttleMs: 1000 }], storage: undefined }
-        ] as { label: string; count: number; args: unknown[]; storage?: () => ActorStorage }[];
+        ] as {
+            label: string;
+            count: number;
+            args: unknown[];
+            storage?: () => ActorStorage;
+            job?: typeof BenchStepJob;
+        }[];
         for (const arm of arms) {
+            const job = arm.job ?? BenchStepJob;
             const key = `run-${arm.label}-${runSeq++}`;
             const fixture = await createBenchHost({
-                actors: [BenchStepJob],
+                actors: [job],
                 ...(arm.storage ? { storage: arm.storage() } : {})
             });
-            const ref = { type: BenchStepJob.type, key };
+            const ref = { type: job.type, key };
             let subs: Subscribers | undefined;
             try {
                 await fixture.host.dispatch(ref, 'start', [null], benchCall());

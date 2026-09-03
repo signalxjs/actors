@@ -88,6 +88,7 @@ export type {
     MigrateStateFn,
     MigrateStateInfo,
     PublishOptions,
+    SaveOptions,
     TaskApi,
     TaskInfo,
     TimerHandle,

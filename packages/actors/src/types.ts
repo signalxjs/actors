@@ -762,6 +762,17 @@ export type TopicSubscription<S extends object, Ext extends object = Record<neve
           handle: TopicSubscriptionHandler<S, Ext>;
       };
 
+/** How durable a `ctx.save()` must be before it resolves. */
+export interface SaveOptions {
+    /**
+     * `'immediate'` (default): the record is stored when the promise
+     * resolves. `'eventual'`: the state is marked for the activation's
+     * write-behind debounce and the promise resolves at once — a burst of
+     * eventual saves costs one write.
+     */
+    durability?: 'immediate' | 'eventual';
+}
+
 /**
  * The built-in half of the per-activation context — created once per
  * activation and closed over by the `methods`/`streams` factories.
@@ -781,11 +792,19 @@ export interface ActorContextBase<S extends object> {
      */
     readonly state: S;
     /**
-     * Persist now. Resolves when stored; throws
+     * Persist. `'immediate'` (default): resolves when stored; throws
      * `ActorStateConflictError` on an etag mismatch, which also discards
-     * this activation.
+     * this activation. `'eventual'`: resolves at once and lets the
+     * activation's write-behind debounce carry the state — a burst of
+     * eventual saves costs one write. A later immediate `save()` or the
+     * deactivation flush picks up whatever is still pending, so an
+     * explicit-persistence actor stays explicit: nothing writes that was
+     * not asked for. What it gives up is the acknowledgement: a host death
+     * inside the debounce window loses the eventual saves since the last
+     * durable one, and a flush failure reports through `onStateError`
+     * rather than to a caller.
      */
-    save(): Promise<void>;
+    save(options?: SaveOptions): Promise<void>;
     /** Delete the stored record; in-memory state resets to `state(key)`. */
     clearState(): Promise<void>;
     /** Volatile timer — dies with the activation; ticks are ordinary turns. */

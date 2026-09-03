@@ -881,3 +881,124 @@ describe('defineJob: a rejected task start takes the running transition back (#3
         expect(runs).toEqual([2]); // a resumed run is its own attempt
     });
 });
+
+describe('defineJob: eventual checkpoints ride the write-behind debounce (#320)', () => {
+    /** Count the JOB's state saves only — the roster's writes are not the
+     *  cost under test — and let a test cut the store off ("host death"). */
+    function jobStorage(type: string) {
+        const inner = memoryStorage();
+        const counts = { saves: 0 };
+        let dead = false;
+        const storage: ReturnType<typeof memoryStorage> = {
+            load: (t, k) => inner.load(t, k),
+            save: (t, k, s, e) => {
+                if (dead) return Promise.reject(new Error('host is dead'));
+                if (t === type) counts.saves++;
+                return inner.save(t, k, s, e);
+            },
+            clear: (t, k, e) => (dead ? Promise.reject(new Error('host is dead')) : inner.clear(t, k, e))
+        };
+        return { storage, inner, counts, kill: () => (dead = true) };
+    }
+
+    async function storedCheckpoint(inner: ReturnType<typeof memoryStorage>, type: string): Promise<unknown> {
+        return ((await inner.load(type, 'run-1'))?.state as { checkpoint: unknown } | undefined)?.checkpoint;
+    }
+
+    it('50 eventual checkpoints then finish cost one terminal save, which carries the last checkpoint', async () => {
+        const { storage, inner, counts } = jobStorage('Burst');
+        const Burst = defineJob({
+            type: 'Burst',
+            allowAnonymous: true,
+            run: async (job) => {
+                for (let i = 1; i <= 50; i++) await job.checkpoint({ cursor: i }, { durability: 'eventual' });
+                return 'done';
+            }
+        });
+        const host = createHost({ actors: [Burst], storage, defaults: quiet });
+        running = host;
+        const client = host.actor(Burst, 'run-1');
+        await client.start(undefined as never);
+        await until(async () => (await client.status()).status === 'completed');
+        // `start` and the terminal save. A debounce that happens to fire
+        // inside the burst adds at most one more; 50 immediate checkpoints
+        // would have added 50.
+        expect(counts.saves).toBeGreaterThanOrEqual(2);
+        expect(counts.saves).toBeLessThanOrEqual(3);
+        // The terminal record is never eventual: it is durable when
+        // `status()` says completed, and it carries the last checkpoint.
+        const record = (await inner.load('Burst', 'run-1'))?.state as { status: string; checkpoint: unknown };
+        expect(record).toMatchObject({ status: 'completed', checkpoint: { cursor: 50 } });
+    });
+
+    it('a crash mid-burst resumes from the last FLUSHED checkpoint, not the last taken', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {}); // the dead store's final-flush report
+        const { storage, inner, kill } = jobStorage('Crashy');
+        const flushed = gate();
+        const attempts: { attempt: number; resumedFrom: unknown }[] = [];
+        let taken = 0;
+        const Crashy = defineJob({
+            type: 'Crashy',
+            allowAnonymous: true,
+            run: async (job) => {
+                attempts.push({ attempt: job.attempt, resumedFrom: job.resumedFrom });
+                if (job.attempt > 1) return (job.resumedFrom as { cursor: number }).cursor;
+                await job.checkpoint({ cursor: 10 }, { durability: 'eventual' });
+                await flushed.opened; // the test saw cursor 10 land in storage
+                for (let i = 11; i <= 20; i++) {
+                    await job.checkpoint({ cursor: i }, { durability: 'eventual' });
+                    taken++;
+                }
+                await aborted(job.signal); // park until the host dies
+                return undefined as never;
+            }
+        });
+        const hostA = createHost({ actors: [Crashy], storage, defaults: quiet });
+        await hostA.actor(Crashy, 'run-1').start(undefined as never);
+        await until(async () => (await storedCheckpoint(inner, 'Crashy') as { cursor?: number } | undefined)?.cursor === 10);
+        // The host "dies" here: nothing it writes from now on lands — not
+        // the debounce the burst below arms, not the deactivation flush —
+        // which is exactly the window a crash loses. Ten more checkpoints
+        // are TAKEN after that, none durable.
+        kill();
+        flushed.open();
+        await until(() => taken === 10);
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
+        expect(await storedCheckpoint(inner, 'Crashy')).toEqual({ cursor: 10 });
+
+        // The successor host has a live store — the death was host A's.
+        const hostB = createHost({ actors: [Crashy], storage: inner, defaults: quiet });
+        running = hostB;
+        const client = hostB.actor(Crashy, 'run-1');
+        await until(async () => (await client.status()).status === 'completed');
+        expect(attempts[1]).toEqual({ attempt: 2, resumedFrom: { cursor: 10 } });
+        expect(await client.result()).toBe(10);
+    });
+
+    it('a graceful stop mid-burst flushes the pending checkpoint — deactivation is not a crash', async () => {
+        const { storage, inner } = jobStorage('Drained');
+        const attempts: unknown[] = [];
+        const Drained = defineJob({
+            type: 'Drained',
+            allowAnonymous: true,
+            run: async (job) => {
+                attempts.push(job.resumedFrom);
+                if (job.attempt > 1) return 'done';
+                for (let i = 1; i <= 20; i++) await job.checkpoint({ cursor: i }, { durability: 'eventual' });
+                await aborted(job.signal);
+                return undefined as never;
+            }
+        });
+        const hostA = createHost({ actors: [Drained], storage, defaults: quiet });
+        await hostA.actor(Drained, 'run-1').start(undefined as never);
+        await until(() => attempts.length === 1);
+        await within(hostA.stop({ timeoutMs: 5000 }), 2000);
+        expect(await storedCheckpoint(inner, 'Drained')).toEqual({ cursor: 20 });
+
+        const hostB = createHost({ actors: [Drained], storage, defaults: quiet });
+        running = hostB;
+        const client = hostB.actor(Drained, 'run-1');
+        await until(async () => (await client.status()).status === 'completed');
+        expect(attempts).toEqual([undefined, { cursor: 20 }]);
+    });
+});
