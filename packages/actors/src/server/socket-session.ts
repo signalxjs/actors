@@ -84,8 +84,11 @@ import type { SocketSessionRecorder } from './socket-stats';
 interface Watch {
     ctrl: AbortController;
     iterator: AsyncIterator<unknown> | null;
-    /** Code units delivered for this subscription in `drainEpoch` (#258);
-     *  stale — and read as 0 — once the epoch has moved on. */
+    /** UTF-16 code units delivered for this subscription in `drainEpoch`
+     *  (#258) — `reply()`'s count, the same approximation as
+     *  `deliveryBytes`: exact for ASCII, an under-count otherwise, and only
+     *  ever COMPARED between subscriptions, never against the cap. Stale —
+     *  and read as 0 — once the epoch has moved on. */
     bytes: number;
     epoch: number;
 }
@@ -195,8 +198,8 @@ export interface ActorSocketSessionOptions {
      * fire-and-forget and `WATCH_BUFFER` bounds only the fan-out queue
      * INTO the session, not the socket's buffer. With a cap, each
      * subscription frame is followed by a read of {@link bufferedBytes};
-     * over the cap, the subscription that put the most bytes into the
-     * buffer since it last drained is closed with a terminal
+     * over the cap, the subscription that put the most into the buffer
+     * since it last drained is closed with a terminal
      * `{i, e: {status: 503, data: {kind: 'shed'}}}` — the ordinary
      * per-subscription error frame, so a client sees one subscription fail
      * and nothing else: the connection stays open, calls and the other
@@ -533,15 +536,18 @@ export async function createActorSocketSession(
      * host's send buffer for this connection over `maxBufferedBytes`? If
      * so, shed the subscription that filled it.
      *
-     * "Filled it" is bytes delivered since the buffer was last observed
-     * EMPTY. A draining `ws` socket reports 0 after almost every write, so
-     * on a healthy connection the window is one frame wide and the count
-     * costs one field write; on a stalling one the buffer stops reporting
-     * empty and the counts accumulate exactly the bytes that are still
-     * queued — so the heaviest subscription is the one most responsible
-     * for the depth, not merely the one whose frame happened to cross the
-     * line. The epoch makes the reset O(1): a counter whose epoch is stale
-     * reads as 0 rather than being zeroed across every watch per frame.
+     * "Filled it" is what each subscription delivered since the buffer was
+     * last observed EMPTY, counted in code units as `deliveryBytes` is —
+     * a ranking between subscriptions, so the approximation is harmless;
+     * the cap itself is only ever compared against the adapter's real
+     * byte count. A draining `ws` socket reports 0 after almost every
+     * write, so on a healthy connection the window is one frame wide and
+     * the count costs one field write; on a stalling one the buffer stops
+     * reporting empty and the counts accumulate what is still queued — so
+     * the heaviest subscription is the one most responsible for the depth,
+     * not merely the one whose frame happened to cross the line. The epoch
+     * makes the reset O(1): a counter whose epoch is stale reads as 0
+     * rather than being zeroed across every watch per frame.
      *
      * `null` from the adapter — it cannot say — never sheds. Faking a 0
      * there would make the cap look enforced on a transport where it is
