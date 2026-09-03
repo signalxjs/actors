@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import { createHost, memoryStorage, type ActorTurnObserver } from '@sigx/actors/host';
 import type { TypeHandler } from '@sigx/serialize';
@@ -63,6 +63,76 @@ const Counter = defineActor({
     })
 });
 
+/**
+ * Same shape under write-behind: the boundary snapshot is still the first
+ * codec touch of a mutating turn (the flush runs out of turn, after
+ * `#afterTurn`), so the poison surfaces in the same place — and the flush
+ * it must not cost is observable through storage (#338).
+ */
+const WbCounter = defineActor({
+    type: 'ObservedWbCounter',
+    allowAnonymous: true,
+    state: () => ({ n: 0, marker: new Marker() }),
+    persistence: { mode: 'write-behind', debounceMs: 5 },
+    methods: (ctx) => ({
+        bump() {
+            ctx.state.n++;
+            return ctx.state.n;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            for await (const s of ctx.changes({ initial: true })) yield s.n;
+        }
+    })
+});
+
+/**
+ * A throttled value feed: the leading-edge window `#deferToWindow` opens is
+ * the one thing the fan-out does for a value subscriber BEFORE it asks the
+ * codec, so a snapshot failure could leave a window open for a boundary the
+ * subscriber never received (#338). Wide enough that a boundary wrongly
+ * deferred into it is never seen by the test.
+ */
+const ThrottledCounter = defineActor({
+    type: 'ObservedThrottledCounter',
+    allowAnonymous: true,
+    state: () => ({ n: 0, marker: new Marker() }),
+    methods: (ctx) => ({
+        bump() {
+            ctx.state.n++;
+            return ctx.state.n;
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            for await (const s of ctx.changes({ initial: true, throttleMs: 60_000 })) yield s.n;
+        }
+    })
+});
+
+const deactivations: string[] = [];
+
+const Quitter = defineActor({
+    type: 'ObservedQuitter',
+    allowAnonymous: true,
+    state: () => ({ n: 0, marker: new Marker() }),
+    onDeactivate(_ctx, reason) {
+        deactivations.push(reason);
+    },
+    methods: (ctx) => ({
+        bumpAndQuit() {
+            ctx.state.n++;
+            ctx.deactivate();
+        }
+    }),
+    streams: (ctx) => ({
+        async *watch() {
+            for await (const s of ctx.changes({ initial: true })) yield s.n;
+        }
+    })
+});
+
 const call = { callChain: [], callId: 'test' };
 const ref = { type: Counter.type, key: 'k' };
 
@@ -74,6 +144,7 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
     let host: ReturnType<typeof createHost> | undefined;
     beforeEach(() => {
         poisoned = false;
+        deactivations.length = 0;
     });
     afterEach(async () => {
         poisoned = false;
@@ -124,4 +195,155 @@ describe('turn observer: failed vs post-turn bookkeeping', () => {
         await expect(host.dispatch(ref, 'missing', [], call)).rejects.toThrow();
         expect(seen.at(-1)).toEqual({ method: 'missing', failed: true });
     });
+
+    // #338: the snapshot failure reaches the caller, but it must not take
+    // the REST of the turn's bookkeeping down with it. The two pieces a test
+    // can observe from outside are the write-behind flush and the
+    // `ctx.deactivate()` hand-off; both used to be skipped.
+
+    it('still schedules the write-behind flush when the boundary snapshot threw (#338)', async () => {
+        const storage = memoryStorage();
+        host = createHost({
+            actors: [WbCounter],
+            storage,
+            types: [probe],
+            defaults: quiet
+        });
+        const wbRef = { type: WbCounter.type, key: 'k' };
+        const feed = host.dispatchStream!(wbRef, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+
+        poisoned = true;
+        await expect(host.dispatch(wbRef, 'bump', [], call)).rejects.toThrow('poisoned snapshot');
+        poisoned = false;
+
+        // The debounce was armed by the failed boundary itself: with the
+        // codec healthy again the flush lands with no further turn. Before
+        // the fix nothing was scheduled, and the dirty state sat until the
+        // next mutating boundary (or deactivation).
+        await vi.waitFor(async () => {
+            const record = await storage.load(WbCounter.type, 'k');
+            expect(record?.state).toMatchObject({ n: 1 });
+        });
+
+        // The failed boundary is consumed, not retried: the watcher missed
+        // version 1, and the NEXT mutating boundary delivers as normal —
+        // whole-state, so it carries everything the missed one did.
+        await expect(host.dispatch(wbRef, 'bump', [], call)).resolves.toBe(2);
+        expect(await feed.next()).toEqual({ value: 2, done: false });
+    });
+
+    it('still honours ctx.deactivate() when the boundary snapshot threw (#338)', async () => {
+        host = createHost({
+            actors: [Quitter],
+            storage: memoryStorage(),
+            types: [probe],
+            defaults: quiet
+        });
+        const quitRef = { type: Quitter.type, key: 'k' };
+        const feed = host.dispatchStream!(quitRef, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+
+        poisoned = true;
+        await expect(host.dispatch(quitRef, 'bumpAndQuit', [], call)).rejects.toThrow(
+            'poisoned snapshot'
+        );
+        poisoned = false;
+
+        // `ctx.deactivate()` is acted on in the same post-turn step that
+        // threw; before the fix the request was left pending and the
+        // activation stayed up until the host stopped.
+        await vi.waitFor(() => {
+            expect(deactivations).toEqual(['explicit']);
+        });
+    });
+
+    it('still ticks the subscribers behind the failing value subscriber (#338)', async () => {
+        host = createHost({
+            actors: [Counter],
+            storage: memoryStorage(),
+            types: [probe],
+            defaults: quiet
+        });
+        // The value subscriber FIRST, so it is the one whose snapshot throws
+        // mid-fan-out ...
+        const feed = host.dispatchStream!(ref, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+        // ... and a shared watch BEHIND it in subscription order. A watch is
+        // a ticks-only subscriber: its notification never touches the codec,
+        // and it re-reads through a turn of its own (`total()` returns a
+        // number, so the poison is invisible to that read). Before the fix
+        // the fan-out aborted at the throw, and every subscriber after it
+        // lost the boundary outright — the watch kept serving 0 until the
+        // next mutation.
+        const abort = new AbortController();
+        const watch = host
+            .dispatchWatch!(
+                ref,
+                'total',
+                [],
+                { ...call, abortSignal: abort.signal },
+                { throttleMs: 0 }
+            )
+            [Symbol.asyncIterator]();
+        expect(await watch.next()).toEqual({ value: 0, done: false });
+
+        poisoned = true;
+        await expect(host.dispatch(ref, 'bump', [], call)).rejects.toThrow('poisoned snapshot');
+        poisoned = false;
+
+        // Raced against a timer rather than awaited bare: a lost tick parks
+        // `next()` forever, and the failure should say so, not time the test
+        // out (`raceTimer`, below).
+        expect(await raceTimer(watch.next(), 'no tick')).toEqual({ value: 1, done: false });
+
+        abort.abort();
+        await watch.return?.();
+    });
+
+    it('does not leave a throttle window open for the value subscriber whose snapshot threw (#338)', async () => {
+        host = createHost({
+            actors: [ThrottledCounter],
+            storage: memoryStorage(),
+            types: [probe],
+            defaults: quiet
+        });
+        const tRef = { type: ThrottledCounter.type, key: 'k' };
+        const feed = host.dispatchStream!(tRef, 'watch', [], call)[Symbol.asyncIterator]();
+        expect(await feed.next()).toEqual({ value: 0, done: false });
+
+        // The failed boundary would have been this subscriber's leading
+        // edge: `#deferToWindow` opened its window, then the snapshot
+        // threw. That window is closed again on the failure — a boundary
+        // the subscriber never received must not defer the next one.
+        poisoned = true;
+        await expect(host.dispatch(tRef, 'bump', [], call)).rejects.toThrow('poisoned snapshot');
+        poisoned = false;
+
+        // So the next boundary is a leading edge of its own and emits at
+        // once, instead of parking behind the 60s window as a trailing emit.
+        await expect(host.dispatch(tRef, 'bump', [], call)).resolves.toBe(2);
+        expect(await raceTimer(feed.next(), 'deferred into the window')).toEqual({
+            value: 2,
+            done: false
+        });
+    });
 });
+
+/**
+ * Race a pull against a timer, clearing the timer either way: a lost tick
+ * parks `next()` forever, and the failure should say so rather than time the
+ * test out — but the guard must not keep the event loop alive once the pull
+ * has won.
+ */
+async function raceTimer<T>(pull: Promise<T>, label: string): Promise<T | string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<string>((r) => {
+        timer = setTimeout(() => r(label), 1000);
+    });
+    try {
+        return await Promise.race([pull, timeout]);
+    } finally {
+        clearTimeout(timer);
+    }
+}

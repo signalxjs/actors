@@ -1455,8 +1455,9 @@ export class Activation {
             // AFTER the observer, on purpose: `failed` is "the method threw",
             // and a bookkeeping failure here (a boundary snapshot whose codec
             // throws) reaches the caller for a turn already reported as
-            // succeeded — the documented, test-pinned contract (#53). What
-            // #afterTurn leaves undone when that throws is #338.
+            // succeeded — the documented, test-pinned contract (#53). The
+            // rest of #afterTurn's bookkeeping still runs when that throws
+            // (#338).
             this.#afterTurn(started);
         }
     }
@@ -1536,40 +1537,88 @@ export class Activation {
         // re-subscribes anything this turn added happens here, once per
         // dirty boundary, before the comparisons below read #version.
         this.#consumeDirty();
-        if (this.#version > this.#notifiedVersion) {
-            this.#notifiedVersion = this.#version;
-            if (this.#subs.size > 0) {
+        const boundary = this.#version > this.#notifiedVersion;
+        // The boundary is consumed BEFORE the fan-out and stays consumed if
+        // the snapshot throws (#338): a boundary snapshot whose codec fails is
+        // rethrown to this turn's caller, and retrying it from the next turn
+        // would make a read-only turn reject for a write it never made. The
+        // value subscribers that missed the boundary catch up on the next
+        // mutating one — snapshots are whole-state, so that one carries
+        // everything this one did.
+        if (boundary) this.#notifiedVersion = this.#version;
+        try {
+            if (boundary && this.#subs.size > 0) {
                 // The snapshot is built at most once per boundary AND only if
                 // someone actually wants one: a set of purely value-free or
                 // throttled-and-inside-their-window subscribers costs zero
                 // clones (#129). It is still shared by everyone who does get
                 // one, exactly as before.
                 let snap: object | undefined;
+                // The first snapshot failure, held until the loop is done: a
+                // throw mid-iteration would take the boundary away from every
+                // subscriber behind the failing one, ticks-only ones included
+                // — and a shared watch never touches the codec for its tick,
+                // it re-reads through a turn of its own. So the fan-out runs
+                // to the end: ticks are still delivered, the remaining value
+                // subscribers are skipped (the codec is not asked again for
+                // the same state), and the error is rethrown afterwards.
+                let snapError: { cause: unknown } | undefined;
                 for (const sub of this.#subs) {
+                    // Skipped BEFORE the window test: a boundary this
+                    // subscriber never receives must not open a throttle
+                    // window for it.
+                    if (snapError !== undefined && !sub.ticksOnly) continue;
                     if (this.#deferToWindow(sub)) continue;
-                    this.#deliver(
-                        sub,
-                        sub.ticksOnly ? CHANGE_TICK : (snap ??= this.#takeBoundarySnapshot())
-                    );
+                    if (sub.ticksOnly) {
+                        this.#deliver(sub, CHANGE_TICK);
+                        continue;
+                    }
+                    if (snap === undefined) {
+                        try {
+                            snap = this.#takeBoundarySnapshot();
+                        } catch (cause) {
+                            snapError = { cause };
+                            // `#deferToWindow` just opened this subscriber's
+                            // leading-edge window for an emit that never
+                            // happened; left open, it would defer the next
+                            // boundary into a trailing emit. The window
+                            // belongs to the boundary it received, so the
+                            // next one is a leading edge of its own.
+                            this.#closeWindow(sub);
+                            continue;
+                        }
+                    }
+                    this.#deliver(sub, snap);
                 }
+                if (snapError !== undefined) throw snapError.cause;
             }
-            if (this.#isWriteBehind() && this.#version > this.#savedVersion) {
+        } finally {
+            // Everything from here on runs whether or not the fan-out threw
+            // (#338): a codec failure is the caller's to see, but it must not
+            // leave the activation half-bookkept — a write-behind actor
+            // whose flush was never armed, a whole-state snapshot retained
+            // until the next save, a `ctx.deactivate()` never acted on.
+            // Deliberately NOT guarded like the observer above: a scheduler
+            // or host hand-off that throws here is a runtime fault, not
+            // per-turn third-party code, and it replacing an in-flight
+            // snapshot error is the lesser evil to swallowing it.
+            if (boundary && this.#isWriteBehind() && this.#version > this.#savedVersion) {
                 this.#scheduleWriteBehind();
             }
-        }
-        // A prepared snapshot nobody took this boundary (the subscriber
-        // closed, or every one deferred into its window) must not be
-        // retained until the next save — it is a whole-state copy.
-        this.#preparedSnap = null;
-        if (this.#faulted && !this.#faultReported) {
-            this.#faultReported = true;
-            this.#host.onFault(this);
-        } else if (this.#deactivateRequested && this.turns.depth <= 1 && !this.#faulted) {
-            // depth 1 = only the turn that is settling right now — nothing
-            // else queued OR in flight (this finally runs before the
-            // turns' own settlement decrement, in both lanes), so the
-            // requested deactivation can begin.
-            this.#host.onIdleRequest(this);
+            // A prepared snapshot nobody took this boundary (the subscriber
+            // closed, or every one deferred into its window) must not be
+            // retained until the next save — it is a whole-state copy.
+            this.#preparedSnap = null;
+            if (this.#faulted && !this.#faultReported) {
+                this.#faultReported = true;
+                this.#host.onFault(this);
+            } else if (this.#deactivateRequested && this.turns.depth <= 1 && !this.#faulted) {
+                // depth 1 = only the turn that is settling right now — nothing
+                // else queued OR in flight (this finally runs before the
+                // turns' own settlement decrement, in both lanes), so the
+                // requested deactivation can begin.
+                this.#host.onIdleRequest(this);
+            }
         }
     }
 

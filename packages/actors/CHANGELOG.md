@@ -137,6 +137,29 @@
 
 ### Fixed
 
+- **A boundary snapshot that throws no longer leaves the turn half-bookkept**
+  (#338). When the post-turn change-feed fan-out failed — a host codec or
+  `TypeHandler` throwing while cloning state for a `ctx.changes()` value
+  subscriber — the error reached the caller as documented (#53), but
+  everything `#afterTurn` does after the fan-out was skipped: a write-behind
+  actor's flush was not scheduled, so its dirty state sat until the next
+  mutating turn or deactivation; a `ctx.deactivate()` made in that turn was
+  never acted on; a prepared whole-state snapshot could linger until the next
+  save; a pending fault report waited for the next turn. And the fan-out
+  itself stopped at the throw, so every subscriber behind the failing one in
+  subscription order lost the boundary too — including the ticks-only
+  subscribers behind a shared watch (`$live`, `useActorState({ live: true })`),
+  which never touch the codec and kept serving stale state until the next
+  mutation. The fan-out now runs to the end (ticks are still delivered, the
+  remaining value subscribers are skipped rather than asking the codec
+  again, and a throttled subscriber's window opened for the failed emit is
+  closed so its next boundary is not deferred) inside a `try/finally`, so
+  all of that bookkeeping completes before the snapshot error is rethrown. The failed boundary itself is consumed,
+  not retried — the value subscribers that missed it see the next mutating
+  boundary, whose whole-state snapshot carries everything the missed one did
+  — so a read-only turn never rejects for a write it did not make. The
+  observer-before-bookkeeping ordering pinned in #53 is unchanged.
+
 - **`host.stop()` now waits for a task run it interrupts mid-start** (#333).
   A run entered the activation's task table the moment `tasks.start` was
   called, but only joined the set deactivation awaits once its body launched
