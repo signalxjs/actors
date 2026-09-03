@@ -75,7 +75,10 @@ other host reads `null`, which is "said nothing", exactly as for `metrics`.
 A renderer that summed the column, or drew a peer's `null` as `0 open`, would
 claim a fleet-wide count that no one measured. Inside the section, a
 `bufferedBytes` of `null` is the same rule one level down: no adapter could
-report its buffers, which is not `0 B` (#208).
+report its buffers, which is not `0 B` (#208). And `subscriptionsShed` (#258)
+is rendered only when non-zero, for the same reason from the other side: the
+cap is off by default and inert on an adapter that cannot report its buffer,
+so a `0 shed` row would claim "nobody was slow" on a host that cannot know.
 
 **A number needs its scope attached.** `scopeOf`, `polledLabel` and
 `coverageNote` exist because the failure behind #121 was never a wrong number

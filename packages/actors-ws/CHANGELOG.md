@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`attachActorSocket({ maxBufferedBytes })`** (#258) — the session's new
+  slow-consumer cap rides through unchanged, and this is the adapter where
+  it actually bites: `ws` exposes `bufferedAmount`, which the adapter has
+  fed to the session as `bufferedBytes` since #252, so a subscriber that
+  stops reading now costs itself its heaviest subscription (a `503`
+  frame with `data.kind === 'shed'`) instead of costing the host unbounded
+  memory. Off by default; a bad value closes the upgrade 1011 exactly like
+  a bad `maxConnectionMs`.
+
 ## [0.9.1] - 2026-08-16
 
 ### Fixed

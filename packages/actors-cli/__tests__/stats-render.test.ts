@@ -64,6 +64,7 @@ const sockets = {
     deliveries: 1200,
     deliveryBytes: 48_000,
     throttleQuantized: 6,
+    subscriptionsShed: 3,
     open: 3,
     inFlight: 1,
     subscriptions: 4,
@@ -210,7 +211,17 @@ describe('renderStats', () => {
         expect(output).toMatch(/buffered {5}512 B/);
         expect(output).toMatch(/connections {2}7 opened {2}4 closed {2}2 refused/);
         expect(output).toMatch(/evicted {6}2 lifetime {2}1 protocol breach/);
+        expect(output).toMatch(/shed {9}3 subscriptions/);
         expect(output).toMatch(/lifetime {5}p50 2ms {2}p90 21ms {2}p99 21ms/);
+    });
+
+    it('prints the shed row only when a subscription was shed (#258)', () => {
+        // Off by default and inert without an adapter's buffer gauge — a
+        // zero would read as "nothing was slow" on a host that cannot say.
+        const output = render(
+            snapshot({ hosts: [{ ...snapshot().hosts[0]!, sockets: { ...sockets, subscriptionsShed: 0 } }] })
+        );
+        expect(output).not.toMatch(/shed/);
     });
 
     it('prints no sockets section for a host that reported none', () => {

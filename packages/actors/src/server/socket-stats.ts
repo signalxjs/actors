@@ -74,6 +74,14 @@ export interface SocketStatsTotals {
      * answers.
      */
     throttleQuantized: number;
+    /**
+     * Subscriptions the session closed because the connection's send
+     * buffer was over `maxBufferedBytes` (#258). Each is also counted in
+     * `subscriptionsClosed`; this says WHY. Stays 0 with the cap off, and
+     * on any adapter that cannot report its buffer — which is "the cap is
+     * inert here", not "nobody was slow".
+     */
+    subscriptionsShed: number;
 }
 
 /** What `snapshot()` reports — the ops-section payload. */
@@ -131,6 +139,8 @@ export interface SocketSessionRecorder {
     delivered(chars: number): void;
     /** A subscription's requested delivery window was moved by the policy. */
     throttleQuantized(): void;
+    /** A subscription was closed for the connection's send buffer being over the cap. */
+    shed(): void;
 }
 
 export interface SocketStats extends SocketSessionRecorder {
@@ -156,7 +166,8 @@ export function socketStats(): SocketStats {
         lifetimeCloses: 0,
         deliveries: 0,
         deliveryBytes: 0,
-        throttleQuantized: 0
+        throttleQuantized: 0,
+        subscriptionsShed: 0
     };
     const open = new Set<SocketSessionProbe>();
     const lifetime = new Histogram();
@@ -198,6 +209,9 @@ export function socketStats(): SocketStats {
         },
         throttleQuantized() {
             totals.throttleQuantized++;
+        },
+        shed() {
+            totals.subscriptionsShed++;
         },
         snapshot() {
             let inFlight = 0;

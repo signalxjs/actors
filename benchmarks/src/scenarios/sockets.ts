@@ -276,6 +276,18 @@ export function deliveryMetrics(result: RunResult): Metric[] {
             informational: true
         });
     }
+    // Subscriptions the hosts shed for a slow consumer (#258) — 0 with the
+    // cap off, which is every run so far; the number the next slow-consumer
+    // run with `maxBufferedBytes` set is for.
+    if (result.delta.subscriptionsShed !== undefined) {
+        metrics.push({
+            name: 'host_subscriptions_shed',
+            value: result.delta.subscriptionsShed,
+            unit: 'count',
+            direction: 'lower',
+            informational: true
+        });
+    }
     if (typeof result.peakBufferedBytes === 'number') {
         metrics.push({
             name: 'peak_host_buffered_bytes',
@@ -547,27 +559,34 @@ const declaredFanout: Scenario = {
  * The slow-consumer arm (#182): what happens to a host when subscribers stop
  * keeping up.
  *
- * The socket send path is fire-and-forget — nothing in the runtime reads
- * `bufferedAmount` — so #182 says a slow client shows up as MEMORY on the
- * host rather than as backpressure. `SLOW_FRACTION` produces such a client
- * by pausing the TCP socket underneath a fraction of subscribers (see
- * `stall()` in `ws-loadgen.mjs` for why it must be the socket and not the
- * message handler). Nothing evicts them: the session's `{ p: 1 }` is an
- * application frame with no pong requirement, and `@sigx/actors-ws`
- * installs no WebSocket keepalive and no idle timeout.
+ * The socket send path is fire-and-forget, so a slow client shows up as
+ * MEMORY on the host rather than as backpressure. `SLOW_FRACTION` produces
+ * such a client by pausing the TCP socket underneath a fraction of
+ * subscribers (see `stall()` in `ws-loadgen.mjs` for why it must be the
+ * socket and not the message handler). Nothing evicts them: the session's
+ * `{ p: 1 }` is an application frame with no pong requirement, and
+ * `@sigx/actors-ws` installs no WebSocket keepalive and no idle timeout.
  *
- * **What this scenario deliberately does NOT report is the buffer itself.**
- * The rig's `maxBufferedBytes` is sampled from the CLIENT's
- * `WebSocket#bufferedAmount` — data queued to send — and a subscriber sends
- * almost nothing, so it sits at ~0 however much the host is holding. The
- * host has no `bufferedAmount` instrumentation anywhere (`socketStats()`
- * has none, nor does `@sigx/actors-ws`), which is #182's own point and also
- * why #182 cannot be settled from this side of the socket. Reporting the
- * client number here would produce a confident `0` that means nothing, and
- * that is how "the hosts never outran the clients" gets written down.
+ * **Two buffers, and only one of them is the finding.** The rig's own
+ * `maxBufferedBytes` is sampled from the CLIENT's `WebSocket#bufferedAmount`
+ * — data queued to send — and a subscriber sends almost nothing, so it sits
+ * at ~0 however much the host is holding; it is never reported here,
+ * because a confident `0` that means nothing is how "the hosts never outran
+ * the clients" got written down. The HOST's buffer is what
+ * `peak_host_buffered_bytes` reports: since #252 the session exposes the
+ * adapter's `bufferedBytes` (`ws`'s `bufferedAmount`) through
+ * `socketStats().bufferedBytes`, sampled in-run. That is the number that
+ * answered #182 — 350 MB across three pods with every client-side signal
+ * at zero (`BASELINES.md`, 2026-08-15) — and it reads `null`, not `0`, on
+ * an adapter that cannot supply the seam.
  *
- * What it reports instead is the CONSEQUENCE, which is observable — and
- * this is a question rather than a gate, so every metric is informational:
+ * The answer to the number is the session's `maxBufferedBytes` (#258,
+ * opt-in, default off): over the cap the session sheds the subscription
+ * that filled the buffer with a `{status: 503, data: {kind: 'shed'}}`
+ * frame, and `host_subscriptions_shed` counts them. Every run so far had
+ * the cap off; the re-measurement with it on is the next paid session's.
+ *
+ * This is a question rather than a gate, so every metric is informational:
  *
  * - `top/deliveries_per_sec` falling against a run at the same rung with
  *   `slow_connections: 0` is the finding that changes the sizing rule: a
@@ -575,9 +594,9 @@ const declaredFanout: Scenario = {
  * - `drops` climbing means something DID react (the kernel, the ingress,
  *   `ws`), and where is then worth knowing — the runtime is not the only
  *   thing in the path.
- * - both flat means the host absorbed it silently, which is #182's
- *   prediction and the case that needs host-side instrumentation to confirm
- *   rather than merely fail to refute.
+ * - `peak_host_buffered_bytes` climbing with both of those flat is the
+ *   host absorbing it silently — the measured case. With the cap on,
+ *   `host_subscriptions_shed` is what should climb instead.
  */
 const slowConsumer: Scenario = {
     name: 'sockets/slow-consumer',

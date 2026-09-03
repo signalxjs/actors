@@ -225,6 +225,30 @@ describe('socketStats', () => {
         await until(() => stats.snapshot().throttleQuantized === 1);
     });
 
+    it('counts a shed subscription once, as shed AND as closed (#258)', async () => {
+        const s = await start();
+        const stats = socketStats();
+        let depth = 1;
+        const { session } = await connect(s, stats, {
+            maxBufferedBytes: 10,
+            bufferedBytes: () => depth
+        });
+        session.handle(JSON.stringify({ i: 1, sub: { t: 'Cart', k: 'k', m: 'total' } }));
+        await until(() => stats.snapshot().deliveries === 1);
+        expect(stats.snapshot().subscriptionsShed).toBe(0);
+
+        depth = 11;
+        session.handle(JSON.stringify({ i: 2, s: 'Cart#add', a: ['k', 'apple'] }));
+        await until(() => stats.snapshot().subscriptionsShed === 1);
+        const snap = stats.snapshot();
+        expect(snap.subscriptionsClosed).toBe(1);
+        expect(snap.subscriptions).toBe(0);
+        // The connection itself is not an eviction.
+        expect(snap.connectionsClosed).toBe(0);
+        expect(snap.lifetimeCloses).toBe(0);
+        expect(stats.digest().subscriptionsShed).toBe(1);
+    });
+
     it('reports bufferedBytes as null when no adapter can answer, and sums when they can', async () => {
         // The #208 rule: null MEANS "nobody could tell us". A zero here
         // would read as "the hosts are not buffering", which is the

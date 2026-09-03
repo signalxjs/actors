@@ -51,6 +51,7 @@ const socketDigest: SocketStatsDigest = {
     deliveries: 1200,
     deliveryBytes: 48_000,
     throttleQuantized: 6,
+    subscriptionsShed: 3,
     layout: 'll-4-26',
     lifetime: { count: 4, sumUs: 46, minUs: 2, maxUs: 21, idx: [1, 20], n: [2, 2] }
 };

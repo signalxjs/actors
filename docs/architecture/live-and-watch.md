@@ -398,6 +398,49 @@ This also scopes #194's sizing rule, which otherwise reads as general:
 identity.** A declared read opens no per-identity stream, so there is
 nothing to budget for; an authorize-only read should become one.
 
+## A slow consumer is shed, not funded (#258)
+
+`WATCH_BUFFER` (`watch-core.ts`, 16 values) bounds the fan-out queue INTO a
+socket session, per subscriber, drop-oldest. It does not bound the socket:
+the session's delivery loop hands every frame to the adapter's `send()`
+fire-and-forget, and a client that stops reading turns into bytes queued in
+the host's own send buffer with nothing to reap the connection (`revalidateMs`
+and `maxConnectionMs` default to off; the `{p:1}` keepalive has no pong
+requirement). Measured on Tier 3 (`sockets/slow-consumer`, 5 000 subscribers,
+10% stalled): **~350 MB across three pods while every client-side signal read
+zero** — `benchmarks/BASELINES.md`, 2026-08-15. A slow consumer was funded out
+of the host's heap.
+
+The bound is `createActorSocketSession({ maxBufferedBytes })` — opt-in,
+default `0` = off, re-exposed verbatim by `attachActorSocket` in
+`@sigx/actors-ws/node`. After each subscription frame the session reads the
+adapter's `bufferedBytes()` (#252, `ws`'s `bufferedAmount`); over the cap it
+sheds ONE subscription: the one that delivered the most bytes since the
+buffer was last observed empty, which on a stalling connection is the one most
+responsible for the depth. The shed is the ordinary per-subscription terminal
+frame, `{i, e: {status: 503, data: {kind: 'shed'}}}`, so a client's live
+channel sees one subscription fail (`error.data.kind === 'shed'`) and nothing
+else changes — the connection stays open, calls and the other subscriptions
+continue. While the buffer stays over the cap each further delivery sheds the
+next heaviest, so a connection that never drains ends up holding no
+subscriptions and at most cap + one frame: the socket equivalent of the
+fan-out's drop-oldest rule, and the same posture. Option 3 in #258 — real
+backpressure, stalling the shared watch loop for one congested subscriber — is
+rejected for the reason coalescing exists at all (#111): one stalled consumer
+must not hold the stream for everyone.
+
+Two things the cap deliberately does not do. It never sheds on `null`: an
+adapter that cannot report its buffer (the Cloudflare adapters today) leaves
+the cap inert and documented as such, rather than faking a 0 and making it
+look enforced. And it closes no connection — a slow consumer is a subscription
+problem; the connection-level closes stay what they were (1003/1009 for the
+vocabulary, 1008 for credentials).
+
+`socketStats().subscriptionsShed` counts them (`shed` in `sigx actors stats`
+/ `top`, `socket_subscriptions_shed_total` in Prometheus, only rendered when
+non-zero); `host_subscriptions_shed` is the benchmark metric. The Tier-3
+re-measurement with the cap on is parked to the next paid cluster session.
+
 ## Sizing guidance, and the guardrails that pin it
 
 The old ceiling was **~100 distinct principals** on one hot actor — and
