@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineActor, type ActorContext, type ActorStorage, type StateErrorPhase } from '@sigx/actors';
+import {
+    defineActor,
+    type ActorContext,
+    type ActorStorage,
+    type AnyActorDefinition,
+    type StateErrorPhase
+} from '@sigx/actors';
 import { createHost, manualScheduler, memoryStorage, type Host, type ManualScheduler } from '@sigx/actors/host';
 
 /**
@@ -77,7 +83,7 @@ afterEach(async () => {
     running = null;
 });
 
-function start(def: ReturnType<typeof explicitActor>, storage: ActorStorage): Host {
+function start(def: AnyActorDefinition, storage: ActorStorage): Host {
     clock = manualScheduler();
     const host = createHost({ actors: [def], storage, scheduler: clock, defaults: quiet });
     running = host;
@@ -106,6 +112,28 @@ describe("ctx.save({ durability: 'eventual' }) on an explicit-persistence actor 
         clock.advance(50);
         await vi.waitFor(() => expect(counts.saves).toBe(2));
         expect(await stored(inner, 'Eventual')).toBe(6);
+    });
+
+    it('works with `persistence` omitted — the default IS explicit, and most actors never spell it', async () => {
+        const { storage, inner, counts } = countingStorage('Unspelled');
+        const def = defineActor({
+            type: 'Unspelled',
+            allowAnonymous: true,
+            state: () => ({ n: 0 }),
+            methods: (ctx) => ({
+                async bump() {
+                    ctx.state.n++;
+                    await ctx.save({ durability: 'eventual' });
+                    return ctx.state.n;
+                }
+            })
+        });
+        const client = start(def, storage).actor(def, 'k');
+        await expect(client.bump()).resolves.toBe(1);
+        expect(counts.saves).toBe(0);
+        clock.advance(50);
+        await vi.waitFor(() => expect(counts.saves).toBe(1));
+        expect(await stored(inner, 'Unspelled')).toBe(1);
     });
 
     it('an immediate save() carries a pending eventual one — no second write follows', async () => {

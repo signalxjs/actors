@@ -1645,8 +1645,10 @@ export class Activation {
      */
     #scheduleWriteBehind(): void {
         if (this.#cancelWriteBehind) return;
-        const p = this.def.__sigxActor.persistence as { debounceMs?: number };
-        this.#cancelWriteBehind = this.#host.scheduler.after(p.debounceMs ?? 50, () => {
+        // `persistence` is optional and usually omitted (the default is
+        // explicit) — an eventual save on such an actor takes the 50 ms.
+        const p = this.def.__sigxActor.persistence as { debounceMs?: number } | undefined;
+        this.#cancelWriteBehind = this.#host.scheduler.after(p?.debounceMs ?? 50, () => {
             this.#cancelWriteBehind = null;
             // A system turn — serialized with user turns, so on a serial
             // actor the save always captures a between-turns state. On an
