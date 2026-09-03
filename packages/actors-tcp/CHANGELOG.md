@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A concurrent first activation no longer applies calls twice, or hangs**
+  (#353). When two hosts dialled each other at once, the simultaneous-dial
+  arbitration closed the losing socket with calls already on it — and it
+  judged the race on `peerHostId`, which a dialled socket only learns from
+  WELCOME, *after* the calls that raced onto it, so the designated dialer
+  closed its own outbound. The in-flight calls failed as `unreachable`, the
+  placement re-dispatched them, and the owner (which had executed the CALL
+  that shared a `data` event with the HELLO, then dropped its REPLY) ran
+  them again: six `increment(1)` at one new key became `[1, 2, 5, 6, 7, 8]`.
+  A call whose connection closed between `linkTo` and the signature never
+  settled at all. Now the loser is **retired**, not cut: `register()` judges
+  the race on socket direction alone, the loser takes no new calls, answers
+  what is on it, and closes once both ends have said they are done
+  (`GOAWAY 0`); `dial()` meets an inbound that arrived while it was
+  connecting through the same arbitration instead of orphaning it, returns
+  the survivor, settles on `close` as well as `connect`/`error`, and gives up
+  after `handshakeTimeoutMs`; a call's abort signal now covers the dial and
+  the signature; `stop()` closes retired connections; a write to a destroyed
+  socket is refused up front so the call classifies as provably unsent. The
+  shared suite gained the case that reproduces it.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

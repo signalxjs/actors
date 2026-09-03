@@ -14,7 +14,13 @@ export function socketLink(socket: Socket): FrameLink {
     socket.setNoDelay(true);
     return {
         messageOriented: false,
-        send: (bytes) => socket.write(bytes),
+        // A destroyed socket takes a write silently and errors on the next
+        // tick; throwing here instead lets the connection classify the call
+        // as provably unsent — retryable — rather than "outcome unknown".
+        send: (bytes) => {
+            if (socket.destroyed) throw new Error('socket destroyed');
+            return socket.write(bytes);
+        },
         close: () => socket.destroy(),
         onData: (cb) =>
             void socket.on('data', (chunk: Buffer) =>

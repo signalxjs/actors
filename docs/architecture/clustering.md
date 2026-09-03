@@ -288,6 +288,34 @@ The warm fast path pays exactly this one increment and nothing else; the
 `remoteDispatches` against its own call count so its `exact` gates stay as
 baselined.
 
+## When a dispatch may be retried
+
+The routing loop (`#routedDispatch`, default `retries: 3`) re-dispatches a
+call on exactly three classifications, and each one is a claim about
+execution, not about the network:
+
+- **`wrong-host`** — the target refused it before running it and said who
+  owns it; retry there at once.
+- **`unreachable`** — the call **provably never executed**: no transport
+  accepted it, or the one that did can prove its CALL frame was never
+  written. Evict the stale claim, refresh membership, re-resolve, back off.
+- **`host-shutdown`** from a *remote* peer — refused at the door of a
+  draining host; re-resolve after a backoff.
+
+Everything else is surfaced to the caller unchanged. In particular a call
+that was on the wire when its connection dropped is **not** `unreachable`:
+the owner may have run it and the reply died with the socket, so a
+connection-oriented transport fails it with an ordinary error ("closed with
+this call in flight: outcome unknown, not retried") and the caller — who
+knows whether the method is idempotent — decides. A transport that answers
+`unreachable` for that case is asking the placement to re-run a
+non-idempotent method on a guess; that is the double execution of #353, and
+the `transportConformance` case "a concurrent first activation reached
+through mutual dials applies every call exactly once" is what pins it. The
+same rule is why the TCP transport *retires* the loser of a simultaneous
+dial instead of closing it (see
+[wire-and-frames.md](wire-and-frames.md#behaviours-a-transport-must-preserve)).
+
 ## Shutdown ordering
 
 The sequence is deliberately not the obvious one:

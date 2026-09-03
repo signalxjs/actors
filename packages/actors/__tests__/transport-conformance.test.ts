@@ -80,7 +80,7 @@ describe('transport conformance: httpTransport()', () => {
                 ctx.skip(outcome.skipped);
             }
             expect(outcome).toBeUndefined();
-        });
+        }, testCase.timeoutMs);
     }
 
     it('covers every case exactly once, with a stated reason', () => {

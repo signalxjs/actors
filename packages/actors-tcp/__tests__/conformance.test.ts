@@ -197,6 +197,6 @@ describe('transport conformance: tcpTransport()', () => {
                 ctx.skip(outcome.skipped);
             }
             expect(outcome).toBeUndefined();
-        });
+        }, testCase.timeoutMs);
     }
 });
