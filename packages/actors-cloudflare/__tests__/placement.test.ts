@@ -6,10 +6,19 @@
  * `hostEndpointRuntime`). So the wire under test is the shipped one —
  * envelope, codec, NDJSON, branded errors — and only the platform is faked.
  */
-import { describe, expect, it } from 'vitest';
-import { defineActor, defineWorker, isActorError } from '@sigx/actors';
+import { describe, expect, it, vi } from 'vitest';
+import {
+    defineActor,
+    defineWorker,
+    isActorError,
+    type AnyActorDefinition
+} from '@sigx/actors';
 import { createHost, manualScheduler, type Host } from '@sigx/actors/host';
-import { handleHostRequestForRuntime, hostEndpointRuntime } from '@sigx/actors/cluster';
+import {
+    consistentHashPolicy,
+    handleHostRequestForRuntime,
+    hostEndpointRuntime
+} from '@sigx/actors/cluster';
 import { durableObjectPlacement, durableObjectStorage } from '@sigx/actors-cloudflare';
 import type { DurableObjectNamespaceLike } from '@sigx/actors-cloudflare';
 
@@ -368,5 +377,149 @@ describe('durableObjectPlacement', () => {
             /does not support jurisdictions/
         );
         await ns.stop();
+    });
+});
+
+/**
+ * The runtime floor for `defineActor({ placement })` on a DO-hosted actor
+ * (#362). The type narrowing from #351 reaches only an app module that
+ * installs the placement plugin itself; the documented `app` factory never
+ * does, so a strategy declared through it compiles — and this is what
+ * catches it.
+ */
+describe('durableObjectPlacement: the declared-placement floor (#362)', () => {
+    const local = { dispatch: async () => 'local' };
+    const namespace: DurableObjectNamespaceLike = {
+        idFromName: (name) => ({ name, toString: () => name }),
+        get: () => ({ fetch: async () => new Response('never') })
+    };
+    const base = {
+        allowAnonymous: true as const,
+        state: () => ({ n: 0 }),
+        methods: () => ({
+            async get() {
+                return 0;
+            }
+        })
+    };
+    /** A host that resolves definitions the way a registry does — sync for
+     *  a definitions array, a promise for the lazy `virtual:sigx-actors`. */
+    const hostOf = (defs: readonly AnyActorDefinition[], lazy = false): Host =>
+        ({
+            definition(type: string) {
+                const def = defs.find((d) => d.type === type) ?? null;
+                return lazy ? Promise.resolve(def) : def;
+            }
+        }) as unknown as Host;
+    /** One placement per side: a Durable Object (with `isSelf`) and the Worker. */
+    const bound = (defs: readonly AnyActorDefinition[], lazy = false) => {
+        const object = durableObjectPlacement({
+            namespace,
+            isSelf: (ref) => ref.key === 'mine'
+        });
+        object.bind!(local, hostOf(defs, lazy));
+        const worker = durableObjectPlacement({ namespace });
+        worker.bind!(local, hostOf(defs, lazy));
+        return { object, worker };
+    };
+
+    it('warns ONCE per type that a declared strategy is ignored — on the self path, the remote path, and a second placement alike', () => {
+        const Placed = defineActor({ ...base, type: 'Placed', placement: { name: 'prefer-local' } });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const { object, worker } = bound([Placed]);
+            // The SELF path first: `isSelf` used to short-circuit before any
+            // definition read, so a check hung off the stateless lookup alone
+            // would never see a Durable Object's own actor.
+            expect(object.dispatcherFor({ type: 'Placed', key: 'mine' })).toBe(local);
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn.mock.calls[0]![0]).toBe(
+                '[sigx actors-cloudflare] actor "Placed" declares placement "prefer-local" — ' +
+                    'Durable Objects ignore it; a ref maps to its object by name'
+            );
+            // Then many dispatches, both paths, and the Worker's placement —
+            // objects of one class share an isolate, so once per type per
+            // module, not per placement.
+            object.dispatcherFor({ type: 'Placed', key: 'other' });
+            object.dispatcherFor({ type: 'Placed', key: 'mine' });
+            worker.dispatcherFor({ type: 'Placed', key: 'other' });
+            worker.dispatcherFor({ type: 'Placed', key: 'mine' });
+            expect(warn).toHaveBeenCalledTimes(1);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('warns through a lazy registry too, and still routes', async () => {
+        const Lazy = defineActor({ ...base, type: 'LazyPlaced', placement: { name: 'sticky' } });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const { object } = bound([Lazy], true);
+            await expect(object.dispatcherFor({ type: 'LazyPlaced', key: 'mine' })).resolves.toBe(
+                local
+            );
+            const remote = await object.dispatcherFor({ type: 'LazyPlaced', key: 'other' });
+            expect(remote).not.toBe(local);
+            // Memoized: the second round is synchronous and says nothing more.
+            expect(object.dispatcherFor({ type: 'LazyPlaced', key: 'mine' })).toBe(local);
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn.mock.calls[0]![0]).toMatch(/actor "LazyPlaced" declares placement "sticky"/);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('THROWS for a strategy tagged for the cluster, on every dispatch and on both paths', async () => {
+        // A cluster policy cannot mean anything here — a ref maps to its
+        // object by name — so it is unambiguously wrong, not merely ignored:
+        // the same posture the cluster placement takes with a tag it does
+        // not own (#350).
+        const Clustered = defineActor({
+            ...base,
+            type: 'Clustered',
+            placement: consistentHashPolicy()
+        });
+        const Tagged = defineActor({
+            ...base,
+            type: 'Tagged',
+            // The tag alone decides — no `choose()` needed to be refused.
+            placement: { name: 'hand-rolled', backend: 'cluster' }
+        });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const { object, worker } = bound([Clustered, Tagged]);
+            const message =
+                /actor "Clustered" declares placement "consistent-hash", a cluster PlacementPolicy/;
+            expect(() => object.dispatcherFor({ type: 'Clustered', key: 'mine' })).toThrow(message);
+            expect(() => object.dispatcherFor({ type: 'Clustered', key: 'other' })).toThrow(message);
+            expect(() => worker.dispatcherFor({ type: 'Clustered', key: 'x' })).toThrow(message);
+            // Not memoized as "checked": the second call fails the same way.
+            expect(() => worker.dispatcherFor({ type: 'Clustered', key: 'x' })).toThrow(message);
+            expect(() => worker.dispatcherFor({ type: 'Tagged', key: 'x' })).toThrow(
+                /actor "Tagged" declares placement "hand-rolled"/
+            );
+            // A lazy registry rejects instead of throwing, same message.
+            const lazy = bound([Clustered], true);
+            await expect(lazy.object.dispatcherFor({ type: 'Clustered', key: 'mine' })).rejects.toThrow(
+                message
+            );
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('says nothing for a definition without placement, or a type the host does not know', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const { object, worker } = bound([Counter, Work]);
+            expect(object.dispatcherFor({ type: 'Counter', key: 'mine' })).toBe(local);
+            expect(object.dispatcherFor({ type: 'Counter', key: 'other' })).not.toBe(local);
+            expect(worker.dispatcherFor({ type: 'Work', key: 'any' })).toBe(local);
+            expect(worker.dispatcherFor({ type: 'Ghost', key: 'x' })).not.toBe(local);
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

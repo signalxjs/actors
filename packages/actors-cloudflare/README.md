@@ -10,6 +10,8 @@ whole actor app runs on Workers.
 - **`durableObjectStorage()`** / **`durableObjectReminders()`** — the two seams
   the platform leaves to you, over DO storage and alarms.
 - **`durableObjectPlacement()`** / **`durableObjects()`** — ref → object id.
+- **`durableObjectsHosted()`** — type-only plugin for the `app` factory: makes
+  `placement:` a compile error on a DO-hosted actor.
 - **`workerSocket()`** — the client WebSocket, terminated in the Worker; pairs
   with `socketTransport()` from
   [`@sigx/actors-ws`](https://sigx.dev/actors). It does **not** release

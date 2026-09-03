@@ -59,6 +59,13 @@ Both exports need the actor registry: the Worker to run guards, tell a stream
 method from a unary one and be the 404 authority; the object to activate. On
 Cloudflare they are the **same bundle**, so it is a plain import.
 
+The factory also does `.use(durableObjectsHosted())`. That plugin installs
+nothing — the host claims the placement itself — but it narrows the
+`defineActor` exported from `actors.app.ts` so `placement:` on an actor is a
+compile error. A cluster policy means nothing on Durable Objects (a ref maps to
+its object by name), and the placement throws at dispatch if one reaches it
+anyway ([#362](https://github.com/signalxjs/actors/issues/362)).
+
 ## The client socket
 
 `socket: {}` on `createWorkerHandler` mounts the Worker-terminated WebSocket
