@@ -333,6 +333,14 @@ export function durableObjectPlacement(
  * directory — so the app-bound `defineActor` of a DO app refuses
  * `placement` outright, where a cluster policy used to compile and be a
  * silent no-op at runtime.
+ *
+ * That narrowing reaches only an app whose module calls
+ * `.use(durableObjects(...))` itself. The `app` factory handed to
+ * `createHostDurableObject()` / `createWorkerHandler()` never does — the
+ * host installs this plugin after the factory runs, and refuses a factory
+ * that installed it already — so a `defineActor` bound from that factory
+ * still carries the wide `Placement`, and a strategy declared through it is
+ * still ignored here. The runtime floor for that path is #362.
  */
 export function durableObjects(
     options: DurableObjectPlacementOptions

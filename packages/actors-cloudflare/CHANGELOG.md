@@ -11,7 +11,16 @@
   maps to its object by name), so a cluster `PlacementPolicy` on a DO-hosted
   actor compiled and was a silent no-op. The bare `defineActor` from
   `@sigx/actors` and apps without the plugin are unchanged; no runtime
-  change.
+  change. **Reach:** the compile error lands only where the app module
+  itself calls `.use(durableObjects(...))`. On the supported authoring
+  path — an `app` factory handed to `createHostDurableObject()` /
+  `createWorkerHandler()`, which install the plugin themselves after the
+  factory runs, and the type-only `export const { defineActor } =
+  createApp({})` binding built from it — `placement` still has the wide
+  type and is still a silent no-op. The runtime floor for that case (a
+  `__DEV__` warning from the DO placement when a registered definition
+  carries `placement`) and a type-level device the factory can use without
+  `env` are tracked in #362.
 - **`objectSocketRoute` refuses `internal: true` types at the upgrade**
   (#74). The object-terminated socket's forwarding route resolves the type
   itself, ahead of any session, so it now answers a server-internal type

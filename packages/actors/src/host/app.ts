@@ -302,8 +302,10 @@ export interface PluginRegistry {
  * app, and the app-bound `defineActor` accepts only that — so a strategy
  * tagged for another backend fails to compile where the runtime would have
  * ignored it silently, and a malformed untagged one fails to compile where
- * the runtime would have thrown at dispatch (#58). Plugins that install no
- * placement leave it at the widest reading, `ActorPlacementStrategy`.
+ * the runtime would have thrown at dispatch (#58). A backend that reads no
+ * strategy at all carries `never` (`durableObjects()`, #351), so the option
+ * can only be omitted. Plugins that install no placement leave it at the
+ * widest reading, `ActorPlacementStrategy`.
  */
 export interface ActorPlugin<
     Ext extends object = Record<never, never>,
