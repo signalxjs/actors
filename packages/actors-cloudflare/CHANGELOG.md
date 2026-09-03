@@ -4,6 +4,14 @@
 
 ### Changed
 
+- **`durableObjects()` narrows `placement` to `never`** (#351). Type-only.
+  The plugin is now `ActorPlugin<Record<never, never>, never>`, so the
+  app-bound `defineActor` of an app that `.use(durableObjects(...))` refuses
+  `placement` outright — the Durable Objects placement never reads it (a ref
+  maps to its object by name), so a cluster `PlacementPolicy` on a DO-hosted
+  actor compiled and was a silent no-op. The bare `defineActor` from
+  `@sigx/actors` and apps without the plugin are unchanged; no runtime
+  change.
 - **`objectSocketRoute` refuses `internal: true` types at the upgrade**
   (#74). The object-terminated socket's forwarding route resolves the type
   itself, ahead of any session, so it now answers a server-internal type

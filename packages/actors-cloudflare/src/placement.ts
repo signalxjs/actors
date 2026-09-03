@@ -327,8 +327,16 @@ export function durableObjectPlacement(
  * `setPlacement` is EXCLUSIVE, and that exclusivity is the recursion guard:
  * if an app already installed this plugin, the host adding its own throws
  * naming both, instead of a Durable Object quietly dispatching to itself.
+ *
+ * Carries `never` as its `Placement` (#351): this placement reads no
+ * strategy — a ref maps to its object by name, and the platform IS the
+ * directory — so the app-bound `defineActor` of a DO app refuses
+ * `placement` outright, where a cluster policy used to compile and be a
+ * silent no-op at runtime.
  */
-export function durableObjects(options: DurableObjectPlacementOptions): ActorPlugin {
+export function durableObjects(
+    options: DurableObjectPlacementOptions
+): ActorPlugin<Record<never, never>, never> {
     return {
         name: 'cloudflare:durable-objects',
         setup(registry) {
