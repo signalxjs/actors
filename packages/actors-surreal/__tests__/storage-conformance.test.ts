@@ -33,6 +33,8 @@ const createSurrealStorage: StorageConformanceFactory =
             // surrealStorage stores the serialized form and implements the
             // text path (#238): the saveText cases must run here, not skip.
             saveText: true,
+            // ... and keeps a per-record log (#312): the append cases too.
+            appendText: true,
             stop: () => dropNamespace(db, namespace)
         };
     };

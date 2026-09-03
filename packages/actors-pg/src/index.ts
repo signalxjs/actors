@@ -5,7 +5,7 @@
  *
  * Table layout under one Postgres SCHEMA (default `sigx`):
  *
- *   {schema}.state               (type, key, etag, state JSON text)  PK (type, key)
+ *   {schema}.state               (type, key, etag, state JSON text, log text[])  PK (type, key)
  *   {schema}.directory           (actor_id, host_id, activation_id)  PK actor_id
  *   {schema}.hosts               (host_id, descriptor JSON text, expires_at)
  *   {schema}.membership_version  single row, bumped on any membership write
@@ -174,8 +174,10 @@ CREATE TABLE IF NOT EXISTS ${s}.state (
     key text NOT NULL,
     etag text NOT NULL,
     state text NOT NULL,
+    log text[] NOT NULL DEFAULT '{}',
     PRIMARY KEY (type, key)
 );
+ALTER TABLE ${s}.state ADD COLUMN IF NOT EXISTS log text[] NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS ${s}.directory (
     actor_id text PRIMARY KEY,
     host_id text NOT NULL,

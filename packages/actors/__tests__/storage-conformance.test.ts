@@ -39,10 +39,12 @@ const quiet = { sweepIntervalMs: 60_000, reminderTickMs: 60_000, callTimeoutMs: 
 
 /**
  * `memoryStorage` semantics over a STRING: `save` delegates to `saveText`
- * exactly as the real text-storing adapters do (#238).
+ * exactly as the real text-storing adapters do (#238), and `appendText`
+ * keeps the entries as the strings it was handed, parsed on load, as they
+ * do (#312).
  */
 function textStorage(): ActorStorage {
-    const records = new Map<string, { json: string; etag: string }>();
+    const records = new Map<string, { json: string; etag: string; log: string[] }>();
     const id = (type: string, key: string): string => `${type}\0${key}`;
     let counter = 0;
     const put = async (
@@ -54,17 +56,30 @@ function textStorage(): ActorStorage {
         const existing = records.get(id(type, key));
         if ((existing?.etag ?? null) !== expectedEtag) throw new ActorStorageConflict(type, key);
         const etag = String(++counter);
-        records.set(id(type, key), { json, etag });
+        records.set(id(type, key), { json, etag, log: [] });
         return etag;
     };
     return {
         async load(type, key) {
             const record = records.get(id(type, key));
-            return record ? { state: JSON.parse(record.json) as unknown, etag: record.etag } : null;
+            return record
+                ? {
+                      state: JSON.parse(record.json) as unknown,
+                      etag: record.etag,
+                      log: record.log.map((entry) => JSON.parse(entry) as unknown)
+                  }
+                : null;
         },
         save: (type, key, state, expectedEtag) =>
             put(type, key, JSON.stringify(state), expectedEtag),
         saveText: put,
+        async appendText(type, key, json, expectedEtag) {
+            const existing = records.get(id(type, key));
+            if (!existing || existing.etag !== expectedEtag) throw new ActorStorageConflict(type, key);
+            existing.etag = String(++counter);
+            existing.log.push(json);
+            return existing.etag;
+        },
         async clear(type, key, expectedEtag) {
             const existing = records.get(id(type, key));
             if (!existing && expectedEtag === null) return;
@@ -76,7 +91,10 @@ function textStorage(): ActorStorage {
 
 const createMemory: StorageConformanceFactory = async () => ({
     storage: () => memoryStorage(),
-    stop: async () => {}
+    stop: async () => {},
+    // memoryStorage wants the tree (no saveText) but keeps a log (#312):
+    // the append cases must run here, not skip.
+    appendText: true
 });
 
 const createFile: StorageConformanceFactory = async () => {
@@ -90,7 +108,8 @@ const createFile: StorageConformanceFactory = async () => {
 const createText: StorageConformanceFactory = async () => ({
     storage: () => textStorage(),
     stop: async () => {},
-    saveText: true
+    saveText: true,
+    appendText: true
 });
 
 const Noop = defineActor({
@@ -126,33 +145,49 @@ const createMetricsDecorated: StorageConformanceFactory = async () => {
             return decorated;
         },
         stop: () => app.stop(),
-        saveText: true
+        saveText: true,
+        appendText: true
     };
 };
 
-function runSuite(title: string, create: StorageConformanceFactory, expectSkips: boolean): void {
+/** The optional paths, by the word their case names carry. */
+const TEXT_CASES = storageConformance.filter((c) => /saveText/.test(c.name)).length;
+const APPEND_CASES = storageConformance.filter((c) => /append/.test(c.name)).length;
+
+/**
+ * `expectSkips` is the EXACT number of cases this storage may report as
+ * skipped: only the optional paths may skip, only where the storage lacks
+ * the member, and a storage that lacks one skips ALL of that path's cases —
+ * a skip count that drifts either way is a harness bug hiding behind a
+ * reported outcome.
+ */
+function runSuite(title: string, create: StorageConformanceFactory, expectSkips: number): void {
     describe(title, () => {
+        const skipped: string[] = [];
         for (const conformanceCase of storageConformance) {
             it(`${conformanceCase.name} — ${conformanceCase.why}`, async (ctx) => {
                 const outcome = await conformanceCase.run(create);
                 if (outcome && 'skipped' in outcome) {
-                    // Only the optional text path may skip, and only where the
-                    // storage has no saveText. Anything else skipping is a
-                    // harness bug hiding behind a reported outcome.
-                    expect(expectSkips, `${conformanceCase.name} skipped: ${outcome.skipped}`).toBe(true);
-                    expect(conformanceCase.name).toMatch(/saveText/);
+                    expect(expectSkips, `${conformanceCase.name} skipped: ${outcome.skipped}`).toBeGreaterThan(0);
+                    expect(conformanceCase.name).toMatch(/saveText|append/);
+                    skipped.push(conformanceCase.name);
                     ctx.skip(outcome.skipped);
                 }
                 expect(outcome).toBeUndefined();
             });
         }
+        it(`reports exactly ${expectSkips} skipped case(s)`, () => {
+            expect(skipped).toHaveLength(expectSkips);
+        });
     });
 }
 
-runSuite('storageConformance × memoryStorage (the incumbent)', createMemory, true);
-runSuite('storageConformance × fileStorage', createFile, true);
-runSuite('storageConformance × an in-memory text adapter', createText, false);
-runSuite('storageConformance × metrics() decorating a text adapter', createMetricsDecorated, false);
+expect(TEXT_CASES).toBe(3);
+expect(APPEND_CASES).toBe(6);
+runSuite('storageConformance × memoryStorage (the incumbent)', createMemory, TEXT_CASES);
+runSuite('storageConformance × fileStorage', createFile, TEXT_CASES + APPEND_CASES);
+runSuite('storageConformance × an in-memory text adapter', createText, 0);
+runSuite('storageConformance × metrics() decorating a text adapter', createMetricsDecorated, 0);
 
 /**
  * Sabotage table: each entry breaks ONE thing about a correct adapter, and
@@ -161,11 +196,12 @@ runSuite('storageConformance × metrics() decorating a text adapter', createMetr
  * and the named case must be the one that did.
  */
 describe('a case that cannot fail is decoration — the suite goes red against a broken adapter', () => {
-    const wrap = (over: (inner: ActorStorage) => ActorStorage, saveText = false) =>
+    const wrap = (over: (inner: ActorStorage) => ActorStorage, saveText = false, appendText = false) =>
         (async () => ({
             storage: () => over(memoryStorage()),
             stop: async () => {},
-            saveText
+            saveText,
+            appendText
         })) satisfies StorageConformanceFactory;
 
     const withoutBrand = (type: string, key: string) =>
@@ -347,6 +383,172 @@ describe('a case that cannot fail is decoration — the suite goes red against a
                 saveText: async (type, key, json, expected) => {
                     await inner.save(type, key, JSON.parse(json), expected);
                     return `text-${Math.random()}`;
+                }
+            }))
+        ],
+        [
+            'a decorator drops appendText over an append-capable storage',
+            'appendText requires a record: a missing one conflicts and nothing is created',
+            wrap(
+                (inner) => ({
+                    load: (type, key) => inner.load(type, key),
+                    save: (type, key, state, expected) => inner.save(type, key, state, expected),
+                    clear: (type, key, expected) => inner.clear(type, key, expected)
+                }),
+                false,
+                true
+            )
+        ],
+        [
+            'appendText is present but not callable',
+            'appendText requires a record: a missing one conflicts and nothing is created',
+            wrap((inner) => ({
+                ...inner,
+                appendText: true as unknown as ActorStorage['appendText']
+            }))
+        ],
+        [
+            'appendText creates the record it is asked to append to',
+            'appendText requires a record: a missing one conflicts and nothing is created',
+            wrap((inner) => ({
+                ...inner,
+                appendText: async (type, key, json, expected) =>
+                    (await inner.load(type, key)) === null
+                        ? inner.save(type, key, null, null).then((etag) => inner.appendText!(type, key, json, etag))
+                        : inner.appendText!(type, key, json, expected)
+            }))
+        ],
+        [
+            'appendText ignores the expected etag',
+            'appendText honours the CAS and throws the same brand: a stale etag appends nothing',
+            wrap((inner) => ({
+                ...inner,
+                appendText: async (type, key, json, _expected) => {
+                    const current = await inner.load(type, key);
+                    return inner.appendText!(type, key, json, current?.etag ?? 'missing');
+                }
+            }))
+        ],
+        [
+            'appendText returns the etag it was given',
+            'appendText mints a fresh etag and load shows the unchanged state plus the one entry',
+            wrap((inner) => ({
+                ...inner,
+                appendText: (type, key, json, expected) =>
+                    inner.appendText!(type, key, json, expected).then(() => expected)
+            }))
+        ],
+        [
+            'load hands out the log by reference',
+            'appendText mints a fresh etag and load shows the unchanged state plus the one entry',
+            wrap(() => {
+                const inner = memoryStorage();
+                const logs = new Map<string, unknown[]>();
+                return {
+                    ...inner,
+                    // The state is cloned (inner does that); the log is the
+                    // store's own array, handed out as-is.
+                    load: async (type, key) => {
+                        const record = await inner.load(type, key);
+                        return record ? { ...record, log: logs.get(`${type}/${key}`) ?? [] } : null;
+                    },
+                    save: async (type, key, state, expected) => {
+                        const etag = await inner.save(type, key, state, expected);
+                        logs.set(`${type}/${key}`, []);
+                        return etag;
+                    },
+                    appendText: async (type, key, json, expected) => {
+                        const etag = await inner.appendText!(type, key, json, expected);
+                        logs.get(`${type}/${key}`)!.push(JSON.parse(json));
+                        return etag;
+                    }
+                };
+            })
+        ],
+        [
+            'the log lives under the record key plus a suffix',
+            'appended entries load in append order, oldest first, whatever their JSON shape — and only on their own record',
+            // One keyspace for records and logs, the log at `${record}:l` —
+            // so the log of "k" IS the record of "k:l".
+            wrap(() => {
+                const space = new Map<string, unknown>();
+                const rec = (type: string, key: string) => `${type}\0${key}`;
+                const log = (type: string, key: string) => `${rec(type, key)}:l`;
+                let n = 0;
+                type Rec = { state: unknown; etag: string };
+                return {
+                    load: async (type, key) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if (!r) return null;
+                        const l = space.get(log(type, key));
+                        return {
+                            state: structuredClone(r.state),
+                            etag: r.etag,
+                            log: Array.isArray(l) ? structuredClone(l) : []
+                        };
+                    },
+                    save: async (type, key, state, expected) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if ((r?.etag ?? null) !== expected) throw new ActorStorageConflict(type, key);
+                        const etag = String(++n);
+                        space.set(rec(type, key), { state, etag });
+                        space.delete(log(type, key));
+                        return etag;
+                    },
+                    appendText: async (type, key, json, expected) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if (!r || r.etag !== expected) throw new ActorStorageConflict(type, key);
+                        const l = space.get(log(type, key));
+                        space.set(log(type, key), [...(Array.isArray(l) ? l : []), JSON.parse(json)]);
+                        r.etag = String(++n);
+                        return r.etag;
+                    },
+                    clear: async (type, key, expected) => {
+                        const r = space.get(rec(type, key)) as Rec | undefined;
+                        if (!r && expected === null) return;
+                        if ((r?.etag ?? null) !== expected) throw new ActorStorageConflict(type, key);
+                        space.delete(rec(type, key));
+                        space.delete(log(type, key));
+                    }
+                };
+            })
+        ],
+        [
+            'load returns the log newest first',
+            'appended entries load in append order, oldest first, whatever their JSON shape — and only on their own record',
+            wrap((inner) => ({
+                ...inner,
+                load: async (type, key) => {
+                    const record = await inner.load(type, key);
+                    return record && record.log ? { ...record, log: [...record.log].reverse() } : record;
+                }
+            }))
+        ],
+        [
+            'a full save keeps the log',
+            'a full save truncates the appended log, clear removes it, and a re-created record starts empty',
+            wrap((inner) => ({
+                ...inner,
+                save: async (type, key, state, expected) => {
+                    const before = await inner.load(type, key);
+                    let etag = await inner.save(type, key, state, expected);
+                    for (const entry of before?.log ?? []) {
+                        etag = await inner.appendText!(type, key, JSON.stringify(entry), etag);
+                    }
+                    return etag;
+                }
+            }))
+        ],
+        [
+            'appendText keeps its own etag chain',
+            'appendText shares the etag chain: the etag it returns is what the next save or clear must present',
+            wrap((inner) => ({
+                ...inner,
+                // Appends, but the etag it hands back is not the one the
+                // record now carries — the save path will never honour it.
+                appendText: async (type, key, json, expected) => {
+                    await inner.appendText!(type, key, json, expected);
+                    return `append-${Math.random()}`;
                 }
             }))
         ]

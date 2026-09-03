@@ -79,7 +79,7 @@ describe.skipIf(!hasSqlite)('sqliteStorage', () => {
             const a = sqlite!.sqliteStorage({ database: db });
             const b = sqlite!.sqliteStorage({ database: db });
             const etag = await a.save('T', 'k', { n: 1 }, null);
-            await expect(b.load('T', 'k')).resolves.toEqual({ state: { n: 1 }, etag });
+            await expect(b.load('T', 'k')).resolves.toEqual({ state: { n: 1 }, etag, log: [] });
             // Two tables in one database are two namespaces.
             const other = sqlite!.sqliteStorage({ database: db, table: 'other_state' });
             await expect(other.load('T', 'k')).resolves.toBeNull();
@@ -95,8 +95,8 @@ describe.skipIf(!hasSqlite)('sqliteStorage', () => {
             // at NUL — or compared truncated forms — would collide them.
             const e1 = await s.save('T', `Cart${NUL}user-42`, { who: 42 }, null);
             const e2 = await s.save('T', `Cart${NUL}user-43`, { who: 43 }, null);
-            await expect(s.load('T', `Cart${NUL}user-42`)).resolves.toEqual({ state: { who: 42 }, etag: e1 });
-            await expect(s.load('T', `Cart${NUL}user-43`)).resolves.toEqual({ state: { who: 43 }, etag: e2 });
+            await expect(s.load('T', `Cart${NUL}user-42`)).resolves.toEqual({ state: { who: 42 }, etag: e1, log: [] });
+            await expect(s.load('T', `Cart${NUL}user-43`)).resolves.toEqual({ state: { who: 43 }, etag: e2, log: [] });
             // The escape is injective: a key that LOOKS like the escaped form
             // is a different record, and so is the bare prefix.
             await expect(s.load('T', 'Cart\\0user-42')).resolves.toBeNull();
@@ -117,7 +117,7 @@ describe.skipIf(!hasSqlite)('sqliteStorage', () => {
             const s = sqlite!.sqliteStorage({ path: ':memory:' });
             const etag = await s.save(`A${NUL}B`, 'k', { nul: true }, null);
             await s.save('A', 'k', { nul: false }, null);
-            await expect(s.load(`A${NUL}B`, 'k')).resolves.toEqual({ state: { nul: true }, etag });
+            await expect(s.load(`A${NUL}B`, 'k')).resolves.toEqual({ state: { nul: true }, etag, log: [] });
             await expect(s.load('A\\0B', 'k')).resolves.toBeNull();
             s.close();
         });
@@ -157,15 +157,24 @@ describe.skipIf(!hasSqlite)('sqliteStorage', () => {
             const first = sqlite!.sqliteStorage({ path });
             const etag = await first.save('T', 'k', { items: ['a', 'b'] }, null);
             const text = await first.saveText('T', 'text', '{"via":"text"}', null);
+            // The log lives in its own table, and reopens with the state (#312).
+            const appended = await first.appendText('T', 'text', '{"step":1}', text);
             first.close();
 
             const second = sqlite!.sqliteStorage({ path });
-            await expect(second.load('T', 'k')).resolves.toEqual({ state: { items: ['a', 'b'] }, etag });
-            await expect(second.load('T', 'text')).resolves.toEqual({ state: { via: 'text' }, etag: text });
+            await expect(second.load('T', 'k')).resolves.toEqual({ state: { items: ['a', 'b'] }, etag, log: [] });
+            await expect(second.load('T', 'text')).resolves.toEqual({
+                state: { via: 'text' },
+                etag: appended,
+                log: [{ step: 1 }]
+            });
             // The etag chain continues across the reopen.
             const next = await second.save('T', 'k', { items: [] }, etag);
             expect(next).not.toBe(etag);
             await expect(second.save('T', 'k', { items: ['stale'] }, etag)).rejects.toSatisfy(isStorageConflict);
+            // A full save after the reopen is the compaction, on the log table too.
+            const compacted = await second.save('T', 'text', { via: 'tree' }, appended);
+            await expect(second.load('T', 'text')).resolves.toEqual({ state: { via: 'tree' }, etag: compacted, log: [] });
             second.close();
         });
     });

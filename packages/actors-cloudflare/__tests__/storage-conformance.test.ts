@@ -41,16 +41,27 @@ const createDurableObjectStorage: StorageConformanceFactory =
     });
 
 describe('storage conformance: durableObjectStorage()', () => {
+    const skipped: string[] = [];
     for (const testCase of storageConformance) {
         it(testCase.name, async (ctx) => {
             const outcome = await testCase.run(createDurableObjectStorage);
             if (outcome && 'skipped' in outcome) {
                 // The adapter hands the platform a structured value and has
-                // no saveText by design (#238): only those cases may skip.
-                expect(testCase.name).toMatch(/saveText/);
+                // neither saveText (#238) nor appendText (#312) by design:
+                // only those cases may skip.
+                expect(testCase.name).toMatch(/saveText|append/);
+                skipped.push(testCase.name);
                 ctx.skip(outcome.skipped);
             }
             expect(outcome).toBeUndefined();
         });
     }
+    it('skips exactly the text and append cases — three plus six', () => {
+        // Pinned as a count so the list cannot grow a skip silently: a
+        // required case that started skipping would fail the regex above,
+        // and an optional path this adapter gains would shrink this number.
+        expect(skipped.filter((n) => /saveText/.test(n))).toHaveLength(3);
+        expect(skipped.filter((n) => /append/.test(n))).toHaveLength(6);
+        expect(skipped).toHaveLength(9);
+    });
 });

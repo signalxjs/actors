@@ -30,6 +30,8 @@ interface ActorStorage {
     clear(type: string, key: string, expectedEtag: string | null): Promise<void>;
     /** Optional (#238) — the same save, one walk earlier. */
     saveText?(type: string, key: string, json: string, expectedEtag: string | null): Promise<string>;
+    /** Optional (#312) — one entry onto the record's log, O(entry), under the same CAS. */
+    appendText?(type: string, key: string, json: string, expectedEtag: string): Promise<string>;
 }
 ```
 
@@ -86,6 +88,66 @@ which of two correct paths runs.
 
 Load is deliberately unchanged: `JSON.parse` + `reviveWithHandlers`, off the
 hot path. There is no revive-from-string variant and none is wanted.
+
+### `appendText` — the optional O(entry) path (#312)
+
+`jobs/checkpoint-growth` measured what a per-step checkpoint costs: 19.8 µs
+at the head of a 300-step run, 113 µs at the tail, because `job.checkpoint()`
+re-encodes the whole `JobState` every step. Only a change of SHAPE removes
+the O(state) term, and this is it: a record becomes a **snapshot plus a
+log**. `state` is the last full save; `log` (on `ActorStorageRecord`, parsed
+entries, oldest first) is what `appendText` added since. The host folds the
+log into the state at load through the actor's reducer (PR 2 of #312 —
+`ctx.append`, `applyEntry`); the adapter never interprets an entry.
+
+The contract, pinned by the six append cases of `storageConformance`:
+
+1. **It is a write under the same CAS.** `expectedEtag` must equal the
+   record's etag, and the call mints and returns a NEW one — so a writer that
+   did not see the append conflicts on its next save, clear or append. A
+   missing record is a conflict like a mismatch: `expectedEtag` is never
+   `null`, because there is nothing to append to. Both throw the
+   `ActorStorageConflict` brand and append nothing.
+2. **A full save is the compaction.** `save` and `saveText` truncate the log
+   in the same write that stores the snapshot (the state they store already
+   contains whatever the entries folded to); `clear` removes both; a record
+   re-created from `null` starts with an empty log. Atomically: a log that
+   survives its snapshot is replayed onto a state that already contains it.
+3. **`load` reports the log on every call** — an empty array when nothing was
+   appended — from a storage that implements the seam, and omits it from one
+   that does not, which is how the host tells "nothing to replay" from "this
+   store never says".
+4. **Absent is a supported answer.** `fileStorage`'s envelope and
+   `durableObjectStorage`'s structured `put` would rewrite the record whole,
+   which is the O(state) write the seam exists to remove — both decline (the
+   DO shape with a key per entry is #375). The host is correct either way:
+   without it, an append is a full save at today's cost.
+
+Per adapter, the log is a Redis LIST beside the HASH under its own prefix
+(`{ns}:sl:…` — a suffix on the record key would collide with another actor's
+opaque key; one Lua script per operation covers both keys, and `load`
+returns etag, state and `LRANGE` in one round trip), a `log text[]` column on the Postgres row (`array_append`
+under the row-count CAS; `ensurePgSchema` adds the column to an existing
+schema with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`), a sibling
+`{table}_log` table in SQLite (the version bump is the CAS, one
+`BEGIN IMMEDIATE` around it and the insert), an `l` array field on the
+SurrealDB record (`l += $entry` under the etag `WHERE`), and a plain array on
+the `memoryStorage` record.
+
+The host reads the capability once, after every decorator, as
+`ActivationHost.appendStateText?(ref, entry, expectedEtag)` — present only
+when the storage has `appendText`, encoding the entry with the one-walk
+emitter — and `loadState` returns `log` revived per entry. Which is why the
+decorator rule below names both members.
+
+**The decorator rule, extended.** A `decorateStorage` wrapper forwards
+`saveText` AND `appendText`, each conditionally. A fixed three-method literal
+drops both silently: two-walk saves, and a full save per append, with no
+error and no counter to show for it. `metrics()` forwards both and counts an
+append as a save — `saves` is "durable writes", and a job that switched to
+appends should not read as having stopped writing. The conformance harness
+flags `saveText: true` / `appendText: true` are what make that drop a red
+case rather than a green skip.
 
 Plugins wrap it via `decorateStorage`; the last registered is outermost.
 

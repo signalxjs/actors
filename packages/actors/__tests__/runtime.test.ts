@@ -631,7 +631,7 @@ describe('state migration', () => {
         expect(host.stats().activations).toBe(0);
         // Corrupt state is loud, never silently reset: same bytes, same etag.
         const record = await storage.load('Cart', 'k');
-        expect(record).toEqual({ state: { items: ['a'] }, etag });
+        expect(record).toEqual({ state: { items: ['a'] }, etag, log: [] });
     });
 
     it('a hook that forgets to return fails activation rather than seeding undefined', async () => {
@@ -703,7 +703,7 @@ describe('state migration', () => {
         // equality is the real assertion: a rewrite of identical bytes would
         // still move it.
         await expect(client.read()).resolves.toEqual({ v: 2, items: ['a'], coupons: [] });
-        expect(await storage.load('Cart', 'k')).toEqual({ state: { items: ['a'] }, etag });
+        expect(await storage.load('Cart', 'k')).toEqual({ state: { items: ['a'] }, etag, log: [] });
 
         await client.add('b');
         const after = await storage.load('Cart', 'k');
@@ -737,10 +737,10 @@ describe('state migration', () => {
 
         await expect(client.read()).resolves.toEqual(['a']);
         await new Promise((r) => setTimeout(r, 40)); // well past the debounce
-        expect(await storage.load('CartWB', 'k')).toEqual({ state: { items: ['a'] }, etag });
+        expect(await storage.load('CartWB', 'k')).toEqual({ state: { items: ['a'] }, etag, log: [] });
         // Nor does the deactivation flush turn a read into a write.
         await host.deactivateType('CartWB');
-        expect(await storage.load('CartWB', 'k')).toEqual({ state: { items: ['a'] }, etag });
+        expect(await storage.load('CartWB', 'k')).toEqual({ state: { items: ['a'] }, etag, log: [] });
 
         // A real mutation carries the migrated shape with it, as ever.
         await client.add('b');

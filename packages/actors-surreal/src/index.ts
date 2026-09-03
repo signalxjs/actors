@@ -6,7 +6,7 @@
  *
  * Table layout under one PREFIX (default `sigx_`):
  *
- *   {p}state:[type, key]           { e: etag, s: state JSON }
+ *   {p}state:[type, key]           { e: etag, s: state JSON, l: [entry JSON, …] }
  *   {p}dir:<actorId>               { h: hostId, a: activationId }
  *   {p}host:<hostId>               { d: descriptor JSON, x: expires_at }
  *   {p}mver:1                      { v: version }
@@ -107,6 +107,7 @@ export function surrealSchemaSql(options: { prefix?: string } = {}): string {
 DEFINE TABLE IF NOT EXISTS ${t.state} SCHEMAFULL TYPE NORMAL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS e ON ${t.state} TYPE string;
 DEFINE FIELD IF NOT EXISTS s ON ${t.state} TYPE string;
+DEFINE FIELD IF NOT EXISTS l ON ${t.state} TYPE array<string> DEFAULT [];
 
 DEFINE TABLE IF NOT EXISTS ${t.dir} SCHEMAFULL TYPE NORMAL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS h ON ${t.dir} TYPE string;

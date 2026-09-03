@@ -14,6 +14,12 @@
  * unindented line and costing this store the one thing it exists for. A dev
  * store trades a walk for `cat`, every time.
  *
+ * No `appendText` either (#312), for the same reason: the envelope is one
+ * file written whole, temp-file plus rename, so an append would be a
+ * rewrite of the entire record — the O(state) write the seam exists to
+ * remove — with a second array to keep readable. The host falls back to a
+ * full save per append, which is exactly what this store would have done.
+ *
  * UNDER VITE: if `dir` is inside the project root, add it to
  * `server.watch.ignored` (both examples in this repo do). A save is a temp
  * file plus a rename, and Vite's HMR path reads a file it has just seen

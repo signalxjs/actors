@@ -10,6 +10,13 @@
  * `ActorStorageConflict`, the integrity floor the cluster design leans on.
  * Reminders ride this storage automatically.
  *
+ * The append seam (#312) is a `log text[]` column on the same row: an
+ * append is `UPDATE … SET etag = $next, log = array_append(log, $entry)
+ * WHERE … AND etag = $expected` — the same one-statement CAS with the same
+ * row-count verdict — and a full save sets `log = '{}'` in the statement
+ * that writes the snapshot, so compaction and snapshot are one write.
+ * `ensurePgSchema` adds the column to a schema that predates it.
+ *
  * State is stored as JSON in a `text` column, DELIBERATELY not `jsonb`:
  * actor state may legitimately contain NUL — a reminder shard record keys
  * entries by `type<NUL>key`, and user strings can hold anything — and
@@ -78,7 +85,7 @@ export function pgStorage(options: PgStorageOptions): ActorStorage {
                       [pgText(type), pgText(key), etag, json]
                   )
                 : await pool.query(
-                      `UPDATE ${s}.state SET etag = $3, state = $4
+                      `UPDATE ${s}.state SET etag = $3, state = $4, log = '{}'
                        WHERE type = $1 AND key = $2 AND etag = $5`,
                       [pgText(type), pgText(key), etag, json, expectedEtag]
                   );
@@ -89,16 +96,30 @@ export function pgStorage(options: PgStorageOptions): ActorStorage {
     return {
         async load(type, key) {
             const result = await pool.query(
-                `SELECT etag, state FROM ${s}.state WHERE type = $1 AND key = $2`,
+                `SELECT etag, state, log FROM ${s}.state WHERE type = $1 AND key = $2`,
                 [pgText(type), pgText(key)]
             );
             const row = result.rows[0];
             if (!row) return null;
-            return { state: JSON.parse(row['state'] as string) as unknown, etag: row['etag'] as string };
+            return {
+                state: JSON.parse(row['state'] as string) as unknown,
+                etag: row['etag'] as string,
+                log: (row['log'] as string[]).map((entry) => JSON.parse(entry) as unknown)
+            };
         },
         save: (type, key, state, expectedEtag) =>
             put(type, key, JSON.stringify(state), expectedEtag),
         saveText: put,
+        async appendText(type, key, json, expectedEtag) {
+            const etag = globalThis.crypto.randomUUID();
+            const result = await pool.query(
+                `UPDATE ${s}.state SET etag = $3, log = array_append(log, $4)
+                 WHERE type = $1 AND key = $2 AND etag = $5`,
+                [pgText(type), pgText(key), etag, json, expectedEtag]
+            );
+            if ((result.rowCount ?? 0) !== 1) throw new ActorStorageConflict(type, key);
+            return etag;
+        },
         async clear(type, key, expectedEtag) {
             if (expectedEtag === null) {
                 // "No record expected": success iff none exists. No write

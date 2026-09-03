@@ -45,7 +45,7 @@ describe.skipIf(!PG_URL)('pgStorage', () => {
             const etag = await s.save(t, 'k', state, null);
             expect(etag).not.toBe('');
             const record = await s.load(t, 'k');
-            expect(record).toEqual({ state, etag });
+            expect(record).toEqual({ state, etag, log: [] });
         });
 
         it('a top-level ARRAY state survives (the node-postgres array trap)', async () => {
@@ -56,7 +56,7 @@ describe.skipIf(!PG_URL)('pgStorage', () => {
             const t = type();
             const state = [1, 'two', { three: 3 }, [4]];
             const etag = await s.save(t, 'k', state, null);
-            await expect(s.load(t, 'k')).resolves.toEqual({ state, etag });
+            await expect(s.load(t, 'k')).resolves.toEqual({ state, etag, log: [] });
         });
 
         it('create against an existing record conflicts', async () => {
@@ -73,7 +73,7 @@ describe.skipIf(!PG_URL)('pgStorage', () => {
             const second = await s.save(t, 'k', { n: 2 }, first);
             expect(second).not.toBe(first);
             await expect(s.save(t, 'k', { n: 3 }, first)).rejects.toSatisfy(isStorageConflict);
-            await expect(s.load(t, 'k')).resolves.toEqual({ state: { n: 2 }, etag: second });
+            await expect(s.load(t, 'k')).resolves.toEqual({ state: { n: 2 }, etag: second, log: [] });
         });
 
         it('update of a missing record conflicts', async () => {
@@ -113,7 +113,7 @@ describe.skipIf(!PG_URL)('pgStorage', () => {
                 path: 'C:\\backslashes\\stay\\distinct'
             };
             const etag = await s.save(t, ledgerKey, shardState, null);
-            await expect(s.load(t, ledgerKey)).resolves.toEqual({ state: shardState, etag });
+            await expect(s.load(t, ledgerKey)).resolves.toEqual({ state: shardState, etag, log: [] });
             // The escape is injective: a key that LOOKS like the escaped
             // form is a different record.
             await expect(s.load(t, 'Cart\\0user-42')).resolves.toBeNull();

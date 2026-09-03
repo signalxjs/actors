@@ -100,6 +100,15 @@ describe('ensurePgSchema under a concurrent bootstrap', () => {
         expect(pgSchemaSql()).not.toContain('pg_advisory');
     });
 
+    it('upgrades a state table that predates the append log (#312)', () => {
+        // `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so
+        // the column a new schema gets from the CREATE must ALSO be added
+        // to an old one — idempotently, in the same bootstrap string.
+        const sql = pgSchemaSql('demo');
+        expect(sql).toContain("log text[] NOT NULL DEFAULT '{}',");
+        expect(sql).toContain("ALTER TABLE demo.state ADD COLUMN IF NOT EXISTS log text[] NOT NULL DEFAULT '{}';");
+    });
+
     it('rejects an invalid schema immediately, without issuing anything', async () => {
         const pool = fakePool(0, new Error('unused'));
         await expect(ensurePgSchema(pool, { schema: 'Bad Schema!' })).rejects.toThrow(

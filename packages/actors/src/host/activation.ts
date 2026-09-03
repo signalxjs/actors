@@ -205,8 +205,14 @@ export interface ActivationHost {
      * `raw` is the codec-ENCODED record alongside the revived `state` — it is
      * already in hand at the call site, and `migrateState` hands it to the
      * hook so a migration can inspect on-disk tags the revive smooths over.
+     * `log` is the record's append log (#312), each entry revived through
+     * the same codec, oldest first — present only from a storage that
+     * implements `appendText` (empty when nothing was appended since the
+     * last full save), absent otherwise.
      */
-    loadState(ref: ActorRef): Promise<{ state: object; raw: unknown; etag: string } | null>;
+    loadState(
+        ref: ActorRef
+    ): Promise<{ state: object; raw: unknown; etag: string; log?: unknown[] } | null>;
     saveState(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
     /**
      * `saveState`'s two halves, split so `#doSave` can reuse the encoded
@@ -227,6 +233,17 @@ export interface ActivationHost {
      * two walks, which is the thing #233 exists to prevent.
      */
     saveStateText?(ref: ActorRef, raw: object, expectedEtag: string | null): Promise<string>;
+    /**
+     * PRESENT ONLY when the storage implements `ActorStorage.appendText`
+     * (#312): encode ONE entry to JSON text in one walk and append it to the
+     * record's log under the record's etag — O(entry), not O(state). Resolves
+     * to the new etag, which the activation must adopt: the one it presented
+     * is stale from here on, for saves and clears too. A missing record or a
+     * mismatch rejects with the storage-conflict brand, like a save.
+     *
+     * Absent, an append is a full save — same result, today's cost.
+     */
+    appendStateText?(ref: ActorRef, entry: unknown, expectedEtag: string): Promise<string>;
     clearStoredState(ref: ActorRef, expectedEtag: string | null): Promise<void>;
     /** Deep, detached copy through the codec vocabulary. */
     cloneState<S>(raw: S): S;
