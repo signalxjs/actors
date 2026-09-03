@@ -56,12 +56,12 @@ const socketDigest: SocketStatsDigest = {
 };
 
 /** A placement's `counters()` (#52, #346): 90 served locally, 10 by a peer. */
-const clusterCounters = {
+const clusterCounters: Partial<ClusterCounterTotals> = {
     dispatchesLocal: 90,
     dispatchesRemote: 10,
     routedLocal: 4,
     remoteDispatches: 12
-} as ClusterCounterTotals;
+};
 
 const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
     name: 'fake-sockets',
@@ -214,7 +214,7 @@ describe('otelMetricsBridge', () => {
             exportIntervalMillis: 3_600_000
         });
         const provider = new MeterProvider({ readers: [reader] });
-        let totals: ClusterCounterTotals | undefined = clusterCounters;
+        let totals: Partial<ClusterCounterTotals> | undefined = clusterCounters;
         const placement = { counters: () => totals };
         const app = defineActorApp({ actors: [Counter], defaults: quiet })
             .use(metrics())
@@ -244,7 +244,7 @@ describe('otelMetricsBridge', () => {
             exportIntervalMillis: 3_600_000
         });
         const provider = new MeterProvider({ readers: [reader] });
-        const legacy = { routedLocal: 4, remoteDispatches: 12 } as ClusterCounterTotals;
+        const legacy: Partial<ClusterCounterTotals> = { routedLocal: 4, remoteDispatches: 12 };
         const app = defineActorApp({ actors: [Counter], defaults: quiet })
             .use(metrics())
             .use(otelMetricsBridge({ meterProvider: provider, cluster: () => legacy }));

@@ -75,12 +75,12 @@ const socketDigest: SocketStatsDigest = {
  * Only the pair matters to the renderer; the rest of the totals are not
  * exposed, so a fake carrying just the pair is the honest fixture.
  */
-const clusterCounters = {
+const clusterCounters: Partial<ClusterCounterTotals> = {
     dispatchesLocal: 90,
     dispatchesRemote: 10,
     routedLocal: 4,
     remoteDispatches: 12
-} as ClusterCounterTotals;
+};
 
 /** A plugin publishing a fixed socket digest, the way an app with a socket mount does. */
 const socketsPlugin = (digest: SocketStatsDigest): ActorPlugin => ({
@@ -233,7 +233,7 @@ describe('renderPrometheus', () => {
         // A fleet still on a build before #52 reports totals without
         // `dispatchesLocal` / `dispatchesRemote`; the series must still be
         // there and parse, not read `undefined`.
-        const legacy = { routedLocal: 4, remoteDispatches: 12 } as ClusterCounterTotals;
+        const legacy: Partial<ClusterCounterTotals> = { routedLocal: 4, remoteDispatches: 12 };
         const lines = renderPrometheus(digest, null, { cluster: legacy }).split('\n');
         expect(lines).toContain('sigx_actors_cluster_dispatches_total{locality="local"} 0');
         expect(lines).toContain('sigx_actors_cluster_dispatches_total{locality="remote"} 0');
@@ -329,7 +329,7 @@ describe('prometheusOps endpoint', () => {
     });
 
     it('reads the cluster counters through the thunk, per scrape (#346)', async () => {
-        let totals: ClusterCounterTotals | undefined = clusterCounters;
+        let totals: Partial<ClusterCounterTotals> | undefined = clusterCounters;
         // What `() => plugin.placement.counters()` is at the seam.
         const placement = { counters: () => totals };
         const app = defineActorApp({ actors: [Counter], defaults: quiet })

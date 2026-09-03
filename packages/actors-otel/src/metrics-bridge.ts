@@ -58,9 +58,10 @@ export interface OtelMetricsBridgeOptions {
      * plugin (#346). Observes `sigx.actors.cluster.dispatches` with
      * `locality="local"` / `"remote"`, the pair whose ratio is the
      * per-request locality fraction. Answer `undefined` for "not clustered
-     * (yet)": nothing is observed.
+     * (yet)": nothing is observed. `Partial`: only the dispatch pair is
+     * read, and a build predating it observes `0`.
      */
-    cluster?: () => ClusterCounterTotals | undefined;
+    cluster?: () => Partial<ClusterCounterTotals> | undefined;
 }
 
 const METER_NAME = '@sigx/actors-otel';
@@ -291,7 +292,7 @@ export function otelMetricsBridge(options: OtelMetricsBridgeOptions = {}): Actor
 
                     // `?? 0`: a build predating the pair reports totals
                     // without it; a zero observation beats a missing one.
-                    const cluster: Partial<ClusterCounterTotals> | undefined = readCluster?.();
+                    const cluster = readCluster?.();
                     if (cluster) {
                         result.observe(clusterDispatches, cluster.dispatchesLocal ?? 0, {
                             locality: 'local'

@@ -60,9 +60,11 @@ export interface RenderPrometheusOptions {
      * locality fraction is a PromQL ratio over the two, never a precomputed
      * gauge, so it aggregates across a fleet. Absent or null renders no
      * cluster family at all: a single host is not a cluster with zero
-     * dispatches.
+     * dispatches. `Partial`: only the dispatch pair is read, and a host
+     * still on a build predating it renders `0` rather than failing to
+     * type-check.
      */
-    cluster?: ClusterCounterTotals | null;
+    cluster?: Partial<ClusterCounterTotals> | null;
 }
 
 /**
@@ -79,7 +81,7 @@ export interface PrometheusOpsOptions extends Omit<RenderPrometheusOptions, 'soc
      * holds no cluster handle and `@sigx/actors` stays size-neutral. Answer
      * `undefined` for "not clustered (yet)": no cluster family is emitted.
      */
-    cluster?: () => ClusterCounterTotals | undefined;
+    cluster?: () => Partial<ClusterCounterTotals> | undefined;
     /**
      * Bearer token. MANDATORY outside development — this endpoint reports
      * your actor types and traffic, so it must not be servable by omission
@@ -434,8 +436,7 @@ function renderSockets(
  * `?? 0`: a host still on a build predating the pair reports totals without
  * it, and a missing series parses worse than a zero one.
  */
-function renderCluster(out: Lines, prefix: string, cluster: ClusterCounterTotals): void {
-    const totals: Partial<ClusterCounterTotals> = cluster;
+function renderCluster(out: Lines, prefix: string, totals: Partial<ClusterCounterTotals>): void {
     out.family(
         `${prefix}cluster_dispatches_total`,
         'counter',
