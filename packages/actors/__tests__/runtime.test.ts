@@ -395,7 +395,10 @@ describe('persistence', () => {
             Promise.race([
                 feed.next().then((r) => r.value),
                 new Promise<never>((_, reject) =>
-                    setTimeout(() => reject(new Error('nothing arrived within 2000ms')), 2000)
+                    setTimeout(
+                        () => reject(new Error('nothing arrived within 2000ms')),
+                        2000
+                    ).unref?.()
                 )
             ]);
         await expect(next()).resolves.toBe(1);
