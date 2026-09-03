@@ -13,7 +13,9 @@
  * and without a `job.watch()` consumer. The `watch=1 − watch=0` delta is
  * the change-feed term (boundary snapshot + `toInfo` per emission); the
  * `watch=0` curve is the save encode alone, to be read against
- * `state/save-growth`'s `mem` arm.
+ * `state/save-growth`'s `mem` arm. `watch=0,append` (#312) is the same run
+ * on `job.append` — one entry per step instead of the whole checkpoint —
+ * and is the acceptance arm for the append seam: flat where `watch=0` grows.
  */
 import {
     closedLoop,
@@ -32,6 +34,7 @@ import {
 import { settleGc } from '../memory.ts';
 import { openSubscribers, type Subscribers } from '../subscribers.ts';
 import {
+    BenchAppendStepJob,
     BenchEventualStepJob,
     BenchLifecycleJob,
     BenchParkedJob,
@@ -44,6 +47,7 @@ import {
 } from '../job-fixtures.ts';
 import { memoryStorage, ROSTER_TYPE } from '@sigx/actors/host';
 import type { ActorRef, ActorStorage, Host } from '@sigx/actors/host';
+import type { AnyActorDefinition } from '@sigx/actors';
 import type { Metric, RunContext, Scenario } from '../types.ts';
 
 /** Same rungs as `state/dirty-size`, so the two ladders read together. */
@@ -123,7 +127,7 @@ let runSeq = 0;
 
 const checkpointGrowth: Scenario = {
     name: 'jobs/checkpoint-growth',
-    description: 'per-step cost of a checkpointing job as state grows — unwatched, watched, throttled',
+    description: 'per-step cost of a checkpointing job as state grows — unwatched, watched, throttled, appending',
     async run(ctx: RunContext): Promise<Metric[]> {
         const steps = ctx.quick ? 60 : CHECKPOINT_STEPS;
         const window = ctx.quick ? 15 : CHECKPOINT_WINDOW;
@@ -144,19 +148,40 @@ const checkpointGrowth: Scenario = {
         // checkpoints (#320): the per-step save is deferred to the debounce,
         // which `manualScheduler` never fires, so the run costs one save at
         // stop and the step is the turn alone — expected head ≈ tail.
+        // `watch=0,append` is `watch=0` with `job.append(row)` per step
+        // (#312): durable per step like `watch=0`, but the write is the row
+        // alone — the acceptance arm for the append seam, expected flat
+        // (tail ≈ head) where `watch=0` grows ~5× over the run. Over
+        // `memoryStorage` (which parses the entry back into a tree) and,
+        // as `watch=0,append,text`, over `textStorage` (which keeps the
+        // string) — the two shapes a real adapter takes. Timings, so they
+        // advise; the ratio is what to read.
         const arms = [
             { label: 'watch=0', count: 0, args: [] as unknown[], storage: undefined },
             { label: 'watch=0,stringify', count: 0, args: [] as unknown[], storage: stringifyStorage },
             { label: 'watch=0,text', count: 0, args: [] as unknown[], storage: textStorage },
             { label: 'watch=0,eventual', count: 0, args: [] as unknown[], job: BenchEventualStepJob },
             { label: 'watch=1', count: 1, args: [] as unknown[], storage: undefined },
-            { label: 'watch=throttled', count: 1, args: [{ throttleMs: 1000 }], storage: undefined }
+            { label: 'watch=throttled', count: 1, args: [{ throttleMs: 1000 }], storage: undefined },
+            // LAST, after the watched arms: the arms run in one process, and
+            // `watch=1`'s head window is sensitive to the heap the preceding
+            // arm leaves behind — measured at 43 → 100 µs with these two
+            // ahead of it, tail unmoved. Appending here keeps every existing
+            // arm's neighbourhood what it was.
+            { label: 'watch=0,append', count: 0, args: [] as unknown[], job: BenchAppendStepJob },
+            {
+                label: 'watch=0,append,text',
+                count: 0,
+                args: [] as unknown[],
+                job: BenchAppendStepJob,
+                storage: textStorage
+            }
         ] as {
             label: string;
             count: number;
             args: unknown[];
             storage?: () => ActorStorage;
-            job?: typeof BenchStepJob;
+            job?: AnyActorDefinition;
         }[];
         for (const arm of arms) {
             const job = arm.job ?? BenchStepJob;

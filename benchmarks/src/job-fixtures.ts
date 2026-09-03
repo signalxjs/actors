@@ -122,6 +122,41 @@ export const BenchStepJob = stepJob('BenchStepJob', 'immediate');
 export const BenchEventualStepJob = stepJob('BenchEventualStepJob', 'eventual');
 
 /**
+ * `BenchStepJob` on the append seam (#312): the same rows, but a step is
+ * `job.append(row)` — `apply` pushes the row onto the checkpoint, and the
+ * row alone goes to storage — where `BenchStepJob` re-encodes every row so
+ * far. Durable per step like `BenchStepJob` (unlike the eventual arm), so
+ * the `watch=0,append` arm reads against `watch=0` directly: the gap is
+ * the O(state) encode+CAS an append replaces with O(entry), and the arm's
+ * own tail/head ratio is the acceptance — a flat curve. The body never
+ * touches `resumedFrom` (a fresh key per arm, never resumed) and keeps no
+ * rows of its own: the checkpoint IS the fold, and the count is the id.
+ */
+export const BenchAppendStepJob = defineJob<null, number, StepRow[], Record<never, never>, StepRow>({
+    type: 'BenchAppendStepJob',
+    allowAnonymous: true,
+    apply: (checkpoint, row) => {
+        (checkpoint ??= []).push(row);
+        return checkpoint;
+    },
+    run: async (job) => {
+        let count = 0;
+        for (;;) {
+            const cmd = await nextCommand(job.key);
+            if (cmd === 'stop') return count;
+            const id = count++;
+            await job.append({
+                id,
+                label: `step-${id}`,
+                output: `output of step ${id}`,
+                at: new Date(1_700_000_000_000 + id)
+            });
+            channel(job.key).ackWaiters.shift()?.();
+        }
+    }
+});
+
+/**
  * The lifecycle fixture (#307): a job whose body does nothing, so a run is
  * the runtime's own bookkeeping and nothing else — `start` (state save,
  * task-ledger CAS, liveness reminder), the terminal transition, and the

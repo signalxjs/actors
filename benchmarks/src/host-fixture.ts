@@ -141,8 +141,10 @@ export function stringifyStorage(): ActorStorage {
  */
 export function textStorage(): ActorStorage {
     // Keyed exactly as `stringifyStorage` keys — the two arms must differ
-    // in the walk and in nothing else.
-    const records = new Map<string, { json: string; etag: string }>();
+    // in the walk and in nothing else. `log` is the record's append log
+    // (#312): the entries' JSON as handed over, parsed on load like a real
+    // text store would, and emptied by every full save.
+    const records = new Map<string, { json: string; etag: string; log: string[] }>();
     let counter = 0;
     const id = (type: string, key: string) => `${type}\u0000${key}`;
 
@@ -157,18 +159,32 @@ export function textStorage(): ActorStorage {
             throw new ActorStorageConflict(type, key);
         }
         const etag = String(++counter);
-        records.set(id(type, key), { json, etag });
+        records.set(id(type, key), { json, etag, log: [] });
         return etag;
     };
 
     return {
         async load(type, key) {
             const record = records.get(id(type, key));
-            return record ? { state: JSON.parse(record.json), etag: record.etag } : null;
+            return record
+                ? {
+                      state: JSON.parse(record.json),
+                      etag: record.etag,
+                      log: record.log.map((entry) => JSON.parse(entry))
+                  }
+                : null;
         },
         save: (type, key, state, expectedEtag) =>
             put(type, key, JSON.stringify(state), expectedEtag),
         saveText: put,
+        async appendText(type, key, json, expectedEtag) {
+            const existing = records.get(id(type, key));
+            if (!existing || existing.etag !== expectedEtag) {
+                throw new ActorStorageConflict(type, key);
+            }
+            existing.log.push(json);
+            return (existing.etag = String(++counter));
+        },
         async clear(type, key, expectedEtag) {
             const existing = records.get(id(type, key));
             if (!existing && expectedEtag === null) return;
@@ -230,6 +246,9 @@ export async function warmActivations(
 export interface StorageCounts {
     loads: number;
     saves: number;
+    /** `appendText` calls (#312) — counted apart from `saves`, because the
+     *  gap between the two is the whole point of the seam. */
+    appends: number;
     clears: number;
     /**
      * The LAST write of a record of `type` (a reminder shard, a task-roster
@@ -254,9 +273,10 @@ export interface StorageCounts {
  * the store for exactly the same things on any machine, so a scenario may
  * report them `exact` (#307 pins the job lifecycle with them).
  *
- * `saveText` is forwarded ONLY when the inner storage has one — its presence
- * is what routes the host onto the single-walk path, so a wrapper that
- * always declared it would change what is being measured.
+ * `saveText` and `appendText` are forwarded ONLY when the inner storage has
+ * them — their presence is what routes the host onto the single-walk and
+ * the O(entry) paths, so a wrapper that always declared them would change
+ * what is being measured, and one that dropped them would too, silently.
  */
 export function countingStorage(inner: ActorStorage): { storage: ActorStorage; counts: StorageCounts } {
     // Whichever form the last write of each type arrived in. Holding a
@@ -267,6 +287,7 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
     const counts: StorageCounts = {
         loads: 0,
         saves: 0,
+        appends: 0,
         clears: 0,
         lastWrite(type) {
             const last = lastByType.get(type)?.payload;
@@ -278,7 +299,7 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
             };
         },
         reset() {
-            counts.loads = counts.saves = counts.clears = 0;
+            counts.loads = counts.saves = counts.appends = counts.clears = 0;
             lastByType.clear();
         }
     };
@@ -315,6 +336,15 @@ export function countingStorage(inner: ActorStorage): { storage: ActorStorage; c
                 lastByType.set(type, { key, payload: { json } });
                 return etag;
             });
+        };
+    }
+    if (inner.appendText) {
+        const appendText = inner.appendText.bind(inner);
+        // Not a "last write": an append leaves the record's snapshot as it
+        // was, and `lastWrite` reports the whole-table term of a rewrite.
+        storage.appendText = (type, key, json, expectedEtag) => {
+            counts.appends++;
+            return appendText(type, key, json, expectedEtag);
         };
     }
     return { storage, counts };
