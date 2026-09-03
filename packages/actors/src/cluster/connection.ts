@@ -210,6 +210,11 @@ export class HostConnection {
                 resolve: done as (v: unknown) => void,
                 reject: fail as (e: unknown) => void
             });
+            // Synchronous from the preflight to here, so nothing can fire
+            // the signal in between today; this keeps the abort honoured if
+            // an await ever lands in that window — the CALL is on the wire
+            // now, so the answer is a CANCEL, exactly what the listener sends.
+            if (signal?.aborted) onAbort();
         });
     }
 
@@ -277,7 +282,7 @@ export class HostConnection {
         if (!sent) {
             // Never registered as in flight, so `close()` cannot re-classify
             // it: the first pull throws `unreachable`, and nothing was sent.
-            this.#streams.delete(corrId);
+            this.#forgetStream(corrId);
             failure = refusal ?? unreachable('frame not written');
             done = true;
         }
