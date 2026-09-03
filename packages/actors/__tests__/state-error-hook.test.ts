@@ -43,7 +43,8 @@ function wbActor(
     debounceMs: number,
     seen: Seen[],
     hook = true,
-    deactivated: DeactivationReason[] = []
+    deactivated: DeactivationReason[] = [],
+    extra: { retryQueuedOnConflict?: true } = {}
 ) {
     const onStateError = (
         ctx: ActorContext<{ n: number }>,
@@ -57,6 +58,7 @@ function wbActor(
         allowAnonymous: true,
         state: () => ({ n: 0 }),
         persistence: { mode: 'write-behind', debounceMs },
+        ...extra,
         ...(hook ? { onStateError } : {}),
         onDeactivate(_ctx, reason) {
             deactivated.push(reason);
@@ -145,6 +147,33 @@ describe('onStateError', () => {
             // ...and the next call reloads the winning state, as documented.
             await expect(client.bump()).resolves.toBe(100);
             // A discarded activation flushes nothing: no 'final-flush' report.
+            expect(seen).toHaveLength(1);
+        } finally {
+            await host.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    it('a flush conflict still discards the activation under retryQueuedOnConflict (#368)', async () => {
+        const seen: Seen[] = [];
+        const deactivated: DeactivationReason[] = [];
+        const wb = wbActor('WBRetry', 5, seen, true, deactivated, { retryQueuedOnConflict: true });
+        const storage = memoryStorage();
+        const host = createHost({ actors: [wb], storage, defaults: quiet });
+        try {
+            const client = host.actor(wb, 'w');
+            await client.bump();
+            await vi.waitFor(async () => expect(await storage.load('WBRetry', 'w')).not.toBeNull());
+            const record = await storage.load('WBRetry', 'w');
+            await storage.save('WBRetry', 'w', { n: 99 }, record!.etag);
+            await client.bump();
+            await vi.waitFor(() => expect(seen).toHaveLength(1));
+            expect(seen[0]!.phase).toBe('flush');
+            // The option covers the TURN path only: a flush's writes belong
+            // to no caller and have no queue order to preserve, so the
+            // #336 contract holds — the flush itself discards the activation
+            // and the next call re-activates on the winning state.
+            await vi.waitFor(() => expect(deactivated).toEqual(['conflict']));
+            await expect(client.bump()).resolves.toBe(100);
             expect(seen).toHaveLength(1);
         } finally {
             await host.stop({ timeoutMs: 1000 });

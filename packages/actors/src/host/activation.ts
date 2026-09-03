@@ -543,6 +543,12 @@ export class Activation {
     #savePending: Promise<void> | null = null;
     #faulted: unknown = null;
     #faultReported = false;
+    /**
+     * `retryQueuedOnConflict` (#368): the conflict a turn-path save just
+     * lost, parked instead of faulting the activation. The next turn to
+     * enter the serial lane reloads the winning record first (`#reload`).
+     */
+    #reloadPending: ActorStateConflictError | null = null;
     #deactivateRequested = false;
     #keepAlive = 0;
     #warnedDroppedChanges = false;
@@ -636,6 +642,18 @@ export class Activation {
                 validateReentrancy(ref.type, opts, def.streamNames);
             }
             if (declaresInterleaving(opts)) {
+                // The option re-runs QUEUED turns, and an interleaving
+                // activation queues none — while a reload landing under an
+                // in-flight sibling would silently discard that sibling's
+                // writes, where the default contract rejects its save (#368).
+                if (opts.retryQueuedOnConflict) {
+                    throw new Error(
+                        `[sigx actors] actor "${ref.type}" declares retryQueuedOnConflict with ` +
+                            `reentrant: 'always' / methodReentrancy — the option needs a serial ` +
+                            `actor: interleaved turns are never queued, so there is nothing to ` +
+                            `re-run, and a reload under an in-flight turn would drop its writes.`
+                    );
+                }
                 const Store = await loadCallStore();
                 a.#als = new Store<ActorCallContext | null>();
             }
@@ -1168,6 +1186,10 @@ export class Activation {
         // them from OUTSIDE the generator — see `#streamContext`.
         const feeds: StreamFeeds = { subs: new Set(), closed: false };
         const resolveGen = async (): Promise<AsyncIterator<unknown>> => {
+            // A stream opened after a parked conflict reads the winning
+            // state. Never inline: that lane runs under an open turn that
+            // already reloaded (or is the loser itself), and must not await.
+            if (!inline && this.#reloadPending) await this.#reload();
             if (this.#faulted) throw this.#faulted;
             const fn = ownFn<AnyStreamFn>(this.#streamTable(feeds), method);
             if (!fn) throw new ActorMethodNotFoundError(this.ref.type, method);
@@ -1310,9 +1332,12 @@ export class Activation {
         // mutation on a never-called actor, or an `onDeactivate` that just
         // amended state above — so the flush check sees them.
         this.#consumeDirty();
-        // A stale activation must not overwrite the winning state.
+        // A stale activation must not overwrite the winning state — nor
+        // one whose reload is still pending (#368): its writes were made
+        // on the record that lost.
         if (
             reason !== 'conflict' &&
+            !this.#reloadPending &&
             this.#version > this.#savedVersion &&
             (this.#isWriteBehind() || this.#savedVersion < this.#eventualWanted)
         ) {
@@ -1404,6 +1429,7 @@ export class Activation {
         call: ActorCallContext,
         enqueuedAt = 0
     ): Promise<unknown> {
+        if (this.#reloadPending) await this.#reload();
         if (this.#faulted) throw this.#faulted;
         const started = Date.now();
         // Read once: the observer may be detached mid-turn (metrics can be
@@ -1547,7 +1573,13 @@ export class Activation {
         // re-subscribes anything this turn added happens here, once per
         // dirty boundary, before the comparisons below read #version.
         this.#consumeDirty();
-        const boundary = this.#version > this.#notifiedVersion;
+        // No boundary for a turn whose save lost the CAS under
+        // `retryQueuedOnConflict` (#368): its writes are discarded by the
+        // reload the next turn runs, so subscribers must not see them, and
+        // the write-behind debounce below must not be armed for them. The
+        // reload bumps the version, so the winning state IS the next
+        // boundary.
+        const boundary = this.#version > this.#notifiedVersion && !this.#reloadPending;
         // The boundary is consumed BEFORE the fan-out and stays consumed if
         // the snapshot throws (#338): a boundary snapshot whose codec fails is
         // rethrown to this turn's caller, and retrying it from the next turn
@@ -1679,6 +1711,11 @@ export class Activation {
             this.turns
                 .run(async () => {
                     try {
+                        // A serial turn like any other: a debounce armed
+                        // before a turn-path conflict was parked would
+                        // otherwise write the stale state back (#368) —
+                        // after the reload nothing is dirty.
+                        if (this.#reloadPending) await this.#reload();
                         // A write-behind actor flushes whatever is dirty. An
                         // explicit actor flushes only what an eventual save
                         // ASKED for — and a clearState() that ran between
@@ -1703,7 +1740,16 @@ export class Activation {
                         // `#afterTurn`'s hand-off never runs for it — the
                         // fault is reported from here, still inside the
                         // turn, and the host's deactivation drains it
-                        // before `onDeactivate('conflict')` runs.
+                        // before `onDeactivate('conflict')` runs. A
+                        // conflict `retryQueuedOnConflict` parked is
+                        // promoted to the fault first (#368): the option
+                        // covers the turn path only — a flush's writes
+                        // belong to no caller and have no queue order to
+                        // preserve, so this path deactivates either way.
+                        if (this.#reloadPending) {
+                            this.#faulted = this.#reloadPending;
+                            this.#reloadPending = null;
+                        }
                         this.#reportFault();
                     }
                 })
@@ -1826,11 +1872,58 @@ export class Activation {
         } catch (error) {
             if (isStorageConflict(error)) {
                 const conflict = new ActorStateConflictError(actorLabel(this.ref));
-                this.#faulted = conflict;
+                // The losing turn rejects either way. With the option the
+                // activation survives it: the next turn reloads (#368). The
+                // flush turn's catch promotes the parked conflict back to a
+                // fault — that path deactivates regardless of the option.
+                if (this.def.__sigxActor.retryQueuedOnConflict) this.#reloadPending = conflict;
+                else this.#faulted = conflict;
                 throw conflict;
             }
             throw error;
         }
+    }
+
+    /**
+     * `retryQueuedOnConflict` (#368): adopt the winning record in place so
+     * the turns queued behind the losing one run against it, in their
+     * original order, with no deactivation and no replay list — the serial
+     * lane already holds them. The same load activation takes
+     * (`seedFromStorage`, `migrateState` included), the same in-place reset
+     * `clearState` uses, and the version bookkeeping reset to "clean at
+     * the loaded record" — a subscriber sees the winning state as the next
+     * boundary. Runs only at the entry of a serial turn (`create` refuses
+     * the option on an interleaving activation), so nothing else touches
+     * the state or the etag while the load is in flight — no save can be
+     * pending here, and the in-place reset is synchronous once it lands. A
+     * reload that fails falls back to the fault path the option opted out
+     * of: the parked conflict faults the activation, the host discards it,
+     * and the caller sees the load failure.
+     */
+    async #reload(): Promise<void> {
+        const conflict = this.#reloadPending!;
+        this.#reloadPending = null;
+        try {
+            const seed = await seedFromStorage(this.ref, this.def.__sigxActor, this.#host);
+            this.#etag = seed.etag;
+            this.#resetState(seed.state as Record<string, unknown>);
+            this.#consumeDirty();
+            this.#savedVersion = ++this.#version;
+            this.#eventualWanted = 0;
+        } catch (error) {
+            this.#faulted = conflict;
+            this.#reportFault();
+            throw error;
+        }
+    }
+
+    /** Reset the live state in place — the proxy identity is captured by closures. */
+    #resetState(fresh: Record<string, unknown>): void {
+        const live = this.#state as Record<string, unknown>;
+        for (const k of Object.keys(live)) {
+            if (!(k in fresh)) delete live[k];
+        }
+        Object.assign(live, fresh);
     }
 
     /**
@@ -2354,6 +2447,7 @@ export class Activation {
         Object.defineProperty(derived, 'turn', {
             value: <T,>(fn: (ctx: ActorContext<object>) => T | Promise<T>): Promise<T> =>
                 self.turns.run(async () => {
+                    if (self.#reloadPending) await self.#reload();
                     if (self.#faulted) throw self.#faulted;
                     const started = Date.now();
                     const prev = self.#currentCall;
@@ -2552,14 +2646,7 @@ export class Activation {
                         self.#cancelWriteBehind();
                         self.#cancelWriteBehind = null;
                     }
-                    const fresh = opts.state(self.ref.key) as Record<string, unknown>;
-                    const live = self.#state as Record<string, unknown>;
-                    // Reset in place — the proxy identity is captured by
-                    // closures.
-                    for (const k of Object.keys(live)) {
-                        if (!(k in fresh)) delete live[k];
-                    }
-                    Object.assign(live, fresh);
+                    self.#resetState(opts.state(self.ref.key) as Record<string, unknown>);
                 })();
                 self.#savePending = run;
                 try {
@@ -2578,6 +2665,7 @@ export class Activation {
                     self.turns
                         .run(async () => {
                             queued = false;
+                            if (self.#reloadPending) await self.#reload();
                             if (self.#faulted) return;
                             const started = Date.now();
                             const prev = self.#currentCall;

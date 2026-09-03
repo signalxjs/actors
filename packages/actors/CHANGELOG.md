@@ -25,6 +25,34 @@
   `socketStats()` gains `subscriptionsShed` (recorder method `shed()`), and
   the `./server` size budget moves 8.1 → 8.25 kB for the check.
 
+- **`retryQueuedOnConflict: true` — re-run queued turns after an etag
+  conflict instead of failing them** (#368). By default a turn whose
+  `ctx.save()` loses the CAS rejects with `ActorStateConflictError`, every
+  turn queued behind it rejects the same way, the activation is discarded
+  (`onDeactivate('conflict')`) and the next call re-activates on the
+  winning state — deterministic, and stricter than an actor with
+  idempotent or commutative methods needs. With the option the losing
+  turn still rejects (its writes were computed on stale state and are
+  discarded), but the activation stays: before the next turn runs, the
+  winning record is reloaded in place — the same load activation takes,
+  `migrateState` included — and the queued turns run in their original
+  order against it, as if they had arrived after the other writer. No
+  deactivation, no re-activation, no replay list: the serial lane already
+  holds the turns. A stream opened, a task's `ctx.turn()`, a timer tick or
+  a write-behind flush landing after the conflict reloads the same way,
+  and the losing turn emits no change-feed boundary — subscribers see the
+  winning state as the next one, never the discarded writes. Turn-path
+  saves only:
+  a write-behind / eventual-save flush conflict still deactivates
+  (#336/#367), and a reload that fails falls back to the fault path
+  exactly as without the option. Serial actors only: on an interleaving
+  activation (`reentrant: 'always'`, or a `methodReentrancy` map naming
+  any method) the first activation fails — interleaved turns are never
+  queued, so there is
+  nothing to re-run, and a reload landing under an in-flight turn would
+  silently discard its writes where the default contract rejects its
+  save. Only for methods that are safe to re-run against state they did
+  not see when queued — the `ActorOptions` JSDoc spells the caveat out.
 - **`job.checkpoint(cp, { durability: 'eventual' })` — a burst of steps
   costs one save** (#320). `jobs/checkpoint-growth` showed every
   `job.checkpoint()` re-encoding and CAS-writing the whole job state, and
@@ -1120,7 +1148,6 @@
   `storage()`/`stop()` are the shared intersection and `bootstrap?()` is
   optional.
 
-
 - `memoryClusterHub().expire(hostId)` — drop a member the way a TTL lapse
   does: no cleanup, and the victim is never told (no `onSelfSuspect`),
   unlike `kill()`. The test seam for #45-shaped scenarios.
@@ -1210,7 +1237,6 @@
   `decodeFnPath` does — per segment — which is what the resolver a moment
   later sees. A mount that worked against every test fixture and failed on
   the one naming convention the docs recommend.
-
 
 - **The Node mount now strips the routing token from the path, so a routed
   call behaves exactly like a direct one (#93).** `route: 'hash'` is the

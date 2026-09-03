@@ -708,6 +708,34 @@ describe('declaration validation (first activation, every build)', () => {
         }
     }
 
+    it('retryQueuedOnConflict on an interleaving actor fails the first activation (#368)', async () => {
+        // The option re-runs QUEUED turns; an interleaving activation
+        // queues none, and a reload landing under an in-flight sibling
+        // would silently discard that sibling's writes — refused, loudly.
+        const always = defineActor({
+            ...base,
+            type: 'RetryAlways',
+            reentrant: 'always',
+            retryQueuedOnConflict: true
+        });
+        expect(await firstCallError(always)).toMatch(/retryQueuedOnConflict.*serial/);
+        const mapped = defineActor({
+            ...base,
+            type: 'RetryMapped',
+            methodReentrancy: { get: 'always' },
+            retryQueuedOnConflict: true
+        });
+        expect(await firstCallError(mapped)).toMatch(/retryQueuedOnConflict.*serial/);
+        // A call-chain actor never interleaves: the option is accepted.
+        const chain = defineActor({
+            ...base,
+            type: 'RetryChain',
+            reentrant: 'call-chain',
+            retryQueuedOnConflict: true
+        });
+        expect(await firstCallError(chain)).toBe('resolved');
+    });
+
     it('an unknown reentrant value fails the first activation', async () => {
         const bad = defineActor({
             ...base,
