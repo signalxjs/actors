@@ -27,6 +27,7 @@ body:
         - "@sigx/actors-redis"
         - "@sigx/actors-pg"
         - "@sigx/actors-surreal"
+        - "@sigx/actors-sqlite"
         - "@sigx/actors-k8s"
         - "@sigx/actors-cloudflare"
         - "@sigx/actors-cli"

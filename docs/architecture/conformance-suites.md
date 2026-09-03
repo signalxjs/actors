@@ -60,9 +60,10 @@ Three things it deliberately does NOT assert, and why:
 
 The incumbent is `memoryStorage`: its behaviour is the contract, and that it
 passes is what proves the suite describes the seam rather than a newcomer's
-habits. `fileStorage`, `durableObjectStorage` (over a Map), and — env-gated
-like everything else against a live server — `pgStorage`, `redisStorage`
-and `surrealStorage` all run the same list.
+habits. `fileStorage`, `durableObjectStorage` (over a Map), `sqliteStorage`
+(against a real database file, skipped where `node:sqlite` is unavailable),
+and — env-gated like everything else against a live server — `pgStorage`,
+`redisStorage` and `surrealStorage` all run the same list.
 
 **Skips are for the text path only, and a harness can forbid them.**
 `saveText` is optional on the seam, so a storage without it reports a skip

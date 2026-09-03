@@ -293,6 +293,34 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   every replica may bootstrap at boot. `pg` ≥8 as a peer
   dependency; provider tests are env-gated on `PG_URL` (a dedicated CI
   job provides a postgres service).
+- `packages/actors-sqlite` → `@sigx/actors-sqlite` — SQLite actor storage
+  on Node's built-in `node:sqlite`, for the single-node host that wants a
+  real database in a file and nothing to operate: `sqliteStorage()`
+  (etag-CAS `ActorStorage` over ONE table keyed `(type, key)`, `WITHOUT
+  ROWID`; the etag is the row's integer version, so a create is `INSERT …
+  ON CONFLICT DO NOTHING` and an update `UPDATE … WHERE version = ?` — one
+  statement, hence one SQLite write transaction, per save or clear;
+  `saveText` implemented, `save` routed through it). The table is created
+  on open; `path` opens the file (WAL + `busy_timeout`), `database` takes
+  a caller's `DatabaseSync` untouched, `close()` closes it. `type` and
+  `key` go through the same injective NUL escape as `pgText`, because
+  SQLite stores a NUL-bearing bound string whole and then truncates it in
+  every text function and read — the row is distinct in the index and
+  unreadable everywhere else. Zero runtime deps. **Node ≥ 22.13 only**
+  (`node:sqlite` is unflagged from there but still Stability 1.1 — every
+  host process prints one `ExperimentalWarning: SQLite is an experimental
+  feature` to stderr on first import; `--disable-warning=ExperimentalWarning`
+  silences it) while the repo's floor is 20.19:
+  the package's `engines` says `>=22.13.0`, and both test files probe
+  `import('node:sqlite')` and `describe.skipIf` on failure — importing the
+  package DYNAMICALLY after the probe, since its static `node:sqlite`
+  import would throw at load on the Node 20 leg before any skip ran. Both
+  run under `@vitest-environment node`, not the root `happy-dom`: vite's
+  client environment only externalizes builtins the running Node lists in
+  `module.builtinModules`, and `node:sqlite` is listed there from Node 24
+  — on 20/22 the resolver refuses it ("Cannot bundle Node.js built-in")
+  before the probe runs. Not a cluster store: two hosts on one file
+  serialize on the write lock.
 - `packages/actors-surreal` → `@sigx/actors-surreal` — SurrealDB (≥3.0,
   3.2.4+ recommended) providers: `surrealStorage` (etag-CAS `ActorStorage`
   on a COMPOSITE record id `{prefix}state:[type, key]` — the primary index,
