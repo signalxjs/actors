@@ -259,11 +259,18 @@ describe.skipIf(!PG_URL)('pgReminders', () => {
             const api = provider.apiFor(ref);
             await api.set('wake', { due: 0 });
             await api.set('beat', { due: 0, period: 60_000 });
+            // A third failing one-shot the actor leaves alone: the batch's
+            // failures go back in ONE statement, so its row reappearing one
+            // tick out is the DB-side proof that the re-arm has landed — and
+            // therefore already decided against touching the other two.
+            await api.set('canary', { due: 0 });
             provider.start();
             try {
                 scheduler.advance(TICK);
-                await vi.waitFor(() => expect(delivered).toHaveLength(2));
-                await sleep(100); // let the re-arm land
+                await vi.waitFor(() => expect(delivered).toHaveLength(3));
+                // (The claim deleted the canary before `deliver` ran, so the
+                // row being back at all means the re-arm's write is in.)
+                await vi.waitFor(async () => expect(await rowOf(ref, 'canary')).toBeDefined());
                 // The one-shot is as the actor re-set it, not one tick out…
                 const wake = await rowOf(ref, 'wake');
                 expect(wake!.dueInMs).toBeGreaterThan(3_600_000 - TICK * 2);
@@ -272,6 +279,7 @@ describe.skipIf(!PG_URL)('pgReminders', () => {
             } finally {
                 await provider.stop();
                 await api.clear('wake');
+                await api.clear('canary');
             }
         });
     });
