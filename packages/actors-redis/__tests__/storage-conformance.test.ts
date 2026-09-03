@@ -32,6 +32,8 @@ const createRedisStorage: StorageConformanceFactory =
             // redisStorage stores the serialized form and implements the
             // text path (#238): the saveText cases must run here, not skip.
             saveText: true,
+            // ... and keeps a per-record log (#312): the append cases too.
+            appendText: true,
             async stop() {
                 try {
                     // SCAN, not KEYS: the latter walks the whole keyspace in

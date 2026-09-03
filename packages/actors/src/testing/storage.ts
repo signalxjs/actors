@@ -13,8 +13,8 @@
  * **Assert the OUTCOME, never the mechanism.** Postgres decides a CAS by a
  * row count, Redis inside a Lua script, SurrealDB by a commit-time write
  * check, `memoryStorage` by a synchronous compare. Nothing here may care:
- * every case is phrased as what a caller sees through the four methods, and
- * an etag is an opaque non-empty string that is equal or is not.
+ * every case is phrased as what a caller sees through the seam's methods,
+ * and an etag is an opaque non-empty string that is equal or is not.
  *
  * What is deliberately NOT here:
  *
@@ -67,6 +67,18 @@ export interface StorageConformanceHarness {
      * sets this so that drop is a red case rather than a green skip.
      */
     saveText?: boolean;
+    /**
+     * Declare that this storage IMPLEMENTS `appendText` (#312). The append
+     * cases then FAIL when it is missing, instead of reporting a skip.
+     *
+     * Same reasoning as `saveText`: the seam is optional, so absence is a
+     * legitimate, reported skip (`fileStorage` and `durableObjectStorage`
+     * decline on purpose) — but absence is also what a decorator produces
+     * when it forgets to forward the member, and the host then silently
+     * falls back to a full save per append. A harness over an
+     * append-capable adapter, or over a decorator of one, sets this.
+     */
+    appendText?: boolean;
 }
 
 export type StorageConformanceFactory = () => Promise<StorageConformanceHarness>;
@@ -145,6 +157,33 @@ async function assertAbsent(
 ): Promise<void> {
     const record = await storage.load(type, key);
     assert(record === null, `${what}: load(${type}, ${show(key)}) returned ${show(record)}, expected null`);
+}
+
+/**
+ * The record under `key` must hold exactly `state`/`etag` AND a `log` that is
+ * exactly `entries`, oldest first. An append-capable storage reports the log
+ * on every load — an empty array when nothing was appended — because the
+ * host distinguishes "nothing to replay" from "this store never says".
+ */
+async function assertRecordWithLog(
+    storage: ActorStorage,
+    type: string,
+    key: string,
+    state: unknown,
+    etag: string,
+    entries: readonly unknown[],
+    what: string
+): Promise<void> {
+    await assertRecord(storage, type, key, state, etag, what);
+    const record = (await storage.load(type, key))!;
+    assert(
+        Array.isArray(record.log),
+        `${what}: an append-capable storage must return log as an array on every load, got ${show(record.log)}`
+    );
+    assert(
+        sameJson(record.log, entries),
+        `${what}: the record's log is ${show(record.log)}, expected ${show(entries)}`
+    );
 }
 
 /**
@@ -227,6 +266,26 @@ function textPath(
             'storage has (see the decorator rule on ActorStorage)'
     );
     return { skipped: 'this storage has no saveText — it wants the tree, which is a legitimate answer' };
+}
+
+/** The storage's `appendText`, a reported skip, or — when declared — a failure. */
+function appendPath(
+    storage: ActorStorage,
+    harness: StorageConformanceHarness
+): NonNullable<ActorStorage['appendText']> | ConformanceSkip {
+    if (typeof storage.appendText === 'function') return storage.appendText.bind(storage);
+    // Same rule as saveText: the host gates on truthiness and then calls it.
+    assert(
+        storage.appendText == null,
+        `appendText is present but not a function (${show(storage.appendText)}); the host would call it`
+    );
+    assert(
+        !harness.appendText,
+        'the harness declares appendText, but the storage has none. A decorator that returns ' +
+            'a fixed literal drops it silently — forward every member the inner storage has ' +
+            '(see the decorator rule on ActorStorage)'
+    );
+    return { skipped: 'this storage has no appendText — every write is a full save, which is a legitimate answer' };
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +406,10 @@ const refusedWriteIsNoop: ConformanceCase<StorageConformanceFactory> = {
             if (typeof s.saveText === 'function') {
                 await assertConflict(() => s.saveText!(T, 'k', '{"items":[]}', 'stale'), 'stale saveText');
                 await assertConflict(() => s.saveText!(T, 'k', '{"items":[]}', null), 'saveText create over existing');
+            }
+            if (typeof s.appendText === 'function') {
+                await assertConflict(() => s.appendText!(T, 'k', '{"step":1}', 'stale'), 'stale appendText');
+                await assertRecordWithLog(s, T, 'k', state, etag, [], 'after the refused append');
             }
             await assertRecord(s, T, 'k', state, etag, 'after every refused write');
         })
@@ -533,10 +596,168 @@ const saveTextInterleaves: ConformanceCase<StorageConformanceFactory> = {
         })
 };
 
+// ---------------------------------------------------------------------------
+// The optional append path (#312): one entry onto the record's log, CAS on
+// the record's etag; a full save is the compaction that truncates it.
+
+const appendRequiresARecord: ConformanceCase<StorageConformanceFactory> = {
+    name: 'appendText requires a record: a missing one conflicts and nothing is created',
+    why: 'there is nothing to append to — an append that creates would give a cleared actor a log with no snapshot to fold it into',
+    run: (create) =>
+        withHarness(create, async (s, h) => {
+            const appendText = appendPath(s, h);
+            if (typeof appendText !== 'function') return appendText;
+            await assertConflict(
+                () => appendText(T, 'k', '{"step":1}', 'not-an-etag'),
+                'appendText on a record that was never saved'
+            );
+            await assertAbsent(s, T, 'k', 'after the refused append');
+            // A cleared record is a missing record, even to the writer that
+            // held its last etag.
+            const etag = await s.save(T, 'gone', { n: 1 }, null);
+            await s.clear(T, 'gone', etag);
+            await assertConflict(
+                () => appendText(T, 'gone', '{"step":1}', etag),
+                "appendText with a cleared record's etag"
+            );
+            await assertAbsent(s, T, 'gone', 'after the refused append to a cleared record');
+        })
+};
+
+const appendHonoursCas: ConformanceCase<StorageConformanceFactory> = {
+    name: 'appendText honours the CAS and throws the same brand: a stale etag appends nothing',
+    why: 'an append that skips the etag lets a stale activation interleave entries into a log a newer one is folding',
+    run: (create) =>
+        withHarness(create, async (s, h) => {
+            const appendText = appendPath(s, h);
+            if (typeof appendText !== 'function') return appendText;
+            const etag = await s.save(T, 'k', { n: 1 }, null);
+            await assertConflict(() => appendText(T, 'k', '{"step":1}', 'stale'), 'appendText with a stale etag');
+            await assertRecordWithLog(s, T, 'k', { n: 1 }, etag, [], 'after the refused append');
+            const next = await mustResolve(
+                () => appendText(T, 'k', '{"step":1}', etag),
+                'appendText with the current etag'
+            );
+            assertEtag(next, 'appendText with the current etag');
+            await assertConflict(() => appendText(T, 'k', '{"step":2}', etag), 'appendText with the etag the append replaced');
+            await assertRecordWithLog(s, T, 'k', { n: 1 }, next, [{ step: 1 }], 'after the second, stale append was refused');
+        })
+};
+
+const appendReturnsANewEtag: ConformanceCase<StorageConformanceFactory> = {
+    name: 'appendText mints a fresh etag and load shows the unchanged state plus the one entry',
+    why: 'the etag IS the write token — an append that returned the etag it was given would let a stale full save land on top of the entry',
+    run: (create) =>
+        withHarness(create, async (s, h) => {
+            const appendText = appendPath(s, h);
+            if (typeof appendText !== 'function') return appendText;
+            const state = { n: 1, deep: { list: [1, 2, null] } };
+            const etag = await s.save(T, 'k', state, null);
+            await assertRecordWithLog(s, T, 'k', state, etag, [], 'a freshly created record');
+            const entry = { step: 1, note: `nul ${String.fromCharCode(0)} stays`, rows: [{ a: 1 }] };
+            const next = await mustResolve(
+                () => appendText(T, 'k', JSON.stringify(entry), etag),
+                'appendText with the current etag'
+            );
+            assertEtag(next, 'appendText');
+            assert(next !== etag, 'appendText returned the etag it was given');
+            await assertRecordWithLog(s, T, 'k', state, next, [entry], 'after one append');
+        })
+};
+
+const appendsAreOrdered: ConformanceCase<StorageConformanceFactory> = {
+    name: 'appended entries load in append order, oldest first, whatever their JSON shape',
+    why: 'the host folds the log through a reducer — an entry out of order, or an object where a scalar was appended, folds to the wrong state',
+    run: (create) =>
+        withHarness(create, async (s, h) => {
+            const appendText = appendPath(s, h);
+            if (typeof appendText !== 'function') return appendText;
+            let etag = await s.save(T, 'k', { n: 0 }, null);
+            const entries: unknown[] = [
+                { step: 1 },
+                [2, 'two'],
+                'three',
+                4,
+                null,
+                false,
+                { step: 7, nested: { list: [] } },
+                {}
+            ];
+            const etags = new Set<string>([etag]);
+            for (const [i, entry] of entries.entries()) {
+                etag = await mustResolve(
+                    () => appendText(T, 'k', JSON.stringify(entry), etag),
+                    `append #${i + 1} with the etag the previous write returned`
+                );
+                assertEtag(etag, `append #${i + 1}`);
+                assert(!etags.has(etag), `append #${i + 1} reused an earlier etag ${show(etag)}`);
+                etags.add(etag);
+            }
+            await assertRecordWithLog(s, T, 'k', { n: 0 }, etag, entries, 'after eight appends');
+        })
+};
+
+const fullSaveTruncatesTheLog: ConformanceCase<StorageConformanceFactory> = {
+    name: 'a full save truncates the appended log, clear removes it, and a re-created record starts empty',
+    why: 'a full save IS the compaction — a log that survives it is replayed onto a state that already contains it',
+    run: (create) =>
+        withHarness(create, async (s, h) => {
+            const appendText = appendPath(s, h);
+            if (typeof appendText !== 'function') return appendText;
+            let etag = await s.save(T, 'k', { n: 0 }, null);
+            etag = await appendText(T, 'k', '{"step":1}', etag);
+            etag = await appendText(T, 'k', '{"step":2}', etag);
+            await assertRecordWithLog(s, T, 'k', { n: 0 }, etag, [{ step: 1 }, { step: 2 }], 'before the compaction');
+            // via save
+            etag = await mustResolve(() => s.save(T, 'k', { n: 2 }, etag), 'save with the etag the append returned');
+            await assertRecordWithLog(s, T, 'k', { n: 2 }, etag, [], 'after the full save');
+            etag = await appendText(T, 'k', '{"step":3}', etag);
+            await assertRecordWithLog(s, T, 'k', { n: 2 }, etag, [{ step: 3 }], 'after appending onto the compacted record');
+            // via saveText, where the storage has it
+            if (typeof s.saveText === 'function') {
+                etag = await mustResolve(() => s.saveText!(T, 'k', '{"n":3}', etag), 'saveText with the etag the append returned');
+                await assertRecordWithLog(s, T, 'k', { n: 3 }, etag, [], 'after the full saveText');
+                etag = await appendText(T, 'k', '{"step":4}', etag);
+            }
+            // via clear + re-create
+            await mustResolve(() => s.clear(T, 'k', etag), 'clear with the etag the append returned');
+            await assertAbsent(s, T, 'k', 'after clear');
+            const again = await mustResolve(() => s.save(T, 'k', { n: 9 }, null), 'save with null after clear');
+            await assertRecordWithLog(s, T, 'k', { n: 9 }, again, [], 'after re-creating the record');
+        })
+};
+
+const appendChainsWithSave: ConformanceCase<StorageConformanceFactory> = {
+    name: 'appendText shares the etag chain: the etag it returns is what the next save or clear must present',
+    why: 'an append with its own chain would let a full save from before the append win over it — the log entry and the snapshot would disagree about what happened',
+    run: (create) =>
+        withHarness(create, async (s, h) => {
+            const appendText = appendPath(s, h);
+            if (typeof appendText !== 'function') return appendText;
+            const e1 = await s.save(T, 'k', { n: 1 }, null);
+            const e2 = await mustResolve(() => appendText(T, 'k', '{"step":1}', e1), 'appendText with the etag save returned');
+            await assertConflict(() => s.save(T, 'k', { n: 9 }, e1), 'save with the etag the append replaced');
+            await assertConflict(() => s.clear(T, 'k', e1), 'clear with the etag the append replaced');
+            if (typeof s.saveText === 'function') {
+                await assertConflict(() => s.saveText!(T, 'k', '{"n":9}', e1), 'saveText with the etag the append replaced');
+            }
+            await assertRecordWithLog(s, T, 'k', { n: 1 }, e2, [{ step: 1 }], 'after the stale writes were refused');
+            const e3 = await mustResolve(() => s.save(T, 'k', { n: 3 }, e2), 'save with the etag the append returned');
+            assertEtag(e3, 'save after append');
+            await assertConflict(() => appendText(T, 'k', '{"step":2}', e2), 'appendText with the etag save replaced');
+            const e4 = await mustResolve(() => appendText(T, 'k', '{"step":2}', e3), 'appendText with the etag save returned');
+            await assertConflict(() => s.clear(T, 'k', e3), 'clear with the etag the append replaced');
+            await assertRecordWithLog(s, T, 'k', { n: 3 }, e4, [{ step: 2 }], 'after the interleaved chain');
+            await mustResolve(() => s.clear(T, 'k', e4), "clear with the chain's last etag");
+            await assertAbsent(s, T, 'k', "after clear with the chain's last etag");
+        })
+};
+
 /**
  * The suite. Cheapest and most fundamental first, so a broken harness fails
  * on "does a miss load as null" rather than inside the etag chain; the
- * optional text path last, where its skips are easy to read.
+ * optional text path and then the optional append path last, where their
+ * skips are easy to read.
  */
 export const storageConformance: readonly ConformanceCase<StorageConformanceFactory>[] = [
     missIsNull,
@@ -552,5 +773,11 @@ export const storageConformance: readonly ConformanceCase<StorageConformanceFact
     keysAreOpaqueAndDistinct,
     saveTextEquivalence,
     saveTextHonoursCas,
-    saveTextInterleaves
+    saveTextInterleaves,
+    appendRequiresARecord,
+    appendHonoursCas,
+    appendReturnsANewEtag,
+    appendsAreOrdered,
+    fullSaveTruncatesTheLog,
+    appendChainsWithSave
 ];

@@ -51,6 +51,8 @@ const createSqliteStorage: StorageConformanceFactory = async (): Promise<Storage
         // sqliteStorage stores the serialized form and implements the text
         // path (#238): the saveText cases must run here, not skip.
         saveText: true,
+        // ... and keeps a per-record log (#312): the append cases too.
+        appendText: true,
         async stop() {
             storage.close();
             await rm(dir, { recursive: true, force: true });

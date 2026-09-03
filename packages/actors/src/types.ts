@@ -402,9 +402,17 @@ export interface ActorScheduler {
 // Storage
 
 export interface ActorStorageRecord {
-    /** Codec-encoded (JSON-safe) state as `@sigx/serialize` produced it. */
+    /** Codec-encoded (JSON-safe) state as `@sigx/serialize` produced it — the last FULL save. */
     state: unknown;
     etag: string;
+    /**
+     * The entries `appendText` added since that full save, parsed, oldest
+     * first (#312). PRESENT — an empty array when nothing was appended —
+     * only from a storage that implements `appendText`; absent from one
+     * that does not, which is how the host tells "nothing to replay" from
+     * "this store never says".
+     */
+    log?: unknown[];
 }
 
 /**
@@ -428,9 +436,12 @@ export interface ActorStorageRecord {
  *   (deserializing from a stored string trivially satisfies this).
  *
  * A DECORATOR of this seam (`decorateStorage`) must forward every member it
- * does not deliberately replace, `saveText` included. A decorator that
- * returns a fixed three-method literal silently drops the optional path, and
- * the host falls back to the two-walk one — correct, just quietly slower.
+ * does not deliberately replace, `saveText` and `appendText` included — and
+ * forward each CONDITIONALLY, so an inner storage without one does not
+ * appear to have it. A decorator that returns a fixed three-method literal
+ * silently drops both optional paths, and the host falls back — to the
+ * two-walk save, and to a full save per append — correct, just quietly
+ * slower.
  *
  * Every rule above is pinned by `storageConformance` in `@sigx/actors/testing`
  * (workspace-only) — run it against a new adapter before trusting it.
@@ -473,6 +484,38 @@ export interface ActorStorage {
         json: string,
         expectedEtag: string | null
     ): Promise<string>;
+    /**
+     * OPTIONAL: append ONE JSON entry to the record's log, in O(entry)
+     * rather than O(state) (#312), so a step of a long-running job costs
+     * what the step wrote and not a re-encode of the whole run.
+     *
+     * The record is a snapshot plus a log: `state` is the last full save,
+     * `log` the entries appended since, oldest first, and `load()` returns
+     * both. The host folds the log into the state at load through the
+     * actor's reducer — the adapter never interprets an entry.
+     *
+     * It is a write under the same CAS as `save`: `expectedEtag` must equal
+     * the record's current etag, and the call mints and returns a NEW one,
+     * so a writer holding the old etag — an activation that had not seen
+     * the append — conflicts on its next save, clear or append. It is never
+     * `null`: there is nothing to append to, so a MISSING record is a
+     * conflict, exactly like a mismatch, and both throw the
+     * `ActorStorageConflict` brand and append nothing.
+     *
+     * A full save is the compaction: `save` and `saveText` TRUNCATE the log
+     * as part of the same write (the state they store already contains
+     * whatever the entries folded to). `clear` removes both, and a record
+     * re-created from `null` starts with an empty log. Implement
+     * `save`/`saveText`/`clear` so that this holds atomically — a log that
+     * survives its snapshot is replayed onto a state that already contains
+     * it.
+     *
+     * ABSENT is the right answer for a store where an append would be a
+     * rewrite anyway — `fileStorage`'s pretty-printed envelope,
+     * `durableObjectStorage`'s structured `put` — and the host is correct
+     * either way: without it, every append is a full save.
+     */
+    appendText?(type: string, key: string, json: string, expectedEtag: string): Promise<string>;
 }
 
 /**
