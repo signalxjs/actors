@@ -7,10 +7,18 @@
  * load and save is a primary-index hit with no `WHERE` scan anywhere, and
  * `[type, …]` stays range-scannable for operators without costing a write.
  *
- * Each of the four operations is ONE statement, therefore one implicit
- * transaction and one round trip, and each answers with a bare boolean —
- * the verdict, not the row. `array::len(…) > 0` collapses the result
+ * Each operation is ONE statement, therefore one implicit transaction and
+ * one round trip, and each write answers with a bare boolean — the
+ * verdict, not the row. `array::len(…) > 0` collapses the result
  * server-side so a rejected CAS costs nothing on the wire.
+ *
+ * The append seam (#312) is the `l` array field on the same record:
+ * `UPDATE $id SET e = $e, l += $l WHERE e = $x` pushes one entry under the
+ * same CAS (`+=` on an array field appends; on a record that predates the
+ * field, where `l` is NONE, it creates the one-element array), the CAS
+ * save sets `l = []` in the statement that writes the snapshot, and
+ * `CREATE` starts it empty. Entries are JSON STRINGS like the state, for
+ * the same reasons as below.
  *
  * **`UPDATE … WHERE`, deliberately not `UPSERT … WHERE`.** `UPSERT`'s create
  * arm carries no condition check, so a writer holding a stale etag whose
@@ -38,14 +46,15 @@ import { surrealHandle, tablesFor, type SurrealConnectionOptions } from './conne
 
 export type SurrealStorageOptions = SurrealConnectionOptions;
 
-const LOAD = `SELECT e, s FROM ONLY $id`;
+const LOAD = `SELECT e, s, l FROM ONLY $id`;
 /** Create-if-absent. Two racers both observe `!exists` and both CREATE; the
  *  commit-time write–write check aborts one, which retries, sees the record
  *  and reports the conflict truthfully (see `surrealRetryable`). */
 const CREATE =
     `RETURN IF record::exists($id) { false } ` +
-    `ELSE { CREATE $id CONTENT { e: $e, s: $s } RETURN NONE; true }`;
-const CAS = `RETURN array::len((UPDATE $id SET e = $e, s = $s WHERE e = $x RETURN VALUE e)) > 0`;
+    `ELSE { CREATE $id CONTENT { e: $e, s: $s, l: [] } RETURN NONE; true }`;
+const CAS = `RETURN array::len((UPDATE $id SET e = $e, s = $s, l = [] WHERE e = $x RETURN VALUE e)) > 0`;
+const APPEND = `RETURN array::len((UPDATE $id SET e = $e, l += $l WHERE e = $x RETURN VALUE e)) > 0`;
 const CAD = `RETURN array::len((DELETE $id WHERE e = $x RETURN BEFORE)) > 0`;
 const EXISTS = `RETURN record::exists($id)`;
 
@@ -78,15 +87,27 @@ export function surrealStorage(options: SurrealStorageOptions): ActorStorage {
 
     return {
         async load(type, key): Promise<ActorStorageRecord | null> {
-            const [row] = await db.query<[{ e: string; s: string } | null]>(LOAD, {
+            const [row] = await db.query<[{ e: string; s: string; l?: string[] | null } | null]>(LOAD, {
                 id: rid(type, key)
             });
-            return row ? { state: JSON.parse(row.s) as unknown, etag: row.e } : null;
+            if (!row) return null;
+            return {
+                state: JSON.parse(row.s) as unknown,
+                etag: row.e,
+                // `l` is NONE on a record written before the field existed.
+                log: (row.l ?? []).map((entry) => JSON.parse(entry) as unknown)
+            };
         },
 
         save: (type, key, state, expectedEtag) =>
             put(type, key, JSON.stringify(state), expectedEtag),
         saveText: put,
+        async appendText(type, key, l, expectedEtag): Promise<string> {
+            const etag = globalThis.crypto.randomUUID();
+            const [written] = await db.query<[boolean]>(APPEND, { id: rid(type, key), e: etag, l, x: expectedEtag });
+            if (written !== true) throw new ActorStorageConflict(type, key);
+            return etag;
+        },
 
         async clear(type, key, expectedEtag): Promise<void> {
             const id = rid(type, key);

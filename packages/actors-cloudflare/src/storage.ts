@@ -64,6 +64,14 @@ export function durableObjectStorage(
         // STRUCTURED value and the platform serializes it itself, so this
         // adapter never ran the second walk the option exists to remove.
         // Handing it a string would store a JSON string it must parse back.
+        //
+        // No `appendText` either (#312): the record is ONE structured value
+        // under one key, so an append would `get` it, push, and `put` it
+        // whole — the O(state) write the seam exists to remove, with a
+        // parse and a serialize the platform does per call. The host falls
+        // back to a full save per append. An O(entry) shape exists — one
+        // key per entry under the record's prefix, `storage.list` on load —
+        // and is a follow-up, not a smaller version of this.
         save(type, key, state, expectedEtag) {
             return gate(async () => {
             const id = recordKey(type, key);

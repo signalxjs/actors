@@ -3,19 +3,27 @@
  * (#65): one row per actor in one table keyed by `(type, key)`, no TTL —
  * durability is the point. The persistence option for a host that wants a
  * real database in a file and nothing to operate: no server, no pool, no
- * DDL to run — the table is created on open, `IF NOT EXISTS`.
+ * DDL to run — the tables are created on open, `IF NOT EXISTS`.
  *
  * Etags are the row's integer version, minted by the database and returned
  * as a decimal string: a create writes version 1, every update is
- * `version = version + 1`. Compare-and-set is ONE statement each way —
- * `INSERT … ON CONFLICT DO NOTHING` for create, `UPDATE … WHERE version =
- * ?` for update, `DELETE … WHERE version = ?` for clear — and SQLite runs
- * each statement as its own write transaction, so the row count IS the
- * verdict and nothing needs an explicit BEGIN. A mismatch throws the
+ * `version = version + 1`. Compare-and-set is one `WHERE version = ?`
+ * predicate each way — `INSERT … ON CONFLICT DO NOTHING` for create,
+ * `UPDATE … WHERE version = ?` for update, `DELETE … WHERE version = ?`
+ * for clear — so the row count IS the verdict. A mismatch throws the
  * branded `ActorStorageConflict`. Like `fileStorage`, and unlike the UUID
  * providers, the version restarts at 1 when a cleared key is re-created;
  * the runtime never carries an etag across a clear, so the chain is intact
  * for every writer that could hold one.
+ *
+ * The append seam (#312) rides a sibling table `{table}_log(type, key,
+ * seq, entry)`: `appendText` bumps the version under the same CAS and
+ * inserts one row, a full save or clear deletes the record's rows, and
+ * `load` reads the state row plus the log rows in `seq` order. Every write
+ * that touches both tables runs in one `BEGIN IMMEDIATE` transaction, so a
+ * CAS verdict and the log it governs commit together; a create is still
+ * the single `INSERT` (a record that does not exist has no log rows —
+ * clear removed them). One write transaction per save, append or clear.
  *
  * State is stored as JSON text. `JSON.stringify` writes NUL as the
  * six-character `\u0000` escape, so the serialized form is always plain
@@ -58,6 +66,8 @@ export interface SqliteStorageOptions {
 export interface SqliteStorage extends ActorStorage {
     /** Always present here: this adapter stores the serialized form (#238). */
     saveText(type: string, key: string, json: string, expectedEtag: string | null): Promise<string>;
+    /** Always present here: the log table is created beside the state table (#312). */
+    appendText(type: string, key: string, json: string, expectedEtag: string): Promise<string>;
     /**
      * Close the underlying database. Every later call rejects; a second
      * `close()` is a no-op, so a `finally` and an explicit stop path can
@@ -134,9 +144,26 @@ export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
             PRIMARY KEY (type, key)
         ) WITHOUT ROWID`
     );
+    // The log (#312): `seq` is the rowid, minted monotonically by
+    // AUTOINCREMENT so a row deleted at compaction never has its number
+    // reused, and the index on (type, key) hands the rows back in rowid —
+    // append — order. Same escaped `type`/`key` as the state table.
+    const logTable = `${table}_log`;
+    db.exec(
+        `CREATE TABLE IF NOT EXISTS ${logTable} (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            key TEXT NOT NULL,
+            entry TEXT NOT NULL
+        )`
+    );
+    db.exec(`CREATE INDEX IF NOT EXISTS ${logTable}_record ON ${logTable} (type, key)`);
 
     const selectStmt = db.prepare(
         `SELECT version, state FROM ${table} WHERE type = ? AND key = ?`
+    );
+    const selectLogStmt = db.prepare(
+        `SELECT entry FROM ${logTable} WHERE type = ? AND key = ? ORDER BY seq`
     );
     const existsStmt = db.prepare(`SELECT 1 FROM ${table} WHERE type = ? AND key = ?`);
     const insertStmt = db.prepare(
@@ -150,6 +177,30 @@ export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
     const deleteStmt = db.prepare(
         `DELETE FROM ${table} WHERE type = ? AND key = ? AND version = ?`
     );
+    const bumpStmt = db.prepare(
+        `UPDATE ${table} SET version = version + 1
+         WHERE type = ? AND key = ? AND version = ?`
+    );
+    const appendStmt = db.prepare(`INSERT INTO ${logTable} (type, key, entry) VALUES (?, ?, ?)`);
+    const purgeLogStmt = db.prepare(`DELETE FROM ${logTable} WHERE type = ? AND key = ?`);
+
+    /**
+     * One write transaction around `body`. `BEGIN IMMEDIATE` takes the
+     * write lock up front (the `busy_timeout` waits for it), so the CAS
+     * statement inside cannot succeed against a row another writer is
+     * about to change; a throw — the conflict included — rolls back.
+     */
+    const transact = <T,>(body: () => T): T => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const result = body();
+            db.exec('COMMIT');
+            return result;
+        } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+        }
+    };
 
     // The one CAS body, reached with JSON either way — from the host's own
     // single-walk emitter via `saveText`, or from a tree `save` stringifies
@@ -171,24 +222,55 @@ export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
             return '1';
         }
         const version = versionOf(expectedEtag);
-        if (version === null || Number(updateStmt.run(json, t, k, version).changes) !== 1) {
-            throw new ActorStorageConflict(type, key);
-        }
-        return String(version + 1);
+        if (version === null) throw new ActorStorageConflict(type, key);
+        // A full save is the compaction: the log goes in the same
+        // transaction as the snapshot that already contains it (#312).
+        return transact(() => {
+            if (Number(updateStmt.run(json, t, k, version).changes) !== 1) {
+                throw new ActorStorageConflict(type, key);
+            }
+            purgeLogStmt.run(t, k);
+            return String(version + 1);
+        });
+    };
+
+    // The append (#312): the version bump IS the CAS — its row count says
+    // whether the etag matched — and the entry lands only when it did.
+    const append = async (
+        type: string,
+        key: string,
+        json: string,
+        expectedEtag: string
+    ): Promise<string> => {
+        const t = sqliteText(type);
+        const k = sqliteText(key);
+        const version = versionOf(expectedEtag);
+        if (version === null) throw new ActorStorageConflict(type, key);
+        return transact(() => {
+            if (Number(bumpStmt.run(t, k, version).changes) !== 1) {
+                throw new ActorStorageConflict(type, key);
+            }
+            appendStmt.run(t, k, json);
+            return String(version + 1);
+        });
     };
 
     let closed = false;
     return {
         async load(type, key) {
-            const row = selectStmt.get(sqliteText(type), sqliteText(key)) as
-                | { version: number | bigint; state: string }
-                | undefined;
+            const t = sqliteText(type);
+            const k = sqliteText(key);
+            const row = selectStmt.get(t, k) as { version: number | bigint; state: string } | undefined;
             if (!row) return null;
-            return { state: JSON.parse(row.state) as unknown, etag: String(row.version) };
+            const log = (selectLogStmt.all(t, k) as { entry: string }[]).map(
+                (r) => JSON.parse(r.entry) as unknown
+            );
+            return { state: JSON.parse(row.state) as unknown, etag: String(row.version), log };
         },
         save: (type, key, state, expectedEtag) =>
             put(type, key, JSON.stringify(state), expectedEtag),
         saveText: put,
+        appendText: append,
         async clear(type, key, expectedEtag) {
             const t = sqliteText(type);
             const k = sqliteText(key);
@@ -200,9 +282,13 @@ export function sqliteStorage(options: SqliteStorageOptions): SqliteStorage {
                 return;
             }
             const version = versionOf(expectedEtag);
-            if (version === null || Number(deleteStmt.run(t, k, version).changes) !== 1) {
-                throw new ActorStorageConflict(type, key);
-            }
+            if (version === null) throw new ActorStorageConflict(type, key);
+            transact(() => {
+                if (Number(deleteStmt.run(t, k, version).changes) !== 1) {
+                    throw new ActorStorageConflict(type, key);
+                }
+                purgeLogStmt.run(t, k);
+            });
         },
         close() {
             if (closed) return;

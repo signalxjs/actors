@@ -299,9 +299,11 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   (etag-CAS `ActorStorage` over ONE table keyed `(type, key)`, `WITHOUT
   ROWID`; the etag is the row's integer version, so a create is `INSERT …
   ON CONFLICT DO NOTHING` and an update `UPDATE … WHERE version = ?` — one
-  statement, hence one SQLite write transaction, per save or clear;
-  `saveText` implemented, `save` routed through it). The table is created
-  on open; `path` opens the file (WAL + `busy_timeout`), `database` takes
+  SQLite write transaction per save, append or clear; `saveText`
+  implemented, `save` routed through it; `appendText` (#312) on a sibling
+  `{table}_log` table, the version bump doubling as its CAS, and a full
+  save or clear deleting the record's log rows in the same transaction).
+  Both tables are created on open; `path` opens the file (WAL + `busy_timeout`), `database` takes
   a caller's `DatabaseSync` untouched, `close()` closes it. `type` and
   `key` go through the same injective NUL escape as `pgText`, because
   SQLite stores a NUL-bearing bound string whole and then truncates it in

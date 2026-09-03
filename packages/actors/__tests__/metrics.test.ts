@@ -8,12 +8,14 @@
  *    queue, which is the entire reason the seam was added.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { ActorStorageConflict, defineActor } from '@sigx/actors';
+import { ActorStorageConflict, defineActor, isStorageConflict } from '@sigx/actors';
 import {
     createHost,
     defineActorApp,
     memoryStorage,
     metrics,
+    type ActorPlugin,
+    type ActorStorage,
     type ActorTurnObserver,
     type MetricsPlugin
 } from '@sigx/actors/host';
@@ -246,6 +248,80 @@ describe('metrics()', () => {
         try {
             await host.actor(Counter, 'a').persist();
             expect(m.snapshot().storage.saves).toBe(1);
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('forwards appendText, and counts an append as a save (#312)', async () => {
+        // The append path has the same silent-drop failure mode as saveText:
+        // a decorator that forgot it would leave the host doing a full save
+        // per append, with nothing to say so. Nothing in the activation
+        // calls the host's append yet, so this drives the DECORATED storage
+        // directly — the object the host holds after `metrics()` wrapped it.
+        const m = metrics();
+        const inner = memoryStorage();
+        let appends = 0;
+        const capable: ActorStorage = {
+            load: inner.load.bind(inner),
+            clear: inner.clear.bind(inner),
+            save: inner.save.bind(inner),
+            appendText: async (type, key, json, etag) => {
+                appends++;
+                return inner.appendText!(type, key, json, etag);
+            }
+        };
+        let decorated: ActorStorage | null = null;
+        const capture: ActorPlugin = {
+            name: 'capture-storage',
+            setup: (registry) =>
+                registry.decorateStorage((storage) => {
+                    decorated = storage;
+                    return storage;
+                })
+        };
+        const app = defineActorApp({ actors: [Counter], storage: capable, defaults: quiet })
+            .use(m)
+            .use(capture);
+        await app.start();
+        try {
+            const etag = await decorated!.save('Counter', 'a', { n: 0 }, null);
+            const next = await decorated!.appendText!('Counter', 'a', '{"step":1}', etag);
+            expect(appends).toBe(1);
+            expect(m.snapshot().storage.saves).toBe(2);
+            await expect(decorated!.appendText!('Counter', 'a', '{"step":2}', etag)).rejects.toSatisfy(
+                isStorageConflict
+            );
+            expect(m.snapshot().storage.conflicts).toBe(1);
+            expect((await decorated!.load('Counter', 'a'))!).toMatchObject({ etag: next, log: [{ step: 1 }] });
+        } finally {
+            await app.stop();
+        }
+    });
+
+    it('does not invent appendText on a storage that lacks it (#312)', async () => {
+        const m = metrics();
+        let decorated: ActorStorage | null = null;
+        const capture: ActorPlugin = {
+            name: 'capture-storage',
+            setup: (registry) =>
+                registry.decorateStorage((storage) => {
+                    decorated = storage;
+                    return storage;
+                })
+        };
+        const inner = memoryStorage();
+        const bare: ActorStorage = {
+            load: inner.load.bind(inner),
+            save: inner.save.bind(inner),
+            clear: inner.clear.bind(inner)
+        };
+        const app = defineActorApp({ actors: [Counter], storage: bare, defaults: quiet })
+            .use(m)
+            .use(capture);
+        await app.start();
+        try {
+            expect(decorated!.appendText).toBeUndefined();
         } finally {
             await app.stop();
         }

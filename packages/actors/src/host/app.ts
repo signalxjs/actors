@@ -135,12 +135,13 @@ export interface PluginRegistry {
      * registration order, so the LAST registered decorator is outermost and
      * therefore sees a call first.
      *
-     * Forward every member you do not deliberately replace, `saveText`
-     * included — and forward it CONDITIONALLY, so an inner storage without
-     * it does not appear to have it. Returning a fixed three-method literal
-     * silently drops the single-walk save path (#238): the host reverts to
-     * encoding a tree the adapter then re-walks, correct but slower, with
-     * nothing to say it happened.
+     * Forward every member you do not deliberately replace, `saveText` and
+     * `appendText` included — and forward each CONDITIONALLY, so an inner
+     * storage without it does not appear to have it. Returning a fixed
+     * three-method literal silently drops the single-walk save path (#238)
+     * and the O(entry) append path (#312): the host reverts to encoding a
+     * tree the adapter then re-walks, and to a full save per append —
+     * correct but slower, with nothing to say it happened.
      */
     decorateStorage(decorate: (inner: ActorStorage) => ActorStorage): void;
     /**

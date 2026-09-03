@@ -33,7 +33,7 @@ a skip is a reported outcome, never a silent pass.
 ## The storage suite
 
 `storageConformance` is what "this is a storage the host can run on" means,
-as fourteen cases over the four methods of `ActorStorage`: the load-miss
+as twenty cases over the methods of `ActorStorage`: the load-miss
 shape (`null`, never `undefined`), create/round-trip, the etag chain and
 its staleness, create-over-existing and update-of-missing as conflicts,
 `clear` as compare-and-delete with `null` asserting absence, no resurrection
@@ -42,9 +42,16 @@ byte-identical (the precondition the host's corrupt-state handling rests
 on), loaded records being the caller's to mutate (#25), non-object state
 (arrays, scalars, `null`) staying distinct from absent, and keys being
 opaque — NUL, separators, whitespace and escape-lookalikes are all distinct
-records. The last three cases pin the optional `saveText` path (#238):
+records. Three cases pin the optional `saveText` path (#238):
 `saveText(json)` is `save(JSON.parse(json))`, it honours the same CAS and
-brand, and the two paths share one etag chain.
+brand, and the two paths share one etag chain. The last six pin the optional
+`appendText` path (#312): a missing record conflicts and creates nothing; a
+stale etag appends nothing; an append mints a fresh etag and `load` shows the
+unchanged state plus the one entry; entries load oldest first whatever their
+JSON shape; a full save (via `save`, via `saveText` where present) truncates
+the log, `clear` removes it and a re-created record starts empty; and the
+etag an append returns is what the next save or clear must present, while
+the one it was given is stale from then on.
 
 Three things it deliberately does NOT assert, and why:
 
@@ -65,27 +72,33 @@ habits. `fileStorage`, `durableObjectStorage` (over a Map), `sqliteStorage`
 and — env-gated like everything else against a live server — `pgStorage`,
 `redisStorage` and `surrealStorage` all run the same list.
 
-**Skips are for the text path only, and a harness can forbid them.**
-`saveText` is optional on the seam, so a storage without it reports a skip
-on the three text cases — `memoryStorage` wants the tree, and that is a
-legitimate answer. But absence is also exactly what a *decorator* produces
-when it returns a fixed three-method literal (the decorator rule on
-`ActorStorage`): the host quietly falls back to the two-walk save path and
-nothing says so. A harness sets `saveText: true` to declare the storage
-implements it, and the text cases then FAIL when it is missing rather than
-skip. The in-package run drives `metrics()` over a text-capable adapter
-with that flag set, so a decorator dropping the member is a red case, not a
-green skip.
+**Skips are for the optional paths only, and a harness can forbid them.**
+`saveText` and `appendText` are optional on the seam, so a storage without
+one reports a skip on that path's cases — `memoryStorage` wants the tree,
+`fileStorage` and `durableObjectStorage` would rewrite the record whole on an
+append, and those are legitimate answers. But absence is also exactly what a
+*decorator* produces when it returns a fixed three-method literal (the
+decorator rule on `ActorStorage`): the host quietly falls back — two-walk
+saves, a full save per append — and nothing says so. A harness sets
+`saveText: true` / `appendText: true` to declare the storage implements the
+member, and that path's cases then FAIL when it is missing rather than skip.
+The in-package run drives `metrics()` over an adapter with both, with both
+flags set, so a decorator dropping either member is a red case, not a green
+skip; and the runs that legitimately skip pin their skip COUNT (three text
+cases, six append cases), so a required case that started skipping, or an
+optional path an adapter quietly gained, both fail.
 
 The sabotage table in `packages/actors/__tests__/storage-conformance.test.ts`
-is rule 2 made permanent: fourteen deliberately broken adapters — a miss
+is rule 2 made permanent: twenty-two deliberately broken adapters — a miss
 that loads as `undefined`, a save that ignores the etag, an unbranded
 conflict, an upsert, a load that hands out the stored tree by reference, a
 key-trimming layer, a non-injective NUL escape, a three-method decorator
-over a text adapter, a `saveText` with its own etag chain — each named
-against the case that must catch it, and the test asserts that case goes
-red with a `[storage conformance]` message. A case added without an entry
-there has not been shown to fail.
+over a text adapter, a `saveText` with its own etag chain, an `appendText`
+that creates the record it is asked to append to, a load that returns the
+log newest first, a full save that keeps the log — each named against the
+case that must catch it, and the test asserts that case goes red with a
+`[storage conformance]` message. A case added without an entry there has not
+been shown to fail.
 
 ## The two rules
 
@@ -152,8 +165,8 @@ every future provider false confidence.
    step wants. Each harness must hand out a storage over an EMPTY namespace
    (a fresh schema, key prefix, directory or Map) and `stop()` drops it —
    cases never clean up after themselves. Declare `saveText: true` if the
-   adapter implements the text path, so a dropped member fails instead of
-   skipping.
+   adapter implements the text path and `appendText: true` if it implements
+   the append path, so a dropped member fails instead of skipping.
 4. Gate the live-server tests on an env var (`REDIS_URL`, `PG_URL`,
    `SURREAL_URL`, `KUBECONFIG`) so the rest of the matrix skips cleanly, and
    add the CI job that provides it.

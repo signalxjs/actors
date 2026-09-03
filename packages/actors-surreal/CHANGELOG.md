@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`surrealStorage` implements `appendText`** (#312): an `l` array field
+  on the state record (`DEFINE FIELD IF NOT EXISTS l … TYPE array<string>
+  DEFAULT []` in `surrealSchemaSql()`, so `ensureSurrealSchema()` adds it to
+  an existing schema), appended with `l += $entry` under the same etag
+  `WHERE` as a save; the CAS save sets `l = []` in the statement that
+  writes the snapshot, `CREATE` starts it empty, and `LOAD` selects it — a
+  record written before the field existed reads back with an empty log.
+
 ### Fixed
 
 - **A reminder whose dispatch fails is retried next tick instead of being

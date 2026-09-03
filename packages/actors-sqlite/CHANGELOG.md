@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`sqliteStorage` implements `appendText`** (#312): a sibling table
+  `{table}_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, type, key, entry)`,
+  created on open beside the state table; an append is one `BEGIN
+  IMMEDIATE` transaction — the version bump `WHERE version = ?` is the CAS,
+  its row count the verdict, and the entry row lands only when it matched.
+  A full save or clear deletes the record's log rows in the same
+  transaction as the snapshot (a create stays the single `INSERT`: a record
+  that does not exist has no log rows), and `load` reads the state row plus
+  the log rows in `seq` order. `type` and `key` go through the same
+  injective NUL escape in both tables.
+
 - **`@sigx/actors-sqlite`** (#65): `sqliteStorage()`, an etag-CAS
   `ActorStorage` on `node:sqlite` — one row per actor in a single table
   keyed by `(type, key)`, the etag a row version the database mints, one

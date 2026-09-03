@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`pgStorage` implements `appendText`** (#312): a `log text[] NOT NULL
+  DEFAULT '{}'` column on `{schema}.state`, appended with `array_append`
+  under the same row-count CAS as a save; a full save sets `log = '{}'` in
+  the statement that writes the snapshot, and `load` selects it. **Schema
+  change**: `pgSchemaSql()` declares the column in the `CREATE TABLE` and
+  follows it with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, so a schema
+  created by an earlier version is upgraded by `ensurePgSchema()` at the
+  next boot — or by carrying the new `pgSchemaSql()` through whatever tool
+  owns the migrations. Rows written before the column read back with an
+  empty log.
+
 ### Fixed
 
 - **A reminder whose dispatch fails is retried next tick instead of being

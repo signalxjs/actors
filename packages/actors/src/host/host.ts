@@ -316,7 +316,11 @@ class HostImpl implements Host {
                 return {
                     state: reviveWithHandlers(record.state, this.#types) as object,
                     raw: record.state,
-                    etag: record.etag
+                    etag: record.etag,
+                    // Present exactly when the storage reports one (#312).
+                    ...(record.log
+                        ? { log: record.log.map((entry) => reviveWithHandlers(entry, this.#types)) }
+                        : {})
                 };
             },
             // Defined via its own split halves so the two paths cannot
@@ -345,6 +349,23 @@ class HostImpl implements Host {
                               ? host.storeState(ref, host.encodeState(raw), expectedEtag)
                               : this.#storage.saveText!(ref.type, ref.key, json, expectedEtag);
                       }
+                  }
+                : {}),
+            // Same conditional read for the append path (#312): settled
+            // here, after every decorator, for the same reason.
+            ...(this.#storage.appendText
+                ? {
+                      appendStateText: (ref: ActorRef, entry: unknown, expectedEtag: string) =>
+                          this.#storage.appendText!(
+                              ref.type,
+                              ref.key,
+                              // The one-walk emitter; the two-walk fallback
+                              // for the root it declines (a symbol or a
+                              // function), as `saveStateText` does.
+                              stringifyWithHandlers(entry, this.#types) ??
+                                  JSON.stringify(encodeWithHandlers(entry, this.#types)),
+                              expectedEtag
+                          )
                   }
                 : {}),
             clearStoredState: (ref, expectedEtag) =>

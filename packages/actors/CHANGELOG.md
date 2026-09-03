@@ -4,6 +4,32 @@
 
 ### Added
 
+- **`ActorStorage.appendText` — an O(entry) append seam, with the log
+  truncated by every full save** (#312, PR 1 of 2). `jobs/checkpoint-growth`
+  measured a per-step checkpoint at 19.8 µs at the head of a 300-step run
+  and 113 µs at the tail, because `job.checkpoint()` re-encodes the whole
+  `JobState` every step; only a change of shape removes the O(state) term.
+  A record is now a snapshot plus a log: `appendText?(type, key, json,
+  expectedEtag)` appends ONE JSON entry to the record's log under the same
+  etag CAS as `save` and mints a new etag (a missing record, like a
+  mismatch, throws the `ActorStorageConflict` brand and appends nothing;
+  `expectedEtag` is never `null` — there is nothing to append to); `save`
+  and `saveText` truncate the log in the write that stores the snapshot,
+  `clear` removes both, and a re-created record starts empty; `load`
+  returns `log?: unknown[]` on `ActorStorageRecord` — parsed entries,
+  oldest first, present (empty included) exactly from a storage that
+  implements the seam. `memoryStorage` implements it; `fileStorage` declines
+  deliberately (its pretty-printed envelope would be rewritten whole).
+  `storageConformance` gains six cases and the harness flag `appendText:
+  true` with `saveText`'s red-or-skip semantics; the decorator rule now
+  names both optional members, and `metrics()` forwards `appendText`
+  conditionally like `saveText`, counting an append into `saves` (durable
+  writes) and its conflicts into `conflicts`. The host reads the capability
+  once, after every decorator, as `ActivationHost.appendStateText?(ref,
+  entry, expectedEtag)`, and `loadState` returns `log` revived per entry.
+  Nothing in the activation calls it yet — `ctx.append`, replay on load and
+  `job.append(entry)` are the second PR.
+
 - **`createActorSocketSession({ maxBufferedBytes })` — a slow consumer is
   shed, not funded from the host's heap** (#258). The Tier-3 run that
   followed #252 measured what #182 predicted: with 10% of 5 000 subscribers

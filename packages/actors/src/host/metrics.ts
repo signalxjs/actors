@@ -531,6 +531,27 @@ export function metrics(options: MetricsOptions = {}): MetricsPlugin {
                                   }
                               }
                           }
+                        : {}),
+                    // Same rule for the append path (#312). An append is a
+                    // durable write of the actor's state — a smaller one —
+                    // so it counts as a save: `saves` is "durable writes",
+                    // and a dashboard watching the write rate of a job that
+                    // switched to appends should not see it drop to zero.
+                    ...(inner.appendText
+                        ? {
+                              async appendText(type: string, key: string, json: string, expectedEtag: string) {
+                                  const started = storageLatency ? performance.now() : 0;
+                                  try {
+                                      return await inner.appendText!(type, key, json, expectedEtag);
+                                  } catch (error) {
+                                      if (isStorageConflict(error)) conflicts++;
+                                      throw error;
+                                  } finally {
+                                      saves++;
+                                      storageLatency?.record(performance.now() - started);
+                                  }
+                              }
+                          }
                         : {})
                 })
             );
