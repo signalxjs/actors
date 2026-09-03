@@ -244,6 +244,7 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
         kind: 'job',
         ...(options.authorize ? { authorize: options.authorize } : {}),
         ...(options.allowAnonymous !== undefined ? { allowAnonymous: options.allowAnonymous } : {}),
+        ...(options.internal !== undefined ? { internal: options.internal } : {}),
         ...(options.idleAfterMs !== undefined ? { idleAfterMs: options.idleAfterMs } : {}),
         ...(options.placement ? { placement: options.placement } : {}),
         persistence: 'explicit',

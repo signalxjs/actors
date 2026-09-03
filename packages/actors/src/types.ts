@@ -1018,6 +1018,20 @@ export interface ActorOptions<
      * principal.
      */
     allowAnonymous?: true;
+    /**
+     * A server-internal type: the PUBLIC wire never serves it (#74). The
+     * actor endpoint, the `$live` mount and the socket session all answer
+     * a call, watch or subscription for it exactly as they do for a type
+     * that is not registered — same 404, same envelope — so a probe learns
+     * nothing. In-process `actor()` / `ctx.actor()` and the cluster's
+     * authenticated host-to-host mount keep serving it, and the Vite build
+     * emits a `__serverOnly` stand-in instead of a client stub.
+     *
+     * Orthogonal to access: the pipeline still runs for the callers that
+     * can reach it, so an internal actor declares `authorize` /
+     * `allowAnonymous` like any other (or relies on the app default).
+     */
+    internal?: true;
     /** Per-method policy chains, ANDed AFTER `authorize`. Static map — the
      *  method table itself is per-activation and cannot carry wire metadata. */
     methodAuthorize?: Record<string, ActorPolicy | readonly ActorPolicy[]>;
@@ -1315,6 +1329,9 @@ export interface WorkerOptions<
     authorize?: ActorPolicy | readonly ActorPolicy[];
     /** The explicit word for a worker reachable without a principal. */
     allowAnonymous?: true;
+    /** Server-internal, exactly as on `ActorOptions.internal`: the public
+     *  wire never serves it. */
+    internal?: true;
     /** Per-method policy chains, ANDed after `authorize`. */
     methodAuthorize?: Record<string, ActorPolicy | readonly ActorPolicy[]>;
     /**

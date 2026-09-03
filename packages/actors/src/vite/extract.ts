@@ -6,10 +6,11 @@
  *   - `streams` — the returned object literal's keys (for the client proxy)
  *   - `reads` — the cache declaration's keys (the methods the proxy GETs)
  *   - `authorize` / `allowAnonymous` — for the `requireAuthorization` gate
+ *   - `internal` — a type the public wire never serves gets no client stub
  *
  * and produces the swapped CLIENT module (`__actorRef` per actor,
- * `__serverOnly` for every other value export). The real module never
- * reaches the browser.
+ * `__serverOnly` for every other value export — and for an `internal`
+ * actor, #74). The real module never reaches the browser.
  */
 import { parseAst } from 'vite';
 
@@ -32,6 +33,15 @@ export interface ExtractedActor {
      * spread (#148).
      */
     worker: boolean;
+    /**
+     * `internal: true` (#74): the public wire never serves this type, so
+     * the client module gets a `__serverOnly` stand-in rather than an
+     * `__actorRef` — no type name, endpoint or stream table for it reaches
+     * the browser bundle. It stays in `actors`, because the server
+     * registry (`virtual:sigx-actors`) is built from this list and the
+     * in-process and host-to-host callers still need it registered.
+     */
+    internal: boolean;
     /** Offset of the defineActor call (for error locations). */
     offset: number;
 }
@@ -201,6 +211,8 @@ export function extractActors(
             !(authorizeValue?.type === 'ArrayExpression' && authorizeValue.elements.length === 0);
         const anonymousValue = unwrapTs(props.get('allowAnonymous')?.value as Node | undefined);
         const anonymous = anonymousValue?.type === 'Literal' && anonymousValue.value === true;
+        const internalValue = unwrapTs(props.get('internal')?.value as Node | undefined);
+        const internal = internalValue?.type === 'Literal' && internalValue.value === true;
 
         const streams: string[] = [];
         const streamsProp = props.get('streams');
@@ -252,6 +264,7 @@ export function extractActors(
             authorized,
             anonymous,
             worker,
+            internal,
             offset: (init.start ?? 0) as number
         });
     };
@@ -320,10 +333,20 @@ export function extractActors(
     let clientModule: string | null = null;
     if (errors.length === 0) {
         const lines = [CLIENT_HEADER];
-        if (otherExports.length > 0) {
+        if (otherExports.length > 0 || actors.some((actor) => actor.internal)) {
             lines.push(`import { __serverOnly } from '@sigx/server/client';`);
         }
         for (const actor of actors) {
+            if (actor.internal) {
+                // Off the public wire (#74): the same throwing stand-in a
+                // non-actor export gets, so an accidental browser-side call
+                // fails loudly instead of 404ing against the endpoint.
+                lines.push(
+                    `export const ${actor.exportName} = __serverOnly(` +
+                        `${JSON.stringify(actor.exportName)}, ${JSON.stringify(file)});`
+                );
+                continue;
+            }
             // The arguments are positional, so each one is emitted whenever
             // any LATER one is: a reads-only actor still passes an empty
             // `streams`, and a bare worker passes both arrays to reach the

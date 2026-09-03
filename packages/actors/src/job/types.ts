@@ -128,6 +128,9 @@ export interface JobOptions<In, Out, C, Extra extends object> {
     authorize?: ActorPolicy | readonly ActorPolicy[];
     /** The explicit word for a job reachable without a principal. */
     allowAnonymous?: true;
+    /** Server-internal, exactly as on `ActorOptions.internal`: the public
+     *  wire never serves its generated surface. */
+    internal?: true;
     /**
      * Total attempts before a crash-looping job is marked `failed`.
      * Counts the first run and every crash-resume; pause-resume is free.

@@ -15,11 +15,25 @@ authority on posture.
 | Who calls it | browsers, service clients | peer hosts only |
 | Auth | your guards, `ctx.principal` | shared-secret HMAC per call |
 | Reserved methods | **refused outright** | this is where they arrive |
+| `internal: true` types | **refused as unregistered** (404) | served |
 | Exists when | always | only if a transport declares a route |
 
 The public endpoint refuses every `$sigx:`-prefixed method. Those are the
 runtime's own deliveries — reminders, topic fan-out, `$sigx:host#stats` — and
 they are legitimate only over the authenticated internal mount.
+
+It also refuses every **`internal: true`** type (#74), and the refusal is the
+unknown-type answer verbatim — same 404, same kind, same message — so a probe
+cannot tell a hidden type from a missing one. The check is `isInternalActor`
+in `guards.ts`, asked right after the definition lookup by each public entry
+point that resolves a type on its own: `createActorResolver` (unary and GET
+reads), `subscribeAll` (the `$live` mount resolves *before* the resolver's
+definition lookup, so it repays the check per subscription) and the socket
+session (calls and subscriptions). `resolveHostSymbol` never asks it, which is
+what keeps the internal mount, `ctx.actor()` hops and remote reminder delivery
+working. The build's half is in `vite/extract.ts`: an internal actor stays in
+the extraction (the server registry is built from it) but its client export is
+a `__serverOnly` stand-in, not an `__actorRef`.
 
 The internal mount is **not special-cased**. `httpTransport()` declares it
 through `PluginRegistry.route()` like any other plugin route, which is why a
@@ -172,6 +186,13 @@ is the whole story:
   current cookies and re-seeds, the same contract as any drop.
   `maxConnectionMs` survives eviction as a per-message-checked deadline in
   the socket attachment; the object's single alarm stays with reminders.
+  The forwarding route (`objectSocketRoute`) is a public entry point that
+  resolves the type **itself**, ahead of any session, so it repays the
+  `internal: true` check (#74) at the upgrade: a flagged type gets the
+  unknown-type 404 and never mints a Durable Object — a 101 there, where a
+  missing type 404s, would tell a probe the type exists. The
+  Worker-terminated mode needs no such line; it only wraps
+  `createActorSocketSession`, which checks per frame.
 
 The object-terminated mode fixes #47 only for the object's **own** actor's
 watches — a session's watches on other actors go object→object over the

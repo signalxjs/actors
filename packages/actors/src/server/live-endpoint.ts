@@ -19,7 +19,7 @@
 import { ServerFnError, type ServerFnContext } from '@sigx/server';
 import { mintCallId } from '../call-id';
 import { takeCallBag } from '../call-context-bag';
-import { actorPosture, authorizeActorCall, encodePrincipal } from '../guards';
+import { actorPosture, authorizeActorCall, encodePrincipal, isInternalActor } from '../guards';
 import { isTraceparent } from '../traceparent';
 import { toClientError } from './client-error';
 import { LIVE_SYMBOL, type LiveFrame, type LiveSubscription } from '../wire-shared';
@@ -373,7 +373,12 @@ export function subscribeAll(
                 }, timeoutMs);
             }
             const def = await host.definition(sub.t);
-            if (!def) throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
+            // `$live` resolves ahead of the unary resolver's definition
+            // lookup, so it repays the `internal: true` refusal itself, per
+            // subscription — and with the same words as a missing type.
+            if (!def || isInternalActor(def as AnyActorDefinition)) {
+                throw new ServerFnError(404, `unknown actor type "${sub.t}"`);
+            }
             // The SAME pipeline a unary call runs, against this request and
             // this instance. A watch therefore exposes nothing a poller
             // could not already read — which is why there is no per-actor

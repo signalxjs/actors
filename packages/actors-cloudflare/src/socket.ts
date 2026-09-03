@@ -221,9 +221,15 @@ export function objectSocketRoute(options: ObjectSocketRouteOptions): ActorRoute
             const parsed = parseSocketActorPath(new URL(request.url).pathname, path);
             if (!parsed) return errorResponse(404, '[sigx actors-cloudflare] not found');
             // The Worker is the 404 authority, exactly as on the HTTP mount:
-            // an unknown type must not mint a Durable Object.
+            // an unknown type must not mint a Durable Object. An `internal:
+            // true` type (#74) takes the SAME branch — the lookup succeeds,
+            // but this is a public entry point, and a 101 here where an
+            // unknown type 404s would confirm the type's existence (and wake
+            // its object) for whoever is probing. Same flag `isInternalActor`
+            // in core's `guards.ts` reads; it is read inline here, next to
+            // `stateless`, rather than widening the `/server` surface for it.
             const def = (await host.definition(parsed.type)) as AnyActorDefinition | undefined;
-            if (!def) {
+            if (!def || def.__sigxActor.internal === true) {
                 return errorResponse(
                     404,
                     `[sigx actors-cloudflare] unknown actor type "${parsed.type}"`

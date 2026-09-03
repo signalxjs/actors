@@ -119,10 +119,24 @@ describe('objectSocketRoute', () => {
         type: 'Pool',
         methods: () => ({})
     });
+    /** Off the public wire (#74): the upgrade must answer as if unregistered. */
+    const Ledger = defineActor({
+        type: 'Ledger',
+        internal: true,
+        allowAnonymous: true,
+        state: () => ({}),
+        methods: () => ({})
+    });
 
     const fakeHost = {
         definition: async (type: string) =>
-            type === 'Stateful' ? Stateful : type === 'Pool' ? Pool : undefined
+            type === 'Stateful'
+                ? Stateful
+                : type === 'Pool'
+                  ? Pool
+                  : type === 'Ledger'
+                    ? Ledger
+                    : undefined
     } as unknown as Host;
 
     function resolverTo(fetched: { url: string }[]): DurableObjectStubResolver {
@@ -158,6 +172,29 @@ describe('objectSocketRoute', () => {
         const route = objectSocketRoute({ resolver: resolverTo(fetched) });
         const res = await route.handle(upgrade('https://x.test/_sigx/socket/Nope/k'), fakeHost);
         expect(res.status).toBe(404);
+        expect(fetched).toEqual([]);
+    });
+
+    it('404s an internal type exactly like an unknown one, without minting a stub', async () => {
+        // The lookup SUCCEEDS for an `internal: true` type, so this is the
+        // one public entry point where a naive "!def" check would answer
+        // 101 and wake a Durable Object for a type the wire must not serve —
+        // and an upgrade that 101s where an unknown type 404s is a probe's
+        // answer. Same status, same body, and the resolver is never touched.
+        const fetched: { url: string }[] = [];
+        const route = objectSocketRoute({ resolver: resolverTo(fetched) });
+        const internal = await route.handle(
+            upgrade('https://x.test/_sigx/socket/Ledger/k'),
+            fakeHost
+        );
+        const missing = await route.handle(upgrade('https://x.test/_sigx/socket/Nope/k'), fakeHost);
+        expect(internal.status).toBe(404);
+        expect(internal.status).toBe(missing.status);
+        const internalBody = (await internal.json()) as { error: { message: string } };
+        const missingBody = (await missing.json()) as { error: { message: string } };
+        expect(internalBody.error.message.replaceAll('Ledger', 'Nope')).toBe(
+            missingBody.error.message
+        );
         expect(fetched).toEqual([]);
     });
 
