@@ -148,7 +148,12 @@ pnpm test:coverage
 pnpm typecheck   # tsgo (a fast TS compiler), config: tsconfig.json
 pnpm lint        # oxlint over the packages' src
 pnpm lint:fix
-pnpm size        # size-limit bundle-size check (.size-limit.json)
+pnpm size        # size-limit bundle-size check (.size-limit.json); bundle-size.yml
+                 # fails a PR that exceeds a limit. Budgets track the feature set:
+                 # the PR that needs a bump ships it, with bytes and why in the PR
+                 # body (#323, #372, #373 are the precedent). Trims are welcome,
+                 # never required; a bump with no feature behind it is a
+                 # regression to investigate.
 pnpm verify:refs # resolve every `#N` in the guarded paths against the repo
 
 pnpm bench       # build, then run every benchmark scenario

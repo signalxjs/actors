@@ -49,6 +49,7 @@ parallel checkouts.
 | Typecheck | `pnpm typecheck` |
 | Lint | `pnpm lint` |
 | Check issue references | `pnpm verify:refs` |
+| Bundle-size check | `pnpm size` — budgets in `.size-limit.json` track the feature set: a PR that needs a bump ships it, with bytes and why in the PR body; trims are welcome, never required (CI fails a PR over a limit) |
 | Benchmarks | `pnpm bench` (see `benchmarks/README.md`) |
 | Perf regression check | `pnpm bench:baseline` before your change, `pnpm bench:compare` after |
 | Diff two saved bench results | `pnpm bench:diff --before=a.json --after=b.json` |
