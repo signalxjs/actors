@@ -177,7 +177,10 @@
   the k8s chart's pins EVERY untokened worker call, for every key and type,
   onto one pod. On such an edge either give the hash an empty-key fallback
   (an nginx `map` to `$request_id`) or carve the worker paths out of the
-  hashed Ingress by path, the way `$live` already is; #342 tracks the chart.
+  hashed Ingress by path, the way `$live` already is. The k8s chart now does
+  the former: it hashes `$sigx_hash`, a `map` in the controller ConfigMap's
+  `http-snippet` that turns an empty header into `$request_id` (#342 — the
+  AKS RUNBOOK's §0 carries the step).
 
 - **A shared watch read no longer runs under the creating subscriber's
   per-request context** (#137). Watch loops are shared per `(method, args,

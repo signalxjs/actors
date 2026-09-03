@@ -100,10 +100,19 @@ consistent hash does not, it hashes `""` and pins every untokened request onto
 whichever one pod that lands on. `$live` is safe on the k8s chart because it is
 carved out of the hashed Ingress *by path*; a worker call has no distinguishing
 path (`/_sigx/actor/Digest/summarize`), so a deployment hashing on the header
-must either give the hash an empty-key fallback (an nginx `map` to
-`$request_id`) or carve its worker types out by path as well. Until the chart
-does (#342), `pool_spread` on the reference estate reads ~1 — one pod for ALL
-workers, which is worse than one pod per key.
+must either give the hash an empty-key fallback or carve its worker types out
+by path as well. The k8s chart takes the fallback route (#342): it hashes
+`$sigx_hash`, an nginx `map` that substitutes the per-request `$request_id`
+for an empty `x-sigx-actor-route` and passes a real token through untouched.
+A `map` is `http`-context config, which a chart cannot carry — it is the
+controller ConfigMap's `http-snippet`, one step of the AKS RUNBOOK's §0 — and
+that makes the step load-bearing rather than optional: a variable no `map`
+defines is nil in the Lua balancer, which then hashes `""` for EVERY request,
+tokened or not, and the whole actor path pins to one pod (read off the
+balancer's code; not yet observed on a cluster). `infra.test.ts` asserts the
+seam three ways — one token pins, distinct tokens spread, untokened calls
+spread — and `testenv.mjs up` refuses to release the chart onto a controller
+without the map.
 
 It is a hash, not the key — the same `hashRouteToken(type, key)` that
 `@sigx/actors-otel` puts on spans, so spans join to routing tokens in access

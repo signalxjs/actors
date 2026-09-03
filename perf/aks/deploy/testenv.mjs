@@ -312,11 +312,34 @@ const ingressIp = () =>
     maskInCi(kube(['-n', cfg.ingressNs, 'get', 'svc', 'ingress-nginx-controller',
         '-o', 'jsonpath={.status.loadBalancer.ingress[0].ip}'], { quiet: true }));
 
+/**
+ * The chart hashes the actor path on `$sigx_hash`, a `map` only the
+ * controller ConfigMap's `http-snippet` can define (RUNBOOK §0 (b)). This
+ * script does not own that ConfigMap, so it cannot install the map — but a
+ * controller WITHOUT it makes the released chart worse than round-robin (the
+ * variable is nil, every actor call hashes "" onto one pod), so the omission
+ * is refused here, before the image build, rather than found by `test`.
+ */
+function ensureEdgeHashMap() {
+    const snippet = kube(['-n', cfg.ingressNs, 'get', 'configmap', 'ingress-nginx-controller',
+        '-o', 'jsonpath={.data.http-snippet}'], { quiet: true, allowFail: true }) ?? '';
+    // The `map` directive itself, not the variable name: `$sigx_hash` in a
+    // comment or some other directive would pass a substring test and let a
+    // map-less controller through — the one thing this gate exists to stop.
+    if (/\bmap\s+\$http_x_sigx_actor_route\s+\$sigx_hash\s*\{/.test(snippet)) {
+        return log(`  ${cfg.ingressNs}: http-snippet maps $http_x_sigx_actor_route → $sigx_hash`);
+    }
+    log(`✗ ${cfg.ingressNs}/ingress-nginx-controller has no \`$sigx_hash\` map in its http-snippet — ` +
+        `the chart's upstream-hash-by would pin the WHOLE actor path to one pod. Apply RUNBOOK §0 (b) first.`);
+    process.exit(1);
+}
+
 // ---------------------------------------------------------------------------
 
 async function up() {
     const tag = gitSha();
     ensurePool();
+    ensureEdgeHashMap();
     buildImage('sigx-actors-test', 'perf/aks/Dockerfile', tag);
     buildImage('sigx-chat', 'perf/app/Dockerfile', tag);
 

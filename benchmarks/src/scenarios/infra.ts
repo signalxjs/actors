@@ -341,11 +341,11 @@ const workerPool: Scenario = {
         };
         // `ROUTE: '0'`: the driver mints its own token (edge-ladder.mjs) and
         // the client mints NONE for a `defineWorker` call (#148), so the pool
-        // arm must drive the wire the client actually sends. Note what that
-        // does on the reference estate until #342 lands: ingress-nginx hashes
-        // the EMPTY header onto one pod, so this reads ~1 there — one pod for
-        // all workers — not because the fix failed but because the edge has
-        // no empty-key fallback yet.
+        // arm must drive the wire the client actually sends. The chart's
+        // edge hashes `$sigx_hash`, which maps an empty header to a
+        // per-request id (#342), so the pool spreads there; on an
+        // ingress-nginx WITHOUT that map the empty key lands every worker
+        // call on one pod and this reads ~1 — the edge failed, not the pool.
         const [pool] = driveFromVm({
             ...common,
             ACTOR_TYPE: 'Digest',

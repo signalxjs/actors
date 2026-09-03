@@ -56,12 +56,14 @@ spec:
           # `$live` (and any other `$`-reserved symbol) is the ONE actor path
           # that must stay off the hash: one held-open response fans out to
           # many actors, so the runtime deliberately sends no token — and an
-          # empty hash key would pin every live subscription in the
-          # deployment onto a single host. A longer prefix wins in nginx, so
-          # this carves it back out of the hashed Ingress below. (Every open
-          # room page holds one — `Room.tsx` puts three live subscriptions on
-          # a single connection — so this rule is load-bearing rather than
-          # defensive, and the infra suite asserts it.)
+          # empty hash key pins every live subscription in the deployment
+          # onto a single host on a controller without the `$sigx_hash` map
+          # (see (3) below). A longer prefix wins in nginx, so this carves it
+          # back out of the hashed Ingress below and keeps it round-robin
+          # either way. (Every open room page holds one — `Room.tsx` puts
+          # three live subscriptions on a single connection — so this rule
+          # is load-bearing rather than defensive, and the infra suite
+          # asserts it.)
           # ImplementationSpecific, NOT Prefix: `$` is rejected by the
           # ingress-nginx admission webhook in a Prefix path ("cannot be
           # used with pathType Prefix"), which neither `helm lint` nor
@@ -84,8 +86,14 @@ spec:
 # for round-robin. Neither half works alone. `$live` and other reserved
 # symbols carry no token and keep paying a hop by design.
 #
-# ⚠ TWO SEPARATE THINGS SILENTLY DEFEAT THIS ANNOTATION. Both were observed
-# live on ingress-nginx v1.15.1, and either one alone gives you round-robin.
+# The key is `$sigx_hash`, NOT the header itself: a `map` on the controller
+# turns an EMPTY header into `$request_id` (see (3) below) so a call with
+# no token spreads instead of pinning. `$live` is carved out by path above
+# regardless; the map is what covers every other untokened call.
+#
+# ⚠ THREE SEPARATE THINGS SILENTLY DEFEAT THIS ANNOTATION. The first two
+# were observed live on ingress-nginx v1.15.1, and either one alone gives
+# you round-robin; the third pins traffic onto ONE pod.
 #
 # (1) THE CONTROLLER STRIPS THE VALUE ON >= 1.12. Its value is an nginx
 # variable, which rates `upstream-hash-by` as Critical risk, and the
@@ -125,8 +133,42 @@ spec:
 # pods, existing only to own a backend of its own. It is defined in
 # `host-actor-service.yaml`, under the same `localityRouting` toggle.
 #
-# `infra.test.ts` now asserts the hash actually pins a token to one host,
-# so either failure is loud instead of quietly costing you the locality half.
+# (3) AN EMPTY KEY HAS NO FALLBACK. ingress-nginx's consistent hash is a
+# Lua balancer, and unlike nginx core `hash`, HAProxy `balance hdr` or
+# Envoy's ring hash it does NOT fall back to round-robin when the key is
+# empty — it hashes "" and sends everything to whichever pod that lands
+# on. A `defineWorker` call carries no token since #148 (no `/r/{token}/`
+# segment, no header — a worker is local on every host, so there is
+# nothing to route to), and its path (`/_sigx/actor/Digest/summarize`) is
+# indistinguishable from a stateful call, so it cannot be carved out the
+# way `$live` is. Hashing the header directly therefore put EVERY worker
+# call, for every key, on ONE pod (#342) — `pool_spread` ~1 however many
+# hosts there are.
+#
+# Hence `$sigx_hash`: an nginx `map` that substitutes `$request_id` (a
+# random 32-hex per request) for an empty header and passes a real token
+# through untouched. A `map` is `http`-context config, so — like the risk
+# level in (1) — a chart cannot set it; it is the controller ConfigMap's
+# `http-snippet`, one more line of the RUNBOOK's §0:
+#
+#     map $http_x_sigx_actor_route $sigx_hash {
+#         ""      $request_id;
+#         default $http_x_sigx_actor_route;
+#     }
+#
+# ⚠ WITHOUT THE MAP THIS CHART IS WORSE THAN ROUND-ROBIN. An nginx
+# variable no `map` defines is nil in Lua, so the balancer hashes the
+# empty string and EVERY actor call — tokened or not — lands on one pod.
+# (Unlike (1) and (2) this is read off the balancer's code, not yet seen
+# on a cluster; the spread assertions in `infra.test.ts` are what would
+# show it.) Do not deploy this chart against a controller whose §0 is
+# incomplete: the RUNBOOK's verify step greps the programmed nginx.conf
+# for the map, and `testenv.mjs up` refuses to release without it.
+#
+# `infra.test.ts` asserts the seam three ways: one token pins to one host,
+# distinct tokens reach more than one, and untokened calls reach more than
+# one — so (1), (2) or (3) is loud instead of quietly costing you the
+# locality half (or the whole fleet).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -135,7 +177,7 @@ metadata:
     {{- include "chat.labels" . | nindent 4 }}
   annotations:
     {{- toYaml $ann | nindent 4 }}
-    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_x_sigx_actor_route"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$sigx_hash"
 spec:
   ingressClassName: nginx
   rules:
