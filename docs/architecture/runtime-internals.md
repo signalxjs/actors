@@ -78,8 +78,11 @@ bumps the version and arms the write-behind debounce (`#scheduleWriteBehind`,
 50 ms) instead of awaiting the CAS, so a burst of eventual saves is one write.
 The explicit-persistence contract holds — nothing is written that was not asked
 for — but `deactivate()` now flushes an explicit actor too when an eventual save
-is still ahead of `#savedVersion`, and a debounce failure reports through
-`onStateError` (`'flush'`) rather than to a caller. `defineJob`'s
+is still ahead of `#savedVersion` (`#eventualWanted`), `clearState()` drops that
+marker and cancels the armed debounce on an explicit actor so a deleted record
+is not written back, and a debounce failure reports through `onStateError`
+(`'flush'`) rather than to a caller — with no retry of its own: on an explicit
+actor only the next `save()` or the deactivation flush carries it. `defineJob`'s
 `checkpoint(cp, { durability })` is a pass-through to this.
 
 ## Change detection

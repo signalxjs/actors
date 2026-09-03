@@ -1677,16 +1677,19 @@ export class Activation {
     }
 
     /**
-     * A write-behind save failed with no caller to throw to (#54). The
-     * app's `onStateError` owns reporting when it exists — a throw there is
-     * ignored, like `onDeactivate`'s — and a dev build logs it otherwise.
+     * A deferred save — a write-behind flush, or an explicit actor's
+     * `save({ durability: 'eventual' })` (#320) — failed with no caller to
+     * throw to (#54). The app's `onStateError` owns reporting when it
+     * exists — a throw there is ignored, like `onDeactivate`'s — and a dev
+     * build logs it otherwise.
      */
     async #reportStateError(error: unknown, phase: StateErrorPhase): Promise<void> {
         const hook = this.def.__sigxActor.onStateError;
         if (!hook) {
             if (__DEV__) {
                 console.error(
-                    `[sigx actors] ${phase === 'flush' ? '' : 'final '}write-behind flush of ` +
+                    `[sigx actors] ${phase === 'flush' ? '' : 'final '}` +
+                        `${this.#isWriteBehind() ? 'write-behind flush' : 'deferred save'} of ` +
                         `${actorLabel(this.ref)} failed:`,
                     error
                 );
@@ -2500,8 +2503,15 @@ export class Activation {
                     await self.#host.clearStoredState(self.ref, self.#etag);
                     self.#etag = null;
                     // An eventual save still outstanding was for the record
-                    // just deleted — deactivation must not resurrect it.
+                    // just deleted — neither the debounce it armed nor the
+                    // deactivation flush may resurrect it. (A write-behind
+                    // actor keeps its timer: the reset below is a dirty
+                    // boundary of its own, and that mode saves every one.)
                     self.#eventualWanted = 0;
+                    if (self.#cancelWriteBehind && !self.#isWriteBehind()) {
+                        self.#cancelWriteBehind();
+                        self.#cancelWriteBehind = null;
+                    }
                     const fresh = opts.state(self.ref.key) as Record<string, unknown>;
                     const live = self.#state as Record<string, unknown>;
                     // Reset in place — the proxy identity is captured by

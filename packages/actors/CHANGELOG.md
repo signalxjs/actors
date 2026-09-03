@@ -22,7 +22,10 @@
   where eviction is not deactivation, there is no final flush at all).
   Default `'immediate'` is today's behaviour, byte for byte. Underneath,
   `ctx.save()` itself takes the same `SaveOptions` (`{ durability }`), so
-  any explicit-persistence actor can defer a write the same way. Fifty
+  any explicit-persistence actor can defer a write the same way — a
+  deferred write that fails reports through `onStateError` (`'flush'`)
+  rather than to a caller, and `clearState()` drops one still pending so
+  the deleted record is not written back. Fifty
   eventual checkpoints followed by completion cost the run 2 state saves
   where they cost 52 before. `docs/job-recipes.md` has the guidance;
   `jobs/checkpoint-growth` gained a `watch=0,eventual` arm.
