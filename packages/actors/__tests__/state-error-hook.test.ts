@@ -4,6 +4,7 @@ import {
     isActorError,
     type ActorContext,
     type ActorStorage,
+    type DeactivationReason,
     type StateErrorPhase
 } from '@sigx/actors';
 import { createHost, memoryStorage } from '@sigx/actors/host';
@@ -37,7 +38,13 @@ function flakyStorage(): { storage: ActorStorage; failing: { on: boolean; saves:
 
 type Seen = { key: string; error: unknown; phase: StateErrorPhase; n: number };
 
-function wbActor(type: string, debounceMs: number, seen: Seen[], hook = true) {
+function wbActor(
+    type: string,
+    debounceMs: number,
+    seen: Seen[],
+    hook = true,
+    deactivated: DeactivationReason[] = []
+) {
     const onStateError = (
         ctx: ActorContext<{ n: number }>,
         error: unknown,
@@ -51,6 +58,9 @@ function wbActor(type: string, debounceMs: number, seen: Seen[], hook = true) {
         state: () => ({ n: 0 }),
         persistence: { mode: 'write-behind', debounceMs },
         ...(hook ? { onStateError } : {}),
+        onDeactivate(_ctx, reason) {
+            deactivated.push(reason);
+        },
         methods: (ctx) => ({
             async bump() {
                 ctx.state.n++;
@@ -106,9 +116,10 @@ describe('onStateError', () => {
         expect(seen).toHaveLength(1);
     });
 
-    it('reports a debounced-flush etag conflict as a state-conflict error', async () => {
+    it('reports a debounced-flush etag conflict as a state-conflict error and discards the activation', async () => {
         const seen: Seen[] = [];
-        const wb = wbActor('WBConflict', 5, seen);
+        const deactivated: DeactivationReason[] = [];
+        const wb = wbActor('WBConflict', 5, seen, true, deactivated);
         const storage = memoryStorage();
         const host = createHost({ actors: [wb], storage, defaults: quiet });
         try {
@@ -126,6 +137,15 @@ describe('onStateError', () => {
             expect(seen[0]!.error).toSatisfy(
                 (e: unknown) => isActorError(e) && e.kind === 'state-conflict'
             );
+            // The conflict discards the activation from the flush itself
+            // (#336) — no further call is needed to make the runtime notice
+            // its own fault. Before, the faulted activation sat `active`
+            // until its next call (forever, if none came).
+            await vi.waitFor(() => expect(deactivated).toEqual(['conflict']));
+            // ...and the next call reloads the winning state, as documented.
+            await expect(client.bump()).resolves.toBe(100);
+            // A discarded activation flushes nothing: no 'final-flush' report.
+            expect(seen).toHaveLength(1);
         } finally {
             await host.stop({ timeoutMs: 1000 });
         }

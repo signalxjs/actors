@@ -1619,10 +1619,14 @@ export class Activation {
             // closed, or every one deferred into its window) must not be
             // retained until the next save — it is a whole-state copy.
             this.#preparedSnap = null;
-            if (this.#faulted && !this.#faultReported) {
-                this.#faultReported = true;
-                this.#host.onFault(this);
-            } else if (this.#deactivateRequested && this.turns.depth <= 1 && !this.#faulted) {
+            // A fault goes to the host first — it discards the activation,
+            // so a `ctx.deactivate()` request made alongside it is moot.
+            if (
+                !this.#reportFault() &&
+                this.#deactivateRequested &&
+                this.turns.depth <= 1 &&
+                !this.#faulted
+            ) {
                 // depth 1 = only the turn that is settling right now — nothing
                 // else queued OR in flight (this finally runs before the
                 // turns' own settlement decrement, in both lanes), so the
@@ -1630,6 +1634,23 @@ export class Activation {
                 this.#host.onIdleRequest(this);
             }
         }
+    }
+
+    /**
+     * Hand a fault to the host exactly once, from whichever turn's
+     * settlement sees it first. The host discards the activation
+     * (`deactivateOne(…, 'conflict')`); a second report would target a slot
+     * already draining. Shared by `#afterTurn` and the scheduled write-behind
+     * flush (#336): the flush is a system turn that never passes through
+     * `#turn`, so without this step a conflict raised there left the
+     * activation faulted but `active` until its next call — for ever, if no
+     * call came. Returns whether a report was made.
+     */
+    #reportFault(): boolean {
+        if (!this.#faulted || this.#faultReported) return false;
+        this.#faultReported = true;
+        this.#host.onFault(this);
+        return true;
     }
 
     #isWriteBehind(): boolean {
@@ -1677,6 +1698,13 @@ export class Activation {
                         // next write or the final flush at deactivation
                         // carries it — a non-mutating turn does not.
                         await this.#reportStateError(error, 'flush');
+                        // The hook heard about it; now the runtime acts on
+                        // it (#336). This system turn is not a `#turn`, so
+                        // `#afterTurn`'s hand-off never runs for it — the
+                        // fault is reported from here, still inside the
+                        // turn, and the host's deactivation drains it
+                        // before `onDeactivate('conflict')` runs.
+                        this.#reportFault();
                     }
                 })
                 .catch(() => {

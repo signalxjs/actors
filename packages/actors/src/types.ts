@@ -681,9 +681,13 @@ export type DeactivationReason =
  * the deactivation flush does — no dirty boundary re-arms anything there.
  * A crash in between loses the write either way. An etag conflict there
  * instead faults the activation (`ActorStateConflictError`) and its
- * unsaved writes are discarded. `'final-flush'` is the save at
- * deactivation — the last chance for those writes, so a failure there IS
- * lost data.
+ * unsaved writes are discarded: once the hook returns the activation is
+ * torn down — `onDeactivate('conflict')` follows with no further call, the
+ * final flush is skipped so the stale state never overwrites the winner,
+ * and the next call reloads the winning state (#336) — so the hook is the
+ * last time that state is observable on this activation. `'final-flush'`
+ * is the save at deactivation — the last chance for those writes, so a
+ * failure there IS lost data.
  */
 export type StateErrorPhase = 'flush' | 'final-flush';
 
