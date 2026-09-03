@@ -257,6 +257,10 @@ export interface ActorPlacementStrategy {
      * missing `choose()` stops being a dev-only warning and a silent
      * misplacement in production. Set by each backend's own factories; a
      * hand-written strategy may omit it, and is then judged on shape alone.
+     *
+     * A backend's plugin can also narrow `ActorOptions.placement` to its own
+     * strategy type structurally, through `ActorPlugin<Ext, Placement>`, so
+     * the app-bound `defineActor` catches the mismatch at compile time (#58).
      */
     readonly backend?: string;
 }
@@ -968,11 +972,18 @@ export type MigrateState<S extends object> =
     | MigrateStateFn<S>
     | { migrate: MigrateStateFn<S>; persist?: 'lazy' | 'eager' };
 
+/**
+ * `Ext` is the plugin-contributed shape of `ctx`, `Placement` the strategy
+ * type the app's placement backend accepts — both default to the widest
+ * reading for the bare `defineActor`, and both are narrowed only by the
+ * app-bound one (`ActorApp<Ext, Placement>['defineActor']`).
+ */
 export interface ActorOptions<
     S extends object,
     M extends ActorMethodTable,
     St extends ActorStreamTable,
-    Ext extends object = Record<never, never>
+    Ext extends object = Record<never, never>,
+    Placement extends ActorPlacementStrategy = ActorPlacementStrategy
 > {
     /**
      * Stable type id — the actor's wire, directory, and storage name.
@@ -1124,8 +1135,15 @@ export interface ActorOptions<
      * `preferLocalPolicy()`, or your own). Read by
      * a cluster placement when it resolves a target, and it WINS over the
      * central `typePolicies` map; ignored single-node.
+     *
+     * Through an app-bound `defineActor` this is narrowed to what the app's
+     * placement plugin understands (`cluster()` → `PlacementPolicy`), so a
+     * strategy tagged for another backend is a compile error where the
+     * runtime would have ignored it silently, and a malformed untagged one
+     * is a compile error where the runtime would have thrown (#58). The
+     * bare `defineActor` accepts any strategy.
      */
-    placement?: ActorPlacementStrategy;
+    placement?: Placement;
     /** Runs before the first message; throwing fails all queued callers. */
     onActivate?(ctx: ActorContext<S, Ext>): void | Promise<void>;
     /** Runs after the queue drains, before state teardown. */

@@ -260,6 +260,18 @@ export interface PolicyRuntime {
  * host-level, not per-type.
  */
 export interface PlacementPolicy extends ActorPlacementStrategy {
+    /**
+     * Narrowed to this backend's tag: a strategy tagged for another backend
+     * is structurally NOT a `PlacementPolicy`, which is what lets the
+     * app-bound `defineActor` of a `cluster()` app reject it at compile time
+     * (#58). Still optional — a hand-written policy is judged on shape.
+     *
+     * Spelled as the literal rather than `typeof CLUSTER_BACKEND` so this
+     * contract file does not import the implementation; the two cannot
+     * drift, because `placement.ts` builds every factory policy with
+     * `backend: CLUSTER_BACKEND` and would stop compiling.
+     */
+    readonly backend?: 'cluster';
     choose(
         ref: ActorRef,
         view: MembershipView,

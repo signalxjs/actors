@@ -342,6 +342,21 @@
 
 ### Changed
 
+- **The app-bound `defineActor` narrows `placement` to the app's backend**
+  (#58). Types only. `ActorPlugin`, `ActorApp` and `ActorOptions` gain a
+  phantom `Placement` type parameter (default `ActorPlacementStrategy`, so
+  nothing changes for existing code): `cluster()` carries `PlacementPolicy`,
+  `app.use()` threads it alongside `Ext`, and `app.defineActor({ placement })`
+  then accepts only a cluster policy. A strategy tagged for another backend
+  is now a compile error where the runtime ignored it silently (the actor
+  landed wherever the default policy put it, with nothing pointing at the
+  cause); an untagged one with no `choose()` is a compile error where the
+  runtime threw at dispatch. `PlacementPolicy.backend` is now typed as the
+  `'cluster'` literal rather than `string`. The bare `defineActor` from
+  `@sigx/actors` stays as wide as before, and the runtime `backend`-tag check
+  remains the floor for everything the types cannot see (packaged actors,
+  definitions built outside the app).
+
 - **`MembershipView.version` is a per-process change token, and a TTL
   expiry moves it** (#267). The contract read "monotonic per cluster; bumps
   on any join/leave/status change" — but a peer dying silently has no

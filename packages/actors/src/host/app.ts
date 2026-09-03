@@ -23,6 +23,7 @@ import type {
     ActorOptions,
     WorkerOptions,
     ActorPlacement,
+    ActorPlacementStrategy,
     ActorRef,
     ActorStorage,
     ActorReminders,
@@ -294,12 +295,26 @@ export interface PluginRegistry {
  * A plugin. `Ext` is the shape this plugin adds to `ctx`; it is a phantom
  * type parameter (`__ext` is never assigned at runtime) that `app.use()`
  * accumulates so the app-bound `defineActor` types it.
+ *
+ * `Placement` is the same device for `ActorOptions.placement`: a plugin
+ * that installs a placement backend names the strategy type it understands
+ * (`cluster()` → `PlacementPolicy`), `app.use()` intersects it into the
+ * app, and the app-bound `defineActor` accepts only that — so a strategy
+ * tagged for another backend fails to compile where the runtime would have
+ * ignored it silently, and a malformed untagged one fails to compile where
+ * the runtime would have thrown at dispatch (#58). Plugins that install no
+ * placement leave it at the widest reading, `ActorPlacementStrategy`.
  */
-export interface ActorPlugin<Ext extends object = Record<never, never>> {
+export interface ActorPlugin<
+    Ext extends object = Record<never, never>,
+    Placement extends ActorPlacementStrategy = ActorPlacementStrategy
+> {
     readonly name: string;
     setup(registry: PluginRegistry): void;
     /** @internal phantom — carries `Ext` for inference only. */
     readonly __ext?: Ext | undefined;
+    /** @internal phantom — carries `Placement` for inference only. */
+    readonly __placement?: Placement | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,9 +343,21 @@ export interface ActorAppOptions {
     defaults?: HostDefaults;
 }
 
-export interface ActorApp<Ext extends object = Record<never, never>> {
-    /** Register a plugin. Mutates and returns THIS app, widened by `Ext`. */
-    use<E extends object>(plugin: ActorPlugin<E>): ActorApp<Ext & E>;
+export interface ActorApp<
+    Ext extends object = Record<never, never>,
+    Placement extends ActorPlacementStrategy = ActorPlacementStrategy
+> {
+    /**
+     * Register a plugin. Mutates and returns THIS app, widened by `Ext` and
+     * narrowed to the plugin's `Placement` (see `ActorPlugin`). The
+     * intersection is deliberate: with two placement backends installed,
+     * `placement` accepts only what BOTH understand — no tagged strategy
+     * can, since `backend` cannot be two literals at once, so only an
+     * untagged one whose shape satisfies both remains assignable.
+     */
+    use<E extends object, P extends ActorPlacementStrategy = ActorPlacementStrategy>(
+        plugin: ActorPlugin<E, P>
+    ): ActorApp<Ext & E, Placement & P>;
     /**
      * Supply the actor registry when the app was built without one — what
      * a HOST does: the Vite plugin hands over the registry it already
@@ -341,21 +368,23 @@ export interface ActorApp<Ext extends object = Record<never, never>> {
      * has been started or its `routes` read: by then the registry is
      * already baked into a running host.
      */
-    withActors(actors: NonNullable<ActorAppOptions['actors']>): ActorApp<Ext>;
+    withActors(actors: NonNullable<ActorAppOptions['actors']>): ActorApp<Ext, Placement>;
     /** Whether a registry has been supplied yet. */
     readonly hasActors: boolean;
     /**
      * `defineActor` bound to this app's plugin set — the same function at
      * runtime, with `ctx` typed as the built-ins plus every plugin's
-     * additions. Destructure it (`export const { defineActor } = app`) and
-     * import it from your actor modules.
+     * additions, and `placement` narrowed to what the app's placement
+     * plugin understands. Destructure it
+     * (`export const { defineActor } = app`) and import it from your actor
+     * modules.
      */
     defineActor<
         S extends object,
         M extends ActorMethodTable,
         St extends ActorStreamTable = Record<never, never>
     >(
-        options: ActorOptions<S, M, St, Ext>
+        options: ActorOptions<S, M, St, Ext, Placement>
     ): ActorDefinition<S, M, St>;
     /**
      * `defineWorker` bound to this app's plugin set — same deal as the
@@ -546,7 +575,9 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
         return this.#options.actors !== undefined;
     }
 
-    use<E extends object>(plugin: ActorPlugin<E>): ActorApp<E> {
+    use<E extends object, P extends ActorPlacementStrategy = ActorPlacementStrategy>(
+        plugin: ActorPlugin<E, P>
+    ): ActorApp<E, P> {
         if (this.#contributions) {
             throw new Error(
                 `[sigx actors] cannot .use(${plugin.name}) after the app has been started ` +
@@ -554,7 +585,7 @@ class ActorAppImpl implements ActorApp<Record<never, never>> {
             );
         }
         this.#plugins.push(plugin as ActorPlugin<object>);
-        return this as unknown as ActorApp<E>;
+        return this as unknown as ActorApp<E, P>;
     }
 
     // The app-bound `defineActor` IS the root one — only its type differs,

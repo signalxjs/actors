@@ -14,7 +14,8 @@ import type {
     TopicPublishReport,
     WorkerContext
 } from '@sigx/actors';
-import { defineActorApp, type ActorPlugin } from '@sigx/actors/host';
+import { defineActorApp, type ActorApp, type ActorPlugin } from '@sigx/actors/host';
+import type { ClusterPlugin, PlacementPolicy } from '@sigx/actors/cluster';
 
 const Cart = defineActor({
     type: 'Cart',
@@ -320,6 +321,100 @@ describe('plugin ctx extension inference', () => {
         expectTypeOf(Logged).toMatchTypeOf<AnyActorDefinition>();
         // and the client inference is unchanged by the extension
         expectTypeOf(actor(Logged, 'k').bump).returns.toEqualTypeOf<Promise<number>>();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Placement narrowing (#58): a plugin that installs a placement backend
+// carries the strategy type it understands, `.use()` threads it alongside
+// `Ext`, and the app-bound `defineActor` accepts only that. The runtime
+// `backend`-tag refusal stays the floor — this is the compile-time layer
+// over it for the common authoring path.
+
+declare const clusterPlugin: ClusterPlugin;
+
+const clusterPolicy: PlacementPolicy = {
+    name: 'prefer-local',
+    backend: 'cluster',
+    choose(_ref, _view, self) {
+        return self;
+    }
+};
+
+// A strategy tagged for another backend — the runtime ignores it silently
+// on a cluster host, so the actor lands somewhere its author did not ask.
+const foreignStrategy = { name: 'durable-object', backend: 'durable-objects' } as const;
+
+const placedBase = {
+    allowAnonymous: true as const,
+    state: () => ({ n: 0 }),
+    methods: () => ({
+        get() {
+            return 0;
+        }
+    })
+};
+
+describe('placement narrowing through the app-bound defineActor', () => {
+    it('accepts a cluster PlacementPolicy on a cluster() app', () => {
+        const app = defineActorApp({ actors: [] }).use(clusterPlugin);
+        expectTypeOf(app).toMatchTypeOf<ActorApp<Record<never, never>, PlacementPolicy>>();
+        void app.defineActor({ ...placedBase, type: 'P1', placement: clusterPolicy });
+        // an untagged strategy with the right shape is a PlacementPolicy too
+        void app.defineActor({
+            ...placedBase,
+            type: 'P2',
+            placement: { name: 'mine', choose: (_r, _v, self) => self }
+        });
+        // and no placement at all is still fine
+        void app.defineActor({ ...placedBase, type: 'P3' });
+    });
+
+    it('rejects a strategy for another backend, or an unusable one, on a cluster() app', () => {
+        const app = defineActorApp({ actors: [] }).use(clusterPlugin);
+        void app.defineActor({
+            ...placedBase,
+            type: 'P4',
+            // @ts-expect-error tagged for a different backend
+            placement: foreignStrategy
+        });
+        void app.defineActor({
+            ...placedBase,
+            type: 'P5',
+            // @ts-expect-error untagged and no choose(): the runtime would throw
+            placement: { name: 'my-strategy' }
+        });
+    });
+
+    it('narrowing survives destructuring and composes with Ext', () => {
+        const { defineActor: bound } = defineActorApp({ actors: [] })
+            .use(loggerPlugin)
+            .use(clusterPlugin);
+        void bound({
+            ...placedBase,
+            type: 'P6',
+            placement: clusterPolicy,
+            methods: (ctx) => ({
+                get() {
+                    expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
+                    return 0;
+                }
+            })
+        });
+        void bound({
+            ...placedBase,
+            type: 'P7',
+            // @ts-expect-error tagged for a different backend
+            placement: foreignStrategy
+        });
+    });
+
+    it('an app without a placement plugin, and the unbound defineActor, stay wide', () => {
+        const app = defineActorApp({ actors: [] }).use(loggerPlugin);
+        void app.defineActor({ ...placedBase, type: 'P8', placement: foreignStrategy });
+        void app.defineActor({ ...placedBase, type: 'P9', placement: { name: 'my-strategy' } });
+        void defineActor({ ...placedBase, type: 'P10', placement: foreignStrategy });
+        void defineActor({ ...placedBase, type: 'P11', placement: clusterPolicy });
     });
 });
 
