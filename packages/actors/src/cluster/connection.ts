@@ -163,8 +163,12 @@ export class HostConnection {
         // retiring both mean "the transport has (or will dial) a replacement".
         if (this.#closed) throw unreachable('closed');
         if (this.#retiring) throw unreachable(this.#retiring);
-        const corrId = this.#allocate();
         const signal = call.abortSignal;
+        // A signal that already fired never fires again, so the listener
+        // below would never run: the call would go out and could not be
+        // cancelled. Refuse it here, with the caller's own reason, unsent.
+        if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+        const corrId = this.#allocate();
         return await new Promise<unknown>((resolve, reject) => {
             // The listener MUST come off when the call settles. Left attached
             // it leaks on a long-lived signal, and — worse — a later abort
@@ -219,11 +223,13 @@ export class HostConnection {
         // Same rule as `dispatch`: refused before the CALL is written, so the
         // placement's re-route (it retries a stream only before its first
         // chunk) never re-issues one that may already be producing.
-        const refusal = this.#closed
+        const refusal: unknown = this.#closed
             ? unreachable('closed')
             : this.#retiring !== null
               ? unreachable(this.#retiring)
-              : undefined;
+              : call.abortSignal?.aborted
+                ? (call.abortSignal.reason ?? new Error('aborted'))
+                : undefined;
         const corrId = this.#allocate();
         const queue: unknown[] = [];
         let done = false;
