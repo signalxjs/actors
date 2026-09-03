@@ -27,6 +27,7 @@ export {
     durableObjectName,
     durableObjectPlacement,
     durableObjects,
+    durableObjectsHosted,
     durableObjectStubResolver,
     type DurableObjectPlacementOptions,
     type DurableObjectStubResolver

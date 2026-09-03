@@ -19,6 +19,7 @@ import {
     createHostDurableObject,
     createWorkerHandler,
     durableObjects,
+    durableObjectsHosted,
     unhostedStorage,
     type DurableObjectNamespaceLike,
     type DurableObjectStateLike,
@@ -334,6 +335,15 @@ describe('createHostDurableObject + createWorkerHandler', () => {
         // plugins.
         const host = new h.Host(fakeState(`Counter${SEP}a`), h.env);
         await expect(host.host()).rejects.toThrow(/cloudflare:durable-objects/);
+    });
+
+    it('accepts an app factory that uses durableObjectsHosted() — the type-only marker claims nothing', async () => {
+        // The narrowing device for the factory (#362) must pass the very
+        // exclusivity check above: it names no placement, so the host's own
+        // `durableObjects()` is still the one and only claim.
+        const h = harness((base) => defineActorApp(base).use(durableObjectsHosted()));
+        await expect(h.invoke('Counter#increment', ['a', 2])).resolves.toBe(2);
+        await expect(h.invoke('Counter#read', ['a'])).resolves.toBe(2);
     });
 
 });

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`durableObjectsHosted()`** (#362) — a plugin that installs nothing and
+  only narrows: `ActorPlugin<Record<never, never>, never>`, so an `app`
+  factory doing `defineActorApp(base).use(durableObjectsHosted())` gets the
+  same `placement`-refusing `defineActor` a `.use(durableObjects(...))` app
+  has (#351), without a namespace binding in hand. That is the device for
+  the documented authoring path — `createHostDurableObject()` /
+  `createWorkerHandler()` install `durableObjects()` themselves after the
+  factory runs, so the factory could not — and for the type-only
+  `export const { defineActor } = createApp({})` binding built from it.
+  The host accepts it because it claims no placement seam.
+  `examples/cf-workers` uses it.
+
 ### Changed
 
 - **`durableObjects()` narrows `placement` to `never`** (#351). Type-only.
@@ -32,6 +46,23 @@
 
 ### Fixed
 
+- **A `placement` declared on a Durable Object-hosted actor is no longer a
+  silent no-op** (#362). `durableObjectPlacement()` now reads
+  `__sigxActor.placement` in the same per-type definition lookup it already
+  makes for `stateless`, ahead of the `isSelf` branch, so an object's own
+  actor is covered as well as a remote one; one lookup per type, then a
+  memo hit. A strategy tagged `backend: 'cluster'` — every
+  `@sigx/actors/cluster` policy — **throws at dispatch**, naming the type
+  and the strategy: a cluster policy on a DO actor asks for a host to be
+  chosen and none ever will be, the same posture the cluster placement
+  takes with a tag it does not own (#350). Any other declared strategy
+  logs one `__DEV__` warning per type (`[sigx actors-cloudflare] actor
+  "<type>" declares placement "<name>" — Durable Objects ignore it; a ref
+  maps to its object by name`). Before, the placement never read the
+  declaration at all. A deployment that had a cluster policy on a DO actor
+  was already not getting what it declared; it now fails loudly — remove
+  the `placement`, or use `durableObjectsHosted()` to refuse it at compile
+  time.
 - **A reminder whose dispatch fails is retried one tick later instead of
   being lost, and counted** (#326). `durableObjectReminders` advances or
   deletes a due entry *before* `onAlarm()` delivers it, and a rejected

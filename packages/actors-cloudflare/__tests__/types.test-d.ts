@@ -10,7 +10,11 @@ import { describe, expectTypeOf, it } from 'vitest';
 import { defineActor } from '@sigx/actors';
 import { defineActorApp, type ActorApp, type ActorPlugin } from '@sigx/actors/host';
 import { consistentHashPolicy, type ClusterPlugin } from '@sigx/actors/cluster';
-import { durableObjects, type DurableObjectNamespaceLike } from '@sigx/actors-cloudflare';
+import {
+    durableObjects,
+    durableObjectsHosted,
+    type DurableObjectNamespaceLike
+} from '@sigx/actors-cloudflare';
 
 declare const namespace: DurableObjectNamespaceLike;
 declare const clusterPlugin: ClusterPlugin;
@@ -90,5 +94,53 @@ describe('durableObjects() narrows placement to never', () => {
         void plain.defineActor({ ...placedBase, type: 'D9', placement: consistentHashPolicy() });
         void plain.defineActor({ ...placedBase, type: 'D10', placement: { name: 'mine' } });
         void defineActor({ ...placedBase, type: 'D11', placement: consistentHashPolicy() });
+    });
+
+    it('durableObjectsHosted() narrows the same way, with no namespace in hand (#362)', () => {
+        // The device for the `app` FACTORY: `createHostDurableObject()` /
+        // `createWorkerHandler()` install `durableObjects()` themselves, so
+        // the factory cannot — and the type-only `export const { defineActor } =
+        // createApp({})` binding built from it kept the wide `Placement`.
+        const app = defineActorApp({ actors: [] }).use(durableObjectsHosted());
+        expectTypeOf(app).toExtend<ActorApp<Record<never, never>, never>>();
+        expectTypeOf<Parameters<typeof app.defineActor>[0]['placement']>().toEqualTypeOf<
+            undefined
+        >();
+        void app.defineActor({
+            ...placedBase,
+            type: 'H1',
+            // @ts-expect-error a cluster policy has no meaning on Durable Objects
+            placement: consistentHashPolicy()
+        });
+        void app.defineActor({
+            ...placedBase,
+            type: 'H2',
+            // @ts-expect-error nor does an untagged strategy
+            placement: { name: 'mine' }
+        });
+        void app.defineActor({ ...placedBase, type: 'H3' });
+        void app.defineActor({ ...placedBase, type: 'H4', placement: undefined });
+
+        // The example's shape: a factory over the base the host hands in,
+        // composed with other plugins, destructured for a type-only binding.
+        const createApp = (base: Parameters<typeof defineActorApp>[0]) =>
+            defineActorApp(base).use(loggerPlugin).use(durableObjectsHosted());
+        const { defineActor: bound } = createApp({});
+        void bound({
+            ...placedBase,
+            type: 'H5',
+            methods: (ctx) => ({
+                get() {
+                    expectTypeOf(ctx.log).toEqualTypeOf<Logger>();
+                    return 0;
+                }
+            })
+        });
+        void bound({
+            ...placedBase,
+            type: 'H6',
+            // @ts-expect-error a cluster policy has no meaning on Durable Objects
+            placement: consistentHashPolicy()
+        });
     });
 });

@@ -30,6 +30,7 @@
 import type {
     ActorDispatcher,
     ActorPlacement,
+    ActorPlacementStrategy,
     ActorRef,
     AnyActorDefinition,
     Host
@@ -55,6 +56,55 @@ const DEFAULT_BASE = '/_sigx/do';
 
 /** NUL separator, matching `actorId()` and this package's storage keys. */
 const SEP = '\u0000';
+
+/**
+ * The `backend` tag every `@sigx/actors/cluster` policy carries
+ * (`CLUSTER_BACKEND` in `cluster/placement.ts`, not exported). A strategy
+ * tagged with it is a cluster `PlacementPolicy`, which this backend cannot
+ * honour — there is no host to choose.
+ */
+const CLUSTER_BACKEND = 'cluster';
+
+/** Types already warned about — once per isolate, since objects of one
+ *  class share an isolate and every one of them would otherwise repeat it. */
+const warnedTypes = new Set<string>();
+
+/**
+ * The runtime floor for `defineActor({ placement })` on a DO-hosted actor
+ * (#362) — what the types cannot see. `durableObjects()` narrows `placement`
+ * to `never`, but only in an app module that installs it itself, and the
+ * documented `app` factory never does (the host installs it after the
+ * factory runs). So a strategy declared through that factory compiles, and
+ * this is where it is caught:
+ *
+ *  - tagged for the cluster → THROW. A cluster policy here is unambiguously
+ *    wrong, not merely unread: its author asked for a host to be chosen,
+ *    and none ever will be. Same posture as the cluster placement's own
+ *    floor for a tag it does not own (#350). Deliberately not memoized by
+ *    the caller: every dispatch to the type fails, not only the first.
+ *  - anything else → dev-only warning, once per type. An untagged or
+ *    foreign-tagged strategy MAY be meant for a backend this actor is also
+ *    deployed on, so it is ignored, but not silently.
+ */
+function checkDeclaredPlacement(type: string, declared: ActorPlacementStrategy | undefined): void {
+    if (!declared) return;
+    const name = declared.name ?? 'unnamed';
+    if (declared.backend === CLUSTER_BACKEND) {
+        throw new Error(
+            `[sigx actors-cloudflare] actor "${type}" declares placement "${name}", a cluster ` +
+                `PlacementPolicy — Durable Objects cannot honour it: a ref maps to its object ` +
+                `by name, and there is no host to choose. Remove \`placement\` from the ` +
+                `definition (an app built on durableObjectsHosted() refuses it at compile ` +
+                `time), or host the actor on cluster().`
+        );
+    }
+    if (!__DEV__ || warnedTypes.has(type)) return;
+    warnedTypes.add(type);
+    console.warn(
+        `[sigx actors-cloudflare] actor "${type}" declares placement "${name}" — ` +
+            `Durable Objects ignore it; a ref maps to its object by name`
+    );
+}
 
 export interface DurableObjectPlacementOptions {
     /**
@@ -182,6 +232,15 @@ export function durableObjectStubResolver(
     };
 }
 
+/** What one definition read tells the router about a type. */
+interface TypeShape {
+    readonly stateless: boolean;
+}
+
+/** Before the host is bound, or when a lazy load failed: route as a plain
+ *  stateful actor and let the dispatch path report whatever is wrong. */
+const UNKNOWN_SHAPE: TypeShape = { stateless: false };
+
 export function durableObjectPlacement(
     options: DurableObjectPlacementOptions
 ): ActorPlacement {
@@ -211,8 +270,9 @@ export function durableObjectPlacement(
 
     let local: ActorDispatcher | null = null;
     let boundHost: Host | null = null;
-    /** Per-type stateless memo — same lazy shape as the cluster placement's. */
-    const statelessTypes = new Map<string, boolean>();
+    /** Per-type memo of what the definition says — same lazy shape as the
+     *  cluster placement's. One definition read per type, then a map hit. */
+    const shapes = new Map<string, TypeShape>();
 
     const requireLocal = (): ActorDispatcher => {
         if (!local) {
@@ -225,30 +285,33 @@ export function durableObjectPlacement(
     };
 
     /**
-     * Stateless workers run in the isolate that received the call — the
-     * Worker at the edge, or whichever Durable Object made the `ctx.actor()`
-     * hop. There is no object to route to: a worker has no identity, no
-     * storage record, and no single-activation invariant, so mapping it onto
-     * a DO would serialize pure compute behind one object for nothing.
+     * One definition read answers two questions: is the type stateless,
+     * and did it declare a `placement` this backend cannot honour. The
+     * placement check runs BEFORE the memo is written, so a throw is not
+     * remembered as "checked" and the next dispatch fails the same way.
      */
-    const isStateless = (type: string): boolean | Promise<boolean> => {
-        const memo = statelessTypes.get(type);
+    const inspect = (type: string, def: AnyActorDefinition | null): TypeShape => {
+        checkDeclaredPlacement(type, def?.__sigxActor.placement);
+        const shape: TypeShape = { stateless: def?.__sigxActor.stateless !== undefined };
+        shapes.set(type, shape);
+        return shape;
+    };
+
+    const shapeOf = (type: string): TypeShape | Promise<TypeShape> => {
+        const memo = shapes.get(type);
         if (memo !== undefined) return memo;
-        if (!boundHost) return false; // pre-bind: nothing dispatches yet
+        if (!boundHost) return UNKNOWN_SHAPE; // pre-bind: nothing dispatches yet
         const resolved = boundHost.definition(type);
         if (resolved && typeof (resolved as PromiseLike<unknown>).then === 'function') {
             return (resolved as Promise<AnyActorDefinition | null>).then(
-                (def) => {
-                    const is = def?.__sigxActor.stateless !== undefined;
-                    statelessTypes.set(type, is);
-                    return is;
-                },
-                () => false
+                (def) => inspect(type, def),
+                // A failed module load is the dispatch path's problem to
+                // report, not the placement's — and not memoized, so a
+                // later successful load is still inspected.
+                () => UNKNOWN_SHAPE
             );
         }
-        const is = (resolved as AnyActorDefinition | null)?.__sigxActor.stateless !== undefined;
-        statelessTypes.set(type, is);
-        return is;
+        return inspect(type, resolved as AnyActorDefinition | null);
     };
 
     const resolver = durableObjectStubResolver(options);
@@ -297,28 +360,34 @@ export function durableObjectPlacement(
         },
 
         dispatcherFor(ref: ActorRef): ActorDispatcher | Promise<ActorDispatcher> {
-            if (options.isSelf?.(ref)) return requireLocal();
-            // Stateless workers never map to an object — they run right
-            // here, in whichever isolate is dispatching. Note there is no
-            // idle sweep on Workers (`sweepIntervalMs: 0`), so a pool
-            // shrinks only when the isolate is evicted — which the platform
-            // does anyway, and a worker loses nothing when it happens.
-            const stateless = isStateless(ref.type);
-            if (stateless === true) return requireLocal();
-            if (stateless !== false) {
-                return Promise.resolve(stateless).then((is) =>
-                    is ? requireLocal() : remoteFor(ref)
-                );
-            }
-            // Built fresh every time, and NOT cached. A stub is an I/O
-            // object bound to the request context that created it, and
-            // workerd refuses to use one from a different request — so a
-            // cache that outlives a request turns every call after the first
-            // into "unreachable". Rebuilding costs one `idFromName` hash and
-            // a closure; a cache costs correctness.
-            return remoteFor(ref);
+            // The definition read comes FIRST, ahead of `isSelf`: the
+            // declared-placement floor has to cover a Durable Object's own
+            // actor too, and a check hung off the stateless lookup alone
+            // would miss it. After the first dispatch per type this is one
+            // map hit and synchronous.
+            const shape = shapeOf(ref.type);
+            return shape instanceof Promise
+                ? shape.then((resolved) => route(ref, resolved))
+                : route(ref, shape);
         }
     };
+
+    function route(ref: ActorRef, shape: TypeShape): ActorDispatcher {
+        if (options.isSelf?.(ref)) return requireLocal();
+        // Stateless workers never map to an object — they run right here,
+        // in whichever isolate is dispatching. Note there is no idle sweep
+        // on Workers (`sweepIntervalMs: 0`), so a pool shrinks only when the
+        // isolate is evicted — which the platform does anyway, and a worker
+        // loses nothing when it happens.
+        if (shape.stateless) return requireLocal();
+        // Built fresh every time, and NOT cached. A stub is an I/O object
+        // bound to the request context that created it, and workerd refuses
+        // to use one from a different request — so a cache that outlives a
+        // request turns every call after the first into "unreachable".
+        // Rebuilding costs one `idFromName` hash and a closure; a cache
+        // costs correctness.
+        return remoteFor(ref);
+    }
 }
 
 /**
@@ -339,8 +408,10 @@ export function durableObjectPlacement(
  * `createHostDurableObject()` / `createWorkerHandler()` never does — the
  * host installs this plugin after the factory runs, and refuses a factory
  * that installed it already — so a `defineActor` bound from that factory
- * still carries the wide `Placement`, and a strategy declared through it is
- * still ignored here. The runtime floor for that path is #362.
+ * still carries the wide `Placement`. `durableObjectsHosted()` is the
+ * factory's way to get the same narrowing, and the placement's own floor
+ * (`checkDeclaredPlacement`) catches at dispatch whatever the types did not
+ * (#362).
  */
 export function durableObjects(
     options: DurableObjectPlacementOptions
@@ -349,6 +420,36 @@ export function durableObjects(
         name: 'cloudflare:durable-objects',
         setup(registry) {
             registry.setPlacement(() => durableObjectPlacement(options));
+        }
+    };
+}
+
+/**
+ * The type-level twin of `durableObjects()` for the `app` FACTORY — a
+ * plugin that installs nothing and only narrows.
+ *
+ * A factory handed to `createHostDurableObject()` / `createWorkerHandler()`
+ * cannot install `durableObjects()`: it has no `env` (and so no namespace
+ * binding), and the host claims the placement seam itself after the factory
+ * runs — `setPlacement` is exclusive, so a factory that claimed it too is
+ * refused. This plugin makes no claim, which is exactly why the host accepts
+ * it, and carries `never` as its `Placement`, so
+ *
+ *     export const createApp = (base) =>
+ *         defineActorApp(base).use(durableObjectsHosted());
+ *     export const { defineActor } = createApp({});
+ *
+ * gives every actor module a `defineActor` that refuses `placement` at
+ * compile time — the same contract a `.use(durableObjects(...))` app has,
+ * reached without a binding in hand. Whatever still slips past (the bare
+ * `defineActor` from `@sigx/actors`, JavaScript) meets the runtime floor in
+ * `durableObjectPlacement()`.
+ */
+export function durableObjectsHosted(): ActorPlugin<Record<never, never>, never> {
+    return {
+        name: 'cloudflare:durable-objects-hosted',
+        setup() {
+            // Nothing to register: the host installs the real placement.
         }
     };
 }

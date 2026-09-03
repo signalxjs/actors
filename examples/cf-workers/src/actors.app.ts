@@ -9,10 +9,18 @@
  *
  * So the host hands the seams in, and this only adds what is
  * runtime-independent — plugins, defaults, context extensions.
+ *
+ * `durableObjectsHosted()` installs nothing: the host claims the placement
+ * itself, after this runs. It is here for the TYPES — it narrows the
+ * app-bound `defineActor` below so `placement:` on an actor is a compile
+ * error, which on Durable Objects it should be (a ref maps to its object by
+ * name; there is no host to choose).
  */
 import { defineActorApp, metrics, type ActorAppOptions } from '@sigx/actors/host';
+import { durableObjectsHosted } from '@sigx/actors-cloudflare';
 
-export const createApp = (base: ActorAppOptions) => defineActorApp(base).use(metrics());
+export const createApp = (base: ActorAppOptions) =>
+    defineActorApp(base).use(metrics()).use(durableObjectsHosted());
 
 /**
  * A type-only binding so actor modules can import an app-bound `defineActor`
