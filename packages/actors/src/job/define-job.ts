@@ -402,11 +402,13 @@ export function defineJob<In, Out, C = unknown, Extra extends object = Record<ne
                         tctx.turn((c) => {
                             if (c.state.status === 'running') c.state.progress = p;
                         }),
-                    checkpoint: (cp) =>
+                    checkpoint: (cp, o) =>
                         tctx.turn(async (c) => {
                             if (c.state.status !== 'running') return;
                             c.state.checkpoint = cp;
-                            await c.save();
+                            // `durability` is the host's own knob (#320):
+                            // eventual = the write-behind debounce.
+                            await c.save(o);
                         }),
                     update: (fn) =>
                         tctx.turn((c) => {

@@ -9,6 +9,9 @@
  * client surface around it.
  */
 export { defineJob } from './define-job';
+// `checkpoint(cp, options)` takes the root entry's `SaveOptions`; re-exported
+// so a helper typed around `checkpoint` needs only this entry (#320).
+export type { SaveOptions } from '../types';
 export { JobCancelledError, JobFailedError, JobNotDoneError, JobStateError } from './errors';
 export {
     JOB_PAUSED,

@@ -670,15 +670,20 @@ export type DeactivationReason =
     | 'migrated';
 
 /**
- * Which write-behind save failed with no caller to throw to (#54).
- * `'flush'` is the debounced save between turns. A transient storage error
- * there leaves the state dirty but schedules NO retry of its own: the next
- * write (a new dirty boundary re-arms the debounce) or the final flush at
- * deactivation carries it — a non-mutating turn does not, and a crash in
- * between loses the write. An etag conflict there instead faults the
- * activation (`ActorStateConflictError`) and its unsaved writes are
- * discarded. `'final-flush'` is the save at deactivation — the last chance
- * for those writes, so a failure there IS lost data.
+ * Which deferred save failed with no caller to throw to (#54) — a
+ * `write-behind` actor's, or an explicit-persistence actor's
+ * `ctx.save({ durability: 'eventual' })` (#320). `'flush'` is the
+ * debounced save between turns. A transient storage error there leaves
+ * the state dirty but schedules NO retry of its own: on a write-behind
+ * actor the next write (a new dirty boundary re-arms the debounce) or the
+ * final flush at deactivation carries it — a non-mutating turn does not;
+ * on an explicit actor only the next `save()` (immediate or eventual) or
+ * the deactivation flush does — no dirty boundary re-arms anything there.
+ * A crash in between loses the write either way. An etag conflict there
+ * instead faults the activation (`ActorStateConflictError`) and its
+ * unsaved writes are discarded. `'final-flush'` is the save at
+ * deactivation — the last chance for those writes, so a failure there IS
+ * lost data.
  */
 export type StateErrorPhase = 'flush' | 'final-flush';
 
@@ -762,6 +767,17 @@ export type TopicSubscription<S extends object, Ext extends object = Record<neve
           handle: TopicSubscriptionHandler<S, Ext>;
       };
 
+/** How durable a `ctx.save()` must be before it resolves. */
+export interface SaveOptions {
+    /**
+     * `'immediate'` (default): the record is stored when the promise
+     * resolves. `'eventual'`: the state is marked for the activation's
+     * write-behind debounce and the promise resolves at once — a burst of
+     * eventual saves costs one write.
+     */
+    durability?: 'immediate' | 'eventual';
+}
+
 /**
  * The built-in half of the per-activation context — created once per
  * activation and closed over by the `methods`/`streams` factories.
@@ -781,11 +797,22 @@ export interface ActorContextBase<S extends object> {
      */
     readonly state: S;
     /**
-     * Persist now. Resolves when stored; throws
+     * Persist. `'immediate'` (default): resolves when stored; throws
      * `ActorStateConflictError` on an etag mismatch, which also discards
-     * this activation.
+     * this activation. `'eventual'`: resolves at once and lets the
+     * activation's write-behind debounce carry the state — a burst of
+     * eventual saves costs one write. A later immediate `save()` or the
+     * deactivation flush picks up whatever is still pending, so an
+     * explicit-persistence actor stays explicit: no WRITE happens that was
+     * not asked for. The write itself is like any other save — it stores
+     * the state as it stands when it runs, not a snapshot taken at the
+     * call, so mutations made between the call and the flush ride along.
+     * What it gives up is the acknowledgement: a host death inside the
+     * debounce window loses the eventual saves since the last durable one,
+     * and a flush failure reports through `onStateError` rather than to a
+     * caller.
      */
-    save(): Promise<void>;
+    save(options?: SaveOptions): Promise<void>;
     /** Delete the stored record; in-memory state resets to `state(key)`. */
     clearState(): Promise<void>;
     /** Volatile timer — dies with the activation; ticks are ordinary turns. */
@@ -1166,14 +1193,17 @@ export interface ActorOptions<
     /** Runs after the queue drains, before state teardown. */
     onDeactivate?(ctx: ActorContext<S, Ext>, reason: DeactivationReason): void | Promise<void>;
     /**
-     * A `write-behind` save failed and there is no caller to throw to
-     * (#54) — `ctx.save()` failures still reject the turn that called it
-     * and never come here. Report it (page, metric, dead-letter
-     * `ctx.snapshot()`) instead of polling for faults; see
+     * A deferred save failed and there is no caller to throw to (#54): a
+     * `write-behind` save, or an explicit-persistence actor's
+     * `ctx.save({ durability: 'eventual' })` (#320), which resolved before
+     * the write. An immediate `ctx.save()` failure still rejects the turn
+     * that called it and never comes here. Report it (page, metric,
+     * dead-letter `ctx.snapshot()`) instead of polling for faults; see
      * `StateErrorPhase` for what each phase means for the state. The hook
      * only observes: a `'flush'` failure schedules no retry of its own —
-     * the next write or the deactivation flush carries the dirty state —
-     * and a `'final-flush'` failure is the last word on it. Runs
+     * the next write (write-behind) or the next `save()` (explicit), or
+     * the deactivation flush, carries the dirty state — and a
+     * `'final-flush'` failure is the last word on it. Runs
      * serialized with turns in the `'flush'` phase and after the drain in
      * `'final-flush'`, and is awaited in both. A throw is dev-logged and
      * ignored. Without the hook, a dev build logs the failure instead.

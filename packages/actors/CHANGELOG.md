@@ -4,6 +4,32 @@
 
 ### Added
 
+- **`job.checkpoint(cp, { durability: 'eventual' })` — a burst of steps
+  costs one save** (#320). `jobs/checkpoint-growth` showed every
+  `job.checkpoint()` re-encoding and CAS-writing the whole job state, and
+  a step loop that does not need each checkpoint durable before the next
+  step starts was paying N saves for N steps. The new option marks the
+  state for the activation's write-behind debounce (the 50 ms window
+  `persistence: { mode: 'write-behind' }` already uses) and resolves at
+  once, so N checkpoints inside the window are one write. `pause()`, the
+  terminal transition (`finish`/`fail`/`cancel`) and a graceful
+  deactivation still save synchronously — an explicit-persistence actor
+  with an eventual save outstanding now flushes it in `deactivate()`, the
+  one write it was asked for — so the record that decides a job's fate is
+  never eventual. The trade is crash distance: a host death between an
+  eventual checkpoint and its flush resumes from the last checkpoint that
+  reached storage, which may be more than one step back (and on Cloudflare,
+  where eviction is not deactivation, there is no final flush at all).
+  Default `'immediate'` is today's behaviour, byte for byte. Underneath,
+  `ctx.save()` itself takes the same `SaveOptions` (`{ durability }`), so
+  any explicit-persistence actor can defer a write the same way — a
+  deferred write that fails reports through `onStateError` (`'flush'`)
+  rather than to a caller, and `clearState()` drops one still pending so
+  the deleted record is not written back. Fifty
+  eventual checkpoints followed by completion cost the run 2 state saves
+  where they cost 52 before. `docs/job-recipes.md` has the guidance;
+  `jobs/checkpoint-growth` gained a `watch=0,eventual` arm.
+
 - **`internal: true` — server-internal actors the public wire never serves**
   (#74). The common shape "this type is only ever called in-process or
   host-to-host" had no word of its own: the OmniaFlow migration marked
