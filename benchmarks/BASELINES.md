@@ -102,6 +102,7 @@ tier legend below exists to prevent. The scenario name says which tier it is:
 | Tier | Scenarios | What it is |
 |---|---|---|
 | **Tier 1** | `dispatch/`, `state/`, `wire/`, `lifecycle/`, `memory/`, `cluster/` | One process, `pipeFetch`, **zero sockets**. Measures algorithmic shape and software cost. Anything about the network here is *modelled*, not measured. |
+| **Tier 1, engine** | `engine/` | One process, one host, the workflow engine of `perf/aks` under `selfPolicy`, one run at a time: what a run costs the runtime as INVARIANTS — saves, transitions, directory calls, reminder-shard writes, completion deliveries. Every metric is `exact` and gates the merge queue; it is the Tier-1 face of the `workflow/*` axis, which cannot gate (#379). |
 | **Tier 1, opt-in** | `compute/` | One process, but **real OS threads**. Opt-in via `BENCH_THREADS=1`, because the effect cannot appear on a 2-core runner: a number recorded there would be wrong rather than noisy. Never gates. |
 | **Tier 2** | `cluster2/` | N hosts as **real OS processes over real loopback sockets**. Measures what the wire actually does. Opt-in: `pnpm bench:tier2`. |
 
