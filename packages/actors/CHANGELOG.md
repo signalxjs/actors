@@ -12,6 +12,38 @@
   `surrealReminders`, `redisReminders` and (its API half) the Durable
   Object alarm. Its red proof is a deliberately broken provider with one
   bug at a time. No shipped code changes.
+- **Admission control** (#384). `defineActor({ maxQueued })` and
+  `HostDefaults.maxQueuedPerActor` cap one activation's queued-plus-running
+  turns; `HostDefaults.maxInflightTurns` caps the host's (every turn on it,
+  timer ticks and task turns included). A call that would pass a cap is
+  refused before it is queued with the new `ActorOverloadedError`
+  (`kind: 'overloaded'`, `scope: 'actor' | 'host'`, `depth`, `limit`) —
+  a 429 on both wires, carrying its fields, never re-placed by cluster
+  routing. Both caps default to 0 (unlimited); with both off the hot path
+  is unchanged. The runtime's own turns (watch reads, the write-behind
+  flush, a conflict reload) are never refused; a refused reminder delivery
+  is re-armed one tick out and a refused topic delivery is a `failures[]`
+  entry. `HostStats.overloadRefusals` counts refusals.
+- **Drop-on-dequeue** (#384). A queued turn whose caller's deadline has
+  already passed is skipped instead of run — `ActorCallTimeoutError` now
+  says so (`skipped`). A running turn is still never killed.
+- **The pool-saturation gauge** (#302 option 2, #384).
+  `ClusterCounters.remoteInflight` / `remoteInflightPeak` (outbound hops
+  not yet answered) and `overloadedReplies` (peer refusals);
+  `boundedFetch()` now returns a fetch with `.stats()` — `inflight`,
+  `inflightPeak`, `saturatedMs` (time at the cap), `queuedCalls`
+  (`BoundedFetchStats`).
+- **`HostStats.reminderShardEntriesMax`** (#384, from #396): the largest
+  sharded reminder record the host has ticked. Past ~1 000 entries the host
+  dev-warns once that `shardedReminders()` has been outgrown (a `set`
+  costs ~5 ms at 10 000 entries, ~1 s at 100 000).
+- `Turns` accepts an optional shared `TurnLoad` counter; `ActorRemindersContext.shardSize?()`.
+
+### Changed
+
+- A call whose deadline had already expired when it reached the head of
+  its queue used to run its body anyway; it is now skipped (#384). The
+  `deadline.test.ts` contract "runs the turn" became "skips the turn".
 
 - **`ctx.append(entry)` + `applyEntry`, and `job.append(entry)` + `apply`
   — O(entry) writes on the `appendText` seam** (#312, PR 2 of 2; closes the

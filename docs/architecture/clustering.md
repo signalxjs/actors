@@ -349,8 +349,13 @@ execution, not about the network:
 - **`host-shutdown`** from a *remote* peer — refused at the door of a
   draining host; re-resolve after a backoff.
 
-Everything else is surfaced to the caller unchanged. In particular a call
-that was on the wire when its connection dropped is **not** `unreachable`:
+Everything else is surfaced to the caller unchanged. Two cases are worth
+naming. An **`overloaded`** answer (#384) is the owner refusing the call at
+admission — it reached the right host, which is full — so it is counted
+(`overloadedReplies`) and surfaced, never re-placed: another host cannot
+serve the actor, and retrying into the same queue is what the refusal
+exists to prevent. And a call that was on the wire when its connection
+dropped is **not** `unreachable`:
 the owner may have run it and the reply died with the socket, so a
 connection-oriented transport fails it with an ordinary error ("closed with
 this call in flight: outcome unknown, not retried") and the caller — who

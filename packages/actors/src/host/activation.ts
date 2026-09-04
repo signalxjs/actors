@@ -17,7 +17,7 @@ import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
 import { decodePrincipal } from '../guards';
 import { ownFn, warnIfInheritedTable } from '../own-member';
-import type { Turns } from './turns';
+import type { TurnLoad, Turns } from './turns';
 import {
     ActorActivationError,
     ActorCallTimeoutError,
@@ -181,14 +181,13 @@ const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /**
  * The host's admission state (#384), shared by reference with every
- * activation: the two caps, and two counters the activations keep
- * current — `inflight` (turns admitted through `enqueue` and not yet
- * settled, host-wide) and `refusals` (calls turned away, monotonic).
+ * activation: the two caps, the host-wide turn count every `Turns` keeps
+ * current (`TurnLoad` — queued or running, all lanes and all kinds), and
+ * `refusals` (calls turned away, monotonic).
  */
-export interface Admission {
+export interface Admission extends TurnLoad {
     maxQueuedPerActor: number;
     maxInflightTurns: number;
-    inflight: number;
     refusals: number;
 }
 
@@ -894,17 +893,12 @@ export class Activation {
         }
         const admission = this.#host.admission;
         const hostCap = admission.maxInflightTurns;
-        if (hostCap > 0) {
-            if (admission.inflight >= hostCap) {
-                admission.refusals++;
-                throw new ActorOverloadedError('host', actorLabel(this.ref), admission.inflight, hostCap);
-            }
-            // Only the host-level cap pays for a settlement hook: an
-            // activation's own depth is already kept by `Turns`.
-            admission.inflight++;
-            return this.enqueueSystem(method, args, call).finally(() => {
-                admission.inflight--;
-            });
+        // `inflight` counts EVERY turn on the host — timer ticks and task
+        // turns included, which never come through here — so a host whose
+        // loop is saturated by its actors' own work refuses new calls too.
+        if (hostCap > 0 && admission.inflight >= hostCap) {
+            admission.refusals++;
+            throw new ActorOverloadedError('host', actorLabel(this.ref), admission.inflight, hostCap);
         }
         return this.enqueueSystem(method, args, call);
     }

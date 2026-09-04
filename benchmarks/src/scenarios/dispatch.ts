@@ -13,6 +13,7 @@
  * No single number here means much on its own; the gaps between them are
  * the finding.
  */
+import { defineActor, isActorError } from '@sigx/actors';
 import { Turns } from '@sigx/actors/host';
 import { AlwaysTiny, Tiny } from '../actors.ts';
 import { sweepConcurrency } from '../loop.ts';
@@ -394,6 +395,175 @@ const alwaysWarmTurns: Scenario = {
     }
 };
 
+/**
+ * Admission control (#384), counted.
+ *
+ * `overload-shed` offers one activation many times its capacity in a single
+ * synchronous burst — the shape a drowning host sees — and counts what the
+ * runtime did with each call. With `maxQueued` set, exactly `maxQueued`
+ * calls are admitted (one running, the rest queued) and every later one is
+ * refused before it is queued; the admitted ones all complete, none times
+ * out. Every one of those is a count of synchronous decisions on a fixed
+ * code path, so they are `exact`. The control arm has no cap and a short
+ * deadline: it admits everything and most of it times out — that arm's
+ * counts depend on wall time and stay informational, but they are the
+ * "drown" the cap exists to replace.
+ */
+const OFFERED = 400;
+const CAP = 8;
+
+function slowActor(type: string, maxQueued: number) {
+    return defineActor({
+        type,
+        allowAnonymous: true,
+        maxQueued,
+        state: () => ({ ran: 0 }),
+        methods: (ctx) => ({
+            async ms1() {
+                ctx.state.ran++;
+                await new Promise((r) => setTimeout(r, 1));
+                return ctx.state.ran;
+            },
+            ran() {
+                return ctx.state.ran;
+            }
+        })
+    });
+}
+
+async function burst(
+    type: string,
+    maxQueued: number,
+    callTimeoutMs: number
+): Promise<{ admitted: number; refused: number; completed: number; timeouts: number; other: number; ran: number }> {
+    const def = slowActor(type, maxQueued);
+    const fixture = await createBenchHost({ actors: [def], callTimeoutMs });
+    try {
+        const ref = { type, key: 'hot' };
+        // Warm the slot: an activation-in-progress parks callers rather
+        // than queueing turns, and the cap is a property of the queue.
+        await fixture.host.dispatch(ref, 'ran', [], benchCall());
+        const outcomes = await Promise.allSettled(
+            Array.from({ length: OFFERED }, () => fixture.host.dispatch(ref, 'ms1', [], benchCall()))
+        );
+        let refused = 0;
+        let completed = 0;
+        let timeouts = 0;
+        let other = 0;
+        for (const o of outcomes) {
+            if (o.status === 'fulfilled') completed++;
+            else if (isActorError(o.reason) && o.reason.kind === 'overloaded') refused++;
+            else if (isActorError(o.reason) && o.reason.kind === 'call-timeout') timeouts++;
+            else other++;
+        }
+        // Let skipped turns drain before reading how many bodies ran.
+        await new Promise((r) => setTimeout(r, 20));
+        const ran = (await fixture.host.dispatch(ref, 'ran', [], benchCall())) as number;
+        return { admitted: OFFERED - refused, refused, completed, timeouts, other, ran };
+    } finally {
+        await fixture.stop();
+    }
+}
+
+const overloadShed: Scenario = {
+    name: 'dispatch/overload-shed',
+    description: `one activation offered ${OFFERED} calls at once: admitted / refused / timed out, with and without maxQueued`,
+    async run(): Promise<Metric[]> {
+        const capped = await burst('BenchShedCapped', CAP, PRODUCTION_CALL_TIMEOUT_MS);
+        const control = await burst('BenchShedOpen', 0, 100);
+        const count = (name: string, value: number, exact: boolean, direction: 'lower' | 'higher' = 'lower'): Metric => ({
+            name,
+            value,
+            unit: 'calls',
+            direction,
+            ...(exact ? { exact: true } : { informational: true })
+        });
+        return [
+            // The cap arm: every value is a synchronous decision on a fixed
+            // path, identical on any machine.
+            count('cap/admitted', capped.admitted, true, 'higher'),
+            count('cap/refused', capped.refused, true),
+            count('cap/completed', capped.completed, true, 'higher'),
+            count('cap/timeouts', capped.timeouts, true),
+            count('cap/other_errors', capped.other, true),
+            count('cap/bodies_run', capped.ran, true, 'higher'),
+            // The control arm: no cap, a 100 ms deadline, 400 × ~1 ms of
+            // turns — the drown. How many time out depends on wall time.
+            count('none/refused', control.refused, true),
+            count('none/timeouts', control.timeouts, false),
+            count('none/completed', control.completed, false, 'higher'),
+            count('none/bodies_run', control.ran, false)
+        ];
+    }
+};
+
+/**
+ * Drop-on-dequeue (#384): a queued turn whose caller's deadline has
+ * already passed is skipped, never run. Constructed rather than raced —
+ * the deadlines are minted in the past — so the count is exact.
+ */
+const expiredSkipped: Scenario = {
+    name: 'dispatch/expired-skipped',
+    description: 'bodies run for calls whose deadline expired while queued — must be 0',
+    async run(): Promise<Metric[]> {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        const def = defineActor({
+            type: 'BenchExpired',
+            allowAnonymous: true,
+            state: () => ({ ran: 0 }),
+            methods: (ctx) => ({
+                async hold() {
+                    ctx.state.ran++;
+                    await gate;
+                },
+                bump() {
+                    ctx.state.ran++;
+                    return ctx.state.ran;
+                },
+                ran() {
+                    return ctx.state.ran;
+                }
+            })
+        });
+        const fixture = await createBenchHost({ actors: [def] });
+        try {
+            const ref = { type: def.type, key: 'e' };
+            const holding = fixture.host.dispatch(ref, 'hold', [], benchCall());
+            await new Promise((r) => setTimeout(r, 5));
+            const expired = Date.now() - 1;
+            const queued = Array.from({ length: 200 }, () =>
+                fixture.host.dispatch(ref, 'bump', [], benchCall({ deadline: expired }))
+            );
+            release();
+            await holding;
+            const outcomes = await Promise.allSettled(queued);
+            const rejected = outcomes.filter(
+                (o) => o.status === 'rejected' && isActorError(o.reason) && o.reason.kind === 'call-timeout'
+            ).length;
+            const ran = (await fixture.host.dispatch(ref, 'ran', [], benchCall())) as number;
+            return [
+                {
+                    name: 'expired_bodies_run',
+                    value: ran - 1,
+                    unit: 'turns',
+                    direction: 'lower',
+                    exact: true
+                },
+                {
+                    name: 'expired_rejected',
+                    value: rejected,
+                    unit: 'calls',
+                    direction: 'higher',
+                    exact: true
+                }
+            ];
+        } finally {
+            await fixture.stop();
+        }
+    }
+};
+
 export const dispatchScenarios: Scenario[] = [
     turnsRaw,
     warmGrain,
@@ -403,5 +573,7 @@ export const dispatchScenarios: Scenario[] = [
     warmTurns,
     warmTurnsDeadline,
     alwaysWarmGrain,
-    alwaysWarmTurns
+    alwaysWarmTurns,
+    overloadShed,
+    expiredSkipped
 ];

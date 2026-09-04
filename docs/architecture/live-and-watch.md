@@ -489,7 +489,13 @@ also carry its own budget — `.with({ deadlineMs })` (#75) replaces the
 host default for that one call, but on a `ctx.actor()` hop it only ever
 *tightens* the inherited deadline, and over HTTP it crosses as remaining-ms
 (`x-sigx-deadline-ms`) that the peer re-anchors on its own clock, like the
-cluster envelope. A pool-saturation gauge (#302, option 2) remains open.
+cluster envelope. The pool-saturation gauge (#302, option 2) landed with
+#384, from both sides of the pool: `ClusterCounters.remoteInflight` /
+`remoteInflightPeak` (hops to peers not yet answered — each one a pooled
+connection on HTTP) and `boundedFetch(…).stats()` (`inflight`,
+`inflightPeak`, `saturatedMs` — time spent at the cap, i.e. calls queueing
+behind sockets rather than on the wire). Read together with `queued` and
+`overloadRefusals`, the wedge of #302 is visible while it forms.
 
 Concretely:
 

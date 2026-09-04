@@ -479,7 +479,7 @@ export class LocalHost implements ActorDispatcher {
                 // Reserve SYNCHRONOUSLY so a racing second dispatch joins
                 // this promise — the single-activation invariant. (`reserved`
                 // is only read after the first await inside the closure.)
-                const turns = new Turns();
+                const turns = new Turns(this.#host.admission);
                 let reserved!: Slot;
                 const promise = (async () => {
                     // The distributed directory's claim point: a throw here
@@ -619,7 +619,7 @@ export class LocalHost implements ActorDispatcher {
     #spinMember(pool: WorkerPool, ref: ActorRef, id: string): Promise<Activation> {
         const mid = memberId(id, pool.seq++);
         pool.members.push(mid);
-        const turns = new Turns();
+        const turns = new Turns(this.#host.admission);
         let reserved!: Slot;
         const promise = (async () => {
             const activation = await Activation.create(ref, pool.def, this.#host, turns);

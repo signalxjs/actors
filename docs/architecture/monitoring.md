@@ -54,6 +54,20 @@ previous total is meaningless. The answer is `null`. Subtracting anyway gives
 a negative rate; treating the new value as the delta gives an enormous
 positive one. Both draw as traffic that never happened.
 
+**A refusal is not an error, and a saturated pool is not idle.** Since
+#384 `HostStats.overloadRefusals` counts calls a host turned away at
+admission; a climbing value is the host shedding load, which past capacity
+is the designed outcome, so a renderer must not fold it into an error
+rate — it belongs beside `queued`, and the ratio to the caller's own
+refusal count is what says whether the caps are sized right.
+`reminderShardEntriesMax` is a size, not a rate: the largest sharded
+reminder record the host has ticked, the number the default provider's cost
+grows with (#396), so it is drawn as a level against the ~1 000-entry line
+the host itself warns at. The pool gauges (`ClusterCounters.remoteInflight`
+/ `remoteInflightPeak`, `boundedFetch().stats().saturatedMs`) say the
+opposite of what a low CPU says: a host whose turns are all awaiting
+cross-host calls reads idle everywhere except here (#302).
+
 **`partial` makes every total a lower bound.** A fan-out where one member did
 not answer still returns numbers, and they look exactly like complete ones.
 The snapshot carries `partial: true` all the way to the UI rather than

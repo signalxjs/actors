@@ -286,24 +286,48 @@ const multiCore: Scenario = {
     }
 };
 
+/** The admission cap the `cap=` arm runs under (#384).
+ *
+ *  Sized by the rule the runtime documents — `maxQueued ≈ callTimeoutMs /
+ *  p50 turn ms` — against the numbers this very scenario recorded before
+ *  the cap existed: a 30 s call deadline over a ~55 ms turn at the knee is
+ *  ~545, and the arm that drowned did so with thousands queued behind the
+ *  compute pool and the singleton aggregator. `WF_LOCAL_CAP` moves it,
+ *  because the right value is a deployment's to choose and the point of
+ *  the arm is the SHAPE of the failure, not this number. */
+const CAP = process.env.WF_LOCAL_CAP ?? '512';
+
 const drownVsShed: Scenario = {
     name: 'wf-local/drown-vs-shed',
     description:
-        'The widest fleet past its knee, at 20 ms tasks (the recorded workload) and 2 ms (the runtime is what saturates)',
+        'The widest fleet past its knee, at 20 ms tasks (the recorded workload) and 2 ms (the runtime is what saturates), then 20 ms again under an admission cap',
     async run(ctx: RunContext) {
         const sweep = ladder('WF_LOCAL_SWEEP', ctx.quick ? '50,100' : '50,100,200,500');
         const durationS = ctx.quick ? 10 : DURATION_S;
         const metrics: Metric[] = [];
-        for (const taskMs of ['20', '2']) {
+        // The third arm is the #384 after-picture: the same 20 ms workload
+        // that drowned, with a per-actor queue cap. Read `refused` against
+        // `timeouts` — shedding turns a deadline failure into a fast
+        // branded refusal, and the drain empties.
+        const arms = [
+            { taskMs: '20', cap: undefined },
+            { taskMs: '2', cap: undefined },
+            { taskMs: '20', cap: CAP }
+        ];
+        for (const arm of arms) {
             const result = await runWfFleet({
                 hosts: WIDEST,
                 sweep,
                 durationS,
-                env: { ...COMMON, WF_TASK_MS: taskMs },
+                env: {
+                    ...COMMON,
+                    WF_TASK_MS: arm.taskMs,
+                    ...(arm.cap === undefined ? {} : { WF_MAX_QUEUED: arm.cap })
+                },
                 redisUrl: REDIS_URL
             });
             for (const rung of result.rungs) {
-                const prefix = `task=${taskMs}/r=${rung.rate}/`;
+                const prefix = `task=${arm.taskMs}${arm.cap === undefined ? '' : `,cap=${arm.cap}`}/r=${rung.rate}/`;
                 metrics.push(
                     ...asTier2(rowMetrics(rung.row, prefix)),
                     ...asTier2(mechanismMetrics(rung).map((m) => ({ ...m, name: `${prefix}${m.name}` }))),

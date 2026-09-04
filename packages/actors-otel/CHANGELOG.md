@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Admission and pool families** (#384): `overload_refusals_total` and
+  `reminder_shard_entries_max` beside the host gauges;
+  `cluster_remote_inflight`, `cluster_remote_inflight_peak` and
+  `cluster_overloaded_replies_total` in the cluster family; and a `pool_*`
+  family (`connections`, `inflight`, `inflight_peak`,
+  `saturated_seconds_total`, `queued_calls_total`) from a new
+  `prometheusOps({ pool: () => fetch.stats() })` thunk for a `boundedFetch`.
+
 - **`socket_subscriptions_shed_total` / `sigx.actors.socket.subscriptions.shed`**
   (#258): subscriptions the socket session closed because a connection's
   send buffer was over its `maxBufferedBytes`. One row in each exporter's

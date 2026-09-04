@@ -215,6 +215,47 @@ describe('host in-flight cap', () => {
         // Settled turns give their slot back.
         await expect(host.actor(one.def, 'other').peek()).resolves.toBe(0);
     });
+
+    it('counts the host’s own turns — a timer tick holding the loop refuses new calls, and is never refused itself', async () => {
+        const gates: Array<() => void> = [];
+        const ticks: number[] = [];
+        const Ticker = defineActor({
+            type: 'TickerHost',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                arm() {
+                    ctx.timer('t', async () => {
+                        ticks.push(Date.now());
+                        await new Promise<void>((r) => gates.push(r));
+                    }, { due: 1 });
+                }
+            })
+        });
+        const other = gated('BesideTicker');
+        const host = createHost({
+            actors: [Ticker, other.def],
+            defaults: { ...quiet, maxInflightTurns: 1 }
+        });
+        running = host;
+        await host.start();
+        await host.actor(Ticker, 'k').arm();
+        await vi.waitFor(() => expect(ticks).toHaveLength(1));
+        // The tick is the one turn in flight; it was never subject to the
+        // cap, and it fills the host for everyone else.
+        const error = await host
+            .actor(other.def, 'k')
+            .hold('a')
+            .then(
+                () => null,
+                (e: unknown) => e
+            );
+        expect(error).toMatchObject({ kind: 'overloaded', scope: 'host', depth: 1, limit: 1 });
+        while (gates.length > 0) gates.shift()!();
+        await vi.waitFor(() => expect(host.stats().queued).toBe(0));
+        other.releaseAll();
+        await expect(host.actor(other.def, 'k').hold('b')).resolves.toBe('b');
+    });
 });
 
 describe('drop-on-dequeue', () => {

@@ -217,6 +217,9 @@ workflow:
     WF_COMPUTE_MAX_LOCAL: ""
     WF_IO_MAX_LOCAL: ""
     WF_CALL_TIMEOUT_MS: ""
+    # Admission caps (#384): per-actor queue and host-wide in-flight turns.
+    WF_MAX_QUEUED: ""
+    WF_MAX_INFLIGHT_TURNS: ""
 
 # The WebSocket load generator (#172) — connections held and messages
 # delivered, rather than ops/s. Rendered per run exactly like `loadgen`.
