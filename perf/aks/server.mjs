@@ -13,6 +13,9 @@
  *   TRANSPORT           http | tcp — host-to-host link      default http
  *   TCP_PORT            listener port when TRANSPORT=tcp    default 7312
  *   MEMBERSHIP          redis | k8s                        default redis
+ *   REMINDERS           sharded | redis — the reminder provider (#385):
+ *                       the runtime's sharded table, or redisReminders()
+ *                       on a due-time index               default sharded
  *   POD_NAMESPACE       k8s namespace (MEMBERSHIP=k8s)     downward API
  *
  * The WebSocket endpoint (#172), all optional and all OFF by default — an
@@ -34,7 +37,7 @@
  * (WF_TIMER_THRESHOLD_MS, WF_REMINDER_TICK_MS, WF_IDLE_AFTER_MS,
  * WF_DEACTIVATE_ON_SLEEP, WF_STALE_WAKE_MS, WF_CHILD_STALE_MS,
  * WF_STATS_SAVE_EVERY, WF_STATS_RING, WF_NOTIFY_RETRY_MS, WF_COMPUTE_MAX_LOCAL, WF_IO_MAX_LOCAL,
- * WF_CALL_TIMEOUT_MS) are documented in `src/workflow/config.ts` and
+ * WF_CALL_TIMEOUT_MS, and REMINDERS) are documented in `src/workflow/config.ts` and
  * `src/actors.app.ts`, all optional, and all part of INFRA_SHAPE. Its
  * counters ride ops() as the `workflow` section.
  *

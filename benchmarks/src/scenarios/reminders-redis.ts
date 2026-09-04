@@ -44,7 +44,7 @@
  */
 import Redis from 'ioredis';
 import { defineActor, isStorageConflict } from '@sigx/actors';
-import { redisStorage } from '@sigx/actors-redis';
+import { redisReminders, redisStorage, remEscape } from '@sigx/actors-redis';
 import { REMINDER_TYPE, type ActorStorage, type Host } from '@sigx/actors/host';
 import { createCluster, selfPolicy } from '../cluster-harness.ts';
 import { benchCall } from '../host-fixture.ts';
@@ -167,7 +167,8 @@ async function runRung(
     namespace: string,
     rate: number,
     windowMs: number,
-    label: string
+    label: string,
+    bytes: (client: Redis, namespace: string) => Promise<number> = shardBytes
 ): Promise<RungResult> {
     fired.clear();
     const due = new Map<string, number>();
@@ -188,7 +189,7 @@ async function runRung(
     let stopSampling = false;
     const sampler = (async () => {
         while (!stopSampling) {
-            shardBytesPeak = Math.max(shardBytesPeak, await shardBytes(admin, namespace));
+            shardBytesPeak = Math.max(shardBytesPeak, await bytes(admin, namespace));
             await sleep(500);
         }
     })();
@@ -288,6 +289,36 @@ async function seedPopulation(storage: ActorStorage, population: number): Promis
         }
         await storage.saveText!(REMINDER_TYPE, shard, JSON.stringify(table), null);
     }
+}
+
+/**
+ * The same population for `redisReminders()`: P one-shot members two years
+ * out in the sorted set, each its own actor (a member's actor set beside
+ * it), pipelined in slices. What a million sleeping runs look like to the
+ * due-time index.
+ */
+async function seedRedisPopulation(client: Redis, namespace: string, population: number): Promise<void> {
+    if (population === 0) return;
+    const due = String(Date.now() + 2 * 365 * 24 * 3600 * 1000);
+    const SLICE = 5_000;
+    for (let start = 0; start < population; start += SLICE) {
+        const pipeline = client.pipeline();
+        for (let i = start; i < Math.min(population, start + SLICE); i++) {
+            const actor = `${remEscape('BenchSleeper')}\u0000${remEscape(`s${i}`)}`;
+            pipeline.zadd(`${namespace}:rem:due`, due, `${actor}\u0000fire`);
+            pipeline.sadd(`${namespace}:rem:a:${actor}`, 'fire');
+        }
+        await pipeline.exec();
+    }
+}
+
+/** The bytes the due-time index holds: the sorted set and the period hash
+ *  (the per-actor name sets are the same count either way). */
+async function indexBytes(client: Redis, namespace: string): Promise<number> {
+    const sizes = await Promise.all(
+        [`${namespace}:rem:due`, `${namespace}:rem:p`].map((key) => client.memory('USAGE', key))
+    );
+    return sizes.reduce<number>((sum, size) => sum + (typeof size === 'number' ? size : 0), 0);
 }
 
 function rungMetrics(prefix: string, r: RungResult): Metric[] {
@@ -408,42 +439,57 @@ const armFire: Scenario = {
 
 const tableSize: Scenario = {
     name: 'reminders-redis/table-size',
-    description: 'one arm rung against P entries already asleep in the shard records (needs REDIS_URL)',
+    description: 'one arm rung against P entries already asleep — the sharded records vs the redisReminders() index (needs REDIS_URL)',
     async run(ctx: RunContext): Promise<Metric[]> {
         const url = process.env['REDIS_URL'];
         if (!url) return skipped;
         const metrics: Metric[] = [];
         const windowMs = ctx.quick ? QUICK_WINDOW_MS : WINDOW_MS;
         for (const population of ctx.quick ? QUICK_POPULATIONS : POPULATIONS) {
-            const namespace = `bench-rempop-${population}-${Date.now()}-${++clusterSeq}`;
-            const admin = new Redis(url);
-            const storageClient = new Redis(url, { enableAutoPipelining: true });
-            const storage = redisStorage({ client: storageClient, namespace });
-            // Seeded BEFORE the hosts start, so no tick ever sees a
-            // half-written table and every set from the first arm pays
-            // the full record.
-            await seedPopulation(storage, population);
-            const harness = await createCluster(POPULATION_HOSTS, {
-                actors: [Armer],
-                storage,
-                policy: selfPolicy,
-                defaults: { reminderTickMs: TICK_MS }
-            });
-            try {
-                const r = await runRung(
-                    harness.hosts,
-                    admin,
-                    namespace,
-                    POPULATION_RATE,
-                    windowMs,
-                    `pop${population}`
-                );
-                metrics.push(...rungMetrics(`n=${POPULATION_HOSTS}/pop=${population}/r=${POPULATION_RATE}`, r));
-            } finally {
-                await harness.stop();
-                await deleteNamespace(admin, namespace);
-                admin.disconnect();
-                storageClient.disconnect();
+            // Two arms per population, the before and the after (#385):
+            // the sharded table in `redisStorage`, and `redisReminders()`
+            // on its due-time index. Same hosts, same rung, same Redis.
+            for (const provider of ['sharded', 'redis'] as const) {
+                const namespace = `bench-rempop-${provider}-${population}-${Date.now()}-${++clusterSeq}`;
+                const admin = new Redis(url);
+                const storageClient = new Redis(url, { enableAutoPipelining: true });
+                const storage = redisStorage({ client: storageClient, namespace });
+                // Seeded BEFORE the hosts start, so no tick ever sees a
+                // half-written table and every set from the first arm pays
+                // the full record.
+                if (provider === 'sharded') await seedPopulation(storage, population);
+                else await seedRedisPopulation(admin, namespace, population);
+                const harness = await createCluster(POPULATION_HOSTS, {
+                    actors: [Armer],
+                    storage,
+                    policy: selfPolicy,
+                    defaults: { reminderTickMs: TICK_MS },
+                    ...(provider === 'redis'
+                        ? { reminders: () => redisReminders({ client: storageClient, namespace }) }
+                        : {})
+                });
+                try {
+                    const r = await runRung(
+                        harness.hosts,
+                        admin,
+                        namespace,
+                        POPULATION_RATE,
+                        windowMs,
+                        `pop${provider}${population}`,
+                        provider === 'redis' ? indexBytes : shardBytes
+                    );
+                    // The sharded arm keeps the names #396 recorded under.
+                    const prefix =
+                        provider === 'sharded'
+                            ? `n=${POPULATION_HOSTS}/pop=${population}/r=${POPULATION_RATE}`
+                            : `redis/n=${POPULATION_HOSTS}/pop=${population}/r=${POPULATION_RATE}`;
+                    metrics.push(...rungMetrics(prefix, r));
+                } finally {
+                    await harness.stop();
+                    await deleteNamespace(admin, namespace);
+                    admin.disconnect();
+                    storageClient.disconnect();
+                }
             }
         }
         return metrics;

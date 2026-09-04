@@ -710,6 +710,7 @@ function liveSocketKnobs(names = SOCKET_KNOBS) {
 const WORKFLOW_KNOBS = [
     'FETCH_CONNECTIONS',
     'TRANSPORT',
+    'REMINDERS',
     'WF_TIMER_THRESHOLD_MS',
     'WF_REMINDER_TICK_MS',
     'WF_IDLE_AFTER_MS',

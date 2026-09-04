@@ -117,13 +117,15 @@ the comparer *cannot* gate on one:
 - **Timed, and contended**: throughput, percentiles, RSS. N processes share
   the cores. Recorded for context; never evidence on its own.
 
-Three Tier-1 scenarios ride a REAL store rather than `memoryStorage` and
+Four Tier-1 scenarios ride a REAL store rather than `memoryStorage` and
 are env-gated on `REDIS_URL` so the default suite still runs anywhere:
 `cluster/redis-amplification` (commands per membership change),
 `reminders-redis/arm-fire` (#382: the arm rate at which the sharded
-reminder table's CAS starts failing) and `reminders-redis/table-size`
-(#382: what a set and a tick cost with P entries already asleep in the
-records). Tier 1 with an external store — one process, real round trips:
+reminder table's CAS starts failing), `reminders-redis/table-size`
+(#382, #385: what a set and a tick cost with P entries already asleep —
+in the sharded records, and in `redisReminders()`'s index) and
+`reminders/redis-commands` (#385: the index's commands per operation at
+up to a million members). Tier 1 with an external store — one process, real round trips:
 the counts and ratios are the findings, the timings depend on the box and
 the store both.
 
@@ -3322,3 +3324,105 @@ turn is what a profile on this rig would say next.
 | ~4 ms of loop time per transition; ~32 host-cores for 1 000 runs/s | task=2 ladder, linear to 255/s at 122% CPU | #389, #391 T3, and a profile on this rig |
 | A `childDone` queued behind a deep parent backlog is repaired by the watchdog as if lost | 48 join repairs on the one-host arm, none elsewhere | recorded; a queue-depth-aware notify retry would be an engine change (#390) |
 | Every generator resets the aggregator ring, so N generators cannot share a fleet | the rig runs ONE generator through a proxy | #380 (reset once, from index 0) |
+
+## 2026-09-04 · `redisReminders()` beside the sharded table — the O(table) term removed (#385)
+
+| | |
+|---|---|
+| Machine | Apple M4, 10 cores, macOS; Redis 7 on loopback (`redis-server`, no persistence) |
+| Node | v24.11.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Settings | `reminders/*` and `reminders-redis/table-size`, 2 rounds, `--no-warmup`; 15 s of arrivals per `table-size` rung |
+| Conditions | Load average 2.9 at the start of the run (the #382 pass earlier the same day read quieter). The sharded rows reproduce the #382 section within its spreads — 870 ms / 0.29 at 100 000 — and every finding below is a count or a ratio between two arms measured back to back; the absolute set latencies are context. |
+| Why | #382 located the sharded provider's ceiling as TABLE SIZE, not CAS rate, and the roadmap made `redisReminders()` the runtime change it gates. This is the before/after on one Redis: the same three hosts, the same 200 arms/s rung, the same P entries already asleep — once in the sixteen shard records, once in the due-time index. |
+
+### `reminders-redis/table-size` — the two providers on one rung
+
+Three hosts, 200 arms/s, P entries asleep. `n=3/…` is the sharded table
+in `redisStorage` (the #382 rows, re-run); `redis/n=3/…` is
+`redisReminders()`.
+
+| P asleep | provider | set p50 | set p99 | fired within a tick | commands / arm | Redis CPU / 1k arms | index bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | sharded | 1.2 ms | 8.0 ms | 0.99 | 9.6 | 135 ms | 46 KiB |
+| 0 | **redis** | **0.71 ms** | 9.7 ms | **1.00** | 10.1 | 98 ms | 55 KiB |
+| 10 000 | sharded | 3.6 ms | 19 ms | 0.99 | 9.6 | 315 ms | 773 KiB |
+| 10 000 | **redis** | **0.64 ms** | 9.8 ms | **1.00** | 10.6 | 108 ms | 1.1 MiB |
+| 100 000 | sharded | **871 ms** | 2.63 s | **0.29** | 10.0 | 1 095 ms | 6.25 MiB |
+| 100 000 | **redis** | **0.68 ms** | 9.7 ms | **1.00** | 10.1 | 106 ms | 10.5 MiB |
+
+Zero CAS failures on either arm at every P. The index costs about the same
+number of commands per arm as the table (the whole life of a reminder:
+set, the ticks while it waits, the fire-side delete) and roughly the same
+bytes at rest — a ZSET member is not smaller than a JSON entry — and is
+**flat in P on every column that is not bytes**. The sharded arm's set
+latency and Redis CPU grow with P because every set rewrites a sixteenth of
+the cluster's reminders; at 100 000 that sixteenth is 387 KiB
+(`reminders/arm-cost` below) and a tick that loads sixteen of them cannot
+keep up with its own table, which is the 0.29.
+
+### `reminders/redis-commands` — the index at a million members
+
+`redisReminders()` alone, bound by hand, P one-shot members asleep two
+years out (each its own actor, with its name set), from `INFO commandstats`
+deltas. Counts, so they gate at a small floor.
+
+| P asleep | commands / set | / clear | / empty tick | / 200-fire claim | fired of 200 | set p50 | 200-fire claim |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 000 | 5 | 4 | 3 | 606 | 200 | 66 µs | 6.1 ms |
+| 100 000 | 5 | 4 | 3 | 606 | 200 | 62 µs | 6.1 ms |
+| **1 000 000** | 5 | 4 | 3 | 606 | 200 | 62 µs | 6.3 ms |
+
+A set is one script (`EVALSHA`, `TIME`, `ZADD`, `HDEL`, `SADD`); a clear
+one fewer; an EMPTY tick is `EVALSHA` + `TIME` + a `ZRANGEBYSCORE` that
+returns nothing — three commands whether ten thousand or a million members
+are asleep, which is what makes a short `reminderTickMs` affordable on this
+provider and not on the sharded one. A claim of 200 due members is ~3
+commands per member (`HGET`, `ZREM`, `SREM`) and 6 ms end to end at any P.
+**Nothing in this table moves between 10 000 and 1 000 000 members**: the
+O(log N) of a sorted set is invisible at these sizes.
+
+### `reminders/arm-cost` — the sharded provider's invariant and its bytes (Tier 1, exact)
+
+The sharded provider on `memoryStorage` behind a counting decorator, with
+P entries asleep. Gated in CI: the two counts are exact by construction.
+
+| P asleep | storage ops / set (exact) | loads / empty tick (exact) | bytes / set | entries rewritten / set | set p50 |
+|---:|---:|---:|---:|---:|---:|
+| 1 000 | 2 | 16 | 7.2 KiB | 64 | 73 µs |
+| 10 000 | 2 | 16 | 41 KiB | 626 | 408 µs |
+| 100 000 | 2 | 16 | 387 KiB | 6 251 | 4.9 ms |
+
+Two operations per set at any P — one load, one CAS save — is the
+invariant the design keeps, and the bytes column is the term it cannot:
+a set rewrites every entry that shares its shard. Sixteen loads per empty
+tick is the other half — every owned record, every tick, due or not — and
+it is why the default's tick cadence is 30 s.
+
+### `wf-fleet` — the engine's sleeping runs under each provider, on one box
+
+The rig knob `REMINDERS=sharded|redis` (part of the `wf` shape) on the
+local fleet (#381): two hosts, 50 orders/s for 30 s, every order sleeping
+90 s on a DURABLE reminder, a 1 s tick, the default 10 % injected task
+failure.
+
+| provider | started | completed (+ injected failures) | stuck | reminders set / fired | lost | wake lag p50 / p99 | order p50 | peak activations | busiest host CPU |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sharded | 1 441 | 1 305 + 136 | 0 | 1 305 / 1 305 | 0 | 505 / 1 015 ms | 90.56 s | 48 | 105 % |
+| redis | 1 402 | 1 281 + 121 | 0 | 1 281 / 1 281 | 0 | 445 / 910 ms | 90.50 s | 41 | 87 % |
+
+At ~1 400 runs asleep the two are the same measurement: every reminder
+fires, nothing is lost, and the wake lag is the tick's own quantisation
+either way. That is the honest reading of the table above — the sharded
+provider is fine at this population, and the difference is an order of
+magnitude further out (10 000 entries is where its set latency first
+triples; 100 000 is where its ticks fall behind). The knob exists so the
+Tier-3 sleep ladder can climb to that population under both providers.
+
+### What this found, and where it went
+
+| finding | evidence | where |
+|---|---|---|
+| The reminder ceiling is removed by an index, not by a bigger table: flat set latency and 100 % on-time fires at 100 000 asleep, and flat commands to 1 000 000 | `redis/…/set_p50_ms` 0.64–0.71 ms at every P; `redis-commands` 5 / 4 / 3 / 606 at every P | #385 ships; the Tier-3 sleep ladder (#391 T2) now runs under `REMINDERS=redis` as the after-arm |
+| The sharded provider's cost is bytes, not operations | `arm-cost`: 2 ops per set and 16 loads per tick at every P, 387 KiB per set at 100 000 | the outgrown gauge (#384's S item) warns on entries per record, not on ops |
+| An empty tick on the index is three commands, so the tick can be seconds, not 30 | `commands_per_empty_tick` 3 at 1 000 000 | `perf/aks` `REMINDERS=redis` + `WF_REMINDER_TICK_MS` is the shape to measure wake lag under (#391 T2) |

@@ -13,6 +13,7 @@ Adding a provider or a transport means writing a *harness*, not a test matrix.
 | `@sigx/actors/testing` | `bootstrapConformance` | provider schema bootstrap (`ensure…Schema`) |
 | `@sigx/actors/testing` | `socketTransportConformance` | client `ActorTransport` implementations (#99) |
 | `@sigx/actors/testing` | `storageConformance` | `ActorStorage` implementations and decorators (#65) |
+| `@sigx/actors/testing` | `remindersConformance` | `ActorReminders` implementations (#385) |
 
 All are **workspace-only**: wired by the tsconfig and vitest path aliases, and
 deliberately **absent from `package.json` exports**. They cannot be imported
@@ -105,6 +106,53 @@ case that must catch it, and the test asserts that case goes red with a
 `[storage conformance]` message. A case added without an entry there has not
 been shown to fail.
 
+## The reminders suite
+
+`remindersConformance` is what "this is a reminder provider the host can
+run on" means, as sixteen cases over `ReminderApi` and the tick loop
+(#385). Five providers had each re-pinned the seam in their own test file
+— two of them sharing a header word for word — and the sixth (Redis) was
+the occasion to stop. The `ReminderApi` cases: set/list/clear round-trips
+under NUL-bearing keys and names, a second `set` overwrites, the 60 s
+period floor, one actor's reminders invisible to another, and the table
+outliving the provider instance. The tick cases: a one-shot fires once and
+is *gone before delivery*; a periodic advances *before* delivery and never
+bursts; two providers ticking one table deliver exactly once; a failed
+dispatch is re-armed one tick out — never sooner — and reported through
+`undelivered` (#306); a failed periodic retries next tick and then resumes
+its cadence; a permanently failing target costs one attempt per tick; the
+three "meanwhile" rules (#326): an actor's `set` during the failing
+dispatch wins, its `clear` of a periodic holds, its `clear` of a one-shot
+may cost one extra delivery; and a `deliver` that throws synchronously is
+treated like a rejection.
+
+The clock is REAL, because three providers judge "due" on a database clock
+the suite cannot move: reminders are set due now or an hour out, the tick
+is driven through a manual scheduler, and a case sleeps a (200 ms) tick of
+wall time where a re-arm has to become due. That is also why the follow-up
+ticks in a case are separated by a settle: a single-flight loop still inside
+its previous tick silently skips one fired on its heels, and a skipped tick
+reads exactly like an empty one — the very defect the case exists to see.
+
+The harness: `reminders()` returns a fresh provider over a table that is
+EMPTY when the harness was created, and is called more than once by the
+cases that need two tickers or a restart — so the namespace is per harness,
+never per call. `tickDriven: false` says the provider has no scheduler loop
+(the Durable Object alarm), and the tick cases report a skip; `singleActor:
+true` says one instance serves one actor (again the Durable Object), and
+the cross-actor case reports a skip. The sharded default keeps its table in
+the context's storage, which the suite shares across every provider it
+binds in a case, so it needs nothing from the harness at all.
+
+Its own proof is in `packages/actors/__tests__/reminders-conformance.test.ts`:
+a naive in-memory provider with one bug switched on at a time — a one-shot
+not deleted before delivery, a periodic not advanced, a non-atomic claim, no
+re-arm, an immediate re-arm, no `undelivered`, a re-arm overriding the
+actor's later `set`, a re-arm resurrecting a cleared periodic, no period
+floor, a table that dies with the instance, a synchronous throw escaping —
+and, for each, the case that goes red. The correct naive provider passes all
+sixteen, as does the sharded default.
+
 ## The two rules
 
 **1. Assert the outcome, never the mechanism.**
@@ -172,7 +220,13 @@ every future provider false confidence.
    cases never clean up after themselves. Declare `saveText: true` if the
    adapter implements the text path and `appendText: true` if it implements
    the append path, so a dropped member fails instead of skipping.
-4. Gate the live-server tests on an env var (`REDIS_URL`, `PG_URL`,
+4. Run `remindersConformance` if it implements `ActorReminders`. The
+   harness hands out a provider over an EMPTY table per harness (not per
+   call — two tickers must share it); declare `tickDriven: false` when the
+   platform fires the reminders (a Durable Object alarm) and `singleActor:
+   true` when one instance serves one actor, so those cases skip rather
+   than fail — a skip is reported, never silent.
+5. Gate the live-server tests on an env var (`REDIS_URL`, `PG_URL`,
    `SURREAL_URL`, `KUBECONFIG`) so the rest of the matrix skips cleanly, and
    add the CI job that provides it.
 

@@ -23,6 +23,7 @@
  */
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
 import type { ActorApp, ActorStorage, Host, HostDefaults } from '@sigx/actors/host';
+import type { ActorReminders } from '@sigx/actors';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import { cluster, memoryClusterHub } from '@sigx/actors/cluster';
 import type {
@@ -194,6 +195,12 @@ export interface ClusterOptions {
      * rest keep `quiet`'s hour-long intervals so nothing fires mid-measurement.
      */
     defaults?: HostDefaults;
+    /**
+     * A reminder provider per host — a FACTORY, because a provider binds
+     * to exactly one host. Omit for the default sharded table over
+     * `storage`.
+     */
+    reminders?: (index: number) => ActorReminders;
 }
 
 export interface ClusterHarness {
@@ -249,7 +256,8 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         const app = defineActorApp({
             actors: options.actors,
             storage,
-            defaults: options.defaults ? { ...quiet, ...options.defaults } : quiet
+            defaults: options.defaults ? { ...quiet, ...options.defaults } : quiet,
+            ...(options.reminders ? { reminders: options.reminders(index) } : {})
         }).use(plugin);
         const host = await app.start();
         registry.set(`host${index}.test`, { app, host });
