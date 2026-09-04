@@ -9,6 +9,7 @@ import { jobScenarios } from './jobs.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
+import { remindersRedisScenarios } from './reminders-redis.ts';
 import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
@@ -62,6 +63,9 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...liveFanoutScenarios,
     ...livePrincipalScenarios,
     ...redisScenarios,
+    // Same gate, a different question: the sharded reminder table's CAS
+    // ceiling against a real store (#382).
+    ...remindersRedisScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),
     // Tier 3 measures a DEPLOYMENT, not this process — a different kind of

@@ -116,6 +116,14 @@ the comparer *cannot* gate on one:
 - **Timed, and contended**: throughput, percentiles, RSS. N processes share
   the cores. Recorded for context; never evidence on its own.
 
+Two Tier-1 scenarios ride a REAL store rather than `memoryStorage` and are
+env-gated on `REDIS_URL` so the default suite still runs anywhere:
+`cluster/redis-amplification` (commands per membership change) and
+`reminders-redis/arm-fire` (#382: the arm rate at which the sharded
+reminder table's CAS starts failing). Tier 1 with an external store — one
+process, real round trips: the counts and ratios are the findings, the
+timings depend on the box and the store both.
+
 ---
 
 ## 2026-07-28 · initial baseline
@@ -3093,3 +3101,93 @@ granted, `cluster-test.yml` → `bench` on the same shape completes this
 section; until then the 2026-08-02/2026-08-06 curves (image `02dded3` /
 `04e6598`, twelve-round-trip runtime) remain the newest HTTP figures and
 must not be quoted as current.
+
+## 2026-09-04 · The sharded reminder table against a real Redis — the CAS holds, the record size does not (#382)
+
+| | |
+|---|---|
+| Machine | Apple M4, 10 cores, macOS; Redis 7 on loopback (`redis-server`, no persistence) |
+| Node | v24.11.1 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Settings | `reminders-redis/*`, 2 rounds, `--no-warmup`; 15 s of arrivals per rung |
+| Conditions | **Contended** — the calibration probe read 1.62 M then 0.55 M in the two rounds of `arm-fire` (four sibling worktrees were building and testing on the same box). Every timing below is informational and carries that; the failure ratios, the fire-within-tick ratios and the byte counts are counts, and hold. |
+| Why | The L2 rung of the scaling roadmap (`docs/architecture/scaling-roadmap.md`): the 2026-08-26 section measured `reminder_set_failure_ratio` at zero for 50 arms/s + 50 fires/s and named "the rate at which it leaves zero" as the next thing to find. This is that number on loopback — the UPPER bound for any cloud figure, since a real RTT only widens the CAS window. |
+
+The shape: N in-process hosts (`createCluster`, membership and directory in
+memory, `selfPolicy`) over ONE `redisStorage`, `reminderTickMs` 1 s, and an
+OPEN-LOOP arm ladder — R fresh actor keys per second each arming a one-shot
+reminder due 2 s out, round-robined over the hosts, so N hosts is N writer
+chains against the same 16 shard records. Open-loop on purpose: a slow `set`
+must not throttle the arrivals, or the ceiling hides behind its backlog.
+
+### `reminders-redis/arm-fire` — the CAS ceiling is above 1 000 arms/s at 16 writers
+
+| N hosts | first rung with a failure | `set_failure_ratio` there | set p50 / p99 at r=1000 | fired within a tick at r=1000 | shard bytes at r=1000 |
+|---:|---|---:|---|---:|---:|
+| 1 | none through 1 000/s | 0 | 1.8 ms / 4.8 ms | 0.997 | 196 KiB |
+| 3 | none through 1 000/s | 0 | 1.6 ms / 8.5 ms | 0.990 | 196 KiB |
+| 8 | none through 1 000/s | 0 | 1.9 ms / 20 ms | 0.980 | 196 KiB |
+| 16 | **r=500** (one round), r=1000 (both) | 0.0007 at 500; **0.0043 / 0.0007** at 1 000 | 4.1 ms / 65 ms | **0.943 / 0.969** | 201 KiB |
+
+Every rung at N ≤ 8 completed its 15 000 arms with zero CAS failures. At
+sixteen writers the third attempt starts losing at 500–1 000 arms/s — 0.07 %
+and 0.43 % — which is where the gate (noise floor 0.001) first trips, and
+the same rung is where the tick begins to fall behind its own table:
+`fired_within_tick_ratio` slides from 0.997 (N=1) to 0.94–0.97 (N=16)
+because every set is a whole-record rewrite and sixteen hosts' sets are
+queued in front of each other's ticks. **On this shape the CAS rate is not
+the ceiling below 1 000 arms/s** — the auto-pipelined loopback round trip
+is too short for three attempts to lose. Redis CPU was 60–320 ms per
+thousand arms across the sweep (informational; falls with rate as the
+per-tick scans amortise over more arms), and the records never passed
+200 KiB, because everything armed here fires two seconds later.
+
+### `reminders-redis/table-size` — the O(table) term, priced
+
+That last clause is the caveat, and the second arm exists for it. A
+million SLEEPING runs is a million entries the records carry through every
+set and every tick. Three hosts, 200 arms/s, P far-future entries seeded
+into the records first:
+
+| P asleep | record bytes (16 shards) | set p50 | set p99 | fired within a tick | Redis CPU per 1 000 arms | `set_failure_ratio` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 43 KiB | 0.86 ms | 9.2 ms | 0.99 | 298 ms | 0 |
+| 10 000 | 772 KiB | 3.2 ms | 15.8 ms | 0.98 | 430 ms | 0 |
+| **100 000** | **6.3 MiB** | **11.0 s** | **17.2 s** (14–20 s across rounds) | **0.00** | **2 415 ms** | 0.0003 / 0 |
+
+At 100 000 sleeping entries — 400 KiB per shard record — a `set` takes
+eleven seconds at the median and **no reminder fires within a tick of its
+due time**: each tick loads, scans and rewrites 400 KiB per owned shard,
+each set does the same, and all of it serialises on one writer chain per
+host. Redis spends 2.4 CPU-seconds per thousand arms, eight times the
+empty-table figure, on `HGET`/`HSET` of the same bytes. The CAS still
+holds (one failure in 3 000 arms, one round) — the sharded design does not
+fail here, it slows by the size of the table it carries, linearly:
+10 000 entries cost 3.7× the empty-table set, 100 000 cost 13 000×, with
+the knee somewhere between them where a record stops fitting in one
+round trip's worth of time.
+
+### What this decides for #385
+
+1. **The reminder ceiling is a table-size ceiling, not a CAS-rate
+   ceiling.** Below ~10 000 sleeping entries cluster-wide the sharded
+   provider is fine at any arm rate this rig can produce. The
+   `1M sleeping` target is two orders of magnitude past the rung that
+   already misses every tick. `redisReminders()` (#385) — arm O(log N),
+   tick O(due), a due-time ZSET rather than sixteen JSON blobs — is
+   justified on this number alone, before any Tier-3 minute is spent on
+   the sleep-rate ladder; the ladder (#391, T2) now exists to confirm the
+   knee with real RTT, not to find it.
+2. **The "outgrown `shardedReminders()`" gauge (#384's S item) has a
+   threshold**: warn when a shard record passes ~1 000 entries (~64 KiB),
+   which is where the per-set cost has already tripled.
+3. **What this rig cannot say**: the cloud figure. Loopback round trips
+   are ~20× shorter than in-cluster, so the CAS window at N=16 — 0.4 % at
+   1 000 arms/s here — should be read as "the retry budget is thin", not
+   as a rate. And the `arm-fire` timings above were taken on a busy box;
+   only their ratios and counts are quotable.
+
+> Reproduce with `REDIS_URL=… pnpm bench:run reminders-redis/ --runs=2 --no-warmup`.
+> The `table-size` arm seeds its population straight through the storage
+> as the runtime writes its own table (`saveText`, round-robin over the
+> shards), so a run costs seconds, not the hours a million real arms would.
