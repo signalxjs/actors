@@ -39,7 +39,7 @@ describe('parseCpuMillis', () => {
 });
 
 describe('parseRedisInfo', () => {
-    it('picks the five fields off an INFO body and ignores the rest', () => {
+    it('picks the CPU pair and the three gauges off an INFO body and ignores the rest', () => {
         const body =
             '# Server\r\nredis_version:7.2.4\r\n# Clients\r\nconnected_clients:12\r\n# Memory\r\n' +
             'used_memory:1048576\r\n# Stats\r\ninstantaneous_ops_per_sec:340\r\n# CPU\r\n' +
@@ -56,6 +56,13 @@ describe('parseRedisInfo', () => {
         expect(parseRedisInfo('')).toBeNull();
         expect(parseRedisInfo(null)).toBeNull();
         expect(parseRedisInfo('error: NOAUTH')).toBeNull();
+    });
+
+    it('never yields NaN: a gauge that is absent or not a number is null', () => {
+        const parsed = parseRedisInfo('used_cpu_user:1\r\nused_cpu_sys:2\r\nused_memory:lots\r\nconnected_clients:\r\n');
+        expect(parsed).toEqual({ cpuS: 3, opsPerSec: null, memBytes: null, clients: null });
+        // And a CPU field that is not a number is not INFO at all.
+        expect(parseRedisInfo('used_cpu_user:x\r\nused_cpu_sys:2\r\n')).toBeNull();
     });
 });
 
@@ -96,5 +103,17 @@ describe('timelinePeaks', () => {
         expect(single.redisCpuPeakRatio).toBeUndefined();
         expect(single.redisOpsPerSecPeak).toBe(5);
         expect(single.redisMemEndBytes).toBe(7);
+        // Null gauges are skipped, not treated as 0 or NaN.
+        const gapped = timelinePeaks(
+            [
+                { t: 0, hosts: [], redis: { cpuS: 1, opsPerSec: null, memBytes: null, clients: null }, activations: null, queued: 0 },
+                { t: 1000, hosts: [], redis: { cpuS: 1.5, opsPerSec: 9, memBytes: 4, clients: 1 }, activations: null, queued: 0 },
+                { t: 2000, hosts: [], redis: { cpuS: 1.6, opsPerSec: null, memBytes: null, clients: null }, activations: null, queued: 0 }
+            ],
+            { hostCpuLimitM: 1000 }
+        );
+        expect(gapped.redisOpsPerSecPeak).toBe(9);
+        expect(gapped.redisMemEndBytes).toBe(4);
+        expect(gapped.redisCpuPeakRatio).toBeCloseTo(0.5, 6);
     });
 });

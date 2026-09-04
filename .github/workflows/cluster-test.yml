@@ -76,7 +76,7 @@ jobs:
     # `up` is ~15 minutes (two ACR builds), `test` can be ~45-60. The
     # ceiling exists for hangs, not for pacing — and a soak (#380) raises
     # it per dispatch rather than for everyone.
-    timeout-minutes: ${{ fromJSON(inputs.timeout || 120) }}
+    timeout-minutes: ${{ inputs.timeout || 120 }}
     permissions:
       # OIDC only — no client secret exists for this identity to leak.
       id-token: write
@@ -157,6 +157,10 @@ jobs:
           # evaluated — so a line cannot become a command.
           while IFS= read -r line; do
             [ -z "$line" ] && continue
+            case "$line" in
+              *=*) ;;
+              *) echo "::error::env input: '$line' has no '=' — expected KEY=VALUE"; exit 1 ;;
+            esac
             key="${line%%=*}"
             value="${line#*=}"
             if ! printf '%s' "$key" | grep -Eq '^[A-Z_][A-Z0-9_]*$'; then

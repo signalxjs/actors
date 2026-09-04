@@ -268,8 +268,8 @@ function timelineMetrics(result: WfLoadResult): Metric[] {
         ...info('redis_mem_end_bytes', p.redisMemEndBytes, 'bytes'),
         // A fence the kubelet restarted, or a pod the run replaced: zero
         // on a clean run, the finding on a packed or a chaos one.
-        ...info('restarts_during_run', result.restartsDuringRun, 'count'),
-        ...info('pods_replaced', result.podsReplaced, 'count')
+        ...info('restarts_during_run', result.restartsDuringRun ?? undefined, 'count'),
+        ...info('pods_replaced', result.podsReplaced ?? undefined, 'count')
     ];
 }
 

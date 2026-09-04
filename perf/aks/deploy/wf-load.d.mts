@@ -94,9 +94,10 @@ export interface TimelineHost {
 export interface TimelineRedis {
     /** Cumulative user+sys CPU seconds — a rate needs two samples. */
     cpuS: number;
-    opsPerSec: number;
-    memBytes: number;
-    clients: number;
+    /** Each null when INFO did not carry a finite value for it. */
+    opsPerSec: number | null;
+    memBytes: number | null;
+    clients: number | null;
 }
 
 /** One poll of the fleet while the Job ran (#380). */
@@ -139,10 +140,10 @@ export interface WfLoadResult {
     timeline: TimelineSample[];
     peaks: TimelinePeaks;
     hostCpuLimitM: number | null;
-    /** Container restarts on host pods present at both ends of the run. */
-    restartsDuringRun: number;
-    /** Host pods that appeared during the run (a replaced victim). */
-    podsReplaced: number;
+    /** Container restarts on host pods present at both ends of the run; null when unobservable. */
+    restartsDuringRun: number | null;
+    /** Host pods that appeared during the run (a replaced victim); null when unobservable. */
+    podsReplaced: number | null;
     chaos: { kind: 'owner-kill'; pod: string; atMs: number } | null;
 }
 

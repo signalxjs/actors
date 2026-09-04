@@ -226,15 +226,22 @@ export function parseRedisInfo(text) {
         const at = line.indexOf(':');
         if (at > 0 && !line.startsWith('#')) fields[line.slice(0, at)] = line.slice(at + 1);
     }
-    const num = (k) => (fields[k] === undefined ? null : Number(fields[k]));
+    // A field that is absent or not a finite number is null, never NaN:
+    // `typeof NaN === 'number'`, and a NaN would ride into the peaks and
+    // the recorded metrics as a value.
+    const num = (k) => {
+        if (fields[k] === undefined || fields[k] === '') return null;
+        const n = Number(fields[k]);
+        return Number.isFinite(n) ? n : null;
+    };
     const user = num('used_cpu_user');
     const sys = num('used_cpu_sys');
-    if (user === null || sys === null || !Number.isFinite(user + sys)) return null;
+    if (user === null || sys === null) return null;
     return {
         cpuS: user + sys,
-        opsPerSec: num('instantaneous_ops_per_sec') ?? 0,
-        memBytes: num('used_memory') ?? 0,
-        clients: num('connected_clients') ?? 0
+        opsPerSec: num('instantaneous_ops_per_sec'),
+        memBytes: num('used_memory'),
+        clients: num('connected_clients')
     };
 }
 
@@ -271,10 +278,10 @@ export function timelinePeaks(timeline, { hostCpuLimitM }) {
         redisCpuPeakRatio = Math.max(redisCpuPeakRatio ?? 0, rate);
     }
     if (redisCpuPeakRatio !== null) peaks.redisCpuPeakRatio = redisCpuPeakRatio;
-    if (redis.length > 0) {
-        peaks.redisOpsPerSecPeak = Math.max(...redis.map((s) => s.redis.opsPerSec));
-        peaks.redisMemEndBytes = redis[redis.length - 1].redis.memBytes;
-    }
+    const ops = redis.map((s) => s.redis.opsPerSec).filter((n) => typeof n === 'number');
+    if (ops.length > 0) peaks.redisOpsPerSecPeak = Math.max(...ops);
+    const mem = redis.map((s) => s.redis.memBytes).filter((n) => typeof n === 'number');
+    if (mem.length > 0) peaks.redisMemEndBytes = mem[mem.length - 1];
     return peaks;
 }
 
@@ -302,11 +309,16 @@ function sampleFleet(kube, namespace, live, t) {
     };
 }
 
-/** Host pod → container restart count, for the restarts-during-run delta. */
+/**
+ * Host pod → container restart count, for the restarts-during-run delta.
+ * `null` when kubectl could not answer: "could not observe" must not read
+ * as "zero restarts".
+ */
 function restartCounts(kube, namespace) {
     const out = kube(['-n', namespace, 'get', 'pod', '-l', 'app.kubernetes.io/component=host',
         '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\t"}{.status.containerStatuses[0].restartCount}{"\\n"}{end}'],
-        { allowFail: true }) ?? '';
+        { allowFail: true });
+    if (out === null) return null;
     const counts = {};
     for (const line of out.split('\n')) {
         const [pod, n] = line.split('\t');
@@ -599,11 +611,15 @@ export async function runWfLoad(options) {
     // kubelet restarted. A pod REPLACED (the chaos victim) is a new name
     // with a count of 0 and is reported as such, not as a restart.
     const restartsAfter = restartCounts(kube, namespace);
-    let restartsDuringRun = 0;
-    for (const [pod, n] of Object.entries(restartsAfter)) {
-        if (pod in restartsBefore) restartsDuringRun += Math.max(0, n - restartsBefore[pod]);
+    let restartsDuringRun = null;
+    let podsReplaced = null;
+    if (restartsBefore && restartsAfter) {
+        restartsDuringRun = 0;
+        for (const [pod, n] of Object.entries(restartsAfter)) {
+            if (pod in restartsBefore) restartsDuringRun += Math.max(0, n - restartsBefore[pod]);
+        }
+        podsReplaced = Object.keys(restartsAfter).filter((pod) => !(pod in restartsBefore)).length;
     }
-    const podsReplaced = Object.keys(restartsAfter).filter((pod) => !(pod in restartsBefore)).length;
 
     const pods = kube(['-n', namespace, 'get', 'pod', '-l', `job-name=${job}`,
         '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'],
