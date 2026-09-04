@@ -154,7 +154,8 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             log(`WorkflowStats.reset failed: ${reset.error}`);
             process.exit(1);
         }
-        for (const def of allDefinitions(knobs)) {
+        const definitions = allDefinitions(knobs);
+        for (const def of definitions) {
             const r = await call('WorkflowDefinition', 'put', [def.name, def]);
             if (r.error) {
                 log(`seeding ${def.name}@${def.version} failed: ${r.error}`);
@@ -171,7 +172,7 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
                 process.exit(1);
             }
         }
-        log(`seeded ${allDefinitions(knobs).length} definitions @v${knobs.version}; mix=${mix}` +
+        log(`seeded ${definitions.length} definitions @v${knobs.version}; mix=${mix}` +
             (marker ? ` (index ${jobIndex ?? 'none'}, marker ${marker})` : ''));
     } else {
         if (!marker) {

@@ -502,9 +502,17 @@ export async function runWfLoad(options) {
     // Halfway through the FIRST rung's arrivals — a chaos run is a single
     // rung by design (a kill mid-sweep would land in whichever rung the
     // clock said, and the rows would not say which).
-    const chaosAtMs = chaos === 'owner-kill'
-        ? Math.round((Number(values.durationS ?? values['loadgen.durationS']) || 60) * 500)
-        : null;
+    let chaosAtMs = null;
+    if (chaos === 'owner-kill') {
+        // Unset means the chart's default (60 s); anything set must be a
+        // positive number — 0 or 'ten' are refused, never read as 60.
+        const raw = values.durationS ?? values['loadgen.durationS'];
+        const durationS = raw === undefined || raw === '' ? 60 : Number(raw);
+        if (!Number.isFinite(durationS) || durationS <= 0) {
+            throw new Error(`[wf-load] chaos=owner-kill needs a positive durationS, got '${raw}'`);
+        }
+        chaosAtMs = Math.round(durationS * 500);
+    }
     const sweep = String(values.sweep ?? values['loadgen.sweep'] ?? '')
         .split(',').map((s) => s.trim()).filter(Boolean);
     if (chaosAtMs !== null && sweep.length > 1) {

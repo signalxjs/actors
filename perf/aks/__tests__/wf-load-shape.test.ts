@@ -121,5 +121,11 @@ describe('runWfLoad argument guards', () => {
                 values: { chaos: 'sideways' }
             })
         ).rejects.toThrow(/unknown chaos/);
+        await expect(
+            runWfLoad({
+                context: 'none', namespace: 'x', chartDir: 'x', imageRepository: 'r', imageTag: 't', workload: 'w',
+                values: { chaos: 'owner-kill', durationS: '0' }
+            })
+        ).rejects.toThrow(/positive durationS/);
     });
 });
