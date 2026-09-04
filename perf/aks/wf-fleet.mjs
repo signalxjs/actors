@@ -47,6 +47,11 @@
  * Run with `--conditions=production` (the `bench:wf-local` script does) so
  * the hosts and the generator measure the built prod dist; the children
  * inherit the flag through `execArgv`.
+ *
+ * A run that ends normally deletes its Redis namespace. One that is
+ * Ctrl-C'd does not — the SIGINT path kills the children and exits at
+ * once, as `benchmarks/src/tier2/rig.ts` does — so after an interrupted
+ * run: `redis-cli --scan --pattern 'wf-fleet-*' | xargs redis-cli del`.
  */
 import { spawn } from 'node:child_process';
 import { createServer, request as httpRequest, Agent as HttpAgent } from 'node:http';
@@ -199,15 +204,17 @@ async function fleetTotals(members, opsSecret) {
     let clusterHosts = 0;
     let activations = 0;
     let activationsHosts = 0;
-    for (const m of members) {
-        let body;
-        try {
-            body = await getJson(`http://127.0.0.1:${m.port}/_sigx/ops`, {
-                authorization: `Bearer ${opsSecret}`
-            });
-        } catch {
-            continue;
-        }
+    // Every host at once: a snapshot is bounded by the slowest host, not by
+    // the sum of their timeouts, and a host that does not answer is simply
+    // absent from the sums — which `hostsComplete` then says.
+    const bodies = await Promise.all(
+        members.map((m) =>
+            getJson(`http://127.0.0.1:${m.port}/_sigx/ops`, { authorization: `Bearer ${opsSecret}` }).catch(() => null)
+        )
+    );
+    for (const [i, body] of bodies.entries()) {
+        if (!body) continue;
+        const m = members[i];
         const ops = body?.ops;
         const counters = ops?.cluster?.counters;
         if (counters && !ops.cluster.error) {
@@ -412,9 +419,19 @@ async function stopHosts(members, onLog) {
     }
 }
 
-/** The Service stand-in: each request goes to the next host in turn; any
- *  number may be in flight at once, as through a Service. */
-function startProxy(members) {
+/**
+ * The Service stand-in: each request goes to the next host in turn; any
+ * number may be in flight at once, as through a Service.
+ *
+ * The upstream timeout sits ABOVE the hosts' own call deadline: under
+ * saturation a `start` legitimately waits up to `WF_CALL_TIMEOUT_MS` in
+ * the owner's queue, and the host is what bounds that. The proxy's timeout
+ * only catches a host whose loop has stopped answering at all, and it
+ * answers 504 so the generator records the failure rather than waiting.
+ */
+function startProxy(members, env) {
+    const callTimeoutMs = Number(env.WF_CALL_TIMEOUT_MS ?? 30_000);
+    const upstreamTimeoutMs = (Number.isFinite(callTimeoutMs) ? callTimeoutMs : 30_000) + 60_000;
     const agent = new HttpAgent({ keepAlive: true, maxSockets: 256 });
     let next = 0;
     let requests = 0;
@@ -422,15 +439,30 @@ function startProxy(members) {
         const target = members[next++ % members.length];
         requests++;
         const out = httpRequest(
-            { host: '127.0.0.1', port: target.port, method: req.method, path: req.url, headers: req.headers, agent },
+            {
+                host: '127.0.0.1',
+                port: target.port,
+                method: req.method,
+                path: req.url,
+                headers: req.headers,
+                agent,
+                timeout: upstreamTimeoutMs
+            },
             (upstream) => {
                 res.writeHead(upstream.statusCode ?? 502, upstream.headers);
                 upstream.pipe(res);
             }
         );
-        out.on('error', () => {
-            if (!res.headersSent) res.writeHead(502);
+        out.on('timeout', () => out.destroy(new Error('upstream timeout')));
+        out.on('error', (error) => {
+            if (!res.headersSent) res.writeHead(error.message === 'upstream timeout' ? 504 : 502);
             res.end();
+        });
+        // A client that gave up takes its upstream request with it. The
+        // RESPONSE's close, not the request's: an incoming request closes
+        // as soon as its body has been read, long before the answer.
+        res.on('close', () => {
+            if (!res.writableFinished) out.destroy();
         });
         req.pipe(out);
     });
@@ -593,7 +625,7 @@ export async function runWfFleet(options) {
     try {
         onLog(`[wf-fleet] starting ${hosts} host(s) on :${basePort}… namespace=${namespace}`);
         await startHosts(members, { hosts, redisUrl, namespace, basePort, env, secrets, onLog });
-        proxy = await startProxy(members);
+        proxy = await startProxy(members, env);
         onLog(`[wf-fleet] fleet up; generator → ${proxy.url} (round-robin over ${hosts})`);
 
         const rungs = [];
