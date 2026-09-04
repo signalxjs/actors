@@ -89,7 +89,7 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
 1. **Multi-core.** A host is one Node process on one event loop, and the
    codebase treats that as an invariant with a security consequence: a
    CPU-bound turn past the membership TTL fences the host fatally
-   (`SECURITY.md` "A CPU-bound turn can fence its own host",
+   ([`SECURITY.md` "A CPU-bound turn can fence its own host"](../../SECURITY.md#a-cpu-bound-turn-can-fence-its-own-host),
    [`clustering.md`](clustering.md)). `defineWorker` multiplies mailboxes,
    not cores — 1.0× against a single activation on a 20-core box.
    `worker_threads` was priced at a ~3.4× ceiling with a ~200 µs crossover
