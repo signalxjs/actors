@@ -46,6 +46,14 @@ on:
         description: 'type "down" to allow the down verb — it deletes the node pool, the DNS record and the load-VM resource group'
         type: string
         default: ''
+      env:
+        description: 'extra environment for the verb, one KEY=VALUE per line (e.g. INFRA_WF_RATE_LADDER=10,25,50,100,200 or INFRA_WF_MAX_INFLIGHT=200000 for wf-bench) — the ladders the scenarios read are env, not args'
+        type: string
+        default: ''
+      timeout:
+        description: 'job timeout in minutes — a soak needs more than the default'
+        type: number
+        default: 120
 
 # Dispatch requires write access, so there is no fork exposure; the token
 # still gets nothing it does not ask for.
@@ -66,8 +74,9 @@ jobs:
     if: github.repository == 'signalxjs/actors'
     runs-on: ubuntu-latest
     # `up` is ~15 minutes (two ACR builds), `test` can be ~45-60. The
-    # ceiling exists for hangs, not for pacing.
-    timeout-minutes: 120
+    # ceiling exists for hangs, not for pacing — and a soak (#380) raises
+    # it per dispatch rather than for everyone.
+    timeout-minutes: ${{ fromJSON(inputs.timeout || 120) }}
     permissions:
       # OIDC only — no client secret exists for this identity to leak.
       id-token: write
@@ -138,8 +147,25 @@ jobs:
           # input cannot rewrite the shell line.
           VERB: ${{ inputs.verb }}
           EXTRA_ARGS: ${{ inputs.args }}
+          EXTRA_ENV: ${{ inputs.env }}
         run: |
           set -o pipefail
+          # KEY=VALUE lines become environment for the verb (#380): the
+          # bench ladders (`INFRA_WF_*`) are read from env by the scenarios,
+          # and nothing else on this path can set them. Keys are validated
+          # to a shell-identifier shape and values taken verbatim — never
+          # evaluated — so a line cannot become a command.
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            if ! printf '%s' "$key" | grep -Eq '^[A-Z_][A-Z0-9_]*$'; then
+              echo "::error::env input: '$line' is not KEY=VALUE with a shell-identifier key"
+              exit 1
+            fi
+            export "$key=$value"
+            echo "env: $key=$value"
+          done <<< "$EXTRA_ENV"
           # Word-splitting EXTRA_ARGS is the point — it is a list. Globbing
           # is not: `set -f`, or a `-t sealed*` test filter would expand
           # against whatever the checkout happens to contain.

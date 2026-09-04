@@ -77,6 +77,22 @@ describe('mergeWfRows', () => {
         expect(merged!.transitionsPerSec).toBeCloseTo(700 / 70, 2);
     });
 
+    it('reports the OFFERED rate — the rung times the pods — beside the per-pod one (#380)', () => {
+        // Four pods each offering 250/s offered 1,000/s to the fleet; a row
+        // labelled r=250 would understate the load fourfold.
+        const [merged] = mergeWfRows([row({ rate: 250 }), row({ rate: 250 }), row({ rate: 250 }), row({ rate: 250 })]);
+        expect(merged!.rate).toBe(250);
+        expect(merged!.pods).toBe(4);
+        expect(merged!.offeredRate).toBe(1000);
+        expect(mergeWfRows([row()])[0]!.offeredRate).toBe(50);
+    });
+
+    it('sums the generator CPU across pods, and leaves it null for rows that predate it', () => {
+        const [merged] = mergeWfRows([row({ generatorCpuMs: 1200 }), row({ generatorCpuMs: 800 })]);
+        expect(merged!.generatorCpuMs).toBe(2000);
+        expect(mergeWfRows([row()])[0]!.generatorCpuMs).toBeNull();
+    });
+
     it('keeps rungs apart and in order, and stamps partial only when told', () => {
         const merged = mergeWfRows([row({ rate: 100 }), row({ rate: 25 })]);
         expect(merged.map((r) => r.rate)).toEqual([25, 100]);

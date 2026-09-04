@@ -78,7 +78,45 @@ export interface WfLoadRow {
     runsStartedPerSec: number;
     runsCompletedPerSec: number;
     transitionsPerSec: number | null;
+    /** `rate × pods` — what the fleet was offered (#380). */
+    offeredRate: number;
+    /** The generator pods' own CPU over the rung, summed; null until every pod reports it. */
+    generatorCpuMs: number | null;
     partial?: boolean;
+}
+
+export interface TimelineHost {
+    pod: string;
+    cpuM: number;
+    memBytes: number;
+}
+
+export interface TimelineRedis {
+    /** Cumulative user+sys CPU seconds — a rate needs two samples. */
+    cpuS: number;
+    opsPerSec: number;
+    memBytes: number;
+    clients: number;
+}
+
+/** One poll of the fleet while the Job ran (#380). */
+export interface TimelineSample {
+    /** ms since the Job was applied */
+    t: number;
+    hosts: TimelineHost[];
+    redis: TimelineRedis | null;
+    activations: number | null;
+    queued: number;
+}
+
+/** What a timeline reduces to; every field absent when it cannot be known. */
+export interface TimelinePeaks {
+    hostCpuPeakM?: number;
+    hostCpuPeakRatio?: number;
+    hostMemPeakBytes?: number;
+    redisCpuPeakRatio?: number;
+    redisOpsPerSecPeak?: number;
+    redisMemEndBytes?: number;
 }
 
 export interface WfLoadResult {
@@ -96,6 +134,16 @@ export interface WfLoadResult {
     delta: Record<string, number>;
     countersTrustworthy: boolean;
     partial: boolean;
+    /** Hosts whose transport chain includes tcp at the end of the run. */
+    tcpHosts: number;
+    timeline: TimelineSample[];
+    peaks: TimelinePeaks;
+    hostCpuLimitM: number | null;
+    /** Container restarts on host pods present at both ends of the run. */
+    restartsDuringRun: number;
+    /** Host pods that appeared during the run (a replaced victim). */
+    podsReplaced: number;
+    chaos: { kind: 'owner-kill'; pod: string; atMs: number } | null;
 }
 
 export interface WfLoadOptions {
@@ -128,4 +176,12 @@ export function workflowTotals(
     hostsComplete: boolean;
     activations: number | null;
     queued: Record<string, number>;
+    tcpHosts: number;
 };
+export function parseCpuMillis(text: string | null | undefined): number | null;
+export function parseTopPods(text: string | null | undefined): TimelineHost[];
+export function parseRedisInfo(text: string | null | undefined): TimelineRedis | null;
+export function timelinePeaks(
+    timeline: TimelineSample[],
+    options: { hostCpuLimitM: number | null }
+): TimelinePeaks;

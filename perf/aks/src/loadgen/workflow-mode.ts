@@ -36,6 +36,19 @@
  * so the poll interval never inflates them; `observedMs` is the client's
  * view including it, reported separately and informational.
  *
+ * ## Several pods, one seeder
+ *
+ * An Indexed Job (#380) gives every pod `JOB_COMPLETION_INDEX`. Pod 0 is
+ * the seeder: it resets the aggregator, puts the definitions, then puts a
+ * MARKER definition named after the Job (`JOB_NAME`, a label every pod
+ * shares). The others wait for the marker and never reset — before this,
+ * every pod reset on start, so a late pod wiped an earlier pod's events
+ * and the merged rows under-counted completions. Outside a Job (no index)
+ * a pod seeds and resets as it always did. The marker rather than the
+ * definitions themselves, because `put` is idempotent by version and a
+ * re-run under the same knobs would find the definitions already there
+ * — before the reset had happened.
+ *
  * Output: ONE JSON line per rate rung on stdout, everything else on
  * stderr — the contract every mode shares.
  */
@@ -130,19 +143,54 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
     if (rungs.length === 0) rungs.push(startRate);
 
     // ---- seed ---------------------------------------------------------
-    for (const def of allDefinitions(knobs)) {
-        const r = await call('WorkflowDefinition', 'put', [def.name, def]);
-        if (r.error) {
-            log(`seeding ${def.name}@${def.version} failed: ${r.error}`);
+    const jobIndex = process.env.JOB_COMPLETION_INDEX;
+    const jobName = process.env.JOB_NAME;
+    const seeder = jobIndex === undefined || jobIndex === '' || jobIndex === '0';
+    const marker = jobName ? `seed-${jobName}` : null;
+    if (seeder) {
+        // Reset FIRST: a pod that sees the marker must see a reset aggregator.
+        const reset = await call('WorkflowStats', 'reset', ['all']);
+        if (reset.error) {
+            log(`WorkflowStats.reset failed: ${reset.error}`);
             process.exit(1);
         }
+        for (const def of allDefinitions(knobs)) {
+            const r = await call('WorkflowDefinition', 'put', [def.name, def]);
+            if (r.error) {
+                log(`seeding ${def.name}@${def.version} failed: ${r.error}`);
+                process.exit(1);
+            }
+        }
+        if (marker) {
+            const m = await call('WorkflowDefinition', 'put', [
+                marker,
+                { name: marker, version: knobs.version, start: 'end', nodes: { end: { type: 'end' } } }
+            ]);
+            if (m.error) {
+                log(`seed marker ${marker} failed: ${m.error}`);
+                process.exit(1);
+            }
+        }
+        log(`seeded ${allDefinitions(knobs).length} definitions @v${knobs.version}; mix=${mix}` +
+            (marker ? ` (index ${jobIndex ?? 'none'}, marker ${marker})` : ''));
+    } else {
+        if (!marker) {
+            log(`JOB_COMPLETION_INDEX=${jobIndex} but no JOB_NAME — cannot wait for the seeder`);
+            process.exit(1);
+        }
+        const seedWaitMs = num('WF_SEED_WAIT_MS', 180_000);
+        const until = Date.now() + seedWaitMs;
+        for (;;) {
+            const r = await call('WorkflowDefinition', 'get', [marker, knobs.version]);
+            if (!r.error) break;
+            if (Date.now() > until) {
+                log(`index ${jobIndex}: seeder marker ${marker}@v${knobs.version} not seen in ${seedWaitMs}ms (${r.error})`);
+                process.exit(1);
+            }
+            await sleep(1000);
+        }
+        log(`index ${jobIndex}: seeder marker ${marker}@v${knobs.version} seen; mix=${mix}`);
     }
-    const reset = await call('WorkflowStats', 'reset', ['all']);
-    if (reset.error) {
-        log(`WorkflowStats.reset failed: ${reset.error}`);
-        process.exit(1);
-    }
-    log(`seeded ${allDefinitions(knobs).length} definitions @v${knobs.version}; mix=${mix}`);
 
     for (const rate of rungs) {
         const result = await oneRung(rate);
@@ -296,12 +344,24 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             }
         };
 
+        // The generator's own CPU (#380): how much of a core this pod spends
+        // per run/s decides how many pods a 1,000 runs/s ladder needs.
+        const cpuMs = (u: NodeJS.CpuUsage) => (u.user + u.system) / 1000;
+        const cpuAtStart = process.cpuUsage();
+        let cpuAtReport = cpuAtStart;
+        let wallAtReport = performance.now();
         const report = () => {
+            const now = process.cpuUsage();
+            const wall = performance.now();
+            const cpu = cpuMs(process.cpuUsage(cpuAtReport));
+            const pct = wall > wallAtReport ? Math.round((cpu / (wall - wallAtReport)) * 100) : 0;
+            cpuAtReport = now;
+            wallAtReport = wall;
             log(
                 `t=${new Date().toISOString()} rate=${rate} started=${counts.started} ` +
                     `inflight=${inflight.size} completed=${counts.completed} failed=${counts.failed} ` +
                     `compensated=${counts.compensated} deferred=${counts.startsDeferred} ` +
-                    `errors=${[...errors.values()].reduce((a, b) => a + b, 0)}`
+                    `errors=${[...errors.values()].reduce((a, b) => a + b, 0)} cpu=${pct}%`
             );
         };
 
@@ -408,6 +468,7 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         for (const [t, s] of observed) observedMs[t] = pct(s.percentiles());
         const wallS = (arrivalsMs + drainMs) / 1000;
         const errorTotal = [...errors.values()].reduce((a, b) => a + b, 0);
+        const generatorCpuMs = Math.round(cpuMs(process.cpuUsage(cpuAtStart)));
 
         return {
             runId,
@@ -420,6 +481,7 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             knobs: { ...knobs, maxInflight, pollMs, signalDelayMs, signalSkipRatio },
             durationMs: Math.round(arrivalsMs),
             drainMs: Math.round(drainMs),
+            generatorCpuMs,
             started: counts.started,
             startFailures: counts.startFailures,
             startsDeferred: counts.startsDeferred,

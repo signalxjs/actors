@@ -77,6 +77,14 @@ function seedVersion(values: Record<string, unknown>): string {
     return String(2_000_000 + ((h >>> 0) % 1_000_000_000));
 }
 
+/**
+ * The generator's in-flight cap, as a ladder value (#380). Its default
+ * (5,000) is a fine bound for the mixed ladder and a false ceiling on the
+ * sleep axis, where every run is in flight for its whole 90 s: past ~50/s
+ * the generator deferred starts and the rung measured its own cap.
+ */
+const MAX_INFLIGHT = process.env.INFRA_WF_MAX_INFLIGHT ?? '';
+
 async function drive(values: Record<string, unknown>): Promise<WfLoadResult> {
     // `WorkflowDefinition.put` is idempotent by version: without a version
     // of its own per scenario, every scenario after the first ran the
@@ -92,9 +100,17 @@ async function drive(values: Record<string, unknown>): Promise<WfLoadResult> {
         imageRepository: IMAGE,
         imageTag: IMAGE_TAG,
         workload: WORKLOAD,
-        values: { durationS: DURATION_S, WF_SEED_VERSION: seedVersion(values), ...values }
+        values: {
+            durationS: DURATION_S,
+            WF_SEED_VERSION: seedVersion(values),
+            ...(MAX_INFLIGHT ? { WF_MAX_INFLIGHT: MAX_INFLIGHT } : {}),
+            ...values
+        }
     });
 }
+
+/** The rung label: the rate the FLEET was offered, not one pod's share. */
+const rung = (row: WfLoadRow): string => `r=${row.offeredRate ?? row.rate}/`;
 
 /**
  * A `partial` result is a run that lost a generator pod or timed out —
@@ -218,7 +234,43 @@ function rowMetrics(row: WfLoadRow, prefix: string): Metric[] {
             direction: 'lower'
         });
     }
+    if (typeof row.generatorCpuMs === 'number' && row.started > 0) {
+        // What the GENERATOR spent per run — the number that sizes the
+        // generator fleet for a rate, never a statement about the engine.
+        metrics.push({
+            name: `${prefix}generator_cpu_ms_per_run`,
+            value: row.generatorCpuMs / row.started,
+            unit: 'ms',
+            direction: 'lower',
+            informational: true
+        });
+    }
     return metrics;
+}
+
+/**
+ * The fleet's resource curve over the run (#380): host CPU against its
+ * limit beside Redis CPU as a fraction of one core — RUNBOOK (c)'s
+ * "which saturates first". Informational, and absent when the sampler
+ * could not see (no metrics-server, a Redis that did not answer).
+ */
+function timelineMetrics(result: WfLoadResult): Metric[] {
+    const p = result.peaks ?? {};
+    const info = (name: string, value: number | undefined, unit: string): Metric[] =>
+        typeof value === 'number'
+            ? [{ name, value, unit, direction: 'lower', informational: true }]
+            : [];
+    return [
+        ...info('host_cpu_peak_ratio', p.hostCpuPeakRatio, 'ratio'),
+        ...info('host_mem_peak_bytes', p.hostMemPeakBytes, 'bytes'),
+        ...info('redis_cpu_peak_ratio', p.redisCpuPeakRatio, 'ratio'),
+        ...info('redis_ops_per_sec_peak', p.redisOpsPerSecPeak, 'ops/s'),
+        ...info('redis_mem_end_bytes', p.redisMemEndBytes, 'bytes'),
+        // A fence the kubelet restarted, or a pod the run replaced: zero
+        // on a clean run, the finding on a packed or a chaos one.
+        ...info('restarts_during_run', result.restartsDuringRun, 'count'),
+        ...info('pods_replaced', result.podsReplaced, 'count')
+    ];
 }
 
 /**
@@ -314,8 +366,9 @@ const throughputLadder: Scenario = {
         });
         refusePartial(result, this.name);
         return [
-            ...result.merged.flatMap((row) => rowMetrics(row, `r=${row.rate}/`)),
-            ...mechanismMetrics(result)
+            ...result.merged.flatMap((row) => rowMetrics(row, rung(row))),
+            ...mechanismMetrics(result),
+            ...timelineMetrics(result)
         ];
     }
 };
@@ -337,8 +390,9 @@ const sleepingRuns: Scenario = {
         });
         refusePartial(result, this.name);
         return [
-            ...result.merged.flatMap((row) => rowMetrics(row, `r=${row.rate}/`)),
-            ...mechanismMetrics(result)
+            ...result.merged.flatMap((row) => rowMetrics(row, rung(row))),
+            ...mechanismMetrics(result),
+            ...timelineMetrics(result)
         ];
     }
 };
@@ -520,8 +574,9 @@ const definitionHotKey: Scenario = {
         });
         refusePartial(result, this.name);
         return [
-            ...result.merged.flatMap((row) => rowMetrics(row, `r=${row.rate}/`)),
-            ...mechanismMetrics(result)
+            ...result.merged.flatMap((row) => rowMetrics(row, rung(row))),
+            ...mechanismMetrics(result),
+            ...timelineMetrics(result)
         ];
     }
 };

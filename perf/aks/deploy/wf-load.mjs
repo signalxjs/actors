@@ -26,6 +26,21 @@
  * **Activations are a gauge.** `peakActivations` is sampled during the run
  * from the metrics section; read afterwards it says nothing about how many
  * sleeping runs the fleet held.
+ *
+ * **The timeline is best-effort (#380).** Every poll also samples
+ * `kubectl top pods` and the Redis pod's `INFO` — the first place host CPU
+ * and Redis CPU are recorded side by side, which is the "which saturates
+ * first" question of RUNBOOK (c). A cluster without a metrics-server, or
+ * a Redis that will not answer, yields fewer samples, never a failed run:
+ * the timeline describes the run, it does not gate it.
+ *
+ * **Chaos is the orchestrator's job.** `chaos=owner-kill` force-deletes
+ * the first host pod halfway through the arrivals — the Job cannot kill
+ * pods, and a kill from here is recorded with its time so the rows can be
+ * read against it. A replaced pod takes its counters with it, so the
+ * `ops.workflow` delta is untrustworthy by construction on a chaos run;
+ * the engine sums that matter (`wakesLost`, `stuck`) ride the ROW, read
+ * from the aggregator, and survive.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -74,7 +89,10 @@ const CLUSTER_COUNTERS = [
     'claimConflicts',
     'inboundDispatches',
     'retries',
-    'unreachableRetries'
+    'unreachableRetries',
+    // Links that fell through to a later transport (#223) — what the tcp
+    // gate reads on a TRANSPORT=tcp run.
+    'transportFallbacks'
 ];
 
 /**
@@ -92,6 +110,8 @@ export function workflowTotals(kube, namespace) {
     const totals = {};
     let hosts = 0;
     let clusterHosts = 0;
+    /** Pods reporting `tcp` in their transport chain — the tcp gate's input. */
+    let tcpHosts = 0;
     let activations = 0;
     let activationsHosts = 0;
     /** Queued turns per host — the backlog a new run must not start on. */
@@ -110,6 +130,8 @@ export function workflowTotals(kube, namespace) {
             continue;
         }
         const ops = body?.ops;
+        const transports = ops?.cluster?.transports;
+        if (Array.isArray(transports) && transports.includes('tcp')) tcpHosts++;
         const counters = ops?.cluster?.counters;
         if (counters && !ops.cluster.error) {
             clusterHosts++;
@@ -143,8 +165,160 @@ export function workflowTotals(kube, namespace) {
         totals,
         hostsComplete: pods.length > 0 && hosts === pods.length && clusterHosts === pods.length,
         activations: activationsHosts > 0 ? activations : null,
-        queued
+        queued,
+        tcpHosts
     };
+}
+
+// ---------------------------------------------------------------------------
+// The timeline sampler (#380) — pure parsers first, so they can be pinned
+// without a cluster.
+
+const UNIT_BYTES = { Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4, K: 1e3, M: 1e6, G: 1e9 };
+
+/**
+ * A CPU resource quantity in millicores: `1800m`, `1`, `0.5`. `null` for
+ * anything else — a limit that does not parse must not read as 0, which
+ * would make every ratio infinite.
+ */
+export function parseCpuMillis(text) {
+    if (typeof text !== 'string' || text.trim() === '') return null;
+    const m = /^\s*(\d+(?:\.\d+)?)(m?)\s*$/.exec(text);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return m[2] === 'm' ? Math.round(n) : Math.round(n * 1000);
+}
+
+function parseMemBytes(text) {
+    const m = /^(\d+(?:\.\d+)?)([A-Za-z]*)$/.exec(text ?? '');
+    if (!m) return null;
+    const unit = m[2] === '' ? 1 : UNIT_BYTES[m[2]];
+    return unit === undefined ? null : Math.round(Number(m[1]) * unit);
+}
+
+/**
+ * `kubectl top pods --no-headers` → `[{ pod, cpuM, memBytes }]`. Lines
+ * that do not parse are skipped, not fatal — a metrics-server mid-restart
+ * prints an error line where a row should be.
+ */
+export function parseTopPods(text) {
+    const out = [];
+    for (const line of String(text ?? '').split('\n')) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 3) continue;
+        const cpuM = parseCpuMillis(cols[1]);
+        const memBytes = parseMemBytes(cols[2]);
+        if (cpuM === null || memBytes === null) continue;
+        out.push({ pod: cols[0], cpuM, memBytes });
+    }
+    return out;
+}
+
+/**
+ * `redis-cli INFO` → the four numbers this rig reads, or `null` when the
+ * body is not an INFO body (an auth error, an empty exec). `cpuS` is the
+ * cumulative user+sys seconds; a RATE needs two samples.
+ */
+export function parseRedisInfo(text) {
+    if (typeof text !== 'string' || !text.includes('used_cpu_user:')) return null;
+    const fields = {};
+    for (const line of text.split(/\r?\n/)) {
+        const at = line.indexOf(':');
+        if (at > 0 && !line.startsWith('#')) fields[line.slice(0, at)] = line.slice(at + 1);
+    }
+    const num = (k) => (fields[k] === undefined ? null : Number(fields[k]));
+    const user = num('used_cpu_user');
+    const sys = num('used_cpu_sys');
+    if (user === null || sys === null || !Number.isFinite(user + sys)) return null;
+    return {
+        cpuS: user + sys,
+        opsPerSec: num('instantaneous_ops_per_sec') ?? 0,
+        memBytes: num('used_memory') ?? 0,
+        clients: num('connected_clients') ?? 0
+    };
+}
+
+/**
+ * What a timeline reduces to for the report: the hottest host sample
+ * against its CPU limit, the hottest Redis CPU RATE between two adjacent
+ * samples (as a fraction of one core), the Redis ops/s peak and its
+ * memory at the end. Every field is absent when the timeline cannot say —
+ * no samples, no limit, a single Redis sample.
+ */
+export function timelinePeaks(timeline, { hostCpuLimitM }) {
+    const peaks = {};
+    let hostCpuPeakM = null;
+    let hostMemPeakBytes = null;
+    for (const sample of timeline) {
+        for (const host of sample.hosts ?? []) {
+            hostCpuPeakM = Math.max(hostCpuPeakM ?? 0, host.cpuM);
+            hostMemPeakBytes = Math.max(hostMemPeakBytes ?? 0, host.memBytes);
+        }
+    }
+    if (hostCpuPeakM !== null) {
+        peaks.hostCpuPeakM = hostCpuPeakM;
+        if (typeof hostCpuLimitM === 'number' && hostCpuLimitM > 0) {
+            peaks.hostCpuPeakRatio = hostCpuPeakM / hostCpuLimitM;
+        }
+    }
+    if (hostMemPeakBytes !== null) peaks.hostMemPeakBytes = hostMemPeakBytes;
+    const redis = timeline.filter((s) => s.redis);
+    let redisCpuPeakRatio = null;
+    for (let i = 1; i < redis.length; i++) {
+        const dt = (redis[i].t - redis[i - 1].t) / 1000;
+        if (dt <= 0) continue;
+        const rate = (redis[i].redis.cpuS - redis[i - 1].redis.cpuS) / dt;
+        redisCpuPeakRatio = Math.max(redisCpuPeakRatio ?? 0, rate);
+    }
+    if (redisCpuPeakRatio !== null) peaks.redisCpuPeakRatio = redisCpuPeakRatio;
+    if (redis.length > 0) {
+        peaks.redisOpsPerSecPeak = Math.max(...redis.map((s) => s.redis.opsPerSec));
+        peaks.redisMemEndBytes = redis[redis.length - 1].redis.memBytes;
+    }
+    return peaks;
+}
+
+/**
+ * One timeline sample: per-host CPU/memory from the metrics API, the
+ * Redis pod's INFO, and the activation/queued gauges the poll already
+ * reads. Anything that fails is simply absent from the sample.
+ */
+function sampleFleet(kube, namespace, live, t) {
+    const top = parseTopPods(kube(['-n', namespace, 'top', 'pods', '--no-headers'], { allowFail: true }));
+    const hostPods = new Set(Object.keys(live.queued));
+    const hosts = top.filter((row) => hostPods.has(row.pod));
+    const redisPod = kube(['-n', namespace, 'get', 'pod', '-l',
+        'app.kubernetes.io/component=redis',
+        '-o', 'jsonpath={.items[0].metadata.name}'], { allowFail: true });
+    const redis = redisPod
+        ? parseRedisInfo(kube(['-n', namespace, 'exec', redisPod, '--', 'redis-cli', 'INFO'], { allowFail: true }))
+        : null;
+    return {
+        t,
+        hosts,
+        redis,
+        activations: live.activations,
+        queued: sumQueued(live)
+    };
+}
+
+/** Host pod → container restart count, for the restarts-during-run delta. */
+function restartCounts(kube, namespace) {
+    const out = kube(['-n', namespace, 'get', 'pod', '-l', 'app.kubernetes.io/component=host',
+        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\t"}{.status.containerStatuses[0].restartCount}{"\\n"}{end}'],
+        { allowFail: true }) ?? '';
+    const counts = {};
+    for (const line of out.split('\n')) {
+        const [pod, n] = line.split('\t');
+        if (pod) counts[pod] = Number(n) || 0;
+    }
+    return counts;
+}
+
+/** The host Deployment's CPU limit in millicores, for the ratio. */
+function hostCpuLimitM(kube, namespace, release) {
+    return parseCpuMillis(kube(['-n', namespace, 'get', 'deploy', `${release}-host`, '-o',
+        'jsonpath={.spec.template.spec.containers[0].resources.limits.cpu}'], { allowFail: true }));
 }
 
 const sumQueued = (snapshot) => Object.values(snapshot.queued).reduce((a, b) => a + b, 0);
@@ -206,6 +380,7 @@ export function mergeWfRows(rows, { partial = false } = {}) {
             knobs: row.knobs,
             durationMs: 0,
             drainMs: 0,
+            generatorCpuMs: null,
             stuck: { sleeping: 0, waiting: 0, blocked: 0, running: 0, other: 0, total: 0 },
             byTemplate: {},
             failedByError: {},
@@ -218,6 +393,12 @@ export function mergeWfRows(rows, { partial = false } = {}) {
         };
         merged.pods++;
         for (const key of SUMMED) merged[key] = (merged[key] ?? 0) + (row[key] ?? 0);
+        // The generator's own CPU (#380): summed, but only once a pod
+        // reports it — a row from an older generator keeps the sum null
+        // rather than under-reporting it as the other pods' total.
+        if (typeof row.generatorCpuMs === 'number') {
+            merged.generatorCpuMs = (merged.generatorCpuMs ?? 0) + row.generatorCpuMs;
+        }
         for (const key of FROM_ONE) if (merged[key] === undefined && row[key] !== undefined) merged[key] = row[key];
         for (const key of Object.keys(merged.stuck)) merged.stuck[key] += row.stuck?.[key] ?? 0;
         for (const [reason, count] of Object.entries(row.failedByError ?? {})) {
@@ -250,6 +431,9 @@ export function mergeWfRows(rows, { partial = false } = {}) {
             const wallS = (row.durationMs + row.drainMs) / 1000;
             return {
                 ...row,
+                // The rate the FLEET was offered: every pod runs the rung's
+                // rate, so a 4-pod run at r=250 offered 1,000/s (#380).
+                offeredRate: row.rate * row.pods,
                 runsStartedPerSec: row.durationMs > 0
                     ? Math.round((row.started / (row.durationMs / 1000)) * 1000) / 1000
                     : 0,
@@ -292,7 +476,22 @@ export async function runWfLoad(options) {
         quietTimeoutMs = 600_000
     } = options;
 
-    const smuggled = Object.keys(values).filter((key) => key.startsWith('image.'));
+    // `chaos=owner-kill` is the orchestrator's, not the chart's: lifted out
+    // of the values before they reach helm.
+    const chaos = values.chaos === undefined ? null : String(values.chaos);
+    if (chaos !== null && chaos !== 'owner-kill' && chaos !== 'none') {
+        throw new Error(`[wf-load] unknown chaos '${chaos}' — the one supported is owner-kill`);
+    }
+    // Halfway through the FIRST rung's arrivals — a chaos run is a single
+    // rung by design (a kill mid-sweep would land in whichever rung the
+    // clock said, and the rows would not say which).
+    const chaosAtMs = chaos === 'owner-kill'
+        ? Math.round((Number(values.durationS ?? values['loadgen.durationS']) || 60) * 500)
+        : null;
+    const chartValues = { ...values };
+    delete chartValues.chaos;
+
+    const smuggled = Object.keys(chartValues).filter((key) => key.startsWith('image.'));
     if (smuggled.length > 0) {
         throw new Error(
             `[wf-load] pass the image as imageRepository/imageTag, not through values ` +
@@ -308,7 +507,7 @@ export async function runWfLoad(options) {
     const job = `${release}-loadgen-${suffix}`;
     const sets = [];
     const prefixed = {};
-    for (const [key, value] of Object.entries(values)) {
+    for (const [key, value] of Object.entries(chartValues)) {
         const full = key.startsWith('loadgen.')
             ? key
             : key.startsWith('WF_')
@@ -351,13 +550,31 @@ export async function runWfLoad(options) {
     let peakActivations = null;
     let samples = 0;
     let partial = false;
-    const deadline = Date.now() + timeoutMs;
+    const timeline = [];
+    const restartsBefore = restartCounts(kube, namespace);
+    const cpuLimitM = hostCpuLimitM(kube, namespace, release);
+    let killed = null;
+    const started = Date.now();
+    const deadline = started + timeoutMs;
     for (;;) {
         const live = workflowTotals(kube, namespace);
         if (live.hosts > 0) {
             samples++;
             if (typeof live.activations === 'number') {
                 peakActivations = Math.max(peakActivations ?? 0, live.activations);
+            }
+            timeline.push(sampleFleet(kube, namespace, live, Date.now() - started));
+        }
+        if (chaosAtMs !== null && killed === null && Date.now() - started >= chaosAtMs) {
+            // The first host pod, force-deleted — the infra suite's hard-kill
+            // recipe. Recorded with its time so the rows read against it.
+            const victim = Object.keys(live.queued).sort()[0]
+                ?? kube(['-n', namespace, 'get', 'pod', '-l', 'app.kubernetes.io/component=host',
+                    '-o', 'jsonpath={.items[0].metadata.name}'], { allowFail: true });
+            if (victim) {
+                onLog(`chaos: force-deleting ${victim} at t+${Math.round((Date.now() - started) / 1000)}s`);
+                kube(['-n', namespace, 'delete', 'pod', victim, '--grace-period=0', '--force'], { allowFail: true });
+                killed = { pod: victim, atMs: Date.now() - started };
             }
         }
         const state = kube(['-n', namespace, 'get', 'job', job, '-o',
@@ -378,6 +595,15 @@ export async function runWfLoad(options) {
         await sleep(sampleIntervalMs);
     }
     const after = workflowTotals(kube, namespace);
+    // Container restarts on pods present at both ends: a fence that the
+    // kubelet restarted. A pod REPLACED (the chaos victim) is a new name
+    // with a count of 0 and is reported as such, not as a restart.
+    const restartsAfter = restartCounts(kube, namespace);
+    let restartsDuringRun = 0;
+    for (const [pod, n] of Object.entries(restartsAfter)) {
+        if (pod in restartsBefore) restartsDuringRun += Math.max(0, n - restartsBefore[pod]);
+    }
+    const podsReplaced = Object.keys(restartsAfter).filter((pod) => !(pod in restartsBefore)).length;
 
     const pods = kube(['-n', namespace, 'get', 'pod', '-l', `job-name=${job}`,
         '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'],
@@ -424,6 +650,14 @@ export async function runWfLoad(options) {
         samples,
         delta,
         countersTrustworthy,
-        partial
+        partial,
+        /** Hosts whose transport chain includes tcp, at the END — the tcp gate's input. */
+        tcpHosts: after.tcpHosts,
+        timeline,
+        peaks: timelinePeaks(timeline, { hostCpuLimitM: cpuLimitM }),
+        hostCpuLimitM: cpuLimitM,
+        restartsDuringRun,
+        podsReplaced,
+        chaos: killed ? { kind: 'owner-kill', ...killed } : null
     };
 }

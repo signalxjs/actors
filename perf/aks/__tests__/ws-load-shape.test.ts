@@ -24,7 +24,7 @@ const SCRIPT = fileURLToPath(new URL('../deploy/testenv.mjs', import.meta.url));
 
 /** What the fake cluster reports — the live shape assembled from it. */
 const LIVE_SHAPE =
-    'ws replicas=3 nodes=3 image=tag123 knobs=ENABLE_SOCKET=1,SOCKET_MAX_SUBSCRIPTIONS=256';
+    'ws replicas=3 nodes=3 cpu=1000m sku=Standard_D2ls_v6 image=tag123 knobs=ENABLE_SOCKET=1,SOCKET_MAX_SUBSCRIPTIONS=256';
 
 const IDENTITY = [
     'RG', 'CLUSTER', 'ACR', 'LOCATION', 'CHAT_HOST',
@@ -67,6 +67,11 @@ if (args.includes('.env[*]')) { out('ENABLE_SOCKET=1'); out('SOCKET_MAX_SUBSCRIP
 if (args.includes('.spec.replicas')) { out('3'); process.exit(0); }
 if (args.includes('nodeName')) { out('n1'); out('n2'); out('n3'); process.exit(0); }
 if (args.includes('containers[0].image')) { out('example.azurecr.io/sigx-actors-test:tag123'); process.exit(0); }
+// The cores-per-host and node-SKU fields of the shape (#380): the host
+// Deployment's CPU limit, and every node's instance type — n4 is a node
+// the hosts do NOT run on, so its SKU must not reach the shape.
+if (args.includes('resources.limits.cpu')) { out('1000m'); process.exit(0); }
+if (args.includes('instance-type')) { out('n1\tStandard_D2ls_v6'); out('n2\tStandard_D2ls_v6'); out('n3\tStandard_D2ls_v6'); out('n4\tStandard_D8ls_v6'); process.exit(0); }
 process.exit(0);
 `);
     fakeTool(fakeBin, 'git', `

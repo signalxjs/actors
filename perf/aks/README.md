@@ -110,6 +110,12 @@ Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each
 other through Redis exactly as the pods do.
 
+Several generator pods (`parallelism`) run the same rung each; the rows
+carry `offeredRate = rate × pods`. On a k8s Job the generator reads
+`JOB_COMPLETION_INDEX` and `JOB_NAME`: index 0 resets the aggregator and
+seeds, the rest wait for its seed marker (`WF_SEED_WAIT_MS`, default
+180 s). Locally, with neither set, a generator seeds as it always did.
+
 ### How to profile the fan-out path (#245)
 
 `ws-dev.mjs` prints one `[ws-dev] load` JSON line per `SAMPLE_MS` window
