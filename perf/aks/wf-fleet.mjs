@@ -662,10 +662,12 @@ export async function runWfFleet(options) {
 
 // ---- CLI --------------------------------------------------------------
 // `argv[1]` is resolved by Node for a script path, but compare resolved to
-// resolved anyway: a relative invocation or a differently-cased drive
-// letter must still run the CLI rather than silently import and exit.
+// resolved anyway, and case-insensitively on Windows, where a drive letter
+// can arrive in either case: a relative invocation must still run the CLI
+// rather than silently import and exit.
+const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 const invokedDirectly =
-    process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url);
+    process.argv[1] !== undefined && samePath(resolvePath(process.argv[1]), fileURLToPath(import.meta.url));
 if (invokedDirectly) {
     const options = parseFleetArgs(process.argv.slice(2));
     if (!options.hosts) {
