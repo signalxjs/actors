@@ -3426,3 +3426,71 @@ Tier-3 sleep ladder can climb to that population under both providers.
 | The reminder ceiling is removed by an index, not by a bigger table: flat set latency and 100 % on-time fires at 100 000 asleep, and flat commands to 1 000 000 | `redis/…/set_p50_ms` 0.64–0.71 ms at every P; `redis-commands` 5 / 4 / 3 / 606 at every P | #385 ships; the Tier-3 sleep ladder (#391 T2) now runs under `REMINDERS=redis` as the after-arm |
 | The sharded provider's cost is bytes, not operations | `arm-cost`: 2 ops per set and 16 loads per tick at every P, 387 KiB per set at 100 000 | the outgrown gauge (#384's S item) warns on entries per record, not on ops |
 | An empty tick on the index is three commands, so the tick can be seconds, not 30 | `commands_per_empty_tick` 3 at 1 000 000 | `perf/aks` `REMINDERS=redis` + `WF_REMINDER_TICK_MS` is the shape to measure wake lag under (#391 T2) |
+
+## 2026-09-04 · Shed, not drown — admission control priced on the local fleet (#384)
+
+| | |
+|---|---|
+| Machine | Apple M4, 10 cores, Node v24.11.1, one local Redis |
+| Rig | `wf-local/drown-vs-shed`, 8 host processes, one generator, 20 s of arrivals per rung, `WF_DRAIN_S=900` |
+| Conditions | **Not quiet** — the sibling roadmap sessions were building alongside. Counts, refusal kinds and the SHAPE of each failure are the evidence; the absolute rates are not. |
+| Why | #397 recorded the before: past its knee this fleet drowned — deadline failures and aggregator timeouts while every "the engine refused something" counter read zero. #384 gives the runtime something to refuse with. This is the after, and the arm that does NOT work is the more useful half of it. |
+
+### The 500 runs/s rung, 20 ms tasks — the same offered load, three admission settings
+
+| | uncapped | `maxQueuedPerActor=512` | `maxInflightTurns=256` |
+|---|---:|---:|---:|
+| completed/s | 7.50 | 7.65 | **14.97** |
+| started/s | 379.6 | 384.4 | 253.4 |
+| transitions/s | 60.7 | 60.9 | **132.8** |
+| task p50 (a 20 ms task) | 4 520 ms | 3 937 ms | **434 ms** |
+| refusals | **0** | **0** | **2 486 `start:overloaded`** (+58 `signal:`) |
+| publish failures | 743 | 808 | — |
+| completions the aggregator never saw | 62 | 56 | — |
+| stuck | 0 | 0 | 0 |
+| drain | **900.7 s** (never cleared) | ~900 s | cleared |
+
+### ❌ A per-actor cap is the wrong lever for this workload, and it says so loudly
+
+`maxQueuedPerActor=512` moved the drowning rung by **nothing** — 7.50 → 7.65
+completed/s, not one refusal in 7 689 starts. The reason is structural: a
+workflow run is one actor, so no single queue ever approaches a useful cap.
+What is full is the **loop** — thousands of short queues across the run
+actors, the worker pool members and the aggregator — and no per-queue
+threshold can see that. A per-actor cap is for the opposite shape, the hot
+key whose one queue *is* the backlog, which is what
+`dispatch/overload-shed` measures (8 admitted, 392 refused, 0 timed out).
+
+Recording the arm that did nothing is the point: a cap that never engages
+is indistinguishable from a cap that works, from the outside, until the
+fleet drowns anyway.
+
+### ✅ The host-wide cap sheds, and the fleet that sheds does twice the work
+
+`maxInflightTurns=256` per host turns the failure inside out. 2 486 of 5 068
+starts are refused **in microseconds** with a branded `overloaded` kind the
+generator can count, and what is admitted actually runs: **2× the completed
+runs per second, 2.2× the transitions, and a 20 ms task measuring 434 ms
+instead of 4.5 s**. Nothing is stuck either way; the difference is that the
+uncapped fleet spent its whole 900 s drain not clearing, while the capped
+one finished.
+
+Two things the numbers say that the design did not promise. The refusal
+rate is not a tax on throughput — the fleet completes *more* while accepting
+*less*, because a queue that cannot drain inside the deadline is work
+already lost. And `start:overloaded` is the honest signal #397 went looking
+for: the before-picture's `start_deferred_ratio` and `run_error_rate` both
+read 0 while 660 calls timed out, because nothing in the fleet had a way to
+say "no".
+
+### What this does not settle
+
+- **The value.** 256 was sized by the documented rule against this rig, not
+  tuned; a deployment's is its own (`WF_LOCAL_CAP` moves the arm). Where
+  the curve of completed/s against the cap peaks is unmeasured.
+- **Tier 3.** These are 8 processes sharing 10 cores. The cloud rung
+  (#391 T1, `INFRA_WF_RATE_LADDER=…,100,200`) is where "shed, not drown"
+  is judged on the shape the baselines are recorded against — this rig can
+  say the mechanism works, not what it is worth per pod.
+- **The aggregator.** 743–808 publish failures at the drowning rung are the
+  singleton on the completion path (#49), untouched by either cap.

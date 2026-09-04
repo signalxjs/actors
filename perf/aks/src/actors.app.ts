@@ -19,7 +19,9 @@
  *                         floor IS this number.
  *   WF_CALL_TIMEOUT_MS    external-call deadline (runtime default 30 s).
  *
- * Two more since #384, the admission caps — 0/unset = unlimited, the
+ * A third, `REMINDERS`, picks the reminder provider — see below.
+ *
+ * Two more knobs since #384, the admission caps — 0/unset = unlimited, the
  * pre-#384 contract, so a shape that sets neither is still the recorded one:
  *
  *   WF_MAX_QUEUED         `maxQueuedPerActor`: a call that would push one
@@ -29,8 +31,6 @@
  *                         whole — every turn queued or running on it, the
  *                         engine's own timer-driven `advance` turns
  *                         included, so a saturated loop refuses new starts.
- *
- * A third, `REMINDERS`, picks the reminder provider — see below.
  */
 import { Redis } from 'ioredis';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
