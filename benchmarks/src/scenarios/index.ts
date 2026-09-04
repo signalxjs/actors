@@ -9,6 +9,7 @@ import { jobScenarios } from './jobs.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
+import { remindersRedisScenarios } from './reminders-redis.ts';
 import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
@@ -62,6 +63,11 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...liveFanoutScenarios,
     ...livePrincipalScenarios,
     ...redisScenarios,
+    // Same gate, two more questions about the sharded reminder table
+    // against a real store (#382): `arm-fire` — the arm rate at which its
+    // CAS starts failing; `table-size` — what a set and a tick cost with
+    // P entries already asleep in the records.
+    ...remindersRedisScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),
     // Tier 3 measures a DEPLOYMENT, not this process — a different kind of
