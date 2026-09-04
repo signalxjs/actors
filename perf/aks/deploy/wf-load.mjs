@@ -280,8 +280,10 @@ export function timelinePeaks(timeline, { hostCpuLimitM }) {
     if (redisCpuPeakRatio !== null) peaks.redisCpuPeakRatio = redisCpuPeakRatio;
     const ops = redis.map((s) => s.redis.opsPerSec).filter((n) => typeof n === 'number');
     if (ops.length > 0) peaks.redisOpsPerSecPeak = Math.max(...ops);
-    const mem = redis.map((s) => s.redis.memBytes).filter((n) => typeof n === 'number');
-    if (mem.length > 0) peaks.redisMemEndBytes = mem[mem.length - 1];
+    // "At the end" means the FINAL sample: an earlier value standing in
+    // for it would be a memory figure from before the drain.
+    const last = timeline[timeline.length - 1];
+    if (last?.redis && typeof last.redis.memBytes === 'number') peaks.redisMemEndBytes = last.redis.memBytes;
     return peaks;
 }
 
@@ -392,7 +394,8 @@ export function mergeWfRows(rows, { partial = false } = {}) {
             knobs: row.knobs,
             durationMs: 0,
             drainMs: 0,
-            generatorCpuMs: null,
+            generatorCpuMs: 0,
+            generatorCpuPods: 0,
             stuck: { sleeping: 0, waiting: 0, blocked: 0, running: 0, other: 0, total: 0 },
             byTemplate: {},
             failedByError: {},
@@ -405,11 +408,12 @@ export function mergeWfRows(rows, { partial = false } = {}) {
         };
         merged.pods++;
         for (const key of SUMMED) merged[key] = (merged[key] ?? 0) + (row[key] ?? 0);
-        // The generator's own CPU (#380): summed, but only once a pod
-        // reports it — a row from an older generator keeps the sum null
-        // rather than under-reporting it as the other pods' total.
+        // The generator's own CPU (#380): summed, and reported only when
+        // EVERY pod carried it — a row from an older generator would
+        // otherwise under-report the rung as the newer pods' total.
         if (typeof row.generatorCpuMs === 'number') {
-            merged.generatorCpuMs = (merged.generatorCpuMs ?? 0) + row.generatorCpuMs;
+            merged.generatorCpuMs += row.generatorCpuMs;
+            merged.generatorCpuPods++;
         }
         for (const key of FROM_ONE) if (merged[key] === undefined && row[key] !== undefined) merged[key] = row[key];
         for (const key of Object.keys(merged.stuck)) merged.stuck[key] += row.stuck?.[key] ?? 0;
@@ -439,10 +443,11 @@ export function mergeWfRows(rows, { partial = false } = {}) {
     }
     return [...byRung.values()]
         .sort((a, b) => a.rate - b.rate)
-        .map((row) => {
+        .map(({ generatorCpuPods, ...row }) => {
             const wallS = (row.durationMs + row.drainMs) / 1000;
             return {
                 ...row,
+                generatorCpuMs: generatorCpuPods === row.pods ? row.generatorCpuMs : null,
                 // The rate the FLEET was offered: every pod runs the rung's
                 // rate, so a 4-pod run at r=250 offered 1,000/s (#380).
                 offeredRate: row.rate * row.pods,

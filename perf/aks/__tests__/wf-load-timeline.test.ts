@@ -113,7 +113,9 @@ describe('timelinePeaks', () => {
             { hostCpuLimitM: 1000 }
         );
         expect(gapped.redisOpsPerSecPeak).toBe(9);
-        expect(gapped.redisMemEndBytes).toBe(4);
+        // "At the end" is the FINAL sample; when it has no memory figure,
+        // an earlier one does not stand in for it.
+        expect(gapped.redisMemEndBytes).toBeUndefined();
         expect(gapped.redisCpuPeakRatio).toBeCloseTo(0.5, 6);
     });
 });

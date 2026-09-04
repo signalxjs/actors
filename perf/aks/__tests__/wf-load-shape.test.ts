@@ -87,10 +87,14 @@ describe('mergeWfRows', () => {
         expect(mergeWfRows([row()])[0]!.offeredRate).toBe(50);
     });
 
-    it('sums the generator CPU across pods, and leaves it null for rows that predate it', () => {
+    it('sums the generator CPU across pods, and reports it only when every pod carried it', () => {
         const [merged] = mergeWfRows([row({ generatorCpuMs: 1200 }), row({ generatorCpuMs: 800 })]);
         expect(merged!.generatorCpuMs).toBe(2000);
         expect(mergeWfRows([row()])[0]!.generatorCpuMs).toBeNull();
+        // A mixed rung — one pod from a generator that predates the field —
+        // must not read as the newer pod's total.
+        expect(mergeWfRows([row({ generatorCpuMs: 1200 }), row()])[0]!.generatorCpuMs).toBeNull();
+        expect(mergeWfRows([row({ generatorCpuMs: 1200 }), row()])[0]!).not.toHaveProperty('generatorCpuPods');
     });
 
     it('keeps rungs apart and in order, and stamps partial only when told', () => {
