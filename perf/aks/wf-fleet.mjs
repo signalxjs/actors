@@ -264,7 +264,13 @@ function portTaken(port) {
             socket.destroy();
             resolve(true);
         });
-        socket.once('error', () => resolve(false));
+        socket.once('error', () => {
+            // A refused connect still owns a handle until destroyed; two
+            // hundred of them (hosts=100 under tcp) would keep the process
+            // alive past the run.
+            socket.destroy();
+            resolve(false);
+        });
     });
 }
 
@@ -477,19 +483,31 @@ function startGenerator({ targetUrl, rate, durationS, env, runId, onLog }) {
     return { pid: child.pid, done, kill: () => child.kill('SIGKILL') };
 }
 
+/**
+ * Quiet means EVERY host answered and their queued turns sum to at most
+ * `QUIET_QUEUED`. A host that did not answer `/_sigx/ops` — overloaded,
+ * mid-restart — is the one most likely to be holding the backlog, and
+ * counting it as zero would start the next rung on top of it.
+ */
+const isQuiet = (snapshot) => snapshot.hostsComplete && sumQueued(snapshot) <= QUIET_QUEUED;
+
 async function waitForQuiet(members, opsSecret, onLog) {
     const deadline = Date.now() + QUIET_TIMEOUT_MS;
     let last = await fleetTotals(members, opsSecret);
-    if (sumQueued(last) <= QUIET_QUEUED) return last;
-    onLog(`[wf-fleet] fleet has ${sumQueued(last)} queued turn(s) — waiting for it to quiet (<= ${QUIET_QUEUED})`);
+    if (isQuiet(last)) return last;
+    onLog(
+        `[wf-fleet] fleet has ${sumQueued(last)} queued turn(s) on ${last.hosts}/${last.pods} answering host(s) — ` +
+            `waiting for it to quiet (<= ${QUIET_QUEUED}, every host answering)`
+    );
     for (;;) {
         await sleep(2000);
         last = await fleetTotals(members, opsSecret);
-        if (sumQueued(last) <= QUIET_QUEUED) return last;
+        if (isQuiet(last)) return last;
         if (Date.now() > deadline) {
             throw new Error(
-                `[wf-fleet] fleet backlogged: ${sumQueued(last)} queued turn(s) after ${QUIET_TIMEOUT_MS / 1000}s — ` +
-                    'refusing to start a rung that would measure the previous one\'s backlog (#302)'
+                `[wf-fleet] fleet not quiet after ${QUIET_TIMEOUT_MS / 1000}s: ${sumQueued(last)} queued turn(s), ` +
+                    `${last.hosts}/${last.pods} host(s) answering — refusing to start a rung that would ` +
+                    'measure the previous one\'s backlog (#302)'
             );
         }
     }
