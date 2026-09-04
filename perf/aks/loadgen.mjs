@@ -111,8 +111,17 @@ async function wireData(type, method, args) {
             body: JSON.stringify({ args })
         });
         if (!res.ok) {
-            await res.text().catch(() => {});
-            return { error: String(res.status) };
+            // The branded kind when the endpoint sent one (`overloaded`,
+            // `call-timeout`, …) — so `errors.byKind` says WHY a start was
+            // refused, not just that it was — else the bare status.
+            const text = await res.text().catch(() => '');
+            let kind;
+            try {
+                kind = JSON.parse(text)?.error?.data?.kind;
+            } catch {
+                kind = undefined;
+            }
+            return { error: typeof kind === 'string' ? kind : String(res.status) };
         }
         const body = await res.json();
         return body.error ? { error: `app:${body.error.status ?? 'error'}` } : { data: body.data };

@@ -22,12 +22,28 @@
  */
 import { HostShutdownError } from '../errors';
 
+/**
+ * A counter shared by every `Turns` of one host (#384): turns queued or
+ * running host-wide, every lane and every kind — a call's turn, a timer
+ * tick, a task's `ctx.turn`, a watch read. Admission compares it against
+ * `maxInflightTurns`; it is what the host's event loop has taken on, so a
+ * host saturated by its actors' own timers reads as full to new calls.
+ */
+export interface TurnLoad {
+    inflight: number;
+}
+
 export class Turns {
     #tail: Promise<unknown> = Promise.resolve();
     /** Unsettled interleaved turns (never-rejecting guards). */
     #inflight = new Set<Promise<void>>();
     #depth = 0;
     #closed = false;
+    #load: TurnLoad | null;
+
+    constructor(load: TurnLoad | null = null) {
+        this.#load = load;
+    }
 
     /** Queued + running turns, across both lanes. */
     get depth(): number {
@@ -42,6 +58,8 @@ export class Turns {
     run<T>(turn: () => T | Promise<T>, interleave = false): Promise<T> {
         if (this.#closed) return Promise.reject(new HostShutdownError());
         this.#depth++;
+        const load = this.#load;
+        if (load) load.inflight++;
         if (interleave) {
             // Launched on its own microtask — the same never-synchronous-
             // from-enqueue property the serial lane has via `#tail.then()` —
@@ -50,11 +68,13 @@ export class Turns {
             const guard: Promise<void> = settled.then(
                 () => {
                     this.#depth--;
+                    if (load) load.inflight--;
                     this.#inflight.delete(guard);
                 },
                 // The turn's failure belongs to ITS caller only.
                 () => {
                     this.#depth--;
+                    if (load) load.inflight--;
                     this.#inflight.delete(guard);
                 }
             );
@@ -68,6 +88,7 @@ export class Turns {
         );
         const settled = result.finally(() => {
             this.#depth--;
+            if (load) load.inflight--;
         });
         // The tail must never carry a rejection forward, and must include the
         // depth decrement so `drain()` observes every turn settled.

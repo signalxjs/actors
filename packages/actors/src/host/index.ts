@@ -63,7 +63,7 @@ export {
 export { memoryStorage } from './storage-memory';
 export { timingSafeEquals } from '../timing-safe';
 export { timerScheduler, manualScheduler, type ManualScheduler } from './scheduler';
-export { Turns } from './turns';
+export { Turns, type TurnLoad } from './turns';
 export { REMINDER_METHOD } from './activation';
 export { TOPIC_METHOD } from './topics';
 export { REMINDER_TYPE, shardedReminders } from './reminders';

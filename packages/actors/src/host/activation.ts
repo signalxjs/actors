@@ -17,10 +17,12 @@ import { mintCallId } from '../call-id';
 import { EMPTY_CALL_BAG } from '../call-bag-core';
 import { decodePrincipal } from '../guards';
 import { ownFn, warnIfInheritedTable } from '../own-member';
-import type { Turns } from './turns';
+import type { TurnLoad, Turns } from './turns';
 import {
     ActorActivationError,
+    ActorCallTimeoutError,
     ActorMethodNotFoundError,
+    ActorOverloadedError,
     ActorStateConflictError,
     ActorWatchDeclarationError,
     HostShutdownError,
@@ -177,10 +179,23 @@ interface WatchHandle {
 /** Keys a context extension may never set — they reach the prototype. */
 const UNSAFE_CONTEXT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+/**
+ * The host's admission state (#384), shared by reference with every
+ * activation: the two caps, the host-wide turn count every `Turns` keeps
+ * current (`TurnLoad` — queued or running, all lanes and all kinds), and
+ * `refusals` (calls turned away, monotonic).
+ */
+export interface Admission extends TurnLoad {
+    maxQueuedPerActor: number;
+    maxInflightTurns: number;
+    refusals: number;
+}
+
 /** What the host provides to every activation. */
 export interface ActivationHost {
     readonly idleAfterMs: number;
     readonly slowTurnMs: number;
+    readonly admission: Admission;
     /**
      * How long deactivation waits for signalled tasks to settle before
      * closing the turns, ms. Bounded so a task that ignores its abort
@@ -554,6 +569,8 @@ export class Activation {
     readonly ref: ActorRef;
     readonly def: AnyActorDefinition;
     readonly turns: Turns;
+    /** `maxQueued` resolved for this activation; 0 = unlimited (#384). */
+    readonly #maxQueued: number;
 
     #host: ActivationHost;
     #scope: ReturnType<typeof effectScope>;
@@ -673,6 +690,9 @@ export class Activation {
         this.#interleaveMethods = opts.methodReentrancy
             ? new Set(Object.keys(opts.methodReentrancy))
             : null;
+        // The definition's cap wins over the host default, and an explicit
+        // 0 on either means unlimited (#384).
+        this.#maxQueued = opts.maxQueued ?? host.admission.maxQueuedPerActor;
     }
 
     /**
@@ -852,8 +872,44 @@ export class Activation {
     // -----------------------------------------------------------------------
     // Dispatch surface (called by the local host only)
 
-    /** Enqueue one turn. */
+    /**
+     * Enqueue one turn — a CALL's turn, subject to admission (#384).
+     *
+     * Throws SYNCHRONOUSLY when refused, on purpose: every caller is either
+     * inside `#dispatchInner`'s try/catch (the warm path), an `async`
+     * frame (the slow path, the reentrancy paths) or `#dispatchOneWay`,
+     * whose contract is that everything before acceptance rejects the
+     * CALLER — a rejected promise here would instead be swallowed as a
+     * post-acceptance failure. The runtime's own turns never come through
+     * here: watch reads use `enqueueSystem`, and the write-behind flush and
+     * the conflict reload schedule on `turns` directly.
+     */
     enqueue(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
+        const cap = this.#maxQueued;
+        const depth = this.turns.depth;
+        if (cap > 0 && depth >= cap) {
+            this.#host.admission.refusals++;
+            throw new ActorOverloadedError('actor', actorLabel(this.ref), depth, cap);
+        }
+        const admission = this.#host.admission;
+        const hostCap = admission.maxInflightTurns;
+        // `inflight` counts EVERY turn on the host — timer ticks and task
+        // turns included, which never come through here — so a host whose
+        // loop is saturated by its actors' own work refuses new calls too.
+        if (hostCap > 0 && admission.inflight >= hostCap) {
+            admission.refusals++;
+            throw new ActorOverloadedError('host', actorLabel(this.ref), admission.inflight, hostCap);
+        }
+        return this.enqueueSystem(method, args, call);
+    }
+
+    /**
+     * Enqueue one turn WITHOUT admission — the runtime's own reads (a watch
+     * loop's pump) go through here. A cap exists to shed a caller's load;
+     * a watch read refused by it would fail every subscriber of a shared
+     * loop for a queue they did not fill.
+     */
+    enqueueSystem(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
         // One clock read per queued turn, and only when an observer exists.
         // Taken HERE rather than inside the turn because the whole point is
         // the gap between the two.
@@ -1122,7 +1178,7 @@ export class Activation {
                     try {
                         let value: unknown;
                         if (interleave) {
-                            value = await this.enqueue(method, args, turnCall);
+                            value = await this.enqueueSystem(method, args, turnCall);
                         } else if (this.turns.depth === 0) {
                             // Uncontended fast path: zero depth means no turn
                             // is queued OR running — so no drain turn either,
@@ -1132,7 +1188,7 @@ export class Activation {
                             // nothing to be fair TO) and skips the pump's
                             // per-job bookkeeping — the single-watch hot path
                             // (`streams/live-watch`) measurably cares.
-                            value = await this.enqueue(method, args, turnCall);
+                            value = await this.enqueueSystem(method, args, turnCall);
                         } else {
                             this.#watchPump ??= createWatchReadPump({
                                 enqueueTurn: (body) => this.turns.run(body),
@@ -1489,6 +1545,16 @@ export class Activation {
         if (this.#reloadPending) await this.#reload();
         if (this.#faulted) throw this.#faulted;
         const started = Date.now();
+        // Drop-on-dequeue (#384): the caller's deadline passed while this
+        // turn was queued. The caller already holds the timeout (the
+        // dispatcher raced it); running the body now is work for nobody, in
+        // front of calls that can still be answered. Reuses the clock read
+        // above — nothing is added to the hot path.
+        if (call.deadline !== undefined && call.deadline <= started) {
+            throw new ActorCallTimeoutError(actorLabel(this.ref), method, started - call.deadline, {
+                skipped: true
+            });
+        }
         // Read once: the observer may be detached mid-turn (metrics can be
         // switched off at runtime), and start/end must agree about whether
         // they are timing at all.

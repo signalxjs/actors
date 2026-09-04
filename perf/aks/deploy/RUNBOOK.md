@@ -948,6 +948,21 @@ no Redis rows; never a failed run. `restartsDuringRun` counts container
 restarts on pods present at both ends (a fence the kubelet restarted);
 `podsReplaced` counts new pod names (the chaos victim's replacement).
 
+**Admission (#384).** Two host knobs, both part of the `wf` shape and both
+unset by default (the recorded contract): `WF_MAX_QUEUED` caps one
+activation's queued-plus-running turns, `WF_MAX_INFLIGHT_TURNS` caps the
+host's (every turn on it, the engine's timer-driven `advance` turns
+included). Past a cap the host REFUSES the call in microseconds
+(`overloaded`, a 429) instead of holding it for the deadline — a refused
+start shows in the row as `errors.byKind['start:overloaded']` and in
+`ops.stats.overloadRefusals`; a refused `childDone` or completion publish
+is repaired by the engine's own watchdog (`join_repairs`, the notify-retry
+wake), which is the recovery path's latency showing up in `etl_p50` rather
+than a loss. Size them by `WF_CALL_TIMEOUT_MS / p50 turn ms`; the
+laptop reference is `wf-local/drown-vs-shed` with and without them
+(BASELINES 2026-09-04). The `pool` ops section (`boundedFetch().stats()`)
+says whether hops queued behind the fetch pool — the #302 gauge.
+
 **Chaos voids the counter delta.** A replaced pod takes its `ops.workflow`
 counters with it, so a `chaos=owner-kill` run reports no delta (and no
 `join_repairs`); `wakesLost` and `stuck` ride the row from the aggregator

@@ -52,10 +52,9 @@
  * outside.
  */
 import { createServer } from 'node:http';
-import { Agent, fetch as undiciFetch } from 'undici';
 import { health, metrics, ops } from '@sigx/actors/host';
 import { socketStats } from '@sigx/actors/server';
-import { createAppHandler, attachSignalHandlers } from '@sigx/actors/node';
+import { createAppHandler, attachSignalHandlers, boundedFetch } from '@sigx/actors/node';
 import { cluster, clusterStats, httpTransport } from '@sigx/actors/cluster';
 import { tcpTransport } from '@sigx/actors-tcp';
 import { redisCluster, redisDirectory } from '@sigx/actors-redis';
@@ -136,7 +135,11 @@ const fetchConnections = (() => {
     }
     return value;
 })();
-const agent = new Agent({ connections: fetchConnections });
+// `boundedFetch` is the same undici Agent({ connections }) this used to
+// build by hand, plus the pool-saturation gauge (#384): `.stats()` rides
+// ops() as the `pool` section, so a run can say whether hops were
+// queueing behind sockets (#302) rather than infer it from an idle CPU.
+const peerFetch = boundedFetch({ connections: fetchConnections });
 
 const providers = (() => {
     if (MEMBERSHIP === 'redis') {
@@ -186,9 +189,7 @@ const tcpPort = () => {
     return parsed;
 };
 
-const httpLeg = httpTransport({
-    fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent })
-});
+const httpLeg = httpTransport({ fetch: peerFetch });
 const plugin = cluster({
     providers,
     advertise: `http://${POD_IP}:${PORT}`,
@@ -231,6 +232,9 @@ composed.use({
     name: 'workflow-counters',
     setup: (registry) => {
         registry.reportOps('workflow', () => workflowSnapshot());
+        // The host-to-host pool's own gauge (#384): in flight against the
+        // cap, and the time spent AT the cap.
+        registry.reportOps('pool', () => peerFetch.stats());
     }
 });
 

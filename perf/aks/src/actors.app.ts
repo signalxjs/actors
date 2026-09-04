@@ -20,6 +20,17 @@
  *   WF_CALL_TIMEOUT_MS    external-call deadline (runtime default 30 s).
  *
  * A third, `REMINDERS`, picks the reminder provider — see below.
+ *
+ * Two more knobs since #384, the admission caps — 0/unset = unlimited, the
+ * pre-#384 contract, so a shape that sets neither is still the recorded one:
+ *
+ *   WF_MAX_QUEUED         `maxQueuedPerActor`: a call that would push one
+ *                         activation's queue past this is refused
+ *                         (`overloaded`) instead of queued.
+ *   WF_MAX_INFLIGHT_TURNS `maxInflightTurns`: the same for the host as a
+ *                         whole — every turn queued or running on it, the
+ *                         engine's own timer-driven `advance` turns
+ *                         included, so a saturated loop refuses new starts.
  */
 import { Redis } from 'ioredis';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
@@ -64,6 +75,8 @@ const knob = (name: string): number | undefined => {
 
 const reminderTickMs = knob('WF_REMINDER_TICK_MS');
 const callTimeoutMs = knob('WF_CALL_TIMEOUT_MS');
+const maxQueuedPerActor = knob('WF_MAX_QUEUED');
+const maxInflightTurns = knob('WF_MAX_INFLIGHT_TURNS');
 
 export const app = defineActorApp({
     storage: redis ? redisStorage({ client: redis, namespace }) : memoryStorage(),
@@ -74,7 +87,9 @@ export const app = defineActorApp({
     // shape" visible in one look.
     defaults: {
         ...(reminderTickMs !== undefined ? { reminderTickMs } : {}),
-        ...(callTimeoutMs !== undefined ? { callTimeoutMs } : {})
+        ...(callTimeoutMs !== undefined ? { callTimeoutMs } : {}),
+        ...(maxQueuedPerActor !== undefined ? { maxQueuedPerActor } : {}),
+        ...(maxInflightTurns !== undefined ? { maxInflightTurns } : {})
     }
 });
 

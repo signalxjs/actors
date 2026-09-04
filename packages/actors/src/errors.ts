@@ -20,7 +20,8 @@ export type ActorErrorKind =
     | 'unreachable'
     | 'unplaceable'
     | 'fenced'
-    | 'watch-declaration';
+    | 'watch-declaration'
+    | 'overloaded';
 
 export interface ActorErrorShape extends Error {
     readonly __sigxActorError: true;
@@ -147,15 +148,59 @@ export class HostShutdownError extends ActorError {
     }
 }
 
-/** The CALLER's deadline passed. The turn itself is never killed. */
+/**
+ * The CALLER's deadline passed. A running turn is never killed; a turn
+ * whose deadline passed while it was still QUEUED is skipped instead of run
+ * (`skipped: true`, #384) — the caller had already given up, so running it
+ * would be work for nobody in front of calls that can still be answered.
+ */
 export class ActorCallTimeoutError extends ActorError {
-    constructor(ref: string, method: string, ms: number) {
+    /** The turn never ran: its deadline had already passed when the queue
+     *  reached it. `false` is the older outcome — the turn IS running and
+     *  only this caller gave up — and the two want different reactions, so
+     *  it is a field rather than a sentence in the message. Crosses the
+     *  wire with the error. */
+    readonly skipped: boolean;
+
+    constructor(ref: string, method: string, ms: number, options?: { skipped?: boolean }) {
         super(
             'call-timeout',
-            `[sigx actors] call to ${ref}.${method}() exceeded its ${ms}ms deadline. ` +
-                `The turn keeps running; only this caller gave up.`
+            options?.skipped
+                ? `[sigx actors] call to ${ref}.${method}() was queued ${ms}ms past its deadline; skipped.`
+                : `[sigx actors] call to ${ref}.${method}() exceeded its ${ms}ms deadline. ` +
+                      `The turn keeps running; only this caller gave up.`
         );
         this.name = 'ActorCallTimeoutError';
+        this.skipped = options?.skipped === true;
+    }
+}
+
+/**
+ * Admission refused (#384): accepting this call would push the target
+ * activation's queue past `maxQueued` (`scope: 'actor'`) or the host past
+ * `maxInflightTurns` (`scope: 'host'`). Thrown in microseconds, before the
+ * call is queued, so a saturated host sheds instead of holding every call
+ * for `callTimeoutMs` and failing all of them after doing the work. Never
+ * re-placed by the routing loop: the call reached the owner, and retrying
+ * on another host would violate single activation. Retry after a backoff,
+ * or shed upstream.
+ */
+export class ActorOverloadedError extends ActorError {
+    readonly scope: 'actor' | 'host';
+    /** Queued + running turns at the refusal. */
+    readonly depth: number;
+    readonly limit: number;
+
+    constructor(scope: 'actor' | 'host', target: string, depth: number, limit: number) {
+        super(
+            'overloaded',
+            `[sigx actors] ${target} refused: ${scope === 'actor' ? 'maxQueued' : 'maxInflightTurns'} ` +
+                `${limit} reached (${depth} in flight).`
+        );
+        this.name = 'ActorOverloadedError';
+        this.scope = scope;
+        this.depth = depth;
+        this.limit = limit;
     }
 }
 

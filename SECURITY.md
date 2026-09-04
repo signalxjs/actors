@@ -160,9 +160,18 @@ unlimited because only you know the right number:
   mint unbounded distinct activations, each pinned for `idleAfterMs` (20 min by
   default). **Set this in production.** The LRU shed is opt-in and rides this
   setting.
-- **Turn queues are unbounded.** A single hot key can be flooded, and every
-  queued turn holds its arguments alive. Depth is *observable* via `ops()` and
-  `activations({ sortBy: 'queued' })`, but not enforced.
+- **Turn queues are unbounded unless you cap them.** A single hot key can be
+  flooded, and every queued turn holds its arguments alive. Depth is
+  *observable* via `ops()` and `activations({ sortBy: 'queued' })`, and since
+  #384 *enforceable*: `defineActor({ maxQueued })` /
+  `HostDefaults.maxQueuedPerActor` bounds one queue and
+  `HostDefaults.maxInflightTurns` bounds the host, refusing the excess in
+  microseconds with `ActorOverloadedError` (a 429 on the wire) instead of
+  holding it for `callTimeoutMs`. Both default to unlimited. **Set them in
+  production** — a cap is the difference between a flood degrading one key
+  and a flood taking the host's whole event loop past its membership TTL
+  (next section). See `docs/architecture/runtime-internals.md` "Admission
+  and overload" for sizing.
 
 Bounded for you, with no configuration: request body (1 MiB), URL (8 KiB),
 frame size (8 MiB, checked before a single payload byte is buffered), `$live`

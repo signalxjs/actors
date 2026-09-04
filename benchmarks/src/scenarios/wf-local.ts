@@ -286,24 +286,58 @@ const multiCore: Scenario = {
     }
 };
 
+/** The admission cap the `cap=` arm runs under (#384), and it is the
+ *  HOST-WIDE one on purpose.
+ *
+ *  `maxQueuedPerActor` is the wrong lever for this workload and measuring
+ *  it said so: a run is one actor, so no single queue ever approaches a
+ *  useful cap, and an arm at 512 moved the drowning 500 runs/s rung by
+ *  nothing at all (7.50 → 7.65 completed/s, not one refusal). What is full
+ *  here is the LOOP — thousands of short queues across the run actors, the
+ *  worker pool and the aggregator — which is what `maxInflightTurns`
+ *  counts. A per-actor cap is for the opposite shape: a hot key whose one
+ *  queue is the backlog.
+ *
+ *  Sized by the rule the runtime documents (`≈ callTimeoutMs / p50 turn
+ *  ms`) against the numbers this scenario recorded before the cap existed:
+ *  a 30 s deadline over the ~100 ms a turn takes once the loop is full is
+ *  a few hundred. `WF_LOCAL_CAP` moves it — the right value is a
+ *  deployment's to choose, and the point of the arm is the SHAPE of the
+ *  failure, not this number. */
+const CAP = process.env.WF_LOCAL_CAP ?? '256';
+
 const drownVsShed: Scenario = {
     name: 'wf-local/drown-vs-shed',
     description:
-        'The widest fleet past its knee, at 20 ms tasks (the recorded workload) and 2 ms (the runtime is what saturates)',
+        'The widest fleet past its knee, at 20 ms tasks (the recorded workload) and 2 ms (the runtime is what saturates), then 20 ms again under an admission cap',
     async run(ctx: RunContext) {
         const sweep = ladder('WF_LOCAL_SWEEP', ctx.quick ? '50,100' : '50,100,200,500');
         const durationS = ctx.quick ? 10 : DURATION_S;
         const metrics: Metric[] = [];
-        for (const taskMs of ['20', '2']) {
+        // The third arm is the #384 after-picture: the same 20 ms workload
+        // that drowned, under a host-wide in-flight cap. Read the refusals
+        // in `errors.byKind` against the uncapped arm's silence — shedding
+        // turns a deadline failure nobody could see into a fast branded
+        // one, and the work that IS admitted finishes.
+        const arms = [
+            { taskMs: '20', cap: undefined },
+            { taskMs: '2', cap: undefined },
+            { taskMs: '20', cap: CAP }
+        ];
+        for (const arm of arms) {
             const result = await runWfFleet({
                 hosts: WIDEST,
                 sweep,
                 durationS,
-                env: { ...COMMON, WF_TASK_MS: taskMs },
+                env: {
+                    ...COMMON,
+                    WF_TASK_MS: arm.taskMs,
+                    ...(arm.cap === undefined ? {} : { WF_MAX_INFLIGHT_TURNS: arm.cap })
+                },
                 redisUrl: REDIS_URL
             });
             for (const rung of result.rungs) {
-                const prefix = `task=${taskMs}/r=${rung.rate}/`;
+                const prefix = `task=${arm.taskMs}${arm.cap === undefined ? '' : `,cap=${arm.cap}`}/r=${rung.rate}/`;
                 metrics.push(
                     ...asTier2(rowMetrics(rung.row, prefix)),
                     ...asTier2(mechanismMetrics(rung).map((m) => ({ ...m, name: `${prefix}${m.name}` }))),

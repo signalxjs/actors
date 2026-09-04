@@ -2,7 +2,7 @@
   {
     "name": "@sigx/actors",
     "path": "packages/actors/dist/index.prod.js",
-    "limit": "4.65 KB",
+    "limit": "4.75 KB",
     "ignore": [
       "@sigx/reactivity",
       "@sigx/runtime-core",
@@ -62,7 +62,7 @@
   {
     "name": "@sigx/actors/cluster",
     "path": "packages/actors/dist/cluster.prod.js",
-    "limit": "15.75 KB",
+    "limit": "16 KB",
     "ignore": [
       "@sigx/server",
       "@sigx/serialize"
@@ -84,7 +84,7 @@
   {
     "name": "@sigx/actors/server",
     "path": "packages/actors/dist/server.prod.js",
-    "limit": "8.25 KB",
+    "limit": "8.35 KB",
     "ignore": [
       "@sigx/server",
       "@sigx/serialize"
@@ -143,7 +143,7 @@
   {
     "name": "@sigx/actors-otel/prometheus",
     "path": "packages/actors-otel/dist/prometheus.prod.js",
-    "limit": "3 KB",
+    "limit": "3.15 KB",
     "ignore": [
       "@sigx/actors"
     ]

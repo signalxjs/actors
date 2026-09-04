@@ -2184,6 +2184,14 @@ class ClusterPlacementImpl implements ClusterPlacement {
             await this.#options.membership.refresh();
             return 'unreachable';
         }
+        if (remote && isActorError(error) && error.kind === 'overloaded') {
+            // Counted, never re-routed (#384): the call reached the owner,
+            // which refused it at admission. Another host cannot serve it
+            // (single activation), and retrying into the same full queue
+            // is what the refusal exists to prevent — the caller backs off.
+            this.#counters.overloadedReplies++;
+            return null;
+        }
         if (remote && isActorError(error) && error.kind === 'host-shutdown') {
             this.#counters.drainingRetries++;
             // The owner is handing off: its claim releases as the actor
@@ -2242,7 +2250,18 @@ class ClusterPlacementImpl implements ClusterPlacement {
                     return await this.#local!.dispatch(ref, method, args, call);
                 }
                 this.#counters.remoteDispatches++;
-                return await this.#transportDispatcher(target).dispatch(ref, method, args, call);
+                // The pool-saturation gauge (#302 option 2, #384): hops in
+                // flight, held for exactly as long as the peer holds the
+                // connection. Streams and watches are counted by their own
+                // families (`remoteStreams`, `remoteWatches`); this is the
+                // unary call, which is what a turn awaits.
+                const c = this.#counters;
+                if (++c.remoteInflight > c.remoteInflightPeak) c.remoteInflightPeak = c.remoteInflight;
+                try {
+                    return await this.#transportDispatcher(target).dispatch(ref, method, args, call);
+                } finally {
+                    c.remoteInflight--;
+                }
             } catch (error) {
                 const failure = await this.#noteFailure(id, error, target !== 'local');
                 if (!failure) throw error;

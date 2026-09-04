@@ -23,6 +23,63 @@ which is why `metrics()` splits the two halves: `queueMs` (waiting for a turn �
 high means the actor is hot) against `turnMs` (holding the activation — high
 means the turn itself is slow).
 
+## Admission and overload
+
+A turn queue is a promise chain with no cap of its own (`host/turns.ts`), so
+before #384 the only thing that bounded it was the caller's deadline: a host
+offered more than it could drain accepted every call, held each one for
+`callTimeoutMs`, ran its body anyway when its turn came, and then failed it —
+it *drowned* (the 500 runs/s row of `wf-local/drown-vs-shed` in
+`BASELINES.md`: ~660 deadline failures and 979 publish timeouts while every
+"the engine refused something" counter read zero). Three things changed.
+
+**Two caps, both off by default.** `defineActor({ maxQueued })` (or
+`HostDefaults.maxQueuedPerActor`, which it overrides — an explicit `0` on
+either is unlimited) bounds one activation's queued-plus-running turns;
+`HostDefaults.maxInflightTurns` bounds the host's, counting *every* turn on
+it — timer ticks, task turns and watch reads included, because a loop
+saturated by its actors' own work is just as full. A call that would pass
+either is refused **before it is queued**, synchronously, with
+`ActorOverloadedError` (`kind: 'overloaded'`, `scope: 'actor' | 'host'`,
+`depth`, `limit`), and `HostStats.overloadRefusals` counts it. The check is
+two integer compares on `Activation.enqueue`; with both caps at 0 the hot
+path is byte for byte what it was.
+
+**Only calls are refused.** The runtime's own turns never come through
+admission: a watch loop's reads (`enqueueSystem`), the write-behind flush, a
+conflict reload, a timer tick and a task's `ctx.turn` all schedule on
+`Turns` directly. They *count* toward `maxInflightTurns` — they are what
+fills the loop — but a cap exists to shed a caller's load, and refusing the
+runtime's own progress would turn back-pressure into a stall. Where a
+refusal lands on one of the runtime's delivery paths it takes that path's
+existing failure branch: a reminder whose `deliver()` is refused is counted
+`remindersUndelivered` and re-armed one tick out (#306), a topic delivery is
+a `failures[]` entry and never a publisher exception, a one-way call rejects
+its caller at acceptance rather than resolving `undefined` (the refusal is
+pre-acceptance by construction — `enqueue` throws rather than returning a
+rejection, so `#dispatchOneWay` cannot mistake it for a post-acceptance
+failure). `retryQueuedOnConflict` is untouched: the reload keeps a queue
+*alive* across a conflict, the cap keeps it *short*.
+
+**Drop-on-dequeue.** At the head of every turn, a `call.deadline` already in
+the past rejects with `ActorCallTimeoutError` (`skipped: true`) without
+running the body: the caller already holds its timeout from the dispatcher's
+race, so the body would be work for nobody, in front of calls that can still
+be answered. A running turn is still never killed. This reuses the clock
+read the turn already takes, so it too adds nothing to the hot path — and
+it is why the control arm of `dispatch/overload-shed` runs ~80 of 400
+bodies rather than all of them.
+
+**Sizing.** `maxQueued ≈ callTimeoutMs / p50 turn ms`: never admit more than
+the queue can drain inside the deadline, so that an admitted call completes
+and a refused one fails in microseconds — the two outcomes a caller can act
+on. The same arithmetic sizes `maxInflightTurns` against the loop as a
+whole. Across hosts the kind crosses the wire as a 429 with its fields and
+is **never re-placed** by the routing loop (`clustering.md`): the call
+reached the owner, which is full, and retrying into the same queue is what
+the refusal exists to prevent. `ClusterCounters.overloadedReplies` counts
+them on the calling side.
+
 ## What runs outside a turn
 
 Three things deliberately run outside the turn sequence, so they cannot block

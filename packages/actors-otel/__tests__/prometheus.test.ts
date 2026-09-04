@@ -7,7 +7,7 @@
  * pin the `ops()` auth posture it copies.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineActor } from '@sigx/actors';
+import { type HostStats, defineActor } from '@sigx/actors';
 import type { ClusterCounterTotals } from '@sigx/actors/cluster';
 import {
     defineActorApp,
@@ -208,6 +208,46 @@ describe('renderPrometheus', () => {
         expect(text).not.toContain('socket_connection_duration');
     });
 
+    it('renders the admission counter and the reminder-table gauge beside the host stats (#384)', () => {
+        const hostStats: HostStats = {
+            activations: 3,
+            queued: 2,
+            perType: { Counter: 3 },
+            transitional: { activating: 0, deactivating: 0 },
+            overloadRefusals: 7,
+            reminderShardEntriesMax: 1200
+        };
+        const text = renderPrometheus(digest, hostStats, {});
+        const lines = text.split('\n');
+        expect(lines).toContain('# TYPE sigx_actors_overload_refusals_total counter');
+        expect(lines).toContain('sigx_actors_overload_refusals_total 7');
+        expect(lines).toContain('# TYPE sigx_actors_reminder_shard_entries_max gauge');
+        expect(lines).toContain('sigx_actors_reminder_shard_entries_max 1200');
+        // A host predating the fields renders 0, not a missing series.
+        const legacy = renderPrometheus(
+            digest,
+            { ...hostStats, overloadRefusals: undefined, reminderShardEntriesMax: undefined },
+            {}
+        ).split('\n');
+        expect(legacy).toContain('sigx_actors_overload_refusals_total 0');
+        expect(legacy).toContain('sigx_actors_reminder_shard_entries_max 0');
+        // No pool without a bounded fetch.
+        expect(text).not.toContain('sigx_actors_pool_');
+    });
+
+    it('renders the bounded fetch pool gauge when given one (#384)', () => {
+        const text = renderPrometheus(digest, null, {
+            pool: { connections: 64, inflight: 5, inflightPeak: 64, saturatedMs: 1500, queuedCalls: 9 }
+        });
+        const lines = text.split('\n');
+        expect(lines).toContain('sigx_actors_pool_connections 64');
+        expect(lines).toContain('sigx_actors_pool_inflight 5');
+        expect(lines).toContain('sigx_actors_pool_inflight_peak 64');
+        expect(lines).toContain('# TYPE sigx_actors_pool_saturated_seconds_total counter');
+        expect(lines).toContain('sigx_actors_pool_saturated_seconds_total 1.5');
+        expect(lines).toContain('sigx_actors_pool_queued_calls_total 9');
+    });
+
     it('renders the cluster dispatch pair by locality (#346)', () => {
         const text = renderPrometheus(digest, null, { cluster: clusterCounters });
         const lines = text.split('\n');
@@ -223,6 +263,17 @@ describe('renderPrometheus', () => {
         expect(text).not.toContain('sigx_actors_cluster_dispatches_total{locality="remote"} 12');
         const helps = lines.filter((l) => l.startsWith('# HELP sigx_actors_cluster_dispatches_total '));
         expect(helps).toHaveLength(1);
+        // The pool-saturation gauge from the placement side (#384); a
+        // pre-#384 peer's counters render 0.
+        expect(lines).toContain('sigx_actors_cluster_remote_inflight 0');
+        expect(lines).toContain('sigx_actors_cluster_remote_inflight_peak 0');
+        expect(lines).toContain('sigx_actors_cluster_overloaded_replies_total 0');
+        const withGauge = renderPrometheus(digest, null, {
+            cluster: { ...clusterCounters, remoteInflight: 3, remoteInflightPeak: 40, overloadedReplies: 2 }
+        }).split('\n');
+        expect(withGauge).toContain('sigx_actors_cluster_remote_inflight 3');
+        expect(withGauge).toContain('sigx_actors_cluster_remote_inflight_peak 40');
+        expect(withGauge).toContain('sigx_actors_cluster_overloaded_replies_total 2');
     });
 
     it('emits no cluster family at all without cluster counters', () => {
