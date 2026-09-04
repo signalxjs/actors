@@ -25,8 +25,10 @@
   is re-armed one tick out and a refused topic delivery is a `failures[]`
   entry. `HostStats.overloadRefusals` counts refusals.
 - **Drop-on-dequeue** (#384). A queued turn whose caller's deadline has
-  already passed is skipped instead of run — `ActorCallTimeoutError` now
-  says so (`skipped`). A running turn is still never killed.
+  already passed is skipped instead of run. `ActorCallTimeoutError` carries
+  `skipped: boolean` for it — a field, and one that crosses both wires, so
+  a caller can tell "the turn is running without me" from "the turn never
+  ran" without reading the message. A running turn is still never killed.
 - **The pool-saturation gauge** (#302 option 2, #384).
   `ClusterCounters.remoteInflight` / `remoteInflightPeak` (outbound hops
   not yet answered) and `overloadedReplies` (peer refusals);

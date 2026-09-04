@@ -25,7 +25,9 @@
  *    has grown (the "outgrown" gauge, #396).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineActor, isActorError, topic, type ActorContext } from '@sigx/actors';
+import { ActorCallTimeoutError, defineActor, isActorError, topic, type ActorContext } from '@sigx/actors';
+import { fromHostWireError, toHostWireError } from '../src/cluster/wire-errors';
+import { toClientError } from '../src/server/client-error';
 import type { ActorOverloadedError } from '@sigx/actors';
 import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
 import { emptyHostStats } from '../src/types';
@@ -455,6 +457,35 @@ describe('the public wire', () => {
         configureActors(null);
         releaseAll();
         await first;
+    });
+});
+
+
+describe('the skipped flag is a field, not a sentence', () => {
+    it('is readable on the error, crosses the host wire, and reaches a client', () => {
+        const ran = new ActorCallTimeoutError('T/k', 'm', 30, {});
+        const skipped = new ActorCallTimeoutError('T/k', 'm', 30, { skipped: true });
+        // A caller distinguishes "the turn is still running without me"
+        // from "the turn never ran" without parsing English.
+        expect(ran.skipped).toBe(false);
+        expect(skipped.skipped).toBe(true);
+
+        const wire = toHostWireError(skipped);
+        expect(wire.status).toBe(504);
+        expect((wire.data as { skipped?: boolean }).skipped).toBe(true);
+        const back = fromHostWireError(wire.status ?? 504, wire, 'fallback');
+        expect((back as { skipped?: boolean }).skipped).toBe(true);
+
+        // The older outcome stays absent on the wire, so a peer that never
+        // learned the field reads exactly what it always did.
+        const ranWire = toHostWireError(ran);
+        expect('skipped' in (ranWire.data as object)).toBe(false);
+        expect((fromHostWireError(ranWire.status ?? 504, ranWire, 'f') as { skipped?: boolean }).skipped).toBe(
+            false
+        );
+
+        const client = toClientError(skipped) as { data?: { skipped?: boolean } };
+        expect(client.data?.skipped).toBe(true);
     });
 });
 

@@ -155,6 +155,13 @@ export class HostShutdownError extends ActorError {
  * would be work for nobody in front of calls that can still be answered.
  */
 export class ActorCallTimeoutError extends ActorError {
+    /** The turn never ran: its deadline had already passed when the queue
+     *  reached it. `false` is the older outcome — the turn IS running and
+     *  only this caller gave up — and the two want different reactions, so
+     *  it is a field rather than a sentence in the message. Crosses the
+     *  wire with the error. */
+    readonly skipped: boolean;
+
     constructor(ref: string, method: string, ms: number, options?: { skipped?: boolean }) {
         super(
             'call-timeout',
@@ -164,6 +171,7 @@ export class ActorCallTimeoutError extends ActorError {
                       `The turn keeps running; only this caller gave up.`
         );
         this.name = 'ActorCallTimeoutError';
+        this.skipped = options?.skipped === true;
     }
 }
 
