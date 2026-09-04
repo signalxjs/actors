@@ -54,6 +54,7 @@ import {
     type ActivationHost
 } from './activation';
 import { LocalHost } from './local-host';
+import type { Admission } from './activation';
 import { shardedReminders } from './reminders';
 import { rosterTaskLiveness } from './task-liveness';
 import { taskLedger,
@@ -96,6 +97,27 @@ export interface HostDefaults {
      * `sweepIntervalMs > 0`.
      */
     maxActivations?: number;
+    /**
+     * Admission cap on EVERY actor's turn queue, unless the definition
+     * sets its own `maxQueued` (#384). A call that would push an
+     * activation's queued-plus-running turns past this is refused at once
+     * with `ActorOverloadedError` (`scope: 'actor'`) — shed in
+     * microseconds, instead of held for `callTimeoutMs` and then failed
+     * after doing the work. Default 0 = unlimited (the pre-#384 contract).
+     * The runtime's own turns (watch reads, the write-behind flush, a
+     * conflict reload) are never capped. Sizing rule: `callTimeoutMs / p50
+     * turn ms` — never admit more than the queue can drain inside the
+     * deadline.
+     */
+    maxQueuedPerActor?: number;
+    /**
+     * Admission cap on the HOST: turns queued or running across every
+     * activation (#384). Past it a call is refused with
+     * `ActorOverloadedError` (`scope: 'host'`). Default 0 = unlimited. The
+     * per-actor cap bounds one hot key; this one bounds what the whole
+     * event loop has taken on. Same exemptions.
+     */
+    maxInflightTurns?: number;
     /** Reminder loop cadence, ms. Default 30s. */
     reminderTickMs?: number;
     /** __DEV__ slow-turn warning threshold, ms. Default 5s. */
@@ -172,11 +194,21 @@ export interface CreateHostOptions {
     defaults?: HostDefaults;
 }
 
+/**
+ * Entries in one sharded reminder record past which the host dev-warns
+ * that the table has outgrown `shardedReminders()` (#384). From #396: at
+ * 10 000 entries a `set` costs ~5 ms, at 100 000 ~1 s; ~1 000 is where the
+ * curve is still flat and the warning is early enough to act on.
+ */
+const REMINDER_SHARD_OUTGROWN = 1_000;
+
 interface ResolvedDefaults {
     idleAfterMs: number;
     callTimeoutMs: number;
     sweepIntervalMs: number;
     maxActivations: number;
+    maxQueuedPerActor: number;
+    maxInflightTurns: number;
     reminderTickMs: number;
     slowTurnMs: number;
     taskGraceMs: number;
@@ -216,6 +248,16 @@ class HostImpl implements Host {
     #reminders: ActorReminders;
     /** Failed reminder dispatches, per attempt — `HostStats.remindersUndelivered` (#306). */
     #remindersUndelivered = 0;
+    /**
+     * Admission state shared by every activation (#384): the two caps, the
+     * host-wide in-flight count and the refusal counter. One object, held
+     * by reference on the `ActivationHost`, so an activation's `enqueue`
+     * reads and bumps it with no indirection.
+     */
+    #admission: Admission = { maxQueuedPerActor: 0, maxInflightTurns: 0, inflight: 0, refusals: 0 };
+    /** The largest sharded reminder record ticked — `HostStats.reminderShardEntriesMax`. */
+    #reminderShardEntriesMax = 0;
+    #warnedShardOutgrown = false;
     #taskLiveness: ActorTaskLiveness;
     #registry = new Map<
         string,
@@ -239,6 +281,8 @@ class HostImpl implements Host {
             callTimeoutMs: options.defaults?.callTimeoutMs ?? 30_000,
             sweepIntervalMs: options.defaults?.sweepIntervalMs ?? 60_000,
             maxActivations: options.defaults?.maxActivations ?? 0,
+            maxQueuedPerActor: options.defaults?.maxQueuedPerActor ?? 0,
+            maxInflightTurns: options.defaults?.maxInflightTurns ?? 0,
             reminderTickMs: options.defaults?.reminderTickMs ?? 30_000,
             slowTurnMs: options.defaults?.slowTurnMs ?? 5_000,
             taskGraceMs: options.defaults?.taskGraceMs ?? 10_000,
@@ -304,10 +348,13 @@ class HostImpl implements Host {
             }
         }
 
+        this.#admission.maxQueuedPerActor = this.#defaults.maxQueuedPerActor;
+        this.#admission.maxInflightTurns = this.#defaults.maxInflightTurns;
         const host: ActivationHost = this.#host = {
             idleAfterMs: this.#defaults.idleAfterMs,
             slowTurnMs: this.#defaults.slowTurnMs,
             taskGraceMs: this.#defaults.taskGraceMs,
+            admission: this.#admission,
             scheduler: this.#scheduler,
             defaultDeadline: () => this.#defaultDeadline(),
             loadState: async (ref) => {
@@ -428,6 +475,22 @@ class HostImpl implements Host {
                 this.dispatch(ref, REMINDER_METHOD, [name], this.#externalCall()),
             undelivered: () => {
                 this.#remindersUndelivered++;
+            },
+            shardSize: (shard, entries) => {
+                if (entries > this.#reminderShardEntriesMax) this.#reminderShardEntriesMax = entries;
+                if (__DEV__ && !this.#warnedShardOutgrown && entries >= REMINDER_SHARD_OUTGROWN) {
+                    this.#warnedShardOutgrown = true;
+                    console.warn(
+                        `[sigx actors] reminder shard ${shard} holds ${entries} entries. The ` +
+                            `default shardedReminders() loads, scans and rewrites a whole record ` +
+                            `per tick and per set/clear, so its cost grows with this number ` +
+                            `(~5 ms per set at 10 000 entries, ~1 s at 100 000, where most ` +
+                            `wakes miss their tick — #396). At this size a due-time-indexed ` +
+                            `provider (pgReminders, surrealReminders, or redisReminders once ` +
+                            `#385 lands) is the answer. HostStats.reminderShardEntriesMax ` +
+                            `carries the gauge.`
+                    );
+                }
             }
         });
         // Single-node: an id for THIS host instance, never reused — the
@@ -988,7 +1051,12 @@ class HostImpl implements Host {
     }
 
     stats(): HostStats {
-        return { ...this.#local.stats(), remindersUndelivered: this.#remindersUndelivered };
+        return {
+            ...this.#local.stats(),
+            remindersUndelivered: this.#remindersUndelivered,
+            overloadRefusals: this.#admission.refusals,
+            reminderShardEntriesMax: this.#reminderShardEntriesMax
+        };
     }
 
     activations(options?: ActivationsOptions): readonly ActivationInfo[] {

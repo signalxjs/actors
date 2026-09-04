@@ -219,9 +219,12 @@ export class ReminderService implements ActorReminders {
         // deleted one-shot — so a failed dispatch can tell "still as I left
         // it" from "the actor has since set or cleared it" (see `#rearm`).
         const due: Due[] = [];
+        let entriesInRecord = 0;
         await this.#mutate(shard, (table) => {
             due.length = 0; // the mutation may retry after a CAS conflict
+            entriesInRecord = 0;
             for (const [id, entries] of Object.entries(table)) {
+                entriesInRecord += Object.keys(entries).length;
                 const nul = id.indexOf('\u0000');
                 if (nul < 0) continue;
                 const ref: ActorRef = { type: id.slice(0, nul), key: id.slice(nul + 1) };
@@ -258,6 +261,13 @@ export class ReminderService implements ActorReminders {
         // — and `nextDue` is computed at write time, so that only shifts the
         // retry, never brings it inside a tick.
         const context = this.#require();
+        // The size gauge (#384): counted on the scan the tick already does,
+        // BEFORE this tick's deletions — what the CAS just rewrote.
+        try {
+            context.shardSize?.(shard, entriesInRecord);
+        } catch {
+            // A gauge must never fail a tick.
+        }
         const failed: Due[] = [];
         await Promise.allSettled(
             due.map(async (entry) => {

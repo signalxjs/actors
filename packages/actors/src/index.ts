@@ -38,6 +38,7 @@ export {
     ActorMethodNotFoundError,
     HostShutdownError,
     ActorCallTimeoutError,
+    ActorOverloadedError,
     ActorWrongHostError,
     ActorUnreachableError,
     ActorUnplaceableError,

@@ -44,6 +44,28 @@ export interface UndiciLike {
     ) => Promise<Response>;
 }
 
+/**
+ * What a bounded fetch has been doing (#302 option 2, #384): the
+ * pool-saturation gauge from the socket side. `inflight` is calls through
+ * this fetch not yet answered; `saturatedMs` accumulates the time during
+ * which `inflight >= connections` — the time further calls were queueing
+ * behind the pool rather than on the wire. A `saturatedMs` that grows
+ * while a host's turns are awaiting cross-host calls is #302 in progress.
+ */
+export interface BoundedFetchStats {
+    /** The cap this fetch was built with. */
+    connections: number;
+    inflight: number;
+    inflightPeak: number;
+    /** Time spent at or over the cap, ms, monotonic. */
+    saturatedMs: number;
+    /** Calls that started while the pool was already at its cap. */
+    queuedCalls: number;
+}
+
+/** The fetch `boundedFetch` returns: a fetch, plus its own gauge. */
+export type BoundedFetch = typeof globalThis.fetch & { stats(): BoundedFetchStats };
+
 export interface BoundedFetchOptions {
     /**
      * Socket cap per origin — MATCH YOUR CONCURRENCY. At the host's
@@ -69,7 +91,7 @@ function loadUndici(): Promise<UndiciLike> {
 export function createBoundedFetch(
     options: BoundedFetchOptions,
     load: () => Promise<UndiciLike>
-): typeof globalThis.fetch {
+): BoundedFetch {
     const { connections } = options;
     if (!Number.isInteger(connections) || connections < 1) {
         throw new Error(
@@ -114,10 +136,49 @@ export function createBoundedFetch(
         return ready;
     }
 
-    return async function fetch(input, init) {
-        const { undici, agent } = await agentReady();
-        return undici.fetch(input as string | URL | Request, { ...init, dispatcher: agent });
+    // The gauge (#384). `saturatedSince` is the clock at which the pool
+    // last became full; the interval is folded into `saturatedMs` when it
+    // empties below the cap, and `stats()` adds the open interval so a
+    // reading taken mid-saturation is current.
+    let inflight = 0;
+    let inflightPeak = 0;
+    let saturatedMs = 0;
+    let saturatedSince: number | null = null;
+    let queuedCalls = 0;
+    const now = () => performance.now();
+    const enter = (): void => {
+        if (inflight >= connections) queuedCalls++;
+        inflight++;
+        if (inflight > inflightPeak) inflightPeak = inflight;
+        if (inflight >= connections && saturatedSince === null) saturatedSince = now();
     };
+    const leave = (): void => {
+        inflight--;
+        if (inflight < connections && saturatedSince !== null) {
+            saturatedMs += now() - saturatedSince;
+            saturatedSince = null;
+        }
+    };
+    const fetch = async function fetch(
+        input: string | URL | Request,
+        init?: RequestInit
+    ): Promise<Response> {
+        enter();
+        try {
+            const { undici, agent } = await agentReady();
+            return await undici.fetch(input, { ...init, dispatcher: agent });
+        } finally {
+            leave();
+        }
+    } as BoundedFetch;
+    fetch.stats = (): BoundedFetchStats => ({
+        connections,
+        inflight,
+        inflightPeak,
+        saturatedMs: saturatedMs + (saturatedSince === null ? 0 : now() - saturatedSince),
+        queuedCalls
+    });
+    return fetch;
 }
 
 /**
@@ -127,6 +188,6 @@ export function createBoundedFetch(
  * process's global dispatcher. Requires the optional `undici` peer; loaded
  * lazily on the first call.
  */
-export function boundedFetch(options: BoundedFetchOptions): typeof globalThis.fetch {
+export function boundedFetch(options: BoundedFetchOptions): BoundedFetch {
     return createBoundedFetch(options, loadUndici);
 }

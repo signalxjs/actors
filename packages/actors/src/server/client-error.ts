@@ -23,6 +23,17 @@ export function toClientError(error: unknown): unknown {
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'call-timeout':
             return new ServerFnError(504, error.message, { kind: error.kind });
+        case 'overloaded': {
+            // Admission refused (#384): the one status whose meaning is
+            // "try again later" — and distinct from 503, which the cluster
+            // reads as a draining peer.
+            const { scope, depth, limit } = error as {
+                scope?: string;
+                depth?: number;
+                limit?: number;
+            };
+            return new ServerFnError(429, error.message, { kind: error.kind, scope, depth, limit });
+        }
         case 'wrong-host':
         case 'unreachable':
         case 'fenced':

@@ -36,7 +36,8 @@ const ACTOR_ERROR_KINDS = new Set<string>([
     'unreachable',
     'unplaceable',
     'fenced',
-    'watch-declaration'
+    'watch-declaration',
+    'overloaded'
 ]);
 
 /**
@@ -72,12 +73,22 @@ export function toHostWireError(error: unknown): HostWireError {
                   ? 503
                   : error.kind === 'call-timeout'
                     ? 504
-                    : 500;
+                    : error.kind === 'overloaded'
+                      ? 429
+                      : 500;
     const owner = (error as ActorWrongHostError).owner;
+    // An overload refusal carries where it was refused and how full the
+    // queue was (#384) — what a caller's backoff and an operator's graph
+    // both read — so those cross like `owner` does.
+    const { scope, depth, limit } = error as Partial<OverloadFields>;
     return {
         message: error.message,
         status,
-        data: { kind: error.kind, ...(owner ? { owner } : {}) }
+        data: {
+            kind: error.kind,
+            ...(owner ? { owner } : {}),
+            ...(error.kind === 'overloaded' ? { scope, depth, limit } : {})
+        }
     };
 }
 
@@ -91,7 +102,9 @@ export function fromHostWireError(
     wire: HostWireError | undefined,
     fallback: string
 ): Error {
-    const data = wire?.data as { kind?: string; owner?: ActorOwnerHint } | undefined;
+    const data = wire?.data as
+        | ({ kind?: string; owner?: ActorOwnerHint } & Partial<OverloadFields>)
+        | undefined;
     const kind = data?.kind;
     if (typeof kind === 'string' && ACTOR_ERROR_KINDS.has(kind)) {
         // Brand-assign rather than re-run constructors: the peer's message
@@ -100,7 +113,10 @@ export function fromHostWireError(
         return Object.assign(new Error(wire?.message ?? fallback), {
             __sigxActorError: true as const,
             kind: kind as ActorErrorKind,
-            ...(kind === 'wrong-host' && data?.owner ? { owner: data.owner } : {})
+            ...(kind === 'wrong-host' && data?.owner ? { owner: data.owner } : {}),
+            ...(kind === 'overloaded'
+                ? { scope: data?.scope ?? 'actor', depth: data?.depth ?? 0, limit: data?.limit ?? 0 }
+                : {})
         });
     }
     return wireFail(status, wire, fallback);
@@ -117,3 +133,10 @@ export const hostWireCodec: HostWireCodec = {
     decode: reviveWire,
     reviver
 };
+
+/** What an `overloaded` refusal carries across the wire (#384). */
+interface OverloadFields {
+    scope: 'actor' | 'host';
+    depth: number;
+    limit: number;
+}

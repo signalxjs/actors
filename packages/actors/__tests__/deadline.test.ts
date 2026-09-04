@@ -118,7 +118,7 @@ describe('call deadlines', () => {
         }
     });
 
-    it('an already-expired deadline rejects with 0ms, runs the turn, and leaves no unhandled rejection', async () => {
+    it('an already-expired deadline rejects with 0ms, SKIPS the turn (#384), and leaves no unhandled rejection', async () => {
         const def = probeActor();
         const host = createHost({ actors: [def], defaults: { ...quiet, callTimeoutMs: 0 } });
         const unhandled: unknown[] = [];
@@ -136,18 +136,19 @@ describe('call deadlines', () => {
                 (e: unknown) =>
                     isActorError(e) && e.kind === 'call-timeout' && (e as Error).message.includes('0ms')
             );
-            // The turn is never killed: the state change lands. Polled, not a
-            // single read — the caller was already rejected, so this follow-up
-            // dispatch races the timed-out turn's own enqueue at the cold
-            // activation boundary, and arrival order across that boundary has
-            // never been part of the mailbox contract (FIFO starts at
-            // arrival). Since #24 the follow-up can genuinely win that race.
-            await vi.waitFor(async () => {
-                await expect(
-                    host.dispatch(ref, 'get', [], { callChain: [], callId: 'test' })
-                ).resolves.toBe(1);
-            });
-            // Let any orphaned rejection surface.
+            // Drop-on-dequeue (#384): the caller had already given up when
+            // the turn reached the head of the queue, so the body never
+            // runs — the state change does NOT land. (Before #384 it did:
+            // "the turn is never killed" applied to queued turns too, and a
+            // drowning host spent its deadline window doing work for
+            // nobody.) A RUNNING turn is still never killed.
+            await new Promise((r) => setTimeout(r, 20));
+            await expect(
+                host.dispatch(ref, 'get', [], { callChain: [], callId: 'test' })
+            ).resolves.toBe(0);
+            // Let any orphaned rejection surface: the skipped turn's own
+            // rejection is swallowed by the race, exactly as a late
+            // failure was.
             await new Promise((r) => setTimeout(r, 20));
             expect(unhandled).toEqual([]);
         } finally {

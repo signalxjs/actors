@@ -316,7 +316,10 @@ describe('screens render', () => {
                         rebalanceRounds: 0,
                         rebalanceMigrations: 0,
                         claimed: 3,
-                        routeCacheSize: 3
+                        routeCacheSize: 3,
+                        overloadedReplies: 0,
+                        remoteInflight: 0,
+                        remoteInflightPeak: 0
                     }
                 }),
                 reminderShards: { p0: ['host-a'], p1: [], p2: ['host-a', 'host-b'] },

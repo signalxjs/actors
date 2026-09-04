@@ -545,6 +545,14 @@ export interface ActorRemindersContext {
      * by hand (tests, an older host) need not carry it.
      */
     undelivered?(ref: ActorRef, name: string, error: unknown): void;
+    /**
+     * Report the size of a reminder record the implementation just ticked
+     * (#384): the host keeps the maximum as
+     * `HostStats.reminderShardEntriesMax`, the gauge that says when the
+     * sharded table has outgrown itself. Optional, and meaningless to an
+     * implementation that keeps no such record.
+     */
+    shardSize?(shard: string, entries: number): void;
 }
 
 /**
@@ -1271,6 +1279,19 @@ export interface ActorOptions<
      */
     retryQueuedOnConflict?: true;
     /**
+     * Admission cap on this actor's turn queue (#384). A call that would
+     * push queued-plus-running turns past this is refused at once with
+     * `ActorOverloadedError` (`scope: 'actor'`) instead of queued — so a
+     * saturated activation sheds in microseconds rather than holding every
+     * call for `callTimeoutMs` and failing all of them after doing the
+     * work. `0` = unlimited. Unset = `HostDefaults.maxQueuedPerActor`.
+     * Never applied to the runtime's own turns (watch reads, the
+     * write-behind flush, a conflict reload). Size it as
+     * `callTimeoutMs / p50 turn ms`: never admit more than the queue can
+     * drain inside the deadline.
+     */
+    maxQueued?: number;
+    /**
      * Reentrancy. Default `false`: turns are strictly serial and A→B→A
      * throws `ActorDeadlockError`.
      *
@@ -1781,6 +1802,25 @@ export interface HostStats {
      * nothing", not "lost none".
      */
     remindersUndelivered?: number;
+    /**
+     * Calls this host REFUSED at admission (#384) — a queue at its
+     * `maxQueued`, or the host at its `maxInflightTurns` — counted per
+     * refusal, monotonic for the host's lifetime. A climbing value is a host
+     * shedding load, which is the designed behaviour past capacity; read it
+     * against `queued` and the caller's own error rate. OPTIONAL for the
+     * mixed-fleet reason above.
+     */
+    overloadRefusals?: number;
+    /**
+     * The largest sharded reminder record this host has ticked, in entries
+     * (#384, from #396). The default `shardedReminders()` loads, scans and
+     * CAS-rewrites a whole record per tick and per `set`/`clear`, so this is
+     * the number its cost grows with: at ~10 000 entries a set is ~5 ms, at
+     * ~100 000 it is ~1 s and most wakes miss their tick. Past ~1 000 the
+     * host dev-warns once that a due-time-indexed provider is the answer.
+     * `0` under a provider that does not shard. OPTIONAL as above.
+     */
+    reminderShardEntriesMax?: number;
 }
 
 /**
@@ -1814,7 +1854,9 @@ export const emptyHostStats = (): HostStats => ({
     perType: {},
     transitional: { activating: 0, deactivating: 0 },
     watchLoops: 0,
-    remindersUndelivered: 0
+    remindersUndelivered: 0,
+    overloadRefusals: 0,
+    reminderShardEntriesMax: 0
 });
 
 /** One live activation, as `Host.activations()` reports it. */

@@ -4,7 +4,12 @@
  * and the file dev-storage provider.
  */
 export { fileStorage } from './file-storage';
-export { boundedFetch, type BoundedFetchOptions } from './bounded-fetch';
+export {
+    boundedFetch,
+    type BoundedFetch,
+    type BoundedFetchOptions,
+    type BoundedFetchStats
+} from './bounded-fetch';
 export {
     createActorHandler,
     attachSignalHandlers,

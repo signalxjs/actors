@@ -65,13 +65,37 @@ export interface RenderPrometheusOptions {
      * type-check.
      */
     cluster?: Partial<ClusterCounterTotals> | null;
+    /**
+     * The host-to-host fetch pool's own gauge (#384) — `boundedFetch(…)
+     * .stats()` from `@sigx/actors/node`, structurally so this entry stays
+     * free of the node one. Renders the `{prefix}pool_*` family: in-flight
+     * against the cap, and the seconds spent AT the cap, which is the
+     * pool-saturation signal of #302. Absent or null renders nothing.
+     */
+    pool?: PoolStats | null;
+}
+
+/** The shape of `BoundedFetchStats`, declared structurally. */
+export interface PoolStats {
+    connections: number;
+    inflight: number;
+    inflightPeak: number;
+    saturatedMs: number;
+    queuedCalls: number;
 }
 
 /**
  * `prometheusOps` reads the socket digest off the registry itself, and the
  * cluster counters through a thunk read on every scrape.
  */
-export interface PrometheusOpsOptions extends Omit<RenderPrometheusOptions, 'sockets' | 'cluster'> {
+export interface PrometheusOpsOptions
+    extends Omit<RenderPrometheusOptions, 'sockets' | 'cluster' | 'pool'> {
+    /**
+     * How to read the host-to-host fetch pool's gauge on each scrape —
+     * `() => fetch.stats()` for the `boundedFetch` handed to `cluster()`.
+     * Answer `undefined` for "no bounded pool": no pool family is emitted.
+     */
+    pool?: () => PoolStats | undefined;
     /** Route path. Default `'/_sigx/metrics'`. */
     path?: string;
     /**
@@ -322,6 +346,44 @@ export function renderPrometheus(
         }
         out.family(`${prefix}queued_messages`, 'gauge', 'Turns waiting to run.');
         out.push(`${prefix}queued_messages ${stats.queued}`);
+        // Admission (#384). Rendered whenever stats are — a host predating
+        // the fields reports 0, and a scraper that sees the family knows
+        // the host can shed.
+        out.family(
+            `${prefix}overload_refusals_total`,
+            'counter',
+            'Calls refused at admission (maxQueued / maxInflightTurns).'
+        );
+        out.push(`${prefix}overload_refusals_total ${stats.overloadRefusals ?? 0}`);
+        out.family(
+            `${prefix}reminder_shard_entries_max`,
+            'gauge',
+            'Largest sharded reminder record ticked, in entries.'
+        );
+        out.push(`${prefix}reminder_shard_entries_max ${stats.reminderShardEntriesMax ?? 0}`);
+    }
+
+    // --- the host-to-host fetch pool -----------------------------------
+    const pool = options.pool ?? null;
+    if (pool) {
+        out.family(`${prefix}pool_connections`, 'gauge', 'Bounded fetch pool cap per origin.');
+        out.push(`${prefix}pool_connections ${pool.connections}`);
+        out.family(`${prefix}pool_inflight`, 'gauge', 'Bounded fetch calls in flight.');
+        out.push(`${prefix}pool_inflight ${pool.inflight}`);
+        out.family(`${prefix}pool_inflight_peak`, 'gauge', 'Peak pool_inflight.');
+        out.push(`${prefix}pool_inflight_peak ${pool.inflightPeak}`);
+        out.family(
+            `${prefix}pool_saturated_seconds_total`,
+            'counter',
+            'Seconds the pool spent at its cap.'
+        );
+        out.push(`${prefix}pool_saturated_seconds_total ${pool.saturatedMs / 1000}`);
+        out.family(
+            `${prefix}pool_queued_calls_total`,
+            'counter',
+            'Calls started while the pool was at its cap.'
+        );
+        out.push(`${prefix}pool_queued_calls_total ${pool.queuedCalls}`);
     }
 
     // --- socket sessions -----------------------------------------------
@@ -450,6 +512,26 @@ function renderCluster(out: Lines, prefix: string, totals: Partial<ClusterCounte
     );
     out.push(`${prefix}cluster_dispatches_total{locality="local"} ${totals.dispatchesLocal ?? 0}`);
     out.push(`${prefix}cluster_dispatches_total{locality="remote"} ${totals.dispatchesRemote ?? 0}`);
+    // The pool-saturation gauge from the placement side (#302 option 2,
+    // #384): hops in flight, their peak, and how often a peer refused.
+    out.family(
+        `${prefix}cluster_remote_inflight`,
+        'gauge',
+        'Outbound hops to peers in flight.'
+    );
+    out.push(`${prefix}cluster_remote_inflight ${totals.remoteInflight ?? 0}`);
+    out.family(
+        `${prefix}cluster_remote_inflight_peak`,
+        'gauge',
+        'Peak cluster_remote_inflight.'
+    );
+    out.push(`${prefix}cluster_remote_inflight_peak ${totals.remoteInflightPeak ?? 0}`);
+    out.family(
+        `${prefix}cluster_overloaded_replies_total`,
+        'counter',
+        'Calls a peer refused at admission.'
+    );
+    out.push(`${prefix}cluster_overloaded_replies_total ${totals.overloadedReplies ?? 0}`);
 }
 
 /**
@@ -550,7 +632,8 @@ export function prometheusOps(options: PrometheusOpsOptions = {}): ActorPlugin {
                     const body = renderPrometheus(digest, host?.stats() ?? null, {
                         ...render,
                         sockets: sockets ?? null,
-                        cluster: readCluster?.() ?? null
+                        cluster: readCluster?.() ?? null,
+                        pool: options.pool?.() ?? null
                     });
                     return new Response(method === 'HEAD' ? null : body, {
                         status: 200,

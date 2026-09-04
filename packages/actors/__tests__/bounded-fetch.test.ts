@@ -71,6 +71,46 @@ describe('boundedFetch', () => {
         expect(calls[0]!.init?.body).toBe('b');
     });
 
+    it('keeps the pool-saturation gauge: in-flight, its peak, and time spent at the cap (#384)', async () => {
+        const gates: Array<() => void> = [];
+        const undici: UndiciLike = {
+            Agent: class {
+                constructor(_o: { connections: number }) {}
+            } as UndiciLike['Agent'],
+            fetch: () => new Promise<Response>((r) => gates.push(() => r(new Response('ok'))))
+        };
+        const fetch = createBoundedFetch({ connections: 2 }, () => Promise.resolve(undici));
+        expect(fetch.stats()).toEqual({
+            connections: 2,
+            inflight: 0,
+            inflightPeak: 0,
+            saturatedMs: 0,
+            queuedCalls: 0
+        });
+        const a = fetch('http://p/1');
+        const b = fetch('http://p/2');
+        const c = fetch('http://p/3'); // the third started AT the cap
+        await new Promise((r) => setTimeout(r, 25));
+        const mid = fetch.stats();
+        expect(mid.inflight).toBe(3);
+        expect(mid.inflightPeak).toBe(3);
+        expect(mid.queuedCalls).toBe(1);
+        // Read mid-saturation: the open interval counts.
+        expect(mid.saturatedMs).toBeGreaterThanOrEqual(20);
+        gates.shift()!();
+        gates.shift()!();
+        await Promise.all([a, b]);
+        const below = fetch.stats();
+        expect(below.inflight).toBe(1);
+        // Below the cap the interval is folded and stops growing.
+        await new Promise((r) => setTimeout(r, 15));
+        expect(fetch.stats().saturatedMs).toBe(below.saturatedMs);
+        gates.shift()!();
+        await c;
+        expect(fetch.stats().inflight).toBe(0);
+        expect(fetch.stats().inflightPeak).toBe(3);
+    });
+
     it('loads undici once even under concurrent first calls', async () => {
         const { undici, agents } = fakeUndici();
         let release!: (mod: UndiciLike) => void;

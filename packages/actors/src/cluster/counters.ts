@@ -117,6 +117,13 @@ export interface ClusterCounterTotals {
     // --- failure classification (the `#noteFailure` funnel) ---------------
     /** 421s received: we called the wrong owner and re-routed. */
     wrongHostRedirects: number;
+    /**
+     * `overloaded` answers received from a peer (#384): the owner refused
+     * the call at admission. Never re-routed — the call reached the right
+     * host, which is full — so this is the rate at which THIS host's
+     * outbound calls are being shed by the fleet.
+     */
+    overloadedReplies: number;
     unreachableRetries: number;
     /** Peer was draining (503 host-shutdown) — a rolling deploy in progress. */
     drainingRetries: number;
@@ -157,6 +164,17 @@ export interface ClusterCounterTotals {
     claimed: number;
     /** Entries currently in the route cache (bounded at 10k). */
     routeCacheSize: number;
+    /**
+     * Outbound hops in flight RIGHT NOW — calls this host has sent to peers
+     * and not yet had answered (#302 option 2, #384). Every one of them
+     * holds a pooled connection on an HTTP transport, so this read against
+     * the pool size (`boundedFetch({ connections })`) is the pool-saturation
+     * gauge: at the cap, further hops queue behind the pool, and a turn
+     * awaiting one of them is holding its actor's queue too.
+     */
+    remoteInflight: number;
+    /** The highest `remoteInflight` seen since start — the peak a pool was sized against. */
+    remoteInflightPeak: number;
 }
 
 /** One host's counters: the additive fields plus its own point-in-time state. */
@@ -200,6 +218,7 @@ export function createCounters(): ClusterCounterTotals {
         hostSweeps: 0,
         sweptEntries: 0,
         wrongHostRedirects: 0,
+        overloadedReplies: 0,
         unreachableRetries: 0,
         drainingRetries: 0,
         authFailures: 0,
@@ -211,7 +230,9 @@ export function createCounters(): ClusterCounterTotals {
         rebalanceRounds: 0,
         rebalanceMigrations: 0,
         claimed: 0,
-        routeCacheSize: 0
+        routeCacheSize: 0,
+        remoteInflight: 0,
+        remoteInflightPeak: 0
     };
 }
 
