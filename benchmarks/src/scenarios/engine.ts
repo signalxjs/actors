@@ -265,9 +265,10 @@ const unitCosts: Scenario = {
                     // A fixed loop over deterministic actors under
                     // `selfPolicy`: one more save, one more directory call
                     // or one more shard write per run is a behavioural
-                    // change, and this is where it fails.
-                    exact: true,
-                    noiseFloor: 0.1
+                    // change, and this is where it fails. No `noiseFloor`:
+                    // the comparer bypasses it for an exact metric, and
+                    // naming one would suggest a tolerance there is not.
+                    exact: true
                 });
 
                 metrics.push(
