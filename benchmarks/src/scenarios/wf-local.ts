@@ -73,6 +73,17 @@ export function parseLadder(name: string, raw: string | undefined, fallback: str
 
 const ladder = (name: string, fallback: string): number[] => parseLadder(name, process.env[name], fallback);
 
+/** A positive number from the env, or the fallback when unset — never 0 or
+ *  NaN passed on to the generator to fail later under another name. */
+export function positiveNumber(name: string, raw: string | undefined, fallback: number): number {
+    if (raw === undefined) return fallback;
+    const value = Number(raw);
+    if (raw.trim() === '' || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`[wf-local] ${name} must be a positive number, got '${raw}'`);
+    }
+    return value;
+}
+
 /** Every host knob that changes the curve without changing the image —
  *  the same list `testenv.mjs` puts in the Tier-3 `wf` shape. */
 const HOST_KNOBS = ['FETCH_CONNECTIONS', 'TRANSPORT'];
@@ -196,7 +207,7 @@ function rungExtras(rung: WfFleetRung, prefix: string): Metric[] {
     return extras;
 }
 
-const DURATION_S = Number(process.env.WF_LOCAL_DURATION_S ?? '20');
+const DURATION_S = positiveNumber('WF_LOCAL_DURATION_S', process.env.WF_LOCAL_DURATION_S, 20);
 
 /**
  * The knobs every arm shares: the Tier-3 throughput ladder's short delays
@@ -226,7 +237,7 @@ const multiCore: Scenario = {
         // 5 s signal timeout) compresses it. One host of the default mix
         // saturates at ~15 runs/s on this class of core (the mix is ~60 ms
         // of sha256 per run), so 200 clears eight of them.
-        const rate = Number(process.env.WF_LOCAL_RATE ?? '200');
+        const rate = positiveNumber('WF_LOCAL_RATE', process.env.WF_LOCAL_RATE, 200);
         const hosts = ctx.quick ? HOSTS.slice(0, 2) : HOSTS;
         const durationS = ctx.quick ? 10 : DURATION_S;
         const metrics: Metric[] = [];

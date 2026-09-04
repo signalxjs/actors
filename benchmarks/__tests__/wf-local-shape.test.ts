@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { shapeMismatch } from '../src/shape.mjs';
-import { asTier2, parseLadder, wfLocalShape } from '../src/scenarios/wf-local.ts';
+import { asTier2, parseLadder, positiveNumber, wfLocalShape } from '../src/scenarios/wf-local.ts';
 
 const shape = (over: Partial<Parameters<typeof wfLocalShape>[0]> = {}) =>
     wfLocalShape({
@@ -62,5 +62,18 @@ describe('parseLadder', () => {
     it('refuses a value that parses to no rungs rather than no-op the scenario', () => {
         expect(() => parseLadder('WF_LOCAL_HOSTS', '', '1,2')).toThrow(/WF_LOCAL_HOSTS/);
         expect(() => parseLadder('WF_LOCAL_HOSTS', 'a,b', '1,2')).toThrow(/positive numbers/);
+    });
+});
+
+describe('positiveNumber', () => {
+    it('takes the env value when set and the fallback when not', () => {
+        expect(positiveNumber('X', '45', 20)).toBe(45);
+        expect(positiveNumber('X', undefined, 20)).toBe(20);
+    });
+
+    it('refuses empty, non-numeric and non-positive values by name', () => {
+        expect(() => positiveNumber('WF_LOCAL_RATE', '', 200)).toThrow(/WF_LOCAL_RATE/);
+        expect(() => positiveNumber('WF_LOCAL_RATE', 'fast', 200)).toThrow(/positive number/);
+        expect(() => positiveNumber('WF_LOCAL_DURATION_S', '0', 20)).toThrow(/positive number/);
     });
 });
