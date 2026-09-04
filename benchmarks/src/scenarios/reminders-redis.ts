@@ -136,13 +136,16 @@ async function shardBytes(client: Redis, namespace: string): Promise<number> {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Every key under the namespace, by SCAN and batched DEL — never KEYS,
- *  which blocks the server for the whole keyspace, ours or not. */
+ *  which blocks the server for the whole keyspace, ours or not. A DEL that
+ *  fails is allowed to throw: a namespace left behind would be loaded by
+ *  every set of a rerun, and a scenario that errors is better than one
+ *  that quietly measures the previous run's leftovers. */
 async function deleteNamespace(client: Redis, namespace: string): Promise<void> {
     let cursor = '0';
     do {
         const [next, keys] = await client.scan(cursor, 'MATCH', `${namespace}:*`, 'COUNT', 1000);
         cursor = next;
-        if (keys.length > 0) await client.del(...keys).catch(() => {});
+        if (keys.length > 0) await client.del(...keys);
     } while (cursor !== '0');
 }
 
