@@ -128,6 +128,17 @@ async function shardBytes(client: Redis, namespace: string): Promise<number> {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Every key under the namespace, by SCAN and batched DEL — never KEYS,
+ *  which blocks the server for the whole keyspace, ours or not. */
+async function deleteNamespace(client: Redis, namespace: string): Promise<void> {
+    let cursor = '0';
+    do {
+        const [next, keys] = await client.scan(cursor, 'MATCH', `${namespace}:*`, 'COUNT', 1000);
+        cursor = next;
+        if (keys.length > 0) await client.del(...keys).catch(() => {});
+    } while (cursor !== '0');
+}
+
 interface RungResult {
     arms: number;
     failures: number;
@@ -174,19 +185,23 @@ async function runRung(
             const key = `${label}-${issued}`;
             const host = hosts[issued % hosts.length]!;
             const at = performance.now();
-            due.set(key, Date.now() + DUE_MS);
             arms++;
             inFlight.push(
                 host.dispatch({ type: Armer.type, key }, 'arm', [DUE_MS], benchCall()).then(
                     () => {
                         latency.record(performance.now() - at);
+                        // `due` is "ms from now" AT THE SET, and under a
+                        // slow set that is long after the arm was issued;
+                        // the dispatch resolving is the closest stamp for
+                        // it, so the fire's lag is measured against the
+                        // reminder the runtime actually recorded.
+                        due.set(key, Date.now() + DUE_MS);
                     },
                     () => {
                         // The third CAS attempt lost: `reminders.set` threw
                         // and the actor method with it. This is the
                         // finding, not an error of the rig.
                         failures++;
-                        due.delete(key);
                     }
                 )
             );
@@ -276,7 +291,7 @@ function rungMetrics(prefix: string, r: RungResult): Metric[] {
             // of their due time. Below 1.0 the tick is falling behind its
             // own table.
             name: `${prefix}/fired_within_tick_ratio`,
-            value: r.firedTotal === 0 ? 0 : r.firedWithinTick / (r.arms - r.failures),
+            value: r.arms - r.failures === 0 ? 0 : r.firedWithinTick / (r.arms - r.failures),
             unit: 'ratio',
             direction: 'higher',
             noiseFloor: 0.01
@@ -351,8 +366,7 @@ const armFire: Scenario = {
                 }
             } finally {
                 await harness.stop();
-                const keys = await admin.keys(`${namespace}:*`);
-                if (keys.length > 0) await admin.del(...keys).catch(() => {});
+                await deleteNamespace(admin, namespace);
                 admin.disconnect();
                 storageClient.disconnect();
             }
@@ -396,8 +410,7 @@ const tableSize: Scenario = {
                 metrics.push(...rungMetrics(`n=${POPULATION_HOSTS}/pop=${population}/r=${POPULATION_RATE}`, r));
             } finally {
                 await harness.stop();
-                const keys = await admin.keys(`${namespace}:*`);
-                if (keys.length > 0) await admin.del(...keys).catch(() => {});
+                await deleteNamespace(admin, namespace);
                 admin.disconnect();
                 storageClient.disconnect();
             }
