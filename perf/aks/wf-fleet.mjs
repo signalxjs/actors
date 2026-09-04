@@ -173,8 +173,13 @@ async function psCpu(pids) {
     }
 }
 
+/** A host that accepts the connection and then says nothing must not hang
+ *  the sampler or the quiet check: an overloaded loop is exactly when
+ *  `/_sigx/ops` answers late, and the run has to keep observing it. */
+const OPS_TIMEOUT_MS = 10_000;
+
 async function getJson(url, headers = {}) {
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(OPS_TIMEOUT_MS) });
     if (!res.ok) {
         await res.text().catch(() => {});
         throw new Error(`${url} → ${res.status}`);
