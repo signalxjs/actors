@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { shapeMismatch } from '../src/shape.mjs';
-import { asTier2, wfLocalShape } from '../src/scenarios/wf-local.ts';
+import { asTier2, parseLadder, wfLocalShape } from '../src/scenarios/wf-local.ts';
 
 const shape = (over: Partial<Parameters<typeof wfLocalShape>[0]> = {}) =>
     wfLocalShape({
@@ -49,5 +49,17 @@ describe('asTier2', () => {
             { name: 'a/wakes_lost', value: 0, unit: 'count', direction: 'lower', noiseFloor: 1 }
         ]);
         expect(out.map((m) => m.informational ?? false)).toEqual([true, true, false, false]);
+    });
+});
+
+describe('parseLadder', () => {
+    it('reads the env value in order, or the fallback when unset', () => {
+        expect(parseLadder('X', '8,1, 4', '1,2')).toEqual([8, 1, 4]);
+        expect(parseLadder('X', undefined, '1,2')).toEqual([1, 2]);
+    });
+
+    it('refuses a value that parses to no rungs rather than no-op the scenario', () => {
+        expect(() => parseLadder('WF_LOCAL_HOSTS', '', '1,2')).toThrow(/WF_LOCAL_HOSTS/);
+        expect(() => parseLadder('WF_LOCAL_HOSTS', 'a,b', '1,2')).toThrow(/positive numbers/);
     });
 });

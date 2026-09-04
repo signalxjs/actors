@@ -54,12 +54,24 @@ export function wfLocalHint(): string {
     return 'wf-local/* need REDIS_URL (a local `redis-server` is enough)';
 }
 
-/** A comma ladder, in the caller's order. */
-const ladder = (name: string, fallback: string): number[] =>
-    (process.env[name] ?? fallback)
+/**
+ * A comma ladder, in the caller's order. Pure over the raw value so it is
+ * tested; an env var that is set but parses to nothing is refused rather
+ * than read as "no rungs" — a scenario that silently no-ops on a typo is
+ * worse than one that fails to start.
+ */
+export function parseLadder(name: string, raw: string | undefined, fallback: string): number[] {
+    const rungs = (raw ?? fallback)
         .split(',')
         .map((s) => Number(s.trim()))
         .filter((n) => Number.isFinite(n) && n > 0);
+    if (rungs.length === 0) {
+        throw new Error(`[wf-local] ${name} must list positive numbers, got '${raw ?? fallback}'`);
+    }
+    return rungs;
+}
+
+const ladder = (name: string, fallback: string): number[] => parseLadder(name, process.env[name], fallback);
 
 /** Every host knob that changes the curve without changing the image —
  *  the same list `testenv.mjs` puts in the Tier-3 `wf` shape. */

@@ -317,11 +317,20 @@ async function startHosts(members, { hosts, redisUrl, namespace, basePort, env, 
         );
         relay(child.stdout, `[h${index}]`, onLog);
         relay(child.stderr, `[h${index}]`, onLog);
-        members.push({ index, port, child, pid: child.pid, exited: false });
+        const member = { index, port, child, pid: child.pid, exited: false };
+        members.push(member);
+        // Both events: a spawn failure (executable missing, permissions)
+        // is an `error` with no `exit`, and a host that never marks itself
+        // exited would spin the readiness loop to its timeout with nothing
+        // to say. The member object, not `members[index]`, so this is
+        // right whatever the array holds.
         child.once('exit', (code, signal) => {
-            const m = members[index];
-            m.exited = true;
-            m.exit = { code, signal };
+            member.exited = true;
+            member.exit = { code, signal };
+        });
+        child.once('error', (error) => {
+            member.exited = true;
+            member.exit = { error: error.message };
         });
     }
     // Ready one by one, then the whole fleet visible from every host.
