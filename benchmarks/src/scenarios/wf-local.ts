@@ -166,6 +166,21 @@ function rungExtras(rung: WfFleetRung, prefix: string): Metric[] {
             informational: true
         }
     ];
+    // The outcome split. `finished` alone hides the drown signature: an
+    // overloaded fleet that fails runs through the 30 s call deadline
+    // finishes them FASTER than one that completes them, and its
+    // `run_error_rate` stays 0 because the engine absorbed every deadline
+    // as a run failure rather than a client error.
+    for (const key of ['completed', 'failed', 'compensated', 'cancelled'] as const) {
+        extras.push({
+            name: `${prefix}${key}`,
+            value: rung.row[key],
+            unit: 'count',
+            direction: key === 'completed' ? 'higher' : 'lower',
+            noiseFloor: 1,
+            informational: true
+        });
+    }
     return extras;
 }
 
@@ -204,8 +219,16 @@ const multiCore: Scenario = {
         const durationS = ctx.quick ? 10 : DURATION_S;
         const metrics: Metric[] = [];
         const completed: Record<number, number> = {};
+        // A ten-minute call deadline, so overload on the narrow arms is
+        // QUEUEING rather than deadline failures: the first run of this
+        // scenario had the one-host arm fail two thirds of its runs at the
+        // 30 s default (order p50 landed at 30.9 s, the deadline itself),
+        // which made completed/s a ratio between an arm that failed fast
+        // and one that finished — not a capacity ratio. Drown-vs-shed keeps
+        // the default deadline on purpose; that is where it is the subject.
+        const env = { ...COMMON, WF_CALL_TIMEOUT_MS: '600000' };
         for (const n of hosts) {
-            const result = await runWfFleet({ hosts: n, rate, durationS, env: COMMON, redisUrl: REDIS_URL });
+            const result = await runWfFleet({ hosts: n, rate, durationS, env, redisUrl: REDIS_URL });
             const rung = result.rungs[0];
             if (!rung) throw new Error(`${this.name} hosts=${n}: no rung came back`);
             const prefix = `h=${n}/`;
