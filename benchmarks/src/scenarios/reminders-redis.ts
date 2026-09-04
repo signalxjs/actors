@@ -95,8 +95,10 @@ const Armer = defineActor({
         fired.set(ctx.key, Date.now());
     },
     methods: (ctx) => ({
-        async arm(due: number) {
-            await ctx.reminders.set('fire', { due });
+        // `delayMs` is "ms from now" at the set — the runtime's `due` —
+        // not the absolute `nextDue` the seeded table carries.
+        async arm(delayMs: number) {
+            await ctx.reminders.set('fire', { due: delayMs });
         }
     })
 });

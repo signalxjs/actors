@@ -3110,37 +3110,40 @@ must not be quoted as current.
 | Node | v24.11.1 |
 | Build | `dist/*.prod.js` (`--conditions=production`) |
 | Settings | `reminders-redis/*`, 2 rounds, `--no-warmup`; 15 s of arrivals per rung |
-| Conditions | **Contended** — the calibration probe read 1.62 M then 0.55 M in the two rounds of `arm-fire` (four sibling worktrees were building and testing on the same box). Every timing below is informational and carries that; the failure ratios, the fire-within-tick ratios and the byte counts are counts, and hold. |
-| Why | The L2 rung of the scaling roadmap (`docs/architecture/scaling-roadmap.md`): the 2026-08-26 section measured `reminder_set_failure_ratio` at zero for 50 arms/s + 50 fires/s and named "the rate at which it leaves zero" as the next thing to find. This is that number on loopback — the UPPER bound for any cloud figure, since a real RTT only widens the CAS window. |
+| Conditions | Quiet — the calibration probe read 1.93 M / 1.82 M (`table-size`) and 1.92 M / 1.91 M (`arm-fire`) across rounds, under 6 %. An earlier pass on the same day, taken while four sibling worktrees were building, read 1.62 M / 0.55 M and its set latencies were up to 12× these; that pass is not recorded, and is why the timings here come with the probe. |
+| Why | The L2 rung of the scaling roadmap (`docs/architecture/scaling-roadmap.md`): the 2026-08-26 section measured `reminder_set_failure_ratio` at zero for 50 arms/s + 50 fires/s and named "the rate at which it leaves zero" as the next thing to find. This is that number on loopback — the UPPER bound for any cloud figure, since a longer round trip widens the load-to-save window in which another writer can land. |
 
 The shape: N in-process hosts (`createCluster`, membership and directory in
 memory, `selfPolicy`) over ONE `redisStorage`, `reminderTickMs` 1 s, and an
 OPEN-LOOP arm ladder — R fresh actor keys per second each arming a one-shot
 reminder due 2 s out, round-robined over the hosts, so N hosts is N writer
 chains against the same 16 shard records. Open-loop on purpose: a slow `set`
-must not throttle the arrivals, or the ceiling hides behind its backlog.
+must not throttle the arrivals, or the ceiling hides behind its backlog. A
+failure is the branded `ActorStorageConflict` after the runtime's three
+attempts and nothing else — any other rejection fails the scenario. The
+expected due time is stamped when the dispatch resolves, the closest stamp
+for the set the runtime recorded.
 
 ### `reminders-redis/arm-fire` — the CAS ceiling is above 1 000 arms/s at 16 writers
 
-| N hosts | first rung with a failure | `set_failure_ratio` there | set p50 / p99 at r=1000 | fired within a tick at r=1000 | shard bytes at r=1000 |
-|---:|---|---:|---|---:|---:|
-| 1 | none through 1 000/s | 0 | 1.8 ms / 4.8 ms | 0.997 | 196 KiB |
-| 3 | none through 1 000/s | 0 | 1.6 ms / 8.5 ms | 0.990 | 196 KiB |
-| 8 | none through 1 000/s | 0 | 1.9 ms / 20 ms | 0.980 | 196 KiB |
-| 16 | **r=500** (one round), r=1000 (both) | 0.0007 at 500; **0.0043 / 0.0007** at 1 000 | 4.1 ms / 65 ms | **0.943 / 0.969** | 201 KiB |
+| N hosts | first rung with a failure | `set_failure_ratio` there (per round) | set p50 / p99 at r=1000 | fired within a tick at r=1000 | shard bytes at r=1000 |
+|---:|---|---|---|---:|---:|
+| 1 | none through 1 000/s | 0 | 2.8 ms / 8.4 ms | 1.00 | 196 KiB |
+| 3 | none through 1 000/s | 0 | 2.6 ms / 17 ms | 0.99 | 196 KiB |
+| 8 | none through 1 000/s | 0 | 3.4 ms / 24 ms | 0.99 | 196 KiB |
+| 16 | r=500 (one round of two) | 0.00013 / 0 at 500; **0.00027 / 0.00053** at 1 000 | 4.6 ms / 25 ms | 0.98 | 200 KiB |
 
 Every rung at N ≤ 8 completed its 15 000 arms with zero CAS failures. At
-sixteen writers the third attempt starts losing at 500–1 000 arms/s — 0.07 %
-and 0.43 % — which is where the gate (noise floor 0.001) first trips, and
-the same rung is where the tick begins to fall behind its own table:
-`fired_within_tick_ratio` slides from 0.997 (N=1) to 0.94–0.97 (N=16)
-because every set is a whole-record rewrite and sixteen hosts' sets are
-queued in front of each other's ticks. **On this shape the CAS rate is not
-the ceiling below 1 000 arms/s** — the auto-pipelined loopback round trip
-is too short for three attempts to lose. Redis CPU was 60–320 ms per
-thousand arms across the sweep (informational; falls with rate as the
-per-tick scans amortise over more arms), and the records never passed
-200 KiB, because everything armed here fires two seconds later.
+sixteen writers the third attempt loses two to eight arms in fifteen
+thousand at 500–1 000 arms/s — under the gate's 0.001 floor, so the gate
+never trips on this shape — and the tick keeps up: `fired_within_tick_ratio`
+never drops below 0.98. Commands per arm settle at ~9 (one `HGET` and
+one script per set, the tick's loads, the fire's delete); Redis CPU falls
+from ~290 ms per thousand arms at 50/s to ~90 ms at 1 000/s as the
+per-tick scans amortise. **On this shape the CAS rate is not the ceiling
+below 1 000 arms/s** — an auto-pipelined loopback round trip is too short
+for three attempts to lose. And the records never pass 200 KiB, because
+everything armed here fires two seconds later.
 
 ### `reminders-redis/table-size` — the O(table) term, priced
 
@@ -3151,20 +3154,20 @@ into the records first:
 
 | P asleep | record bytes (16 shards) | set p50 | set p99 | fired within a tick | Redis CPU per 1 000 arms | `set_failure_ratio` |
 |---:|---:|---:|---:|---:|---:|---:|
-| 0 | 43 KiB | 0.86 ms | 9.2 ms | 0.99 | 298 ms | 0 |
-| 10 000 | 772 KiB | 3.2 ms | 15.8 ms | 0.98 | 430 ms | 0 |
-| **100 000** | **6.3 MiB** | **11.0 s** | **17.2 s** (14–20 s across rounds) | **0.00** | **2 415 ms** | 0.0003 / 0 |
+| 0 | 43 KiB | 1.3 ms | 7.9 ms | 1.00 | 141 ms | 0 |
+| 10 000 | 772 KiB | 4.5 ms | 15 ms | 0.99 | 385 ms | 0 |
+| **100 000** | **6.25 MiB** | **870 ms** | **2.85 s** | **0.27** | **1 156 ms** | 0 |
 
 At 100 000 sleeping entries — 400 KiB per shard record — a `set` takes
-eleven seconds at the median and **no reminder fires within a tick of its
-due time**: each tick loads, scans and rewrites 400 KiB per owned shard,
-each set does the same, and all of it serialises on one writer chain per
-host. Redis spends 2.4 CPU-seconds per thousand arms, eight times the
-empty-table figure, on `HGET`/`HSET` of the same bytes. The CAS still
-holds (one failure in 3 000 arms, one round) — the sharded design does not
-fail here, it slows by the size of the table it carries, linearly:
-10 000 entries cost 3.7× the empty-table set, 100 000 cost 13 000×, with
-the knee somewhere between them where a record stops fitting in one
+most of a second at the median and nearly three at p99, and **only a
+quarter of the reminders fire within a tick of their due time**: each
+tick loads, scans and rewrites 400 KiB per owned shard, each set does the
+same, and all of it serialises on one writer chain per host. Redis spends
+1.2 CPU-seconds per thousand arms, eight times the empty-table figure, on
+`HGET`/`HSET` of the same bytes. The CAS never failed. The sharded design
+does not fail at this size — it slows by the size of the table it
+carries: 10 000 entries cost 3.5× the empty-table set, 100 000 cost
+670×, with the knee between them where a record stops fitting in one
 round trip's worth of time.
 
 ### What this decides for #385
@@ -3172,20 +3175,19 @@ round trip's worth of time.
 1. **The reminder ceiling is a table-size ceiling, not a CAS-rate
    ceiling.** Below ~10 000 sleeping entries cluster-wide the sharded
    provider is fine at any arm rate this rig can produce. The
-   `1M sleeping` target is two orders of magnitude past the rung that
-   already misses every tick. `redisReminders()` (#385) — arm O(log N),
-   tick O(due), a due-time ZSET rather than sixteen JSON blobs — is
-   justified on this number alone, before any Tier-3 minute is spent on
-   the sleep-rate ladder; the ladder (#391, T2) now exists to confirm the
-   knee with real RTT, not to find it.
+   `1M sleeping` target is an order of magnitude past the rung that
+   already misses three ticks in four. `redisReminders()` (#385) — arm
+   O(log N), tick O(due), a due-time ZSET rather than sixteen JSON blobs —
+   is justified on this number alone, before any Tier-3 minute is spent
+   on the sleep-rate ladder; the ladder (#391, T2) now exists to confirm
+   the knee with real RTT, not to find it.
 2. **The "outgrown `shardedReminders()`" gauge (#384's S item) has a
    threshold**: warn when a shard record passes ~1 000 entries (~64 KiB),
    which is where the per-set cost has already tripled.
 3. **What this rig cannot say**: the cloud figure. Loopback round trips
-   are ~20× shorter than in-cluster, so the CAS window at N=16 — 0.4 % at
-   1 000 arms/s here — should be read as "the retry budget is thin", not
-   as a rate. And the `arm-fire` timings above were taken on a busy box;
-   only their ratios and counts are quotable.
+   are ~20× shorter than in-cluster, so the CAS window at N=16 — a few
+   arms in ten thousand at 1 000 arms/s here — should be read as "the
+   retry budget is thin", not as a rate.
 
 > Reproduce with `REDIS_URL=… pnpm bench:run reminders-redis/ --runs=2 --no-warmup`.
 > The `table-size` arm seeds its population straight through the storage
