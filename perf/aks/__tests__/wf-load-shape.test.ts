@@ -104,3 +104,22 @@ describe('mergeWfRows', () => {
         expect(mergeWfRows([row()], { partial: true })[0]!.partial).toBe(true);
     });
 });
+
+describe('runWfLoad argument guards', () => {
+    it('refuses chaos=owner-kill with a multi-rung sweep before touching a cluster', async () => {
+        const { runWfLoad } = await import('../deploy/wf-load.mjs');
+        // No context, no kubectl: the guard fires on the values alone.
+        await expect(
+            runWfLoad({
+                context: 'none', namespace: 'x', chartDir: 'x', imageRepository: 'r', imageTag: 't', workload: 'w',
+                values: { chaos: 'owner-kill', sweep: '10,25' }
+            })
+        ).rejects.toThrow(/single rung/);
+        await expect(
+            runWfLoad({
+                context: 'none', namespace: 'x', chartDir: 'x', imageRepository: 'r', imageTag: 't', workload: 'w',
+                values: { chaos: 'sideways' }
+            })
+        ).rejects.toThrow(/unknown chaos/);
+    });
+});

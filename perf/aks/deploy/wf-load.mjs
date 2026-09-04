@@ -505,6 +505,14 @@ export async function runWfLoad(options) {
     const chaosAtMs = chaos === 'owner-kill'
         ? Math.round((Number(values.durationS ?? values['loadgen.durationS']) || 60) * 500)
         : null;
+    const sweep = String(values.sweep ?? values['loadgen.sweep'] ?? '')
+        .split(',').map((s) => s.trim()).filter(Boolean);
+    if (chaosAtMs !== null && sweep.length > 1) {
+        throw new Error(
+            `[wf-load] chaos=owner-kill takes a single rung, got sweep=${sweep.join(',')} — ` +
+                'the kill lands in the first rung and the later rows would not say they ran after it'
+        );
+    }
     const chartValues = { ...values };
     delete chartValues.chaos;
 
