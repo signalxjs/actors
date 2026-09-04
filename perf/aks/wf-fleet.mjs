@@ -360,7 +360,9 @@ async function startHosts(members, { hosts, redisUrl, namespace, basePort, env, 
         for (;;) {
             if (m.exited) throw new Error(`[wf-fleet] host ${m.index} exited before ready (${JSON.stringify(m.exit)})`);
             try {
-                const res = await fetch(`http://127.0.0.1:${m.port}/_sigx/health/ready`);
+                const res = await fetch(`http://127.0.0.1:${m.port}/_sigx/health/ready`, {
+                    signal: AbortSignal.timeout(OPS_TIMEOUT_MS)
+                });
                 await res.text().catch(() => {});
                 if (res.ok) break;
             } catch {
@@ -595,10 +597,13 @@ export async function runWfFleet(options) {
         onLog(`[wf-fleet] fleet up; generator → ${proxy.url} (round-robin over ${hosts})`);
 
         const rungs = [];
-        for (const rung of sweep) {
+        for (const [rungIndex, rung] of sweep.entries()) {
             const before = await waitForQuiet(members, secrets.ops, onLog);
             const proxyBefore = proxy.requests();
-            const runId = `fleet-h${hosts}-${started}`;
+            // Unique per rung: the generator derives every run key from
+            // `${runId}-r${rate}`, so a sweep repeating a rate would
+            // otherwise collide with the earlier rung's retained records.
+            const runId = `fleet-h${hosts}-${started}-${rungIndex}`;
             let peakActivations = null;
             let samples = 0;
             const hostCpu = [];
