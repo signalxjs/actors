@@ -212,12 +212,16 @@ async function fleetTotals(members, opsSecret) {
                 if (typeof value === 'number') totals[`cluster/${key}`] = (totals[`cluster/${key}`] ?? 0) + value;
             }
         }
-        const live = body?.stats?.activations;
+        // The top-level `stats` gauges, with the metrics section's copy as
+        // the fallback — the same pair `workflowTotals` in `wf-load.mjs`
+        // reads, so a host build that carries only one of them is not
+        // read as idle.
+        const live = body?.stats?.activations ?? ops?.metrics?.gauges?.activations;
         if (typeof live === 'number') {
             activations += live;
             activationsHosts++;
         }
-        const q = body?.stats?.queued;
+        const q = body?.stats?.queued ?? ops?.metrics?.gauges?.queued;
         if (typeof q === 'number') queued[`h${m.index}`] = q;
         const section = ops?.workflow;
         if (!section || section.error) continue;
