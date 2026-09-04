@@ -224,11 +224,19 @@ export class ReminderService implements ActorReminders {
             due.length = 0; // the mutation may retry after a CAS conflict
             entriesInRecord = 0;
             for (const [id, entries] of Object.entries(table)) {
-                entriesInRecord += Object.keys(entries).length;
+                // ONE enumeration per actor record: the scan's own snapshot
+                // is also the pre-deletion count for the gauge below and,
+                // through `remaining`, the emptiness test after it. The
+                // record this walk is longest for is exactly the outgrown
+                // one the gauge exists to name, so it must not pay three
+                // O(n) passes to say so.
+                const names = Object.entries(entries);
+                entriesInRecord += names.length;
                 const nul = id.indexOf('\u0000');
                 if (nul < 0) continue;
                 const ref: ActorRef = { type: id.slice(0, nul), key: id.slice(nul + 1) };
-                for (const [name, entry] of Object.entries(entries)) {
+                let remaining = names.length;
+                for (const [name, entry] of names) {
                     if (entry.nextDue > now) continue;
                     if (entry.period !== undefined) {
                         // Advance past `now` even after long downtime — one
@@ -239,10 +247,11 @@ export class ReminderService implements ActorReminders {
                         due.push({ id, ref, name, advanced: { ...entry } });
                     } else {
                         delete entries[name];
+                        remaining--;
                         due.push({ id, ref, name, advanced: null });
                     }
                 }
-                if (Object.keys(entries).length === 0) delete table[id];
+                if (remaining === 0) delete table[id];
             }
         });
         // Persisted first (above); now fire. The CAS is what keeps this
