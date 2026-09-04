@@ -155,9 +155,9 @@ number decided.
 | L2 reminder CAS ladder, N = 1, 3, 8, 16 tickers | #382 | No CAS failure at N ≤ 8 through 1,000 arms/s; N = 16 loses 2–8 in 15,000. **Table size is the ceiling**: at 100,000 sleeping entries a `set` is 870 ms p50 / 2.85 s p99 and 27% of fires land within a tick; at 10,000, 4.5 ms. | B2 (`redisReminders()`) is justified on the table-size number alone; T2 confirms the knee with real RTT rather than finds it. The outgrown gauge warns at ~1,000 entries per shard record. |
 | L3 drown-vs-shed, 8 hosts, 50 → 500 runs/s, `WF_TASK_MS` 20 and 2 | #381 | 20 ms tasks: knee ~80 completed/s; at 500 offered ~660 deadline failures and 979 aggregator publish timeouts while `start_deferred_ratio` and `run_error_rate` stay **0** — the fleet drowns, never sheds. 2 ms tasks: linear to **255 completed/s, 2,066 transitions/s**. | The 20 ms row is B1's before-picture; the 979 publish timeouts are B4's evidence. ~**4 ms of one JS thread per transition** prices 1,000 runs/s at ~32 host-cores before storage and the wire (B7, T3). |
 
-### Phase 2 — mid-scale (100 runs/s, ≤ 20 hosts)
+### Phase 2 — mid-scale (100 runs/s, ≤ 20 hosts) — DONE 2026-09-04 (#401)
 
-**B1. Admission control and back-pressure (M) — #384.** The one runtime
+**B1. Admission control and back-pressure (M) — #384, shipped in #401.** The one runtime
 change needed at mid-scale; without it the 100 and 200 runs/s rungs are a
 wedge, not a measurement.
 
@@ -188,9 +188,9 @@ to 200 (before and after B1); T2 the sleep-rate ladder at a 1 s tick with the
 generator cap raised; T5 Redis CPU versus host CPU riding both; T3 the
 `TRANSPORT=tcp` arm; T4 chaos plus load with an owner kill mid-ladder.
 
-### Phase 3 — make.com scale
+### Phase 3 — make.com scale — B2 and B3 done 2026-09-04 (#400, #399); B4 open
 
-**B2. `redisReminders()` and `remindersConformance` (M) — #385.** A
+**B2. `redisReminders()` and `remindersConformance` (M) — #385, shipped in #400.** A
 due-time ZSET plus Lua scripts for set, clear, claim-batch and re-arm-failed,
 mirroring `pgReminders` through the unchanged seam; `ownsShard` ignored;
 server time; arm O(log N), tick O(due), so `reminderTickMs` can drop to 5 s.
@@ -206,7 +206,7 @@ out of deadlock detection because nobody waits. Ships after B1. The engine
 pattern beside it: shard the aggregator by `key:` and persist its ring with
 `ctx.append`.
 
-**B3. One host per core (S now, M later) — #386.** The k8s packing recipe
+**B3. One host per core (S now, M later) — #386, recipe shipped in #399; the `spawnHosts()` supervisor remains open.** The k8s packing recipe
 first (D8 pool, `replicaCount = 5 × nodes` — L1 measured a saturated host
 at 138–151% of a core, and 5 × `requests.cpu 1300m` fits the rule
 sum(requests) ≤ allocatable − 1 core; resources in the shape); the fence is
@@ -278,6 +278,14 @@ double-counted:
 
 ## How to read a result against this note
 
+- **A cap that never engages looks exactly like one that works.** B1's
+  measurement recorded a per-actor cap that moved the drowning rung by
+  nothing, beside the host-wide cap that doubled its completed runs per
+  second, and the pair is worth more than either: the shape of a workload
+  decides which lever is even connected. A per-actor cap is for a hot key
+  whose single queue is the backlog; a fleet of many short-lived actors
+  fills the loop instead, and only `maxInflightTurns` can see that. Any
+  arm that changes nothing gets recorded for the same reason.
 - A Tier-3 number is never `exact`; `stuck_ratio` and
   `reminder_set_failure_ratio` gate hardest. A Tier-2 `wf-local` number is
   evidence in its counts and a decision in its **ratios**; its absolute
