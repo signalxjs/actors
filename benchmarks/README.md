@@ -83,6 +83,8 @@ process per host and binds ports, and it is slow.
 ```sh
 pnpm bench:tier2                        # the Tier-2 scenarios
 BENCH_TIER2=1 pnpm bench:run cluster2/  # same thing, spelled out
+REDIS_URL=redis://127.0.0.1:6379 pnpm bench:wf-local   # wf-local/*: the workflow engine as N host
+                                        # processes on THIS box (#381) — the multi-core rig
 
 ## Trusting the numbers
 

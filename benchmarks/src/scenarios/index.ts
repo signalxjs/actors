@@ -16,6 +16,7 @@ import { liveFanoutScenarios } from './live-fanout.ts';
 import { livePrincipalScenarios } from './live-principal.ts';
 import { WS_ENABLED, wsHint as wsReason, socketScenarios } from './sockets.ts';
 import { WF_ENABLED, wfHint as wfReason, workflowScenarios } from './workflow.ts';
+import { WF_LOCAL_ENABLED, wfLocalHint as wfLocalReason, wfLocalScenarios } from './wf-local.ts';
 import { topicScenarios } from './topics.ts';
 import { wireScenarios } from './wire.ts';
 import type { Scenario } from '../types.ts';
@@ -70,6 +71,10 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...remindersRedisScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),
+    // `wf-local/*` is Tier 2 as well — the workflow engine as N real host
+    // processes on ONE box over a local Redis (#381). Counts are evidence,
+    // the ratio between fleet sizes is the decision, timings are context.
+    ...(WF_LOCAL_ENABLED ? wfLocalScenarios : []),
     // Tier 3 measures a DEPLOYMENT, not this process — a different kind of
     // number again, so it comes last and never reads as another rung.
     ...(TIER3_ENABLED ? tier3Scenarios : []),
@@ -119,6 +124,7 @@ export function tier2Hint(filters: readonly string[]): string | null {
 const TIER3_NAMES = tier3Scenarios.map((s) => s.name);
 const WS_NAMES = socketScenarios.map((s) => s.name);
 const WF_NAMES = workflowScenarios.map((s) => s.name);
+const WF_LOCAL_NAMES = wfLocalScenarios.map((s) => s.name);
 
 export function threadsHint(filters: readonly string[]): string | null {
     if (THREADS_ENABLED || filters.length === 0) return null;
@@ -147,6 +153,13 @@ export function wsHint(filters: readonly string[]): string | null {
     if (!filters.some((f) => WS_NAMES.some((name) => name.includes(f)))) return null;
     const reason = wsReason();
     return reason === null ? null : `sockets/* are opt-in — ${reason}`;
+}
+
+/** `wf-local/*` — opt-in like Tier 2, plus a Redis to share (#381). */
+export function wfLocalHint(filters: readonly string[]): string | null {
+    if (WF_LOCAL_ENABLED || filters.length === 0) return null;
+    if (!filters.some((f) => WF_LOCAL_NAMES.some((name) => name.includes(f)))) return null;
+    return wfLocalReason();
 }
 
 /** `workflow/*` — gated exactly like `sockets/*`, on its own env (#297). */

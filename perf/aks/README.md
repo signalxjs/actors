@@ -108,7 +108,27 @@ sums them across pods. Every host knob (`WF_*`) is documented in
 
 Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each
-other through Redis exactly as the pods do.
+other through Redis exactly as the pods do. `wf-fleet.mjs` does exactly
+that for you (#381): N copies of `server.mjs` on one box, the real load
+generator pointed at them through a round-robin proxy (the Service's
+stand-in), the `ops.workflow` counters read before and after, and each
+process's CPU sampled — the multi-core rig, and the local rung of every
+scaling question before it costs a paid session.
+
+```sh
+redis-server &                                          # or any local Redis
+node --conditions=production perf/aks/wf-fleet.mjs hosts=4 rate=100 durationS=20 \
+  WF_DELAY_MS=2000                                      # one JSON line per rung
+pnpm bench:wf-local                                     # the recorded wf-local/* scenarios
+```
+
+One generator, not one per host, on purpose: every generator resets the
+`WorkflowStats` ring when it seeds, so N of them starting together wipe
+each other's completions (#380 makes that index-0-only). The generator's
+own CPU is in the row, so a rung it bottlenecks says so. Nothing here is
+`exact` and every timing is informational (N processes share the cores);
+the number to read is the RATIO between fleet sizes measured back to back
+on one box — see the tier legend in `benchmarks/BASELINES.md`.
 
 Several generator pods (`parallelism`) run the same rung each; the rows
 carry `offeredRate = rate × pods`. The chart's loadgen Job is **Indexed**,

@@ -105,6 +105,7 @@ tier legend below exists to prevent. The scenario name says which tier it is:
 | **Tier 1, engine** | `engine/` | One process, one host, the workflow engine of `perf/aks` under `selfPolicy`, one run at a time: what a run costs the runtime as INVARIANTS — saves, transitions, directory calls, reminder-shard writes, completion deliveries. Every metric is `exact` and gates the merge queue; it is the Tier-1 face of the `workflow/*` axis, which cannot gate (#379). |
 | **Tier 1, opt-in** | `compute/` | One process, but **real OS threads**. Opt-in via `BENCH_THREADS=1`, because the effect cannot appear on a 2-core runner: a number recorded there would be wrong rather than noisy. Never gates. |
 | **Tier 2** | `cluster2/` | N hosts as **real OS processes over real loopback sockets**. Measures what the wire actually does. Opt-in: `pnpm bench:tier2`. |
+| **Tier 2, with a store** | `wf-local/` | The workflow engine as N **real host processes on ONE box** over a local Redis, driven by the real generator through a round-robin proxy (#381). The multi-core rig: counts are evidence, every timing is `informational`, and the decision number is the **ratio** between fleet sizes measured back to back on one box. Shape prefix `wf-local`, never comparable with `wf`. Opt-in: `pnpm bench:wf-local` (needs `REDIS_URL`). |
 
 Within Tier 2 there is a second split, and it is enforced in code rather than
 by this paragraph — every timing metric is emitted `informational: true`, so
