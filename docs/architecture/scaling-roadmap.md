@@ -133,7 +133,7 @@ engine. Every B item names the A measurement that gates it and the one that
 proves it; nothing in B ships before its A number exists. Phases are ordered
 cheapest first. Sizes are S/M/L.
 
-### Phase 0 — harness prep and test debt (laptop, free)
+### Phase 0 — harness prep and test debt (laptop, free) — DONE 2026-09-04 (#393, #394, #395, #396, #397)
 
 | Item | Issue | What |
 |---|---|---|
@@ -143,13 +143,17 @@ cheapest first. Sizes are S/M/L.
 | A4 `reminders-redis/arm-fire` | #382 | N in-process hosts on `redisStorage`, an arm-rate ladder to 1,000/s, `set_failure_ratio`, commands per arm, Redis CPU per 1k arms, shard bytes. |
 | C0 engine test debt | #383 | `faultStorage` / `faultReminders` decorators; crash-mid-task at-least-once; CAS-loss → `timer-fallback`; `publishFailures`; `joinRepairs`; ring overflow; a `REDIS_URL`-gated run of the cluster suite. No file under `perf/aks/src/` changes. |
 
-### Phase 1 — local numbers (laptop, ~1 h)
+### Phase 1 — local numbers (laptop, ~1 h) — MEASURED 2026-09-04
 
-| Measurement | Rig | Decision it makes |
-|---|---|---|
-| L1 multi-core, hosts = 1, 2, 4, 8 | #381 | ≥ 6× at 8 hosts: one host per core is a recipe plus a chart pattern, not a runtime change. ≤ 3×: something shared (Redis on loopback, the singleton aggregator, the reminder writer chain) caps a box, and G1 must be designed to isolate it. |
-| L2 reminder CAS ladder, N = 1, 3, 8, 16 tickers | #382 | The failure rung on loopback is the **upper bound** for any cloud figure. Under 1,000/s here justifies B2 before a Tier-3 minute goes to the sleep ladder. |
-| L3 drown-vs-shed, 8 hosts, 50 → 500 runs/s, `WF_TASK_MS` 20 and 2 | #381 | The first rung where `queued` grows without bound while `start_deferred_ratio` stays 0 is B1's evidence; the first `publish_failures` / `completed_unreported` is B4's; generator CPU per run/s sizes the generator fleet for 1,000/s (~250/s per pod before `setTimeout` granularity makes Poisson bursty). |
+Every row below was run on a 10-core Mac and recorded as a dated section in
+`BASELINES.md`; the verdicts are on #378. The "decision" column is what the
+number decided.
+
+| Measurement | Rig | Result | Decision it made |
+|---|---|---|---|
+| L1 multi-core, hosts = 1, 2, 4, 8 | #381 | 13.1 / 23.2 / 44.6 / **77.9** completed runs/s at 200 offered — **5.93× at 8 hosts**, 0 stuck, 0 lost wakes (machine not quiet; the ratio is the evidence). A saturated host process is **138–151% of a core**. | One host per core is a recipe plus a chart pattern, not a runtime change (B3). The packing rule is **5 hosts per 8-core node** (7 usable cores ÷ ~1.4), not 7. |
+| L2 reminder CAS ladder, N = 1, 3, 8, 16 tickers | #382 | No CAS failure at N ≤ 8 through 1,000 arms/s; N = 16 loses 2–8 in 15,000. **Table size is the ceiling**: at 100,000 sleeping entries a `set` is 870 ms p50 / 2.85 s p99 and 27% of fires land within a tick; at 10,000, 4.5 ms. | B2 (`redisReminders()`) is justified on the table-size number alone; T2 confirms the knee with real RTT rather than finds it. The outgrown gauge warns at ~1,000 entries per shard record. |
+| L3 drown-vs-shed, 8 hosts, 50 → 500 runs/s, `WF_TASK_MS` 20 and 2 | #381 | 20 ms tasks: knee ~80 completed/s; at 500 offered ~660 deadline failures and 979 aggregator publish timeouts while `start_deferred_ratio` and `run_error_rate` stay **0** — the fleet drowns, never sheds. 2 ms tasks: linear to **255 completed/s, 2,066 transitions/s**. | The 20 ms row is B1's before-picture; the 979 publish timeouts are B4's evidence. ~**4 ms of one JS thread per transition** prices 1,000 runs/s at ~32 host-cores before storage and the wire (B7, T3). |
 
 ### Phase 2 — mid-scale (100 runs/s, ≤ 20 hosts)
 
@@ -192,7 +196,8 @@ mirroring `pgReminders` through the unchanged seam; `ownsShard` ignored;
 server time; arm O(log N), tick O(due), so `reminderTickMs` can drop to 5 s.
 There is no reminder conformance suite today — the contract is re-pinned in
 four test files — so one is added in `packages/actors/src/testing/` and run
-by every provider. Gated on L2 and T2 locating the sharded ceiling; proven
+by every provider. Gate met: L2 located the sharded ceiling as table size
+(870 ms per `set` at 100,000 entries), so this is unblocked; proven
 by T2 re-run under a `REMINDERS=redis` knob in the shape.
 
 **B4. One-way publish (S–M) — #49.** `PublishOptions.delivery:
@@ -202,10 +207,12 @@ pattern beside it: shard the aggregator by `key:` and persist its ring with
 `ctx.append`.
 
 **B3. One host per core (S now, M later) — #386.** The k8s packing recipe
-first (D8 pool, `replicaCount = 7 × nodes`, `requests.cpu 1000m`, the rule
-sum(requests) ≤ allocatable − 1 core, resources in the shape); the fence is
+first (D8 pool, `replicaCount = 5 × nodes` — L1 measured a saturated host
+at 138–151% of a core, and 5 × `requests.cpu 1300m` fits the rule
+sum(requests) ≤ allocatable − 1 core; resources in the shape); the fence is
 the watchdog and the packing hazard is oversubscription. Later a
-`spawnHosts()` helper on `@sigx/actors/node` for non-k8s users. Gated on L1;
+`spawnHosts()` helper on `@sigx/actors/node` for non-k8s users. Gate met
+(L1: 5.93× at 8 hosts);
 proven by G1.
 
 **Tier-3 sessions on the grown estate — #391.** G1 the D8 shape, 7 × 1 vCPU
