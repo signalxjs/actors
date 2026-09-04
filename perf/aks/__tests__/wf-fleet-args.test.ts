@@ -6,7 +6,7 @@
  * needs a Redis, so it is exercised by `pnpm bench:wf-local`, not here.
  */
 import { describe, expect, it } from 'vitest';
-import { cpuSummary, parseFleetArgs } from '../wf-fleet.mjs';
+import { cpuSummary, parseFleetArgs, validateBasePort } from '../wf-fleet.mjs';
 
 describe('parseFleetArgs', () => {
     it('splits rig options from host knobs', () => {
@@ -52,5 +52,20 @@ describe('cpuSummary', () => {
     it('says so when nothing was sampled', () => {
         expect(cpuSummary([null, null])).toEqual({ peak: null, avg: null, samples: 0 });
         expect(cpuSummary([])).toEqual({ peak: null, avg: null, samples: 0 });
+    });
+});
+
+describe('validateBasePort', () => {
+    it('accepts a port with room for the http and tcp ranges', () => {
+        expect(validateBasePort('7411', 8)).toBe(7411);
+        expect(validateBasePort(65435, 1)).toBe(65435);
+    });
+
+    it('refuses a non-port, and a base that pushes either range past 65535', () => {
+        expect(() => validateBasePort('seven', 1)).toThrow(/integer in 1..65535/);
+        expect(() => validateBasePort(0, 1)).toThrow(/integer in 1..65535/);
+        expect(() => validateBasePort(65500, 1)).toThrow(/no room/);
+        expect(() => validateBasePort(65400, 40)).toThrow(/no room/);
+        expect(() => validateBasePort(7411, 101)).toThrow(/at most 100 hosts/);
     });
 });

@@ -53,6 +53,7 @@ import { createServer, request as httpRequest, Agent as HttpAgent } from 'node:h
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { resolve as resolvePath } from 'node:path';
 import { Redis } from 'ioredis';
 import { mergeWfRows } from './deploy/wf-load.mjs';
 
@@ -120,6 +121,30 @@ export function parseFleetArgs(words) {
         }
     }
     return options;
+}
+
+/** The tcp listeners sit `TCP_PORT_OFFSET` above the http ones. */
+const TCP_PORT_OFFSET = 100;
+
+/**
+ * The http ports are `basePort … basePort+hosts-1` and the tcp ones sit
+ * `TCP_PORT_OFFSET` above them, so both ranges must be valid ports and
+ * must not overlap. Returns the integer base port or throws — a `NaN` from
+ * an env typo would otherwise bind port 0 on every host and pass every
+ * readiness check against the same one.
+ */
+export function validateBasePort(raw, hosts) {
+    const base = Number(raw);
+    if (!Number.isInteger(base) || base < 1 || base > 65535) {
+        throw new Error(`[wf-fleet] base port must be an integer in 1..65535, got '${raw}'`);
+    }
+    if (hosts > TCP_PORT_OFFSET) {
+        throw new Error(`[wf-fleet] at most ${TCP_PORT_OFFSET} hosts per fleet (the tcp ports sit ${TCP_PORT_OFFSET} above the http ones)`);
+    }
+    if (base + TCP_PORT_OFFSET + hosts - 1 > 65535) {
+        throw new Error(`[wf-fleet] base port ${base} leaves no room for ${hosts} host(s) plus their tcp ports`);
+    }
+    return base;
 }
 
 /** Sum `%cpu` samples: peak over the run and mean over samples. */
@@ -269,7 +294,7 @@ async function startHosts(members, { hosts, redisUrl, namespace, basePort, env, 
                     CLUSTER_SECRET: secrets.cluster,
                     OPS_SECRET: secrets.ops,
                     TRANSPORT: transport,
-                    TCP_PORT: String(basePort + 100 + index)
+                    TCP_PORT: String(basePort + TCP_PORT_OFFSET + index)
                 },
                 stdio: ['ignore', 'pipe', 'pipe']
             }
@@ -479,12 +504,12 @@ export async function runWfFleet(options) {
         durationS = 30,
         env = {},
         redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
-        basePort = Number(process.env.WF_FLEET_BASE_PORT ?? 7411),
         sampleIntervalMs = 5000,
         onLog = (line) => console.error(line)
     } = options;
     if (!Number.isInteger(hosts) || hosts < 1) throw new Error('[wf-fleet] hosts must be a positive integer');
     if (sweep.length === 0) throw new Error('[wf-fleet] give rate= or sweep=');
+    const basePort = validateBasePort(options.basePort ?? process.env.WF_FLEET_BASE_PORT ?? 7411, hosts);
 
     const started = Date.now();
     const namespace = `wf-fleet-${started}-${Math.floor(Math.random() * 10000)}`;
@@ -586,7 +611,11 @@ export async function runWfFleet(options) {
 }
 
 // ---- CLI --------------------------------------------------------------
-const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+// `argv[1]` is resolved by Node for a script path, but compare resolved to
+// resolved anyway: a relative invocation or a differently-cased drive
+// letter must still run the CLI rather than silently import and exit.
+const invokedDirectly =
+    process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
     const options = parseFleetArgs(process.argv.slice(2));
     if (!options.hosts) {

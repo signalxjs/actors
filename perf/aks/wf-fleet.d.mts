@@ -66,3 +66,5 @@ export interface FleetArgs {
 export function runWfFleet(options: WfFleetOptions): Promise<WfFleetResult>;
 export function parseFleetArgs(words: readonly string[]): FleetArgs;
 export function cpuSummary(samples: readonly (number | null)[]): CpuSummary;
+/** The integer base port, or a throw when the http or tcp range is not valid for `hosts`. */
+export function validateBasePort(raw: unknown, hosts: number): number;
