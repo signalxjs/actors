@@ -22,7 +22,7 @@
  * measuring it for real needs a Redis instance (Tier 2).
  */
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
-import type { ActorApp, ActorStorage, Host } from '@sigx/actors/host';
+import type { ActorApp, ActorStorage, Host, HostDefaults } from '@sigx/actors/host';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
 import { cluster, memoryClusterHub } from '@sigx/actors/cluster';
 import type {
@@ -188,6 +188,12 @@ export interface ClusterOptions {
      */
     secret?: string | null;
     retries?: number;
+    /**
+     * Host defaults layered over `quiet`. A scenario that MEASURES background
+     * work (a reminder tick, a sweep) names the cadence it wants here; the
+     * rest keep `quiet`'s hour-long intervals so nothing fires mid-measurement.
+     */
+    defaults?: HostDefaults;
 }
 
 export interface ClusterHarness {
@@ -243,7 +249,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         const app = defineActorApp({
             actors: options.actors,
             storage,
-            defaults: quiet
+            defaults: { ...quiet, ...options.defaults }
         }).use(plugin);
         const host = await app.start();
         registry.set(`host${index}.test`, { app, host });

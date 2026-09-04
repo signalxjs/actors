@@ -3,6 +3,7 @@ import { computeScenarios } from './compute.ts';
 import { tier2Scenarios } from './cluster2.ts';
 import { TIER3_ENABLED, tier3Hint as tier3Reason, tier3Scenarios } from './infra.ts';
 import { dispatchScenarios } from './dispatch.ts';
+import { engineScenarios } from './engine.ts';
 import { frameScenarios } from './frames.ts';
 import { jobScenarios } from './jobs.ts';
 import { lifecycleScenarios } from './lifecycle.ts';
@@ -47,6 +48,10 @@ export const ALL_SCENARIOS: Scenario[] = [
     // The next rung of the state ladder: the same codec costs, measured on
     // the `defineJob` path they were reported against (#124 / #227).
     ...jobScenarios,
+    // The workflow engine's per-run invariants (#379): the Tier-1, `exact`
+    // face of the `workflow/*` axis, so a runtime change on that path
+    // gates here without a cluster.
+    ...engineScenarios,
     ...wireScenarios,
     ...frameScenarios,
     ...lifecycleScenarios,
