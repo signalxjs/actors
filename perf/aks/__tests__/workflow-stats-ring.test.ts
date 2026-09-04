@@ -9,7 +9,7 @@
  * Its own file because the ring size is read at module load: a 20-entry
  * ring under the unit suite's cases would break their `eventFor`.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Host } from '@sigx/actors';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
 
@@ -40,6 +40,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
     await host.stop();
+});
+
+beforeEach(() => {
+    wf.resetCounters();
 });
 
 describe('WorkflowStats — the ring past capacity', { timeout: 20_000 }, () => {

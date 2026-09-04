@@ -33,6 +33,9 @@ type Engine = typeof import('../../src/workflow/index.ts');
 
 const NUL = String.fromCharCode(0);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Await the listener's close, not just request it — a handle left open
+ *  here outlives the file and shows up in the next one. */
+const closed = (server: Server) => new Promise<void>((r) => server.close(() => r()));
 
 interface Member {
     host: Host;
@@ -88,7 +91,7 @@ export function workflowClusterSuite(name: string, harness: () => Promise<Workfl
         for (const m of members) {
             if (m.dead) continue;
             await m.host.stop().catch(() => {});
-            m.server.close();
+            await closed(m.server);
         }
         await h.stop?.();
     });
@@ -110,7 +113,7 @@ export function workflowClusterSuite(name: string, harness: () => Promise<Workfl
     /** Abrupt: socket gone, membership gone — and then the corpse held still. */
     async function kill(m: Member): Promise<void> {
         m.dead = true;
-        m.server.close();
+        await closed(m.server);
         hub.kill(m.hostId);
         await m.host.stop({ timeoutMs: 500 }).catch(() => {});
         // A replacement keeps the cluster at three so later cases have a

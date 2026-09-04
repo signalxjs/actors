@@ -26,7 +26,8 @@ process.env.WF_IDLE_AFTER_MS = '600000';
 process.env.WF_STATS_SAVE_EVERY = '1';
 process.env.WF_NOTIFY_RETRY_MS = '300';
 
-const REDIS_URL = process.env.REDIS_URL;
+// Empty counts as unset (`REDIS_URL= pnpm test …`), as the provider suites read it.
+const REDIS_URL = process.env.REDIS_URL || undefined;
 
 if (REDIS_URL) {
     workflowClusterSuite('redis', async () => {
