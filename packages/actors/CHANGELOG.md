@@ -4,6 +4,15 @@
 
 ### Added
 
+- **`remindersConformance`** on the workspace-only `@sigx/actors/testing`
+  (#385): the `ActorReminders` seam as sixteen outcome cases — the
+  `ReminderApi` round-trips, the floor, one-shot and periodic firing
+  semantics, exactly-once across two tickers, and the failed-dispatch
+  re-arm rules of #306/#326 — run by `shardedReminders()`, `pgReminders`,
+  `surrealReminders`, `redisReminders` and (its API half) the Durable
+  Object alarm. Its red proof is a deliberately broken provider with one
+  bug at a time. No shipped code changes.
+
 - **`ctx.append(entry)` + `applyEntry`, and `job.append(entry)` + `apply`
   — O(entry) writes on the `appendText` seam** (#312, PR 2 of 2; closes the
   issue). `ActorOptions.applyEntry?(state, entry)` is the reducer: it folds

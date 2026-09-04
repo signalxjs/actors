@@ -18,6 +18,7 @@ describe('parseFleetArgs', () => {
             'WF_MAX_INFLIGHT=50000',
             'TRANSPORT=tcp',
             'FETCH_CONNECTIONS=128',
+            'REMINDERS=redis',
             '--json'
         ]);
         expect(args.hosts).toBe(4);
@@ -28,7 +29,8 @@ describe('parseFleetArgs', () => {
             WF_TASK_MS: '2',
             WF_MAX_INFLIGHT: '50000',
             TRANSPORT: 'tcp',
-            FETCH_CONNECTIONS: '128'
+            FETCH_CONNECTIONS: '128',
+            REMINDERS: 'redis'
         });
     });
 

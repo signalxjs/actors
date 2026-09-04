@@ -86,7 +86,7 @@ export function positiveNumber(name: string, raw: string | undefined, fallback: 
 
 /** Every host knob that changes the curve without changing the image —
  *  the same list `testenv.mjs` puts in the Tier-3 `wf` shape. */
-const HOST_KNOBS = ['FETCH_CONNECTIONS', 'TRANSPORT'];
+const HOST_KNOBS = ['FETCH_CONNECTIONS', 'TRANSPORT', 'REMINDERS'];
 
 /**
  * The `wf-local` shape string. Pure over its inputs so it is tested; the

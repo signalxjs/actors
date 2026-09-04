@@ -4,6 +4,21 @@
 
 ### Added
 
+- **`redisReminders()`** (#385): durable reminders on a due-time index —
+  a ZSET `{ns}:rem:due` scored by `next_due`, a HASH `{ns}:rem:p` of
+  periods, and a SET `{ns}:rem:a:{type}<NUL>{key}` of each actor's names so
+  `list()` never scans. One Lua script per `set`, `clear`, claim-batch and
+  re-arm, with the server's `TIME` as the clock; every host claims from the
+  one set and gets disjoint members (`ownsShard` is ignored, the
+  `SKIP LOCKED` posture of `pgReminders`). A failed dispatch is re-armed
+  one tick out and reported (#306, #326) under the same "meanwhile" rules
+  as the other providers. An arm is O(log N), a tick O(due) and an empty
+  claim one round trip — so `reminderTickMs` can be a few seconds where the
+  default sharded table (O(table) on both, measured at 870 ms per `set`
+  with 100 000 entries asleep) needs 30. Members escape `\` and NUL so a
+  NUL-bearing key splits back; `remEscape`/`remUnescape` are exported for
+  tooling. Runs `remindersConformance`.
+
 - **`redisStorage` implements `appendText`** (#312): the record's log is a
   LIST beside the HASH, under its own prefix (`{ns}:sl:{type}<NUL>{key}` —
   a prefix, not a suffix, because actor keys are opaque and `{key}:l` is

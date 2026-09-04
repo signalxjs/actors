@@ -18,11 +18,34 @@
  *                         sooner than the next tick, so the delay-node lag
  *                         floor IS this number.
  *   WF_CALL_TIMEOUT_MS    external-call deadline (runtime default 30 s).
+ *
+ * A third, `REMINDERS`, picks the reminder provider — see below.
  */
+import { Redis } from 'ioredis';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
-import { redisStorage } from '@sigx/actors-redis';
+import { redisReminders, redisStorage } from '@sigx/actors-redis';
 
 const url = process.env.REDIS_URL;
+const namespace = process.env.SIGX_NAMESPACE ?? 'sigx';
+// ONE client for storage and reminders: a second connection per host
+// would be a variable of its own in a run where REMINDERS is the one
+// under test. Auto-pipelined, as `redisStorage({ url })` would have been.
+const redis = url ? new Redis(url, { enableAutoPipelining: true }) : null;
+
+/**
+ * REMINDERS — which `ActorReminders` the host runs (#385), part of
+ * INFRA_SHAPE: `sharded` (the runtime's default table over the storage —
+ * unset means this, so every earlier baseline is unchanged) or `redis`
+ * (`redisReminders()`, the due-time index; needs REDIS_URL). A run under one
+ * is a different measurement from a run under the other.
+ */
+const REMINDERS = process.env.REMINDERS ?? 'sharded';
+if (REMINDERS !== 'sharded' && REMINDERS !== 'redis') {
+    throw new Error(`[perf-aks] REMINDERS must be sharded or redis, got '${REMINDERS}'`);
+}
+if (REMINDERS === 'redis' && !url) {
+    throw new Error('[perf-aks] REMINDERS=redis needs REDIS_URL');
+}
 
 /**
  * A host default knob: absent means "the runtime's default", and 0 is
@@ -43,9 +66,8 @@ const reminderTickMs = knob('WF_REMINDER_TICK_MS');
 const callTimeoutMs = knob('WF_CALL_TIMEOUT_MS');
 
 export const app = defineActorApp({
-    storage: url
-        ? redisStorage({ url, namespace: process.env.SIGX_NAMESPACE ?? 'sigx' })
-        : memoryStorage(),
+    storage: redis ? redisStorage({ client: redis, namespace }) : memoryStorage(),
+    ...(REMINDERS === 'redis' && redis ? { reminders: redisReminders({ client: redis, namespace }) } : {}),
     // Spread conditionally: an `undefined` value would still be a key, and
     // the host treats a present-but-undefined default as the default anyway
     // — but keeping the object empty when nothing is set makes "unchanged

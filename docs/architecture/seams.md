@@ -240,10 +240,37 @@ actor's reminders live in its own object and fire from its own alarm, so there
 is nothing to shard and nothing to poll (and no cadence floor — an alarm fires
 *at* the due time, where `shardedReminders()` promises only "at or after").
 
-`ownsShard` is meaningless to an implementation that does not shard;
-`pgReminders` ignores it because `SKIP LOCKED` lets every host claim disjoint
-rows from one scan, while `surrealReminders` partitions by it because SurrealDB
-has no lock primitive to make the other approach safe.
+`ownsShard` is meaningless to an implementation that does not shard. Each
+provider takes its own posture, and the difference is the mechanism the
+backend offers for "every host ticks, no entry fires twice":
+
+| Provider | Table | `ownsShard` | What keeps a firing at-most-once |
+|---|---|---|---|
+| `shardedReminders()` (default) | 16 records in `ActorStorage` | partitions — a host ticks the shards it owns | the per-record etag CAS: a second ticker reloads an advanced table |
+| `pgReminders` | one indexed table | ignored — every host claims | `FOR UPDATE SKIP LOCKED` in one statement |
+| `redisReminders` (#385) | one ZSET by due time (+ a period hash, a name set per actor) | ignored — every host claims | one Lua script per claim: it runs alone |
+| `surrealReminders` | one indexed table, a shard column | partitions — no row lock exists | the claim transaction's commit-time conflict |
+| `durableObjectReminders` | this object's own storage | n/a — one actor per object | the platform alarm and `blockConcurrencyWhile` |
+
+**The scale contract** a provider is held to, since #385: an arm is
+O(log N) or better and a tick is O(due) — never O(table). The sharded
+default is O(table) on both (every `set` rewrites a sixteenth of the
+cluster's reminders; every tick loads and scans every owned record), which
+`BASELINES.md` (2026-09-04, #382) priced at 870 ms per `set` with 100 000
+entries asleep and a quarter of fires landing within a tick. It stays the
+default because it needs no second store and is right at dev scale; a
+deployment that sleeps thousands of actors on reminders picks the indexed
+provider its store already has (`pgReminders`, `redisReminders`,
+`surrealReminders`), and the host warns — see the outgrown gauge, #384 —
+when a shard record has grown past what the default was built for. Because
+an empty claim on an index costs one round trip, those providers can also
+run a much shorter `reminderTickMs` (a few seconds where the default is 30),
+which is what turns a durable wake's lag from half a tick of fifteen seconds
+into one of two.
+
+Every provider runs `remindersConformance` (`@sigx/actors/testing`, #385) —
+see [`conformance-suites.md`](conformance-suites.md); the cases above are
+its outcomes, and `ownsShard` is the one thing it never asserts.
 
 ## `ActorTaskLiveness`
 

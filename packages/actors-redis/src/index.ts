@@ -426,3 +426,4 @@ export function redisDirectory(
 // Storage
 
 export { redisStorage, type RedisStorageOptions } from './storage';
+export { redisReminders, remEscape, remUnescape, type RedisRemindersOptions } from './reminders';

@@ -42,7 +42,8 @@
  * CLI:  node perf/aks/wf-fleet.mjs hosts=4 rate=100 [sweep=50,100] \
  *         [durationS=30] [WF_TASK_MS=2 …other WF_* knobs] [--json]
  * Env:  REDIS_URL (default redis://127.0.0.1:6379), WF_FLEET_BASE_PORT
- *       (default 7411), FETCH_CONNECTIONS, TRANSPORT — passed to the hosts.
+ *       (default 7411), FETCH_CONNECTIONS, TRANSPORT, REMINDERS — passed
+ *       to the hosts.
  *
  * Run with `--conditions=production` (the `bench:wf-local` script does) so
  * the hosts and the generator measure the built prod dist; the children
@@ -93,8 +94,8 @@ const QUIET_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 35_000;
 
 /**
- * Parse `key=value` CLI words into options; `WF_*`, `FETCH_CONNECTIONS`
- * and `TRANSPORT` go to `env`, the rest are rig options. Pure, so it is
+ * Parse `key=value` CLI words into options; `WF_*`, `FETCH_CONNECTIONS`,
+ * `TRANSPORT` and `REMINDERS` go to `env`, the rest are rig options. Pure, so it is
  * tested.
  */
 export function parseFleetArgs(words) {
@@ -108,7 +109,7 @@ export function parseFleetArgs(words) {
         if (eq < 0) throw new Error(`[wf-fleet] expected key=value, got '${word}'`);
         const key = word.slice(0, eq);
         const value = word.slice(eq + 1);
-        if (/^WF_/.test(key) || key === 'FETCH_CONNECTIONS' || key === 'TRANSPORT') {
+        if (/^WF_/.test(key) || key === 'FETCH_CONNECTIONS' || key === 'TRANSPORT' || key === 'REMINDERS') {
             options.env[key] = value;
         } else if (key === 'hosts' || key === 'rate' || key === 'durationS' || key === 'basePort') {
             const n = Number(value);

@@ -10,6 +10,7 @@ import { lifecycleScenarios } from './lifecycle.ts';
 import { memoryScenarios } from './memory.ts';
 import { redisScenarios } from './redis.ts';
 import { remindersRedisScenarios } from './reminders-redis.ts';
+import { remindersCostScenarios } from './reminders-cost.ts';
 import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
@@ -69,6 +70,11 @@ export const ALL_SCENARIOS: Scenario[] = [
     // CAS starts failing; `table-size` — what a set and a tick cost with
     // P entries already asleep in the records.
     ...remindersRedisScenarios,
+    // What ONE reminder costs each provider, as counts (#385): `arm-cost`
+    // is Tier 1 and exact (the sharded provider's O(table) bytes beside its
+    // flat op count); `redis-commands` prices `redisReminders()` on the
+    // same REDIS_URL gate.
+    ...remindersCostScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),
     // `wf-local/*` is Tier 2 as well — the workflow engine as N real host

@@ -278,13 +278,23 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   exports: `./cluster/testing` (`transportConformance`) and `./testing`
   (`bootstrapConformance`, `socketTransportConformance` — the client
   `ActorTransport` suite of #99, run by `fetchTransport` and
-  `@sigx/actors-ws` — and `storageConformance`, the `ActorStorage` suite of
-  #65, run by every storage adapter in the repo).
+  `@sigx/actors-ws` — `storageConformance`, the `ActorStorage` suite of
+  #65, run by every storage adapter in the repo, and
+  `remindersConformance`, the `ActorReminders` suite of #385, run by the
+  sharded default and every provider package).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
   `redisCluster` (membership and the actor directory) for
-  `@sigx/actors/cluster`, and `redisStorage` (etag-CAS `ActorStorage` —
-  the cluster-safe persistence option). ioredis ≥5 as a peer dependency;
-  provider tests are env-gated on `REDIS_URL`.
+  `@sigx/actors/cluster`, `redisStorage` (etag-CAS `ActorStorage` —
+  the cluster-safe persistence option), and `redisReminders` (#385 —
+  durable reminders on a due-time ZSET plus a period hash and a name set
+  per actor, one Lua script per set / clear / claim-batch / re-arm, the
+  server's `TIME` as the clock; `ownsShard` ignored because a script runs
+  alone, the `SKIP LOCKED` posture of `pgReminders`. An arm is O(log N)
+  and a tick O(due), where the default sharded table is O(table) on both —
+  the answer to the reminder ceiling the roadmap priced at 100 000
+  sleeping entries. Members are `type<NUL>key<NUL>name` with each field
+  escaped, so a NUL-bearing key splits back). ioredis ≥5 as a peer
+  dependency; provider tests are env-gated on `REDIS_URL`.
 - `packages/actors-pg` → `@sigx/actors-pg` — Postgres (≥13) providers, for
   the team whose one durable store is SQL: `pgStorage` (etag-CAS
   `ActorStorage`, single-statement CAS, state as JSON in a `text` column —
@@ -796,7 +806,7 @@ the queue, in two moments:
 - **Plan first for non-trivial work.** Both Claude Code and Copilot CLI have a built-in plan mode; use it and let the CLI manage the plan file.
 - **Verify before declaring done.** Run typecheck/tests for code changes; show evidence the change works.
 - **Test-first bug fixes.** Reproduce the bug with a *failing* unit test first (red), then make the fix so the test goes green — the failing test proves both that the bug exists and that the fix actually addresses it, and it stays behind as a regression test. Never fix a bug without a test that would have caught it. While you're in the area, if you find behaviour that should be covered but isn't, add the missing tests in the same PR.
-- **A seam with several implementations gets ONE shared conformance suite, not N copies of the assertions.** They live in `@sigx/actors/cluster/testing` (`transportConformance`) and `@sigx/actors/testing` (`bootstrapConformance`, `socketTransportConformance`, `storageConformance`) — framework-free case descriptors, parameterized by a harness the package supplies, run by every implementation. Two rules make them worth having: **assert the outcome, never the mechanism** (Postgres serialises its bootstrap with an advisory lock; SurrealDB has no lock primitive and converges by retry — a case that pinned either one would be false for the other), and **a case that cannot fail is decoration** — prove a new one goes red against the unfixed code before trusting it. Concretely: a provider package with a schema bootstrap runs `bootstrapConformance`, so concurrent boots from independent connections must all converge (#76, #78), and every `ActorStorage` adapter runs `storageConformance` (#65). Adding a provider means writing a harness, not a test matrix.
+- **A seam with several implementations gets ONE shared conformance suite, not N copies of the assertions.** They live in `@sigx/actors/cluster/testing` (`transportConformance`) and `@sigx/actors/testing` (`bootstrapConformance`, `socketTransportConformance`, `storageConformance`, `remindersConformance`) — framework-free case descriptors, parameterized by a harness the package supplies, run by every implementation. Two rules make them worth having: **assert the outcome, never the mechanism** (Postgres serialises its bootstrap with an advisory lock; SurrealDB has no lock primitive and converges by retry — a case that pinned either one would be false for the other), and **a case that cannot fail is decoration** — prove a new one goes red against the unfixed code before trusting it. Concretely: a provider package with a schema bootstrap runs `bootstrapConformance`, so concurrent boots from independent connections must all converge (#76, #78), every `ActorStorage` adapter runs `storageConformance` (#65), and every `ActorReminders` provider runs `remindersConformance` (#385). Adding a provider means writing a harness, not a test matrix.
 - **Minimal, surgical edits.** Don't refactor unrelated code. Don't add backward-compat shims for things that never shipped.
 - **Cross-platform paths**: Contributors and CI can run on Windows, macOS or Linux (check this repo's CI matrix for what it actually covers) — use the path separator and shell syntax of the environment you're in, and prefer Node scripts over shell one-liners for anything committed to the repo.
 - **Git hygiene**: Stage specific files (`git add <path>`), never `git add -A` / `git add .`. Run `pnpm typecheck` before any commit touching `.ts`. Do **not** add co-author trailers to commits (e.g. `Co-Authored-By: Claude …` / `Co-authored-by: Copilot …`).

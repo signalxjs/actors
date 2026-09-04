@@ -9,6 +9,8 @@ option.
   push and a poll fallback.
 - **`redisDirectory()`** — the single-activation claim directory.
 - **`redisStorage()`** — `ActorStorage` with etag compare-and-set.
+- **`redisReminders()`** — durable reminders on a due-time index: O(log N)
+  to arm, O(due) to tick, at any number of sleeping actors.
 
 ```sh
 pnpm add @sigx/actors-redis ioredis
@@ -16,7 +18,7 @@ pnpm add @sigx/actors-redis ioredis
 
 Requires **Redis ≥ 7**. [`ioredis`](https://github.com/redis/ioredis) (≥ 5) is
 a peer dependency, as is `@sigx/actors` itself. One client can be shared across
-`redisCluster()` and `redisStorage()`.
+`redisCluster()`, `redisStorage()` and `redisReminders()`.
 
 ## Documentation
 

@@ -106,6 +106,11 @@ sums them across pods. Every host knob (`WF_*`) is documented in
 `src/workflow/config.ts` and is part of the `wf` INFRA_SHAPE. See scenario
 (t) in the runbook.
 
+`REMINDERS=redis` swaps the hosts' reminder provider for `redisReminders()`
+(#385) — the due-time index instead of the runtime's sharded table. It is
+part of the `wf` shape (a run under one is a different measurement from a
+run under the other) and `wf-fleet.mjs` passes it through.
+
 Multiple local hosts: run more instances with the same `REDIS_URL` and a
 different `PORT` — `POD_IP` defaults to `127.0.0.1`, so they find each
 other through Redis exactly as the pods do. `wf-fleet.mjs` does exactly
