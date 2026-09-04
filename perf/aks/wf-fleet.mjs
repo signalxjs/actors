@@ -50,6 +50,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer, request as httpRequest, Agent as HttpAgent } from 'node:http';
+import { connect as tcpConnect } from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -255,18 +256,33 @@ function relay(stream, prefix, onLog) {
 /** The `--conditions=…` flag this process was launched with, if any. */
 const conditionsFlag = () => process.execArgv.filter((a) => a.startsWith('--conditions='));
 
-/** Refuse a port something else already answers on: a stale host from an
- *  earlier run would pass the readiness probe in this one's place. */
-async function assertPortsFree(basePort, hosts) {
+/** True when something accepts a TCP connection on the port. */
+function portTaken(port) {
+    return new Promise((resolve) => {
+        const socket = tcpConnect({ host: '127.0.0.1', port });
+        socket.once('connect', () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once('error', () => resolve(false));
+    });
+}
+
+/**
+ * Refuse a port something else already listens on: a stale host from an
+ * earlier run would pass the readiness probe in this one's place, and a
+ * stale tcp listener only surfaces later as "exited before ready". Both
+ * ranges are probed when the transport is tcp.
+ */
+async function assertPortsFree(basePort, hosts, transport) {
+    const ports = [];
     for (let index = 0; index < hosts; index++) {
-        const port = basePort + index;
-        try {
-            const res = await fetch(`http://127.0.0.1:${port}/_sigx/health`);
-            await res.text().catch(() => {});
-            throw new Error(`[wf-fleet] something already listens on :${port} (a stale host?) — kill it or set WF_FLEET_BASE_PORT`);
-        } catch (error) {
-            if (error instanceof Error && error.message.startsWith('[wf-fleet]')) throw error;
-            // ECONNREFUSED: free, as it should be.
+        ports.push(['http', basePort + index]);
+        if (transport === 'tcp') ports.push(['tcp', basePort + TCP_PORT_OFFSET + index]);
+    }
+    for (const [kind, port] of ports) {
+        if (await portTaken(port)) {
+            throw new Error(`[wf-fleet] something already listens on :${port} (${kind}; a stale host?) — kill it or set WF_FLEET_BASE_PORT`);
         }
     }
 }
@@ -274,8 +290,8 @@ async function assertPortsFree(basePort, hosts) {
 /** Spawns into `members` (the caller's array) so a failure part-way still
  *  leaves every child where the caller's cleanup can reach it. */
 async function startHosts(members, { hosts, redisUrl, namespace, basePort, env, secrets, onLog }) {
-    await assertPortsFree(basePort, hosts);
     const transport = env.TRANSPORT ?? 'http';
+    await assertPortsFree(basePort, hosts, transport);
     for (let index = 0; index < hosts; index++) {
         const port = basePort + index;
         const child = spawn(
