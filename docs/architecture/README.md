@@ -49,6 +49,7 @@ Every arrow that crosses a box is a seam, and every seam is listed in
 | [`clustering.md`](clustering.md) | How do hosts find each other and agree on who owns an actor? |
 | [`conformance-suites.md`](conformance-suites.md) | How is a new provider or transport proven correct? |
 | [`monitoring.md`](monitoring.md) | How is a dashboard layered, and which of its rules fail silently when re-implemented? |
+| [`scaling-roadmap.md`](scaling-roadmap.md) | What is proven about scale, what holds it back, and in which order the ceilings get measured and removed? |
 
 ## Two rules that shape most of the code
 
