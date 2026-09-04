@@ -144,4 +144,23 @@ describe('testenv.mjs identity validation', () => {
 
         expect([...verbs].sort()).toEqual([...offered].sort());
     });
+
+    /**
+     * A second estate on one cluster is WORKLOAD (plus POOL/POOL_SIZE/
+     * POOL_COUNT/ACTORS_NS) overridden together — the D8 host-per-core
+     * pool of #386. The pool is labelled AND tainted with the workload, so
+     * a release that passed it only as the nodeSelector would schedule
+     * nothing: every pod Pending, tolerating the DEFAULT workload's taint
+     * on a pool that carries a different one. Every `--set
+     * nodeSelector.workload=` must therefore travel with its
+     * `tolerations[0].value=`. Static on purpose: the helm calls need a
+     * cluster, the pairing does not.
+     */
+    it('passes WORKLOAD as the toleration wherever it passes it as the selector', () => {
+        const source = readFileSync(SCRIPT, 'utf8');
+        const selectors = source.match(/nodeSelector\.workload=\$\{cfg\.workload\}/g) ?? [];
+        const tolerations = source.match(/tolerations\[0\]\.value=\$\{cfg\.workload\}/g) ?? [];
+        expect(selectors.length).toBeGreaterThan(0);
+        expect(tolerations.length).toBe(selectors.length);
+    });
 });

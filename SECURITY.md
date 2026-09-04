@@ -213,6 +213,13 @@ Development flags offenders: a turn that holds the loop longer than
 `slowTurnMs` (default 5 s) gets a `__DEV__` console warning naming the actor
 and method.
 
+Packing several hosts on one machine — the way a multi-core node is used,
+see ["One host per core"](docs/architecture/clustering.md#one-host-per-core)
+— does not widen this surface: each host has its own loop and starves only
+its own heartbeat. It adds one operational rule instead: size CPU requests
+so the hosts cannot oversubscribe the cores, because a throttled host lands
+its beat late without any single turn being slow.
+
 ## `reads.public` and shared caches
 
 `reads: { method: { maxAge, public: true } }` emits `public, s-maxage=…` and

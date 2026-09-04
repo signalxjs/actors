@@ -268,7 +268,10 @@ function timelineMetrics(result: WfLoadResult): Metric[] {
         ...info('redis_ops_per_sec_peak', p.redisOpsPerSecPeak, 'ops/s'),
         ...info('redis_mem_end_bytes', p.redisMemEndBytes, 'bytes'),
         // A fence the kubelet restarted, or a pod the run replaced: zero
-        // on a clean run, the finding on a packed or a chaos one.
+        // on a clean run, the finding on a packed (#386, G1) or a chaos
+        // one. On a packed node this IS the fence count a stateful host
+        // leaves behind — it reports `fatal` and restarts, taking its own
+        // `selfFences` with it — so read it with `hosts_fenced` below.
         ...info('restarts_during_run', result.restartsDuringRun ?? undefined, 'count'),
         ...info('pods_replaced', result.podsReplaced ?? undefined, 'count')
     ];
@@ -311,6 +314,19 @@ export function mechanismMetrics(
             unit: 'ratio',
             direction: 'lower',
             noiseFloor: 0.001
+        },
+        {
+            // Hosts that fenced themselves during the run (#386): the
+            // in-process `selfFences` delta. A worker-only host rejoins
+            // under its identity and keeps the count; a stateful host
+            // exits `fatal` and the kubelet restarts it, so ITS fence
+            // shows up as `restarts_during_run` instead. Zero on both is
+            // the packing rule holding; their sum is the number of fences.
+            name: 'hosts_fenced',
+            value: d['cluster/selfFences'] ?? 0,
+            unit: 'count',
+            direction: 'lower',
+            informational: true
         },
         {
             // At-most-once firing: wakes that never arrived and were

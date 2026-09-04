@@ -974,3 +974,106 @@ hundreds of durable sleeps per second across N hosts that is the first
 thing to go. The `WorkflowStats` singleton is on the completion path
 (`ctx.publish` waits for its turn) and is the second. Both are why this
 workload exists; record them in `BASELINES.md` and file the runtime issue.
+
+### (u) One host per core — the D8 packing shape (#386, the roadmap's G1)
+
+A host is one Node process on one JS thread, and the only way it uses a
+second core is a second host. Measured on a 10-core laptop (#397,
+`BASELINES.md` 2026-09-04): eight hosts on one box completed **5.93×**
+what one did, and a saturated host process sat at **138–151 % of a core**
+— the JS loop plus V8's GC helpers and libuv. The rule that follows:
+
+> **sum of the hosts' CPU requests ≤ node allocatable − 1 core**, at
+> **~1.4 cores per host**. An 8-vCPU node (`Standard_D8ls_v6`, ~7 usable
+> cores) packs **5 hosts at `requests.cpu 1300m`**, with `limits = requests`
+> so no host bursts into another's slice. Oversubscription — limits
+> summing past the cores — is the packing hazard, not packing itself: a
+> throttled host lands its heartbeat late and fences (§ `clustering.md`
+> "One host per core").
+
+This is a SECOND estate on the same cluster, reached by env alone — the
+pool is labelled and tainted with `WORKLOAD`, and every release passes it
+as the node selector and as the toleration:
+
+```sh
+export POOL=sigxactorsd8 POOL_SIZE=Standard_D8ls_v6 POOL_COUNT=2 POOL_MAX=2 \
+       WORKLOAD=sigx-actors-d8 ACTORS_NS=sigx-actors-d8 CHAT_NS=sigx-chat-d8
+node perf/aks/deploy/testenv.mjs up          # creates the D8 pool, both releases
+```
+
+Two nodes, not one: `affinity.hostAntiRedis` is required in both
+directions, so Redis takes one D8 to itself (the generator Job, with no
+anti-affinity of its own, lands beside it — the scheduler prefers the
+emptier node) and every host packs onto the other, because with
+`hostSelfSpread: preferred` there is nowhere else to go. The shape string
+carries `cpu=<limits.cpu> sku=<instance-type>` (#380), so an arm here can
+never be compared with a D2 run by accident.
+
+The two arms are rollouts of the actors release — `ws-up` is the "roll
+with these values" verb — each followed by the throughput ladder:
+
+```sh
+# arm A — five hosts, one core-and-a-bit each, no burst
+node perf/aks/deploy/testenv.mjs ws-up replicaCount=5 \
+  resources.requests.cpu=1300m resources.limits.cpu=1300m
+node perf/aks/deploy/testenv.mjs wf-load sweep=25,50,100,200 WF_DELAY_MS=2000
+
+# arm B — ONE host handed the whole node: the maxLocal/threads question,
+#         and the control that makes arm A's number a fleet number
+node perf/aks/deploy/testenv.mjs ws-up replicaCount=1 \
+  resources.requests.cpu=7000m resources.limits.cpu=7000m \
+  workflow.env.WF_COMPUTE_MAX_LOCAL=16
+node perf/aks/deploy/testenv.mjs wf-load sweep=25,50,100,200 WF_DELAY_MS=2000
+
+# arm C (optional) — the chart's burstable default, five hosts
+node perf/aks/deploy/testenv.mjs ws-up replicaCount=5 \
+  resources.requests.cpu=1300m resources.limits.cpu=1800m
+```
+
+From the Actions tab the same three are `Cluster test` dispatches — verb
+`up` then `ws-up`/`wf-load` with the arm's values in `args`, and the estate
+override in the `env` input, one `KEY=VALUE` per line:
+
+```
+POOL=sigxactorsd8
+POOL_SIZE=Standard_D8ls_v6
+POOL_COUNT=2
+POOL_MAX=2
+WORKLOAD=sigx-actors-d8
+ACTORS_NS=sigx-actors-d8
+CHAT_NS=sigx-chat-d8
+```
+
+The CLI form of the same dispatch, arm A shown; `wf-bench` records the
+run with the shape attached:
+
+```sh
+d8env="$(printf 'POOL=sigxactorsd8\nPOOL_SIZE=Standard_D8ls_v6\nPOOL_COUNT=2\nPOOL_MAX=2\nWORKLOAD=sigx-actors-d8\nACTORS_NS=sigx-actors-d8\nCHAT_NS=sigx-chat-d8')"
+gh workflow run cluster-test.yml -f verb=up -f env="$d8env"
+gh workflow run cluster-test.yml -f verb=ws-up -f env="$d8env" \
+  -f args='replicaCount=5 resources.requests.cpu=1300m resources.limits.cpu=1300m'
+gh workflow run cluster-test.yml -f verb=wf-bench -f env="$d8env"
+```
+
+**What to read.** `runsCompletedPerSec` at the knee, arm A over arm B:
+
+- **A/B ≈ 5** — the box scales with hosts; the recipe stands and 20 × D8
+  at five hosts each is the ~100-host estate the membership work (#387)
+  needs. Arm B alone should read about what a single D2 host does
+  (BASELINES 2026-08-02 measured one host on an 8-core node at 1.07×).
+- **A/B ≈ 1–2** — something SHARED caps the box. The #380 timeline names
+  it: Redis CPU near a core (the store), `publishFailures` climbing (the
+  `WorkflowStats` singleton), `reminderSetFailures` (the shard chain), or
+  the hottest host at its limit while the others idle (placement, not
+  packing). That arm is a runtime finding, not a recipe failure.
+- **`hosts_fenced` and `restarts_during_run` are 0 on both.** A stateful
+  host that fences exits `fatal` and is restarted, so its fence shows as a
+  restart; a worker-only host rejoins and keeps the in-process count.
+  Either non-zero on a run that did not kill anything means a host was
+  starved past the membership TTL — the packing rule was broken, or the
+  node had less allocatable than the arithmetic assumed (`kubectl describe
+  node` → `Allocatable.cpu`).
+
+**Then tear the pool down** — `down` deletes `$POOL`, and with the same
+env exported it is the D8 pool it deletes, not the D2 one. `POOL_MAX=2`
+keeps the autoscaler from adding a third D8 under load.

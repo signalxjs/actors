@@ -62,7 +62,13 @@ const cfg = {
     poolSize: process.env.POOL_SIZE ?? 'Standard_D2ls_v6',
     poolCount: process.env.POOL_COUNT ?? '4',
     poolMax: process.env.POOL_MAX ?? '8',
-    // The taint/label pair every chart in here selects on.
+    // The taint/label pair every chart in here selects on. A second estate on
+    // the same cluster (the D8 host-per-core pool, RUNBOOK (u)) is this set
+    // of five overridden together: POOL, POOL_SIZE, POOL_COUNT, WORKLOAD,
+    // ACTORS_NS (and CHAT_NS) — the pool is labelled AND tainted with the
+    // workload, and every release passes it as the selector and as the
+    // toleration, so a workload that only reached the selector would leave
+    // every pod Pending on the new pool.
     workload: process.env.WORKLOAD ?? 'sigx-actors-test',
     actorsNs: process.env.ACTORS_NS ?? 'sigx-actors-test',
     chatNs: process.env.CHAT_NS ?? 'sigx-chat',
@@ -346,13 +352,15 @@ async function up() {
     release('sigx', 'perf/aks/deploy/chart', cfg.actorsNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-actors-test`,
         '--set', `image.tag=${tag}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`
+        '--set', `nodeSelector.workload=${cfg.workload}`,
+        '--set', `tolerations[0].value=${cfg.workload}`
     ]);
     release('chat', 'perf/app/deploy/chart', cfg.chatNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
         '--set', `image.tag=${tag}`,
         '--set', `ingress.host=${cfg.chatHost}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`
+        '--set', `nodeSelector.workload=${cfg.workload}`,
+        '--set', `tolerations[0].value=${cfg.workload}`
     ]);
 
     step('waiting for rollouts');
@@ -1219,7 +1227,8 @@ async function migrateCheck(args) {
             '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
             '--set', `image.tag=${oldTag}`,
             '--set', `ingress.host=${cfg.chatHost}`,
-            '--set', `nodeSelector.workload=${cfg.workload}`
+            '--set', `nodeSelector.workload=${cfg.workload}`,
+            '--set', `tolerations[0].value=${cfg.workload}`
         ]);
         kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
     }
@@ -1243,7 +1252,8 @@ async function migrateCheck(args) {
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
         '--set', `image.tag=${tag}`,
         '--set', `ingress.host=${cfg.chatHost}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`
+        '--set', `nodeSelector.workload=${cfg.workload}`,
+        '--set', `tolerations[0].value=${cfg.workload}`
     ]);
     kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
 

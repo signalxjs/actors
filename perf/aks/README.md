@@ -193,6 +193,16 @@ time** bucketed into: `@sigx/serialize` encode · native `JSON.stringify` ·
 which fix is worth building; the thresholds are recorded in the
 `BASELINES.md` section this recipe produced.
 
+## One host per core
+
+A host is one Node process on one thread; a node with N cores runs N
+cores' worth of actors as N hosts, at ~1.4 cores per host (measured in
+#397 — `pnpm bench:wf-local` is the laptop version). The Kubernetes
+packing recipe — a second, env-only node pool of `Standard_D8ls_v6`, five
+hosts at `requests.cpu 1300m` each, and the two-arm run that checks the
+box scales with hosts — is scenario (u) in
+[`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) (#386).
+
 ## Load generator
 
 `MODE=counter` (state churn — every call is a Redis CAS), `crunch`
