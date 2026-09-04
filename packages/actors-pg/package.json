@@ -51,7 +51,7 @@
         "@types/pg": "^8.11.10",
         "pg": "^8.13.1",
         "typescript": "^6.0.3",
-        "vite": "^8.0.3"
+        "vite": "^8.2.2"
     },
     "publishConfig": {
         "access": "public"
