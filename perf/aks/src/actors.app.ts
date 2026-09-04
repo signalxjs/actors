@@ -21,11 +21,16 @@
  *
  * A third, `REMINDERS`, picks the reminder provider — see below.
  */
+import { Redis } from 'ioredis';
 import { defineActorApp, memoryStorage } from '@sigx/actors/host';
 import { redisReminders, redisStorage } from '@sigx/actors-redis';
 
 const url = process.env.REDIS_URL;
 const namespace = process.env.SIGX_NAMESPACE ?? 'sigx';
+// ONE client for storage and reminders: a second connection per host
+// would be a variable of its own in a run where REMINDERS is the one
+// under test. Auto-pipelined, as `redisStorage({ url })` would have been.
+const redis = url ? new Redis(url, { enableAutoPipelining: true }) : null;
 
 /**
  * REMINDERS — which `ActorReminders` the host runs (#385), part of
@@ -61,8 +66,8 @@ const reminderTickMs = knob('WF_REMINDER_TICK_MS');
 const callTimeoutMs = knob('WF_CALL_TIMEOUT_MS');
 
 export const app = defineActorApp({
-    storage: url ? redisStorage({ url, namespace }) : memoryStorage(),
-    ...(REMINDERS === 'redis' && url ? { reminders: redisReminders({ url, namespace }) } : {}),
+    storage: redis ? redisStorage({ client: redis, namespace }) : memoryStorage(),
+    ...(REMINDERS === 'redis' && redis ? { reminders: redisReminders({ client: redis, namespace }) } : {}),
     // Spread conditionally: an `undefined` value would still be a key, and
     // the host treats a present-but-undefined default as the default anyway
     // — but keeping the object empty when nothing is set makes "unchanged
