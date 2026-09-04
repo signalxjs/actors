@@ -151,7 +151,7 @@ number decided.
 
 | Measurement | Rig | Result | Decision it made |
 |---|---|---|---|
-| L1 multi-core, hosts = 1, 2, 4, 8 | #381 | 13.1 / 23.2 / 44.6 / **77.9** completed runs/s at 200 offered — **5.93× at 8 hosts**, 0 stuck, 0 lost wakes (machine not quiet; the ratio is the evidence). A saturated host process is **138–151% of a core**. | One host per core is a recipe plus a chart pattern, not a runtime change (B3). The packing rule is **5–6 hosts per 8-core node**, not 7. |
+| L1 multi-core, hosts = 1, 2, 4, 8 | #381 | 13.1 / 23.2 / 44.6 / **77.9** completed runs/s at 200 offered — **5.93× at 8 hosts**, 0 stuck, 0 lost wakes (machine not quiet; the ratio is the evidence). A saturated host process is **138–151% of a core**. | One host per core is a recipe plus a chart pattern, not a runtime change (B3). The packing rule is **5 hosts per 8-core node** (7 usable cores ÷ ~1.4), not 7. |
 | L2 reminder CAS ladder, N = 1, 3, 8, 16 tickers | #382 | No CAS failure at N ≤ 8 through 1,000 arms/s; N = 16 loses 2–8 in 15,000. **Table size is the ceiling**: at 100,000 sleeping entries a `set` is 870 ms p50 / 2.85 s p99 and 27% of fires land within a tick; at 10,000, 4.5 ms. | B2 (`redisReminders()`) is justified on the table-size number alone; T2 confirms the knee with real RTT rather than finds it. The outgrown gauge warns at ~1,000 entries per shard record. |
 | L3 drown-vs-shed, 8 hosts, 50 → 500 runs/s, `WF_TASK_MS` 20 and 2 | #381 | 20 ms tasks: knee ~80 completed/s; at 500 offered ~660 deadline failures and 979 aggregator publish timeouts while `start_deferred_ratio` and `run_error_rate` stay **0** — the fleet drowns, never sheds. 2 ms tasks: linear to **255 completed/s, 2,066 transitions/s**. | The 20 ms row is B1's before-picture; the 979 publish timeouts are B4's evidence. ~**4 ms of one JS thread per transition** prices 1,000 runs/s at ~32 host-cores before storage and the wire (B7, T3). |
 
@@ -207,9 +207,9 @@ pattern beside it: shard the aggregator by `key:` and persist its ring with
 `ctx.append`.
 
 **B3. One host per core (S now, M later) — #386.** The k8s packing recipe
-first (D8 pool, `replicaCount = 5–6 × nodes` — L1 measured a saturated host
-at 138–151% of a core — `requests.cpu 1300m`, the rule sum(requests) ≤
-allocatable − 1 core, resources in the shape); the fence is
+first (D8 pool, `replicaCount = 5 × nodes` — L1 measured a saturated host
+at 138–151% of a core, and 5 × `requests.cpu 1300m` fits the rule
+sum(requests) ≤ allocatable − 1 core; resources in the shape); the fence is
 the watchdog and the packing hazard is oversubscription. Later a
 `spawnHosts()` helper on `@sigx/actors/node` for non-k8s users. Gate met
 (L1: 5.93× at 8 hosts);
