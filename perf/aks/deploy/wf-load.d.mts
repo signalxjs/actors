@@ -102,7 +102,7 @@ export interface TimelineRedis {
 
 /** One poll of the fleet while the Job ran (#380). */
 export interface TimelineSample {
-    /** ms since the Job was applied */
+    /** ms since the poll loop started — after the Job was applied and the quiet-fleet wait ended */
     t: number;
     hosts: TimelineHost[];
     redis: TimelineRedis | null;
