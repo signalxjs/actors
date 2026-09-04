@@ -172,6 +172,9 @@ pnpm bench:wf             # workflow/*: the workflow engine on a live cluster (o
 pnpm bench:wf:baseline    # record this deployment SHAPE's workflow baseline
 pnpm bench:wf:compare     # run again and diff against it
 pnpm bench:tier2          # Tier 2: real sockets, one process per host (opt-in)
+pnpm bench:wf-local       # wf-local/*: the workflow engine as N host processes on THIS
+                          # box over a local Redis — the multi-core rig (#381); opt-in,
+                          # needs REDIS_URL (a local redis-server is enough)
 pnpm bench:threads        # compute/: worker_threads vs the event loop (opt-in, needs cores)
 ```
 
@@ -227,7 +230,9 @@ See "What a shared runner actually does" in `benchmarks/README.md` for the
 measurements all of this is calibrated against.
 
 Most scenarios are **Tier 1**: one process, zero sockets, measuring
-algorithmic shape. **Tier 2** (`cluster2/*`, `pnpm bench:tier2`) forks a
+algorithmic shape. **Tier 2** (`cluster2/*`, `pnpm bench:tier2`; and
+`wf-local/*`, `pnpm bench:wf-local`, the workflow engine as N host
+processes on one box over a local Redis — #381) forks a
 process per host and uses real loopback TCP; it is opt-in via `BENCH_TIER2=1`
 and never runs as part of `pnpm bench`. Inside it, counts (sockets, bytes)
 gate while timings are `informational` — see `benchmarks/BASELINES.md`, whose
