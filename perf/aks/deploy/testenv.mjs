@@ -741,12 +741,31 @@ function actorsShape(prefix = 'ws', knobNames = SOCKET_KNOBS) {
     const distinct = new Set(nodes.split('\n').filter(Boolean)).size;
     const image = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host',
         '-o', 'jsonpath={.spec.template.spec.containers[0].image}'], { quiet: true });
+    // Cores per host and the node SKU are deployment identity exactly as
+    // node spread is (#380): a 1 vCPU pod on a D2 and on a D8, or seven
+    // 1 vCPU pods packed on one D8 against one 7 vCPU pod, are different
+    // shapes whose curves must never be compared as one. Both read off
+    // the live cluster; absent (no limit set, a node the API would not
+    // name) is recorded as such rather than guessed.
+    const cpu = kube(['-n', cfg.actorsNs, 'get', 'deploy', 'sigx-host',
+        '-o', 'jsonpath={.spec.template.spec.containers[0].resources.limits.cpu}'],
+        { quiet: true, allowFail: true }) || 'none';
+    const hostNodes = new Set(nodes.split('\n').filter(Boolean));
+    const skuLines = kube(['get', 'nodes', '-o',
+        'jsonpath={range .items[*]}{.metadata.name}{"\\t"}{.metadata.labels.node\\.kubernetes\\.io/instance-type}{"\\n"}{end}'],
+        { quiet: true, allowFail: true }) ?? '';
+    const skus = new Set();
+    for (const line of skuLines.split('\n')) {
+        const [node, sku] = line.split('\t');
+        if (hostNodes.has(node) && sku) skus.add(sku);
+    }
+    const sku = skus.size > 0 ? [...skus].sort().join('+') : 'unknown';
     const knobs = Object.entries(liveSocketKnobs(knobNames))
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([k, v]) => `${k}=${v}`)
         .join(',');
     return (
-        `${prefix} replicas=${replicas} nodes=${distinct} image=${image.split(':').pop()}` +
+        `${prefix} replicas=${replicas} nodes=${distinct} cpu=${cpu} sku=${sku} image=${image.split(':').pop()}` +
         (knobs ? ` knobs=${knobs}` : '')
     );
 }
@@ -762,6 +781,12 @@ function actorsShape(prefix = 'ws', knobNames = SOCKET_KNOBS) {
  * Same discipline as `ws-load`: the image is named once, the live shape is
  * printed before and after (a rollout mid-run invalidates the rows), and
  * `expect-shape='…'` refuses a run against a deployment of another shape.
+ *
+ * Two arguments are the orchestrator's rather than the chart's (#380):
+ * `chaos=owner-kill` force-deletes the first host pod halfway through the
+ * arrivals (a single-rung run, by design), and `timeline=1` prints every
+ * fleet sample (host CPU/memory, Redis CPU/ops/memory) — the peaks print
+ * on every run.
  */
 async function wfLoad(args) {
     const values = {};
@@ -782,6 +807,9 @@ async function wfLoad(args) {
     delete values['image.repository'];
     const expectShape = values['expect-shape'];
     delete values['expect-shape'];
+    // `timeline=1` prints every sample; the peaks print regardless.
+    const printTimeline = values.timeline === '1';
+    delete values.timeline;
 
     step(`image: ${imageRepository}:${imageTag}` +
         (tagDefaulted ? ' (defaulted to git HEAD — pass image.tag=<tag> to pin)' : ''));
@@ -839,8 +867,22 @@ async function wfLoad(args) {
 
     step(result.countersTrustworthy
         ? 'ops.workflow + cluster counters, summed across hosts'
-        : 'ops.workflow: a snapshot missed a host — no delta reported');
+        : 'ops.workflow: a snapshot missed a host or the pod set changed — no delta reported');
     log(JSON.stringify({ hosts: result.hosts, delta: result.delta }));
+
+    // The resource curve (#380): host CPU against its limit beside Redis
+    // CPU — RUNBOOK (c)'s question, answered per run rather than by hand.
+    step(`fleet timeline: ${result.timeline.length} sample(s)`);
+    log(JSON.stringify({
+        hostCpuLimitM: result.hostCpuLimitM,
+        peaks: result.peaks,
+        restartsDuringRun: result.restartsDuringRun,
+        podsReplaced: result.podsReplaced,
+        chaos: result.chaos
+    }));
+    if (printTimeline || process.env.WF_LOAD_TIMELINE === '1') {
+        for (const sample of result.timeline) log(JSON.stringify(sample));
+    }
 
     const shapeAfter = actorsShape('wf', WORKFLOW_KNOBS);
     step(`shape: ${shapeAfter}`);
@@ -850,6 +892,18 @@ async function wfLoad(args) {
         process.exitCode = 1;
     }
     if (result.partial) process.exitCode = 1;
+    // A TRANSPORT=tcp run partly on HTTP, or one on which a link fell back,
+    // is void for the workflow axis as it is for the socket one (#223):
+    // every child start and childDone is a cross-host call.
+    const transport = transportGate(shapeAfter, result.delta, {
+        hosts: result.hosts,
+        tcpHosts: result.tcpHosts,
+        watchesTrustworthy: result.countersTrustworthy
+    });
+    if (transport) {
+        log(`  ${transport.valid ? '!' : '✗'} ${transport.message}`);
+        if (!transport.valid) process.exitCode = 1;
+    }
     const stuck = result.merged.reduce((a, row) => a + (row.stuck?.total ?? 0), 0);
     if (stuck > 0) {
         log(`  ✗ ${stuck} run(s) stuck at the end of the drain — see the rows' \`stuck\` breakdown`);

@@ -23,6 +23,10 @@ metadata:
 spec:
   parallelism: {{ .Values.loadgen.parallelism }}
   completions: {{ .Values.loadgen.parallelism }}
+  # Indexed, so JOB_COMPLETION_INDEX exists and pod 0 can be THE seeder
+  # (#380): in MODE=workflow every pod used to call WorkflowStats.reset,
+  # so with parallelism > 1 a late pod wiped an earlier pod's events.
+  completionMode: Indexed
   backoffLimit: {{ .Values.loadgen.backoffLimit }}
   template:
     metadata:
@@ -66,6 +70,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- /* Shared by every pod of one Job — the seed marker the
+                   non-seeding pods wait on carries it (#380). */}}
+            - name: JOB_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['job-name']
             {{- /* The workflow knobs (#297): empty omits, so the
                    generator's own default applies — see values.yaml. */}}
             {{- range $name, $value := .Values.loadgen.wf }}

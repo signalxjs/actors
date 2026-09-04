@@ -77,10 +77,55 @@ describe('mergeWfRows', () => {
         expect(merged!.transitionsPerSec).toBeCloseTo(700 / 70, 2);
     });
 
+    it('reports the OFFERED rate — the rung times the pods — beside the per-pod one (#380)', () => {
+        // Four pods each offering 250/s offered 1,000/s to the fleet; a row
+        // labelled r=250 would understate the load fourfold.
+        const [merged] = mergeWfRows([row({ rate: 250 }), row({ rate: 250 }), row({ rate: 250 }), row({ rate: 250 })]);
+        expect(merged!.rate).toBe(250);
+        expect(merged!.pods).toBe(4);
+        expect(merged!.offeredRate).toBe(1000);
+        expect(mergeWfRows([row()])[0]!.offeredRate).toBe(50);
+    });
+
+    it('sums the generator CPU across pods, and reports it only when every pod carried it', () => {
+        const [merged] = mergeWfRows([row({ generatorCpuMs: 1200 }), row({ generatorCpuMs: 800 })]);
+        expect(merged!.generatorCpuMs).toBe(2000);
+        expect(mergeWfRows([row()])[0]!.generatorCpuMs).toBeNull();
+        // A mixed rung — one pod from a generator that predates the field —
+        // must not read as the newer pod's total.
+        expect(mergeWfRows([row({ generatorCpuMs: 1200 }), row()])[0]!.generatorCpuMs).toBeNull();
+        expect(mergeWfRows([row({ generatorCpuMs: 1200 }), row()])[0]!).not.toHaveProperty('generatorCpuPods');
+    });
+
     it('keeps rungs apart and in order, and stamps partial only when told', () => {
         const merged = mergeWfRows([row({ rate: 100 }), row({ rate: 25 })]);
         expect(merged.map((r) => r.rate)).toEqual([25, 100]);
         expect(merged[0]!.partial).toBeUndefined();
         expect(mergeWfRows([row()], { partial: true })[0]!.partial).toBe(true);
+    });
+});
+
+describe('runWfLoad argument guards', () => {
+    it('refuses chaos=owner-kill with a multi-rung sweep before touching a cluster', async () => {
+        const { runWfLoad } = await import('../deploy/wf-load.mjs');
+        // No context, no kubectl: the guard fires on the values alone.
+        await expect(
+            runWfLoad({
+                context: 'none', namespace: 'x', chartDir: 'x', imageRepository: 'r', imageTag: 't', workload: 'w',
+                values: { chaos: 'owner-kill', sweep: '10,25' }
+            })
+        ).rejects.toThrow(/single rung/);
+        await expect(
+            runWfLoad({
+                context: 'none', namespace: 'x', chartDir: 'x', imageRepository: 'r', imageTag: 't', workload: 'w',
+                values: { chaos: 'sideways' }
+            })
+        ).rejects.toThrow(/unknown chaos/);
+        await expect(
+            runWfLoad({
+                context: 'none', namespace: 'x', chartDir: 'x', imageRepository: 'r', imageTag: 't', workload: 'w',
+                values: { chaos: 'owner-kill', durationS: '0' }
+            })
+        ).rejects.toThrow(/positive durationS/);
     });
 });

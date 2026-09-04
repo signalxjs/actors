@@ -608,7 +608,7 @@ Pass/fail, and what to record:
 
   ```sh
   node perf/aks/deploy/testenv.mjs ws-load mode=hot ladder=1000 \
-    'expect-shape=ws replicas=3 nodes=3 image=<tag> knobs=…'
+    'expect-shape=ws replicas=3 nodes=3 cpu=1000m sku=Standard_D2ls_v6 image=<tag> knobs=…'
   ```
 
   A mismatch refuses before anything runs — the same contract
@@ -915,13 +915,51 @@ node perf/aks/deploy/testenv.mjs wf-load WF_MIX=approval:100 WF_START_RATE=50 \
 
 # 5. the recorded run — every scenario, shape attached
 node perf/aks/deploy/testenv.mjs wf-bench --save-baseline
+
+# 6. chaos + load (#380): the first host pod force-deleted halfway through
+#    the arrivals — a single rung, and one arm with the sleeping runs
+#    RESIDENT so they have an owner to lose
+node perf/aks/deploy/testenv.mjs wf-load WF_START_RATE=25 durationS=120 \
+  WF_MIX=order:40,etl:40,approval:20 chaos=owner-kill
+node perf/aks/deploy/testenv.mjs ws-up workflow.env.WF_DEACTIVATE_ON_SLEEP=0
+node perf/aks/deploy/testenv.mjs wf-load WF_START_RATE=25 durationS=120 \
+  WF_MIX=order:100 WF_DELAY_MS=90000 chaos=owner-kill
 ```
+
+**Several generator pods (#380).** `parallelism=N` runs N pods at the
+rung's rate EACH, so the merged row carries `offeredRate = rate × pods`
+beside `rate`, and the recorded rows are labelled by the offered rate. The
+Job is Indexed: pod 0 resets the aggregator and seeds, the others wait for
+its seed marker — before that, every pod reset on start and a late pod
+wiped an earlier pod's events. One generator pod is good for ~250 runs/s
+before `setTimeout` granularity makes its Poisson arrivals bursty; the
+row's `generatorCpuMs` says what a pod spent. `WF_MAX_INFLIGHT` (default
+5,000) is a false ceiling on the sleep axis — every run is in flight for
+its whole 90 s — so the recorded run takes it from `INFRA_WF_MAX_INFLIGHT`
+and a hand-run passes it bare.
+
+**The fleet timeline (#380).** Every poll samples `kubectl top pods` and
+the Redis pod's `INFO`; the run prints the peaks — the hottest host
+against its CPU limit, Redis CPU as a fraction of one core, Redis ops/s
+and memory — and `timeline=1` prints every sample. This is RUNBOOK (c)'s
+"which saturates first, host CPU or Redis CPU", answered per run. It is
+best-effort: no metrics-server, no host rows; a Redis that will not answer,
+no Redis rows; never a failed run. `restartsDuringRun` counts container
+restarts on pods present at both ends (a fence the kubelet restarted);
+`podsReplaced` counts new pod names (the chaos victim's replacement).
+
+**Chaos voids the counter delta.** A replaced pod takes its `ops.workflow`
+counters with it, so a `chaos=owner-kill` run reports no delta (and no
+`join_repairs`); `wakesLost` and `stuck` ride the row from the aggregator
+and stand. `TRANSPORT=tcp` runs are gated as socket runs are: a fleet
+partly on HTTP or a link that fell back exits 1.
 
 **Pass criteria.** `stuck.total` is 0 on every row (the verb exits 1
 otherwise); `completedUnreported` is 0 (a topic delivery to the aggregator
 was lost); `wakesLost` is 0 — reminder firing is at-most-once, so a lost
 wake is a runtime finding, recovered by the sweep's `status()` touch but
-counted. Kill a host mid-run (scenario (f)) and all three must still hold.
+counted. Under `chaos=owner-kill` (step 6) `stuck.total` must still be 0;
+`wakesLost` is recorded, not gated — it is the number #306 asked for.
 
 **What to record.** `runsCompletedPerSec` against `rate` (where they part
 is the ceiling), `wakeLagMs` (its floor is the tick; its growth is the
