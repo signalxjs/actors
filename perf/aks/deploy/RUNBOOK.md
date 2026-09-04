@@ -1044,10 +1044,16 @@ ACTORS_NS=sigx-actors-d8
 CHAT_NS=sigx-chat-d8
 ```
 
-(`gh workflow run cluster-test.yml -f verb=ws-up -f args='replicaCount=5
-resources.requests.cpu=1300m resources.limits.cpu=1300m' -f env="$(printf
-'POOL=sigxactorsd8\nPOOL_SIZE=Standard_D8ls_v6\nPOOL_COUNT=2\nPOOL_MAX=2\nWORKLOAD=sigx-actors-d8\nACTORS_NS=sigx-actors-d8\nCHAT_NS=sigx-chat-d8')"`
-is the CLI form; `wf-bench` records it with the shape attached.)
+The CLI form of the same dispatch, arm A shown; `wf-bench` records the
+run with the shape attached:
+
+```sh
+d8env="$(printf 'POOL=sigxactorsd8\nPOOL_SIZE=Standard_D8ls_v6\nPOOL_COUNT=2\nPOOL_MAX=2\nWORKLOAD=sigx-actors-d8\nACTORS_NS=sigx-actors-d8\nCHAT_NS=sigx-chat-d8')"
+gh workflow run cluster-test.yml -f verb=up -f env="$d8env"
+gh workflow run cluster-test.yml -f verb=ws-up -f env="$d8env" \
+  -f args='replicaCount=5 resources.requests.cpu=1300m resources.limits.cpu=1300m'
+gh workflow run cluster-test.yml -f verb=wf-bench -f env="$d8env"
+```
 
 **What to read.** `runsCompletedPerSec` at the knee, arm A over arm B:
 
