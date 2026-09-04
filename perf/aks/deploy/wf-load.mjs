@@ -92,7 +92,11 @@ const CLUSTER_COUNTERS = [
     'unreachableRetries',
     // Links that fell through to a later transport (#223) — what the tcp
     // gate reads on a TRANSPORT=tcp run.
-    'transportFallbacks'
+    'transportFallbacks',
+    // Hosts that fenced themselves during the run (#386): the in-process
+    // count, which a stateful host takes with it when the kubelet restarts
+    // it — read beside `restartsDuringRun`, which is where those land.
+    'selfFences'
 ];
 
 /**

@@ -94,6 +94,53 @@ would cost a directory lookup and a membership refresh against the store that
 just failed. A *peer* calling into a fenced host still gets `unreachable`,
 which is the answer it can act on.
 
+## One host per core
+
+A host is one Node process on one JS thread. Nothing in the runtime uses a
+second core: `defineWorker` multiplies *activations* — concurrency at
+`await` points — and measured 1.0× against a single activation on a
+20-core box; `worker_threads` was priced at a ~3.4× ceiling with a ~200 µs
+crossover and a 1 MB payload cliff and deliberately kept out of the
+runtime (#119 — `benchmarks/BASELINES.md` 2026-08-06 has the numbers, and
+2026-08-02 the one-host-on-eight-cores figure of 1.07×). The way a machine
+with N cores runs N cores' worth of actors is **N hosts**, and that is a
+supported shape, not a workaround:
+
+- **Identity is per process.** The placement mints the host id when it
+  starts (`cluster/placement.ts`), the directory entry names
+  `{hostId}/{epoch}/{seq}`, and the membership record is per host — so N
+  processes on one machine are N cluster members that happen to share a
+  kernel. Nothing needs allocating but a listen port each and an
+  `advertise` address peers can dial (`perf/aks/server.mjs` takes `PORT`
+  and `POD_IP`; the multi-process rig in `perf/aks/wf-fleet.mjs` runs
+  eight of them on `:7411+i`).
+- **Measured** (#397, `BASELINES.md` 2026-09-04): eight hosts on one
+  10-core box completed 5.93× what one did, with the shared components —
+  the directory, the aggregator, the reminder table — flat across the
+  ladder. A saturated host process is **~1.4 cores**, not one: the JS loop
+  plus V8's GC helpers, libuv and the Redis client's I/O.
+- **The sizing rule** that follows: `sum(requests) ≤ allocatable − 1 core`
+  at ~1.4 cores per host, with `limits = requests`. On Kubernetes that is
+  five hosts per 8-vCPU node at `requests.cpu 1300m`; the packing recipe
+  and the two-arm measurement that checks it are RUNBOOK scenario (u)
+  (`perf/aks/deploy/RUNBOOK.md`, #386).
+
+**The fence is the watchdog.** Packing does not create a new hazard — each
+host has its own loop, so a CPU-bound turn on one starves only its own
+heartbeat ([SECURITY.md](../../SECURITY.md#a-cpu-bound-turn-can-fence-its-own-host)),
+exactly as on a node of its own. What packing *can* create is
+oversubscription: limits summing past the cores, so that the CFS
+throttles a host across whole periods and its beat lands past the TTL
+without any turn being slow. The answer is the sizing rule above, not a
+second liveness mechanism: a starved host fences ("Self-fencing" above),
+reports `fatal` on its health check, and the orchestrator restarts it —
+which is why the k8s recipe needs no supervisor beyond the kubelet, and
+why a process supervisor for non-Kubernetes deployments (the `spawnHosts`
+follow-on in #386) restarts a child on exit and forwards `SIGTERM` for the
+drain, and does nothing cleverer. A run that fences a host under the rule
+is a finding about the rule (`hosts_fenced`, `restarts_during_run` in the
+workflow scenario), never something to paper over with a longer TTL.
+
 ## Change detection
 
 Providers compare **host signatures**, not just a version counter. A host that
