@@ -35,6 +35,7 @@
         "bench:wf": "cross-env BENCH_WF=1 node --conditions=production --expose-gc benchmarks/src/main.ts workflow/ --runs=1 --no-warmup --no-gc-profile",
         "bench:wf:baseline": "cross-env BENCH_WF=1 node --conditions=production --expose-gc benchmarks/src/main.ts workflow/ --runs=1 --no-warmup --no-gc-profile --save-baseline",
         "bench:wf:compare": "cross-env BENCH_WF=1 node --conditions=production --expose-gc benchmarks/src/main.ts workflow/ --runs=1 --no-warmup --no-gc-profile --compare",
+        "bench:wf-local": "cross-env BENCH_WF_LOCAL=1 node --conditions=production --expose-gc benchmarks/src/main.ts wf-local/ --runs=1 --no-warmup --no-gc-profile",
         "bench:diff": "node --conditions=production benchmarks/src/compare-files.ts",
         "bench:ab": "node --conditions=production --expose-gc benchmarks/src/ab.ts",
         "bench:ab:report": "node --conditions=production benchmarks/src/ab-report.ts",

@@ -125,8 +125,9 @@ function refusePartial(result: WfLoadResult, what: string): void {
 
 const ratio = (num: number, den: number): number => (den > 0 ? num / den : 0);
 
-/** Per-rung metrics; `prefix` labels the rung. */
-function rowMetrics(row: WfLoadRow, prefix: string): Metric[] {
+/** Per-rung metrics; `prefix` labels the rung. Exported for `wf-local/*`,
+ *  so a laptop fleet and a Tier-3 fleet name their numbers identically. */
+export function rowMetrics(row: WfLoadRow, prefix: string): Metric[] {
     const finished = row.completed + row.failed + row.compensated + row.cancelled;
     const metrics: Metric[] = [
         {
@@ -278,7 +279,9 @@ function timelineMetrics(result: WfLoadResult): Metric[] {
  * `ops.workflow` sections — absent when either snapshot missed a host,
  * because a delta with an unknown error direction is worse than none.
  */
-function mechanismMetrics(result: WfLoadResult): Metric[] {
+export function mechanismMetrics(
+    result: Pick<WfLoadResult, 'delta' | 'countersTrustworthy' | 'peakActivations'>
+): Metric[] {
     if (!result.countersTrustworthy) return [];
     const d = result.delta;
     const count = (name: string, key: string, direction: 'lower' | 'higher'): Metric => ({
