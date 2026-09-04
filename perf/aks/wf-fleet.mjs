@@ -296,7 +296,13 @@ async function assertPortsFree(basePort, hosts, transport) {
 /** Spawns into `members` (the caller's array) so a failure part-way still
  *  leaves every child where the caller's cleanup can reach it. */
 async function startHosts(members, { hosts, redisUrl, namespace, basePort, env, secrets, onLog }) {
-    const transport = env.TRANSPORT ?? 'http';
+    // The option wins, the environment is the fallback — the header says
+    // `TRANSPORT=tcp` in the environment reaches the hosts, so it must —
+    // and anything else is refused before a host is spawned.
+    const transport = env.TRANSPORT ?? process.env.TRANSPORT ?? 'http';
+    if (transport !== 'http' && transport !== 'tcp') {
+        throw new Error(`[wf-fleet] TRANSPORT must be http or tcp, got '${transport}'`);
+    }
     await assertPortsFree(basePort, hosts, transport);
     for (let index = 0; index < hosts; index++) {
         const port = basePort + index;

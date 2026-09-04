@@ -119,7 +119,7 @@ scaling question before it costs a paid session.
 redis-server &                                          # or any local Redis
 node --conditions=production perf/aks/wf-fleet.mjs hosts=4 rate=100 durationS=20 \
   WF_DELAY_MS=2000                                      # one JSON line per rung
-pnpm bench:wf-local                                     # the recorded wf-local/* scenarios
+REDIS_URL=redis://127.0.0.1:6379 pnpm bench:wf-local   # the recorded wf-local/* scenarios
 ```
 
 One generator, not one per host, on purpose: every generator resets the
