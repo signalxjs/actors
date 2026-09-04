@@ -11,8 +11,9 @@
  * attempt fails and the caller sees an error. `BASELINES.md` (2026-08-26)
  * measured that ratio at zero for 50 arms/s + 50 fires/s on three hosts and
  * named "the rate at which it leaves zero" as the next thing to find. This
- * finds it on loopback — the UPPER bound for any cloud figure, since a real
- * RTT only shortens the CAS window.
+ * finds it on loopback — the UPPER bound for any cloud figure: a longer
+ * round trip WIDENS the load-to-save window in which another writer can
+ * land, so conflicts are rarer here than they will ever be in a cluster.
  *
  * Shape: N in-process hosts (`createCluster`, `selfPolicy`, membership and
  * directory in memory) over ONE `redisStorage`, a 1 s reminder tick, and an
@@ -213,16 +214,28 @@ async function runRung(
     await Promise.all(inFlight);
 
     // Drain: every successful arm should fire by its due time plus a tick.
-    const lastDue = Math.max(0, ...due.values());
+    // Counted as the intersection with THIS rung's arms — a late fire from
+    // the previous rung lands in the same map and must not read as one of
+    // ours, or the drain exits early and the ratio below is skewed.
+    let lastDue = 0;
+    for (const at of due.values()) if (at > lastDue) lastDue = at;
     const drainUntil = lastDue + DRAIN_SLACK_MS;
-    while (Date.now() < drainUntil && fired.size < due.size) await sleep(200);
+    const firedOfOurs = (): number => {
+        let count = 0;
+        for (const key of due.keys()) if (fired.has(key)) count++;
+        return count;
+    };
+    while (Date.now() < drainUntil && firedOfOurs() < due.size) await sleep(200);
     stopSampling = true;
     await sampler;
 
     let firedWithinTick = 0;
-    for (const [key, at] of fired) {
-        const expected = due.get(key);
-        if (expected !== undefined && at - expected <= TICK_MS) firedWithinTick++;
+    let firedTotal = 0;
+    for (const [key, expected] of due) {
+        const at = fired.get(key);
+        if (at === undefined) continue;
+        firedTotal++;
+        if (at - expected <= TICK_MS) firedWithinTick++;
     }
     const after = await sampleRedis(admin);
     return {
@@ -230,7 +243,7 @@ async function runRung(
         failures,
         latency,
         firedWithinTick,
-        firedTotal: fired.size,
+        firedTotal,
         commands: after.commands - before.commands,
         cpuMs: after.cpuMs - before.cpuMs,
         shardBytesPeak
