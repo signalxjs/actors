@@ -129,12 +129,12 @@ if (WF_LOCAL_ENABLED && !process.env.INFRA_SHAPE) {
 
 /**
  * Timings are context on a shared box: demote every non-ratio, non-count
- * metric to informational. The ratio metrics carry their own noise floors
- * and keep gating.
+ * metric to informational. Ratios (`ratio`, and the `x` multipliers between
+ * arms) and counts carry their own noise floors and keep gating.
  */
 export function asTier2(metrics: Metric[]): Metric[] {
     return metrics.map((m) =>
-        m.unit === 'ratio' || m.unit === 'count' ? m : { ...m, informational: true }
+        m.unit === 'ratio' || m.unit === 'x' || m.unit === 'count' ? m : { ...m, informational: true }
     );
 }
 
@@ -258,12 +258,17 @@ const multiCore: Scenario = {
                 // THE number: completed runs/s at the widest fleet over the
                 // narrowest, both measured on this box in this run.
                 // >= ~6x at 8 hosts says one host per core scales the
-                // engine; <= ~3x says something shared caps the box.
+                // engine; <= ~3x says something shared caps the box. It
+                // gates, with a floor of a whole multiple: two runs on one
+                // busy box read 5.18x and 5.93x fifteen minutes apart, so a
+                // finer floor would call the machine, not the code — but a
+                // fleet that stopped scaling by 1x is exactly what a
+                // comparison must say.
                 name: `scale_${widest}_over_${narrowest}`,
                 value: Math.round((completed[widest]! / completed[narrowest]!) * 100) / 100,
                 unit: 'x',
                 direction: 'higher',
-                informational: true
+                noiseFloor: 1
             });
         }
         return metrics;

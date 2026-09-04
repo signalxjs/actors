@@ -41,14 +41,15 @@ describe('wfLocalShape', () => {
 });
 
 describe('asTier2', () => {
-    it('demotes timings to informational and leaves counts and ratios gating', () => {
+    it('demotes timings to informational and leaves counts, ratios and multipliers gating', () => {
         const out = asTier2([
             { name: 'a/runs_completed_per_sec', value: 1, unit: 'runs/s', direction: 'higher' },
             { name: 'a/start_p50_ms', value: 1, unit: 'ms', direction: 'lower' },
             { name: 'a/stuck_ratio', value: 0, unit: 'ratio', direction: 'lower', noiseFloor: 0.001 },
-            { name: 'a/wakes_lost', value: 0, unit: 'count', direction: 'lower', noiseFloor: 1 }
+            { name: 'a/wakes_lost', value: 0, unit: 'count', direction: 'lower', noiseFloor: 1 },
+            { name: 'scale_8_over_1', value: 5.9, unit: 'x', direction: 'higher', noiseFloor: 1 }
         ]);
-        expect(out.map((m) => m.informational ?? false)).toEqual([true, true, false, false]);
+        expect(out.map((m) => m.informational ?? false)).toEqual([true, true, false, false, false]);
     });
 });
 

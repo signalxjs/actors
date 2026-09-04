@@ -395,7 +395,8 @@ async function stopHosts(members, onLog) {
     }
 }
 
-/** The Service stand-in: round-robin over the hosts, one request at a time. */
+/** The Service stand-in: each request goes to the next host in turn; any
+ *  number may be in flight at once, as through a Service. */
 function startProxy(members) {
     const agent = new HttpAgent({ keepAlive: true, maxSockets: 256 });
     let next = 0;
