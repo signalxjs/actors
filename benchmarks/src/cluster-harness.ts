@@ -249,7 +249,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
         const app = defineActorApp({
             actors: options.actors,
             storage,
-            defaults: { ...quiet, ...options.defaults }
+            defaults: options.defaults ? { ...quiet, ...options.defaults } : quiet
         }).use(plugin);
         const host = await app.start();
         registry.set(`host${index}.test`, { app, host });

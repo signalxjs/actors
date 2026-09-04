@@ -43,7 +43,7 @@
  * failure ratio is the finding.
  */
 import Redis from 'ioredis';
-import { defineActor } from '@sigx/actors';
+import { defineActor, isStorageConflict } from '@sigx/actors';
 import { redisStorage } from '@sigx/actors-redis';
 import { REMINDER_TYPE, type ActorStorage, type Host } from '@sigx/actors/host';
 import { createCluster, selfPolicy } from '../cluster-harness.ts';
@@ -78,6 +78,10 @@ const POPULATION_RATE = 200;
 
 /** Duplicated from `reminder-shards.ts` (internal): the 16 shard keys. */
 const SHARD_KEYS = Array.from({ length: 16 }, (_v, i) => `p${i}`);
+
+/** Distinguishes clusters within a process; the clock separates runs. Two
+ *  clusters minted in one millisecond would otherwise share shard records. */
+let clusterSeq = 0;
 
 /** Fires seen, keyed by actor key → wall time. Module scope because the
  *  actor body has no other channel back to the scenario. */
@@ -165,6 +169,10 @@ async function runRung(
     const latency = new Samples();
     let failures = 0;
     let arms = 0;
+    /** Anything that is NOT the CAS giving up is the rig's problem, not a
+     *  finding — kept apart and thrown after the window so a timeout or a
+     *  Redis error fails the scenario instead of inflating the ratio. */
+    let rigError: unknown = null;
     let shardBytesPeak = 0;
     const inFlight: Promise<void>[] = [];
 
@@ -198,11 +206,12 @@ async function runRung(
                         // reminder the runtime actually recorded.
                         due.set(key, Date.now() + DUE_MS);
                     },
-                    () => {
+                    (error: unknown) => {
                         // The third CAS attempt lost: `reminders.set` threw
-                        // and the actor method with it. This is the
-                        // finding, not an error of the rig.
-                        failures++;
+                        // the branded conflict and the actor method with
+                        // it. This is the finding, not an error of the rig.
+                        if (isStorageConflict(error)) failures++;
+                        else rigError ??= error;
                     }
                 )
             );
@@ -212,6 +221,7 @@ async function runRung(
         if (wait > 0) await sleep(wait);
     }
     await Promise.all(inFlight);
+    if (rigError !== null) throw rigError;
 
     // Drain: every successful arm should fire by its due time plus a tick.
     // Counted as the intersection with THIS rung's arms — a late fire from
@@ -360,7 +370,7 @@ const armFire: Scenario = {
         for (const n of ctx.quick ? QUICK_HOSTS : HOSTS) {
             // Fresh per cluster, across processes as well as within one: a
             // shard record left by a crashed run is loaded by every set.
-            const namespace = `bench-rem-${n}-${Date.now()}`;
+            const namespace = `bench-rem-${n}-${Date.now()}-${++clusterSeq}`;
             const admin = new Redis(url);
             // Own the client: `url` would mint one the scenario cannot close.
             const storageClient = new Redis(url, { enableAutoPipelining: true });
@@ -397,7 +407,7 @@ const tableSize: Scenario = {
         const metrics: Metric[] = [];
         const windowMs = ctx.quick ? QUICK_WINDOW_MS : WINDOW_MS;
         for (const population of ctx.quick ? QUICK_POPULATIONS : POPULATIONS) {
-            const namespace = `bench-rempop-${population}-${Date.now()}`;
+            const namespace = `bench-rempop-${population}-${Date.now()}-${++clusterSeq}`;
             const admin = new Redis(url);
             const storageClient = new Redis(url, { enableAutoPipelining: true });
             const storage = redisStorage({ client: storageClient, namespace });
