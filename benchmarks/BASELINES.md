@@ -3196,3 +3196,129 @@ round trip's worth of time.
 > The `table-size` arm seeds its population straight through the storage
 > as the runtime writes its own table (`saveText`, round-robin over the
 > shards), so a run costs seconds, not the hours a million real arms would.
+
+## 2026-09-04 · Tier 2 — the workflow engine on N hosts of ONE box, the first multi-core number (#381)
+
+| | |
+|---|---|
+| Shape | `wf-local hosts=1,2,4,8 cores=10 cpu=Apple_M4 node=24 image=e83b1ee knobs=(default)` |
+| Machine | Apple M4 (10 cores), macOS, Node v24.11.1, local `redis-server` on loopback, prod dist |
+| Rig | `perf/aks/wf-fleet.mjs` — N × `server.mjs` on `:7411+i` over one Redis namespace, HTTP host-to-host, one `loadgen.mjs MODE=workflow` through a round-robin proxy standing in for the Service. `pnpm bench:wf-local`, `--runs=1 --no-warmup` |
+| Knobs shared by every arm | `WF_DELAY_MS=2000` (volatile timers, as the Tier-3 ladder), `WF_SIGNAL_TIMEOUT_MS=5000`, `WF_MAX_INFLIGHT=50000`, `WF_DRAIN_S=900`; 20 s of Poisson arrivals per rung, the default mix `order:50,approval:20,etl:20,saga:10` |
+| Conditions | **NOT quiet.** Load average 3–8 throughout: three sibling sessions were building and testing in other worktrees of this repo. The counts are unaffected; the timings and the absolute knee are context; the ratios were measured back to back and are the evidence, per the tier legend. A second run of the multi-core arm 15 min earlier (a different deadline, see below) put the same ratio at 5.18×. |
+
+Every rung of both scenarios: **`stuck_ratio` 0, `run_error_rate` 0,
+`start_deferred_ratio` 0, `completed_unreported` 0, `wakes_lost` 0,
+`reminder_set_failure_ratio` 0**. Nothing was lost anywhere; what follows
+is about how fast, and what queued where.
+
+### `wf-local/multi-core` — 200 runs/s offered to 1, 2, 4 and 8 hosts
+
+The offered rate is above every arm's knee on purpose (one host of this
+mix saturates at ~13–15 completed runs/s on this class of core — the mix
+is ~60 ms of native sha256 per run), so completed/s is each fleet's
+CAPACITY and the ratio is a capacity ratio. The call deadline is raised to
+600 s for this arm so that overload on the narrow fleets is queueing, not
+deadline failure — the first run at the default 30 s had the one-host arm
+fail two thirds of its runs (order p50 landed at 30.9 s, the deadline
+itself), which made the ratio one between an arm that failed fast and one
+that finished.
+
+| hosts | completed/s | per host | vs 1 host | start p50 | task p50 (20 ms body) | order p50 | etl p50 (8 children) | drain | busiest host CPU | join repairs |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 13.1 | 13.1 | 1.00× | 365 ms | 33.8 s | 49.3 s | 246 s | 264 s | 151 % | **48** |
+| 2 | 23.2 | 11.6 | 1.76× | 354 ms | 15.1 s | 25.7 s | 121 s | 128 s | 143 % | 0 |
+| 4 | 44.6 | 11.1 | 3.39× | 368 ms | 5.8 s | 13.8 s | 54 s | 57 s | 138 % | 0 |
+| 8 | 77.9 | 9.7 | **5.93×** | 400 ms | 989 ms | 5.7 s | 15.6 s | 21 s | 112 % | 0 |
+
+(`failed` 4.3–4.8% and `compensated` 1.6–2.0% on every arm — the
+unsignalled fifth of approvals taking the 5 s timeout edge, and the saga's
+10% injected failure rate; neither moves with fleet size, so neither is
+overload.)
+
+**One host per core scales the engine: 5.93× at 8 hosts, 1.76× at 2,
+3.39× at 4.** This is the number the roadmap's phase-1 gate asked for
+(≥ ~6× confirms the recipe, ≤ ~3× would name a shared wall), and it lands
+at the threshold rather than clear of it for a reason the CPU column
+shows: **a host is not one core.** The busiest host process sat at
+138–151% of a core on the narrow arms — the JS loop plus V8's GC helpers
+and libuv — so eight hosts on a ten-core box, with the generator (21%),
+the proxy and Redis beside them, is an oversubscribed box. Per-host
+capacity falls 13.1 → 9.7 across the ladder, which is that contention,
+not a shared runtime component: `remote_dispatch_ratio` climbs 0 → 0.88
+as it should, `publish_failures` is 0 on every arm, no reminder CAS was
+lost, and the counters that would name a shared wall (the directory, the
+aggregator, the shard table) are all flat. The packing rule for the D8
+recipe (#386) is therefore **~1.4 cores per host, not 1** — five or six
+hosts per 8-core node, not eight — and the Tier-3 D8 arm should be sized
+that way before it is measured.
+
+**The 48 join repairs on the one-host arm are the one mechanism finding.**
+With 4 000 runs queued on one loop, ~800 fan-out parents sat waiting for
+`childDone` calls that had been sent detached into a queue hundreds of
+turns deep; the generator's trickle at 1–2 completions/s for ninety
+seconds, then a burst of 400, is the `join-check` reminder (60 s period on
+a 30 s tick) re-issuing them. Nothing was lost — it is the watchdog doing
+its job — but it means the recovery path, not the happy path, set the
+one-host arm's drain, and a `childDone` that is queued behind the parent's
+own backlog is indistinguishable from one that was lost. The 2-, 4- and
+8-host arms repaired nothing.
+
+### `wf-local/drown-vs-shed` — 8 hosts, rising rates, at 20 ms and at 2 ms tasks
+
+Default 30 s call deadline (the deadline is the subject here), everything
+else as above. `task=20` is the recorded workload; `task=2` takes the
+sha256 wall away so the runtime's own bookkeeping is what saturates — the
+arm that speaks to the 1 000 runs/s target.
+
+| task | offered | completed/s | transitions/s | start p50 | task p50 | etl p50 | failed | of which deadline* | publish failures | peak activations | busiest host CPU | drain |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20 ms | 50 | 29.9 | 232 | 12 ms | 22 ms | 222 ms | 44 (4.8%) | 0 | 0 | 177 | 108 % | 8 s |
+| 20 ms | 100 | 60.4 | 480 | 169 ms | 54 ms | 1.5 s | 4.5% | 0 | 0 | 445 | 112 % | 9 s |
+| 20 ms | 200 | 77.4 | 634 | 385 ms | 1.08 s | 17.5 s | 152 (4.3%) | 0 | 0 | 2 689 | 118 % | 23 s |
+| 20 ms | 500 | 73.2 | 629 | 401 ms | 4.34 s | 50.5 s | **1 007 (13.2%)** | **~660** | **979** | 8 716 | 123 % | 69 s |
+| 2 ms | 50 | 33.6 | 273 | 3.7 ms | 3 ms | 27 ms | 43 (4.3%) | 0 | 0 | 137 | 23 % | 8 s |
+| 2 ms | 100 | 65.3 | 527 | 3.3 ms | 2 ms | 28 ms | 77 (4.0%) | 0 | 0 | 236 | 29 % | 8 s |
+| 2 ms | 200 | 126.0 | 1 037 | 4.6 ms | 2 ms | 36 ms | 177 (4.7%) | 0 | 0 | 371 | 63 % | 8 s |
+| 2 ms | 500 | **255.4** | **2 066** | 17.8 ms | 3 ms | 257 ms | 394 (4.6%) | 0 | 0 | 1 120 | 122 % | 11 s |
+
+\* the excess over the ~4.5% every unloaded rung shows.
+
+**With 20 ms tasks the fleet's knee is ~80 completed runs/s, and past it
+the fleet drowns rather than sheds — but it drowns gracefully.** 200 and
+500 offered both complete ~75/s; at 500 the difference is where the other
+425/s went: 8 716 activations resident at the peak, a 20 ms task measuring
+4.3 s of queue, an eight-child etl taking 50 s — and then the 30 s call
+deadline converting ~660 of the queued task calls into run FAILURES and
+979 completion publishes into timeouts on the singleton `WorkflowStats`.
+`start_deferred_ratio` and `run_error_rate` stayed 0 throughout: the
+engine cannot refuse a start, so it accepted every one of them, and the
+deadline was the only thing that ever said no. That is the shape #384
+(admission control) exists to change, and the row a "shed, not drown"
+verdict will be judged against: at 500 offered, refusals should replace
+those ~660 deadline failures and the 979 publish timeouts, `queued` should
+stay bounded, and completed/s should not fall below the 200 rung.
+
+**With 2 ms tasks the same fleet climbs linearly to 255 completed runs/s
+and 2 066 transitions/s, and the busiest host reaches a core only at the
+500 rung** — so the runtime's own bookkeeping, not the workload, is now
+what saturates: about **4 ms of one JS thread per transition** (≈ 250
+transitions/s per host at a core, each transition a Redis CAS, a timer hop
+and a dispatch, 87% of them cross-host over HTTP). A run of this mix is ~8
+transitions, so a host-core is worth ~30 runs/s of pure engine, and the
+1 000 runs/s target is ~8 000 transitions/s — **~32 host-cores at this
+efficiency, before storage and the wire are considered.** That is the
+per-transition cost the storage measurement (#389) and the TCP arm (#391,
+T3) should be read against; whether it is the CAS, the HTTP hop or the
+turn is what a profile on this rig would say next.
+
+### What this rig has found, and where each went
+
+| finding | evidence | where |
+|---|---|---|
+| One host per core scales the engine, 5.93× at 8 | the multi-core ladder | #386: the recipe is right; size it at ~1.4 cores per host |
+| A host process is ~1.4 cores under load, not one | 138–151% busiest-host CPU on every saturated arm | #386 (packing rule), #391 G1 (size the D8 arms that way) |
+| Past the knee the fleet drowns: deadline failures and aggregator timeouts, never a refusal | task=20 at 500: 660 deadline failures, 979 publish failures, `start_deferred_ratio` 0 | #384 — this row is its before/after |
+| ~4 ms of loop time per transition; ~32 host-cores for 1 000 runs/s | task=2 ladder, linear to 255/s at 122% CPU | #389, #391 T3, and a profile on this rig |
+| A `childDone` queued behind a deep parent backlog is repaired by the watchdog as if lost | 48 join repairs on the one-host arm, none elsewhere | recorded; a queue-depth-aware notify retry would be an engine change (#390) |
+| Every generator resets the aggregator ring, so N generators cannot share a fleet | the rig runs ONE generator through a proxy | #380 (reset once, from index 0) |
