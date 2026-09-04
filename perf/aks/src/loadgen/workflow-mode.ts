@@ -351,9 +351,11 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         let cpuAtReport = cpuAtStart;
         let wallAtReport = performance.now();
         const report = () => {
+            // One reading, differenced against the previous one — so the
+            // windows tile exactly and no CPU is counted twice.
             const now = process.cpuUsage();
             const wall = performance.now();
-            const cpu = cpuMs(process.cpuUsage(cpuAtReport));
+            const cpu = cpuMs({ user: now.user - cpuAtReport.user, system: now.system - cpuAtReport.system });
             const pct = wall > wallAtReport ? Math.round((cpu / (wall - wallAtReport)) * 100) : 0;
             cpuAtReport = now;
             wallAtReport = wall;

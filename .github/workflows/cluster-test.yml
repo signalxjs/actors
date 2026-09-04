@@ -168,7 +168,9 @@ jobs:
               exit 1
             fi
             export "$key=$value"
-            echo "env: $key=$value"
+            # The key only: a value pasted into this input by mistake (a
+            # token, a connection string) must not land in a public log.
+            echo "env: $key=(set, ${#value} chars)"
           done <<< "$EXTRA_ENV"
           # Word-splitting EXTRA_ARGS is the point — it is a list. Globbing
           # is not: `set -f`, or a `-t sealed*` test filter would expand
