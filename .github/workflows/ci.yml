@@ -86,7 +86,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test against Redis
-        run: pnpm test actors-redis
+        run: pnpm test actors-redis workflow-cluster-redis
         env:
           REDIS_URL: redis://localhost:6379
 
