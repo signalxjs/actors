@@ -116,13 +116,15 @@ the comparer *cannot* gate on one:
 - **Timed, and contended**: throughput, percentiles, RSS. N processes share
   the cores. Recorded for context; never evidence on its own.
 
-Two Tier-1 scenarios ride a REAL store rather than `memoryStorage` and are
-env-gated on `REDIS_URL` so the default suite still runs anywhere:
-`cluster/redis-amplification` (commands per membership change) and
+Three Tier-1 scenarios ride a REAL store rather than `memoryStorage` and
+are env-gated on `REDIS_URL` so the default suite still runs anywhere:
+`cluster/redis-amplification` (commands per membership change),
 `reminders-redis/arm-fire` (#382: the arm rate at which the sharded
-reminder table's CAS starts failing). Tier 1 with an external store — one
-process, real round trips: the counts and ratios are the findings, the
-timings depend on the box and the store both.
+reminder table's CAS starts failing) and `reminders-redis/table-size`
+(#382: what a set and a tick cost with P entries already asleep in the
+records). Tier 1 with an external store — one process, real round trips:
+the counts and ratios are the findings, the timings depend on the box and
+the store both.
 
 ---
 

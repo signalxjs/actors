@@ -375,17 +375,21 @@ the cluster-wide stats `clusterStats()` now provides.
 
 See `BASELINES.md` for what the sweep found.
 
-The same variable un-gates `reminders-redis/arm-fire` (#382): N in-process
-hosts over one `redisStorage`, an open-loop arm ladder, and the rate at
-which the sharded reminder table's three-attempt CAS starts throwing —
-the ceiling the roadmap's reminder workstream is priced against.
+The same variable un-gates the two `reminders-redis/*` scenarios (#382),
+the ones the roadmap's reminder workstream is priced against:
+`arm-fire` — N in-process hosts over one `redisStorage`, an open-loop arm
+ladder, and the rate at which the sharded reminder table's three-attempt
+CAS starts throwing; and `table-size` — one rung against P entries already
+asleep in the shard records, so the cost a sleeping population adds to
+every set and every tick is a number.
 
 ```sh
 REDIS_URL=redis://localhost:6399 pnpm bench:run reminders-redis/ --runs=2 --no-warmup
 ```
 
-It stops climbing a host count's ladder once a rung fails more than a
-quarter of its arms, since every rung above would only measure the backlog.
+`arm-fire` stops climbing a host count's ladder once a rung fails more than
+a quarter of its arms, since every rung above would only measure the
+backlog; `table-size` runs its three populations regardless.
 
 ## Adding a scenario
 

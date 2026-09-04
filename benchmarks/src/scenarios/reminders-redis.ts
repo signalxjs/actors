@@ -274,8 +274,11 @@ async function seedPopulation(storage: ActorStorage, population: number): Promis
     // Two years out: never due within a run, and the same digit count as a
     // real far-future reminder, so the bytes are representative.
     const nextDue = Date.now() + 2 * 365 * 24 * 3600 * 1000;
-    const perShard = Math.ceil(population / SHARD_KEYS.length);
+    // Exactly `population` entries, the remainder spread over the first
+    // shards — never `ceil(P / 16) × 16`, which would over-seed any P that
+    // is not a multiple of sixteen and mislabel the rung.
     for (const [i, shard] of SHARD_KEYS.entries()) {
+        const perShard = Math.floor(population / SHARD_KEYS.length) + (i < population % SHARD_KEYS.length ? 1 : 0);
         const table: Record<string, Record<string, { nextDue: number }>> = {};
         for (let j = 0; j < perShard; j++) {
             table[`BenchSleeper\u0000s${i}-${j}`] = { fire: { nextDue } };

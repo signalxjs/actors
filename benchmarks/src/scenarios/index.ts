@@ -63,8 +63,10 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...liveFanoutScenarios,
     ...livePrincipalScenarios,
     ...redisScenarios,
-    // Same gate, a different question: the sharded reminder table's CAS
-    // ceiling against a real store (#382).
+    // Same gate, two more questions about the sharded reminder table
+    // against a real store (#382): `arm-fire` — the arm rate at which its
+    // CAS starts failing; `table-size` — what a set and a tick cost with
+    // P entries already asleep in the records.
     ...remindersRedisScenarios,
     ...(THREADS_ENABLED ? computeScenarios : []),
     ...(TIER2_ENABLED ? tier2Scenarios : []),
