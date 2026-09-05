@@ -151,16 +151,28 @@ describe('testenv.mjs identity validation', () => {
      * pool of #386. The pool is labelled AND tainted with the workload, so
      * a release that passed it only as the nodeSelector would schedule
      * nothing: every pod Pending, tolerating the DEFAULT workload's taint
-     * on a pool that carries a different one. Every `--set
-     * nodeSelector.workload=` must therefore travel with its
-     * `tolerations[0].value=`. Static on purpose: the helm calls need a
-     * cluster, the pairing does not.
+     * on a pool that carries a different one. Both must therefore travel
+     * together, which is what `workloadSets()` exists to make impossible to
+     * get half right. Static on purpose: the helm calls need a cluster, the
+     * pairing does not.
+     *
+     * This asserted the two `--set` LITERALS appeared equally often until
+     * #406, and passed the whole time the toleration it was counting was
+     * being rendered unschedulable — the flags were paired and the result
+     * was still invalid. Pinning the helper is what the pairing rule
+     * actually needs; that the flags produce a valid toleration is a
+     * question about a render, and is asked of one in
+     * `testenv-tolerations.test.ts`.
      */
-    it('passes WORKLOAD as the toleration wherever it passes it as the selector', () => {
+    it('sends every workload-bound release through the one set of flags', () => {
         const source = readFileSync(SCRIPT, 'utf8');
-        const selectors = source.match(/nodeSelector\.workload=\$\{cfg\.workload\}/g) ?? [];
-        const tolerations = source.match(/tolerations\[0\]\.value=\$\{cfg\.workload\}/g) ?? [];
-        expect(selectors.length).toBeGreaterThan(0);
-        expect(tolerations.length).toBe(selectors.length);
+        const helper = /const workloadSets = \(workload\) => \[/.test(source);
+        expect(helper).toBe(true);
+        // No release may hand-roll either flag: one spelling, one place.
+        const strays = [...source.matchAll(/'--set',\s*[`'](?:nodeSelector\.workload|tolerations\[0\])[^`']*[`']/g)]
+            .map((m) => m[0]);
+        const inHelper = /const workloadSets[\s\S]*?\];/.exec(source)?.[0] ?? '';
+        expect(strays.filter((flag) => !inHelper.includes(flag))).toEqual([]);
+        expect([...source.matchAll(/\.\.\.workloadSets\(cfg\.workload\)/g)].length).toBeGreaterThan(0);
     });
 });
