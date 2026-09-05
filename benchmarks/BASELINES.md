@@ -3494,3 +3494,139 @@ say "no".
   say the mechanism works, not what it is worth per pod.
 - **The aggregator.** 743–808 publish failures at the drowning rung are the
   singleton on the completion path (#49), untouched by either cap.
+
+## 2026-09-05 · Tier 3 — the workflow axis on the post-#401 runtime (#391: T1–T5)
+
+| | |
+|---|---|
+| Shape | `wf replicas=3 nodes=3 cpu=1800m sku=Standard_D2ls_v6 image=555327c knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` — three host pods on three nodes, requests 1000m and **limits 1800m**, one Redis, HTTP host-to-host unless a row says otherwise |
+| Driver | one in-cluster generator pod, Poisson arrivals, 60 s per rung, `WF_DELAY_MS=2000`, the default mix; hand-run `wf-load`, so read these as the 2026-08-26 ladder is read — a first measurement, not a recorded `wf-bench` artifact |
+| Runs | Actions 33968753050 (T1 before), 33969880709 (T1 after), 33970856185 / 33972090064 (T2), 33972770012 (T3), 33973918486 (T4) |
+| Why | Four questions the local rigs could set up but not settle: does the fleet still wedge past its knee, does admission control shed on the shape the baselines use, does the due-time reminder index hold with real RTT, and does TCP move the knee. |
+
+### ✅ The fleet no longer wedges — and that was the open question
+
+`stuck_ratio` is **0 at every rung to 200 runs/s**, including the two that
+wedged the fleet twice before #302/#304 and have not been re-run since.
+`wakes_lost` 0 and `reminder_set_failure_ratio` 0 throughout. The 100 rung
+being interpretable at all is the result; it stopped being a cliff.
+
+### ❌ It still drowns, and the hosts are not what is full
+
+| offered | started/s | completed/s | transitions/s | task p50 | start p50 | unreported | stuck |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 9.9 | 5.9 | 48 | 27 ms | 8 ms | 0 | 0 |
+| 25 | 25.5 | 11.9 | 132 | 29 ms | 34 ms | 0 | 0 |
+| 50 | 49.9 | **23.6** | 320 | 50 ms | 162 ms | 0 | 0 |
+| 100 | 104.6 | 16.2 | 290 | 71 ms | 187 ms | 1 834 | 0 |
+| 200 | 197.3 | 19.7 | 441 | 88 ms | 297 ms (p90 11 s) | 6 528 | 0 |
+
+Completed/s peaks at **23.6 at 50 offered** and falls past it — more work
+offered, less finished. `startFailures` and `startsDeferred` are **0 at
+every rung**: nothing in the fleet ever said no, which is the same silence
+`wf-local` recorded. Cluster-wide over the ladder: 13 363 publish failures,
+7 920 child-start failures and 7 792 join repairs.
+
+**The hosts peaked at 1 253m of a 1 800m limit — 70% — and Redis at 21%,
+7 638 ops/s.** Nothing was CPU-saturated at the point throughput collapsed,
+so on this shape the ceiling is coordination (a `childDone` into a parent,
+a completion into the singleton aggregator), not compute. That is a
+different answer from the 2026-09-02 reading, and it is what makes the
+capacity question about queueing rather than cores.
+
+### ❌ `maxInflightTurns` made it WORSE — the shape the cap was measured on hid this
+
+The same ladder under `WF_MAX_INFLIGHT_TURNS=256`, one variable changed:
+
+| offered | uncapped completed/s | capped completed/s | capped stuck |
+|---:|---:|---:|---:|
+| 10 | 5.94 | 4.77 | 0 |
+| 25 | 11.89 | 11.97 | 0 |
+| 50 | **23.56** | **9.57** | 0 |
+| 100 | 16.16 | 11.74 | **4** |
+| 200 | 19.74 | 12.66 | **81** |
+
+The refusals are real, branded and counted — 5 798 `start:overloaded` at
+200 — but the fleet finishes **less than half** the work at its knee and
+produces stuck runs where the uncapped fleet produced none. The reason is
+in the error strings:
+
+```
+[sigx actors] WfCompute/default refused: maxInflightTurns 256 reached
+[sigx actors] WfIo/default refused: maxInflightTurns 256 reached
+```
+
+A host-wide in-flight cap counts **every** turn on the loop, so past the
+knee it refuses a run's own worker-pool calls — work already admitted,
+already paid for, one hop from finishing. That is not shedding; it converts
+queued work into failed work, and a run whose task is refused mid-flight
+can be left waiting. **Admission has to happen at the entrance.** The
+mechanism is sound and the placement of it is not.
+
+The local rig said the opposite (2× completed/s at 500 offered on 8 hosts)
+because there the cap bit almost entirely on `start`. Two hosts fewer and a
+higher per-host load is all it took to move where it bites, which is the
+argument for Tier 3 in one sentence.
+
+### ✅ `redisReminders()` holds flat where the sharded table degrades 4×
+
+Order-only, a 90 s durable sleep per run so the fleet holds `rate × 90`
+sleeping runs, `WF_REMINDER_TICK_MS=1000`, one variable between the arms:
+
+| offered | asleep ≈ | sharded wake lag p50 / p99 | **redis** wake lag p50 / p99 |
+|---:|---:|---:|---:|
+| 50 | 4 500 | 514 ms / 1.00 s | **402 ms / 888 ms** |
+| 100 | 9 000 | 712 ms / 8.92 s | **395 ms / 888 ms** |
+| 200 | 18 000 | **2 210 ms / 48.2 s** | **338 ms / 878 ms** |
+
+The sharded table's wake lag grows with the sleeping population — 4× at the
+median and **48 seconds at p99** by 18 000 sleepers — while the due-time
+index is flat and, if anything, slightly better at the top rung. Redis CPU
+peaked at **17.6% on `sharded` against 8.7% on `redis`** for the same work. Both arms:
+0 lost wakes, 0 reminder CAS failures, 0 stuck.
+
+This is the local table-size finding (871 ms per `set` at 100 000 entries,
+27% of fires within a tick) reproduced with real RTT, and it settles B2:
+the ceiling was never the CAS rate.
+
+### ⚠️ TCP does not move the workflow knee
+
+The T1 ladder over `TRANSPORT=tcp`, `transportFallbacks` 0 so it was really
+in use: 5.85 / 12.44 / 21.49 / 16.52 / 20.16 completed/s against HTTP's
+5.94 / 11.89 / 23.56 / 16.16 / 19.74. Identical within noise, and the
+failure counts match too (13 104 publish failures against 13 363, 8 146
+join repairs against 7 792).
+
+83% of dispatches cross hosts here, so the transport had every chance. It
+is the Tier-2 conclusion again — TCP's win is socket count, not latency —
+and it means the queueing above is not the wire.
+
+### ❌ A hard host kill loses runs, and says which recovery path failed
+
+First chaos-plus-load on this axis: 25 runs/s of
+`order:40,etl:40,approval:20` for 120 s, the owner pod force-deleted at
+t+68 s, 200 s drain.
+
+| | |
+|---|---|
+| started / completed / failed | 2 986 / 2 869 / 108 |
+| **stuck** | **9** — 2 `sleeping`, 5 `waiting`, 2 `blocked` |
+| wakes lost / unreported | 0 / 0 |
+| errors | 3 `start:fetch:ECONNRESET`, 1 `drain:`, 5 `signal:500` |
+
+0.3% of runs never finish, and the breakdown names the paths: the five
+`waiting` match the five `signal:500` exactly — a signal in flight to the
+dying host is lost, and the run sits past its own 30 s timeout inside a
+200 s drain, so the timeout timer went with the host and the sweep's
+`status()` touch did not restore it. Connection-level errors during a hard
+kill are expected (#142); nine permanently stuck runs are not.
+
+### What this rig has found, and where each goes
+
+| finding | evidence | where |
+|---|---|---|
+| A host-wide in-flight cap refuses admitted runs' own task calls, halving throughput at the knee and stranding runs | 23.56 → 9.57 completed/s at 50 offered; 81 stuck at 200; `WfCompute/default refused` | **#408** — admission belongs at the entrance, not on every turn |
+| A killed host strands ~0.3% of runs, five of nine of them waiting on a signal whose timeout died with the host | 9 stuck of 2 986, `signal:500` ×5 | **#409** — the wait-node timeout needs to survive its host |
+| The knee is coordination, not CPU: hosts at 70% and Redis at 21% while completed/s falls | the T1 table and the timeline peaks | #49 (one-way publish), #389 |
+| The due-time reminder index is flat where the sharded table degrades 4× at p50 and 48× at p99 | the T2 A/B | #400 confirmed; make `redisReminders` the deployment default |
+| TCP does not move the workflow knee | the T3 ladder, `transportFallbacks` 0 | #203 stays a socket-count justification |
