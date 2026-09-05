@@ -142,6 +142,24 @@ const helm = (args, opts) => sh('helm', ['--kube-context', cfg.cluster, ...args]
 
 const gitSha = () => sh('git', ['rev-parse', '--short', 'HEAD'], { quiet: true });
 
+/**
+ * The `--set` flags that point a release at this estate's node pool.
+ *
+ * The toleration is written WHOLE, and that is not verbosity: helm merges
+ * maps but REPLACES list elements, so `--set tolerations[0].value=x` alone
+ * discards the key, operator and effect that `values.yaml` gives the same
+ * element, and the API server rejects the Deployment — "operator must be
+ * Exists when `key` is empty". `nodeSelector.workload` is a map key and
+ * merges, which is why only its sibling needed fixing (#406).
+ */
+const workloadSets = (workload) => [
+    '--set', `nodeSelector.workload=${workload}`,
+    '--set', 'tolerations[0].key=workload',
+    '--set', 'tolerations[0].operator=Equal',
+    '--set', `tolerations[0].value=${workload}`,
+    '--set', 'tolerations[0].effect=NoSchedule'
+];
+
 // ---------------------------------------------------------------------------
 
 function ensureCredentials() {
@@ -445,15 +463,13 @@ async function up() {
     release('sigx', 'perf/aks/deploy/chart', cfg.actorsNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-actors-test`,
         '--set', `image.tag=${tag}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`,
-        '--set', `tolerations[0].value=${cfg.workload}`
+        ...workloadSets(cfg.workload)
     ]);
     release('chat', 'perf/app/deploy/chart', cfg.chatNs, [
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
         '--set', `image.tag=${tag}`,
         '--set', `ingress.host=${cfg.chatHost}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`,
-        '--set', `tolerations[0].value=${cfg.workload}`
+        ...workloadSets(cfg.workload)
     ]);
 
     step('waiting for rollouts');
@@ -1323,8 +1339,7 @@ async function migrateCheck(args) {
             '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
             '--set', `image.tag=${oldTag}`,
             '--set', `ingress.host=${cfg.chatHost}`,
-            '--set', `nodeSelector.workload=${cfg.workload}`,
-            '--set', `tolerations[0].value=${cfg.workload}`
+            ...workloadSets(cfg.workload)
         ]);
         kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
     }
@@ -1348,8 +1363,7 @@ async function migrateCheck(args) {
         '--set', `image.repository=${cfg.acr}.azurecr.io/sigx-chat`,
         '--set', `image.tag=${tag}`,
         '--set', `ingress.host=${cfg.chatHost}`,
-        '--set', `nodeSelector.workload=${cfg.workload}`,
-        '--set', `tolerations[0].value=${cfg.workload}`
+        ...workloadSets(cfg.workload)
     ]);
     kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
 
