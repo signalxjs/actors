@@ -351,11 +351,23 @@ function edgeHashState() {
 }
 
 function ensureEdgeHashMap() {
-    if (edgeHashState().mapped) {
-        return log(`  ${cfg.ingressNs}: http-snippet maps $http_x_sigx_actor_route → $sigx_hash`);
+    const { mapped, risk } = edgeHashState();
+    if (mapped && risk === 'Critical') {
+        return log(`  ${cfg.ingressNs}: http-snippet maps $http_x_sigx_actor_route → $sigx_hash, ` +
+            `annotations-risk-level Critical`);
     }
-    log(`✗ ${cfg.ingressNs}/ingress-nginx-controller has no \`$sigx_hash\` map in its http-snippet — ` +
-        `the chart's upstream-hash-by would pin the WHOLE actor path to one pod. ` +
+    // BOTH halves, because they fail in opposite directions and a run that
+    // is missing either reads as a shape statement rather than a broken
+    // edge: without the map the balancer hashes "" and pins the whole actor
+    // path to one pod; without `Critical` the controller silently STRIPS
+    // `upstream-hash-by` and round-robins it. The second is how the
+    // 2026-08-02 baselines came to be measured with no locality at all
+    // (#143) — nothing errored, `token_speedup` just sat at 1.0.
+    const missing = [
+        mapped ? null : 'no `$sigx_hash` map in its http-snippet (the balancer would hash "" for every request and pin the whole actor path to one pod)',
+        risk === 'Critical' ? null : `annotations-risk-level is ${risk || '(unset)'}, not Critical (the controller silently strips upstream-hash-by and round-robins the actor path)`
+    ].filter(Boolean);
+    log(`✗ ${cfg.ingressNs}/ingress-nginx-controller: ${missing.join('; and ')}. ` +
         `Program it with: node testenv.mjs edge-hash (RUNBOOK §0 (b)).`);
     process.exit(1);
 }
@@ -401,6 +413,8 @@ async function edgeHash() {
         : before.snippet.trim()
           ? `${before.snippet.trimEnd()}\n${SIGX_HASH_MAP}`
           : SIGX_HASH_MAP;
+    log('  http-snippet to be written:');
+    for (const line of snippet.split('\n')) log(`    │ ${line}`);
     kube(['-n', cfg.ingressNs, 'patch', 'configmap', 'ingress-nginx-controller', '--type', 'merge',
         '-p', JSON.stringify({ data: { 'annotations-risk-level': 'Critical', 'http-snippet': snippet } })]);
 
