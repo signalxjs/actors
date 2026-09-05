@@ -73,6 +73,18 @@ kubectl create namespace $NS
 # `--annotations-risk-level=Critical` as a controller arg crash-loops
 # v1.15.1 with `unknown flag`. And a running controller does not re-read
 # either key, so the restart is part of the step, not a precaution.
+# `testenv.mjs edge-hash` does all of (a) and (b) — and is what to use from
+# the Actions tab, where the cluster credentials actually are. It MERGES
+# the map into whatever http-snippet is already present (printing the
+# before and after), is idempotent, restarts the controller, and verifies
+# against the PROGRAMMED nginx.conf rather than the ConfigMap. It stays a
+# separate verb because the two settings are cluster-wide: `up` refuses
+# rather than fixing a shared cluster underneath whoever else is on it.
+node perf/aks/deploy/testenv.mjs edge-hash
+
+# …or by hand, which is the same thing. ⚠ This patch REPLACES the
+# http-snippet — on a shared cluster read it first and merge, or use the
+# verb above, which does.
 kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
   -p '{"data":{"annotations-risk-level":"Critical","http-snippet":"map $http_x_sigx_actor_route $sigx_hash { \"\" $request_id; default $http_x_sigx_actor_route; }"}}'
 kubectl -n ingress-nginx rollout restart deploy/ingress-nginx-controller

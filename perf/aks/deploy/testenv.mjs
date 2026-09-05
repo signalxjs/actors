@@ -326,18 +326,111 @@ const ingressIp = () =>
  * variable is nil, every actor call hashes "" onto one pod), so the omission
  * is refused here, before the image build, rather than found by `test`.
  */
+/**
+ * RUNBOOK §0 (b)'s `map`, and the pattern that recognises it. ONE
+ * definition for the gate and the fix: a check that looked for something
+ * the writer does not write is worse than no check, because it fails on a
+ * correctly programmed controller.
+ *
+ * The `map` directive itself, not the variable name — `$sigx_hash` in a
+ * comment or some other directive would pass a substring test and let a
+ * map-less controller through, which is the one thing the gate exists to
+ * stop.
+ */
+const SIGX_HASH_MAP =
+    'map $http_x_sigx_actor_route $sigx_hash { "" $request_id; default $http_x_sigx_actor_route; }';
+const SIGX_HASH_MAP_RE = /\bmap\s+\$http_x_sigx_actor_route\s+\$sigx_hash\s*\{/;
+
+/** What the controller currently carries: the snippet and the risk level. */
+function edgeHashState() {
+    const get = (key) =>
+        kube(['-n', cfg.ingressNs, 'get', 'configmap', 'ingress-nginx-controller',
+            '-o', `jsonpath={.data.${key}}`], { quiet: true, allowFail: true }) ?? '';
+    const snippet = get('http-snippet');
+    return { snippet, risk: get('annotations-risk-level'), mapped: SIGX_HASH_MAP_RE.test(snippet) };
+}
+
 function ensureEdgeHashMap() {
-    const snippet = kube(['-n', cfg.ingressNs, 'get', 'configmap', 'ingress-nginx-controller',
-        '-o', 'jsonpath={.data.http-snippet}'], { quiet: true, allowFail: true }) ?? '';
-    // The `map` directive itself, not the variable name: `$sigx_hash` in a
-    // comment or some other directive would pass a substring test and let a
-    // map-less controller through — the one thing this gate exists to stop.
-    if (/\bmap\s+\$http_x_sigx_actor_route\s+\$sigx_hash\s*\{/.test(snippet)) {
-        return log(`  ${cfg.ingressNs}: http-snippet maps $http_x_sigx_actor_route → $sigx_hash`);
+    const { mapped, risk } = edgeHashState();
+    if (mapped && risk === 'Critical') {
+        return log(`  ${cfg.ingressNs}: http-snippet maps $http_x_sigx_actor_route → $sigx_hash, ` +
+            `annotations-risk-level Critical`);
     }
-    log(`✗ ${cfg.ingressNs}/ingress-nginx-controller has no \`$sigx_hash\` map in its http-snippet — ` +
-        `the chart's upstream-hash-by would pin the WHOLE actor path to one pod. Apply RUNBOOK §0 (b) first.`);
+    // BOTH halves, because they fail in opposite directions and a run that
+    // is missing either reads as a shape statement rather than a broken
+    // edge: without the map the balancer hashes "" and pins the whole actor
+    // path to one pod; without `Critical` the controller silently STRIPS
+    // `upstream-hash-by` and round-robins it. The second is how the
+    // 2026-08-02 baselines came to be measured with no locality at all
+    // (#143) — nothing errored, `token_speedup` just sat at 1.0.
+    const missing = [
+        mapped ? null : 'no `$sigx_hash` map in its http-snippet (the balancer would hash "" for every request and pin the whole actor path to one pod)',
+        risk === 'Critical' ? null : `annotations-risk-level is ${risk || '(unset)'}, not Critical (the controller silently strips upstream-hash-by and round-robins the actor path)`
+    ].filter(Boolean);
+    log(`✗ ${cfg.ingressNs}/ingress-nginx-controller: ${missing.join('; and ')}. ` +
+        `Program it with: node testenv.mjs edge-hash (RUNBOOK §0 (b)).`);
     process.exit(1);
+}
+
+/**
+ * Program RUNBOOK §0 (b) — the one prerequisite `up` cannot do for itself.
+ *
+ * It stays a separate verb rather than a step inside `up` because what it
+ * touches is not this estate: `annotations-risk-level: Critical` unlocks
+ * Critical annotations for EVERY Ingress the controller serves, and the
+ * restart interrupts all of them briefly. That is a deliberate act on
+ * shared infrastructure, so it gets its own dispatch and its own record —
+ * `up` keeps refusing rather than quietly fixing the cluster underneath
+ * whoever else is on it.
+ *
+ * The snippet is MERGED, never replaced. The runbook's hand-written patch
+ * overwrites, and its own warning says to merge by hand on a shared
+ * cluster; doing it here means the safe path is the default one. A `map`
+ * only defines a variable nobody else reads, so appending is additive.
+ *
+ * Evidence is the PROGRAMMED nginx.conf, not the ConfigMap: the controller
+ * re-reads neither key, so the restart is part of the step and the config
+ * nginx actually loaded is the only thing that proves it took.
+ */
+async function edgeHash() {
+    const before = edgeHashState();
+    if (before.mapped && before.risk === 'Critical') {
+        return log(`✓ already programmed — the map is in the http-snippet and ` +
+            `annotations-risk-level is Critical. Nothing to do.`);
+    }
+
+    step(`programming $sigx_hash on ${cfg.ingressNs}/ingress-nginx-controller`);
+    log(`  annotations-risk-level: ${before.risk || '(unset)'} → Critical`);
+    if (before.snippet.trim()) {
+        log(`  existing http-snippet (${before.snippet.split('\n').length} lines) is KEPT; the map is appended:`);
+        for (const line of before.snippet.split('\n')) log(`    │ ${line}`);
+    } else {
+        log('  http-snippet is empty; the map becomes its only entry');
+    }
+
+    const snippet = before.mapped
+        ? before.snippet
+        : before.snippet.trim()
+          ? `${before.snippet.trimEnd()}\n${SIGX_HASH_MAP}`
+          : SIGX_HASH_MAP;
+    log('  http-snippet to be written:');
+    for (const line of snippet.split('\n')) log(`    │ ${line}`);
+    kube(['-n', cfg.ingressNs, 'patch', 'configmap', 'ingress-nginx-controller', '--type', 'merge',
+        '-p', JSON.stringify({ data: { 'annotations-risk-level': 'Critical', 'http-snippet': snippet } })]);
+
+    step('restarting the controller (it does not re-read either key)');
+    kube(['-n', cfg.ingressNs, 'rollout', 'restart', 'deploy/ingress-nginx-controller']);
+    kube(['-n', cfg.ingressNs, 'rollout', 'status', 'deploy/ingress-nginx-controller', '--timeout=300s']);
+
+    const programmed = kube(['-n', cfg.ingressNs, 'exec', 'deploy/ingress-nginx-controller', '--',
+        'grep', '-cF', 'map $http_x_sigx_actor_route $sigx_hash {', '/etc/nginx/nginx.conf'],
+        { quiet: true, allowFail: true });
+    if (!programmed || Number(programmed.trim()) < 1) {
+        log('✗ the map is in the ConfigMap but NOT in the programmed nginx.conf. ' +
+            'The controller may have rejected the snippet — check its logs before releasing the chart.');
+        process.exit(1);
+    }
+    log('\n✓ edge hash programmed and live in nginx.conf. `up` will release the chart now.');
 }
 
 // ---------------------------------------------------------------------------
@@ -1330,7 +1423,8 @@ const verbs = {
     'wf-bench': () => wfBench(rest),
     'ws-bench': () => wsBench(rest),
     'migrate-check': () => migrateCheck(rest),
-    'vm-up': loadVmUp
+    'vm-up': loadVmUp,
+    'edge-hash': edgeHash
 };
 
 /**
@@ -1360,10 +1454,12 @@ const NEEDS = {
     'wf-bench': ['RG', 'CLUSTER'],
     'migrate-check': ['RG', 'CLUSTER', 'ACR', 'CHAT_HOST'],
     down: ['RG', 'CLUSTER', 'CHAT_HOST', 'DNS_ZONE', 'DNS_RG', 'LOAD_RG'],
-    'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM']
+    'vm-up': ['LOCATION', 'LOAD_RG', 'LOAD_VM'],
+    // Touches the ingress controller only — no registry, no DNS, no VM.
+    'edge-hash': ['RG', 'CLUSTER']
 };
 /** Verbs that reach kubectl/helm, and so need a kubeconfig first. */
-const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'ws-bench', 'wf-load', 'wf-bench', 'migrate-check', 'down']);
+const KUBE_VERBS = new Set(['up', 'status', 'test', 'baseline', 'bench', 'load', 'ws-up', 'ws-load', 'ws-bench', 'wf-load', 'wf-bench', 'migrate-check', 'down', 'edge-hash']);
 
 if (!verbs[verb]) {
     log(`usage: node testenv.mjs <${Object.keys(verbs).join('|')}>`);
