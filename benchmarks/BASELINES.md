@@ -3527,7 +3527,7 @@ every rung**: nothing in the fleet ever said no, which is the same silence
 `wf-local` recorded. Cluster-wide over the ladder: 13 363 publish failures,
 7 920 child-start failures and 7 792 join repairs.
 
-**The hosts peaked at 1 253m of an 1 800m limit — 70% — and Redis at 21%,
+**The hosts peaked at 1 253m of a 1 800m limit — 70% — and Redis at 21%,
 7 638 ops/s.** Nothing was CPU-saturated at the point throughput collapsed,
 so on this shape the ceiling is coordination (a `childDone` into a parent,
 a completion into the singleton aggregator), not compute. That is a
@@ -3582,7 +3582,7 @@ sleeping runs, `WF_REMINDER_TICK_MS=1000`, one variable between the arms:
 The sharded table's wake lag grows with the sleeping population — 4× at the
 median and **48 seconds at p99** by 18 000 sleepers — while the due-time
 index is flat and, if anything, slightly better at the top rung. Redis CPU
-peaked at **17.6% sharded against 8.7% redis** for the same work. Both arms:
+peaked at **17.6% on `sharded` against 8.7% on `redis`** for the same work. Both arms:
 0 lost wakes, 0 reminder CAS failures, 0 stuck.
 
 This is the local table-size finding (871 ms per `set` at 100 000 entries,
