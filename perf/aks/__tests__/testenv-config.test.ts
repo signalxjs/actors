@@ -169,10 +169,16 @@ describe('testenv.mjs identity validation', () => {
         const helper = /const workloadSets = \(workload\) => \[/.test(source);
         expect(helper).toBe(true);
         // No release may hand-roll either flag: one spelling, one place.
+        // Located by INDEX, not by text — a stray that happens to read the
+        // same as a line inside the helper is exactly the case this is for,
+        // and a substring test would excuse it.
+        const span = /const workloadSets = \(workload\) => \[[\s\S]*?\];/.exec(source);
+        expect(span).not.toBeNull();
+        const [from, to] = [span!.index, span!.index + span![0].length];
         const strays = [...source.matchAll(/'--set',\s*[`'](?:nodeSelector\.workload|tolerations\[0\])[^`']*[`']/g)]
-            .map((m) => m[0]);
-        const inHelper = /const workloadSets[\s\S]*?\];/.exec(source)?.[0] ?? '';
-        expect(strays.filter((flag) => !inHelper.includes(flag))).toEqual([]);
+            .filter((m) => m.index < from || m.index >= to)
+            .map((m) => `${m[0]} @${m.index}`);
+        expect(strays).toEqual([]);
         expect([...source.matchAll(/\.\.\.workloadSets\(cfg\.workload\)/g)].length).toBeGreaterThan(0);
     });
 });
