@@ -79,11 +79,13 @@ jobs:
     #
     # `fromJSON` is load-bearing, not decoration: a workflow_dispatch input
     # reaches an expression as a STRING whatever its declared `type`, and
-    # `timeout-minutes` takes a number — so the bare `${{ inputs.timeout }}`
-    # this shipped with made the whole FILE unparseable, with no job and no
-    # log to say why (#391). Nothing dispatched between that merge and this
-    # fix, which is the only reason it went unnoticed for a day.
-    timeout-minutes: ${{ fromJSON(inputs.timeout || 120) }}
+    # `timeout-minutes` takes a number — so `${{ inputs.timeout || 120 }}`,
+    # which this shipped with, resolves to `'120'` and makes the whole FILE
+    # unparseable, with no job and no log to say why (#391). The fallback is
+    # quoted for the same reason: `fromJSON` parses JSON *text*, so it must
+    # be handed a string on both branches. Nothing was dispatched between
+    # that merge and this fix, which is why it went unnoticed for a day.
+    timeout-minutes: ${{ fromJSON(inputs.timeout || '120') }}
     permissions:
       # OIDC only — no client secret exists for this identity to leak.
       id-token: write
