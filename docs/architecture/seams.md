@@ -254,19 +254,50 @@ backend offers for "every host ticks, no entry fires twice":
 
 **The scale contract** a provider is held to, since #385: an arm is
 O(log N) or better and a tick is O(due) — never O(table). The sharded
-default is O(table) on both (every `set` rewrites a sixteenth of the
-cluster's reminders; every tick loads and scans every owned record), which
-`BASELINES.md` (2026-09-04, #382) priced at 870 ms per `set` with 100 000
-entries asleep and a quarter of fires landing within a tick. It stays the
-default because it needs no second store and is right at dev scale; a
-deployment that sleeps thousands of actors on reminders picks the indexed
-provider its store already has (`pgReminders`, `redisReminders`,
-`surrealReminders`), and the host warns — see the outgrown gauge, #384 —
-when a shard record has grown past what the default was built for. Because
-an empty claim on an index costs one round trip, those providers can also
-run a much shorter `reminderTickMs` (a few seconds where the default is 30),
-which is what turns a durable wake's lag from half a tick of fifteen seconds
-into one of two.
+default is O(table) on both: every `set` rewrites a sixteenth of the
+cluster's reminders, and every tick loads and scans every owned record,
+due or not. Its operation counts are constant — two storage ops per `set`,
+sixteen loads per tick, gated as `exact` — and its BYTES are the term it
+cannot hold, which is the whole ceiling in one line.
+
+**Which one to pass.** `shardedReminders()` needs no second store and is
+right at dev scale and for any deployment holding hundreds of sleeping
+actors; it is the default for exactly that reason. A deployment that keeps
+*thousands* of them asleep should pass the indexed provider its store
+already has — `pgReminders`, `redisReminders` or `surrealReminders` — and
+the host warns when a shard record has outgrown the default (#384). The
+population where it stops being a matter of taste is measured, not
+guessed (`BASELINES.md`):
+
+| entries asleep | sharded `set` p50 | fires within a tick | indexed `set` p50 |
+|---:|---:|---:|---:|
+| 1 000 | 73 µs | — | — |
+| 10 000 | 408 µs | 0.99 | 0.64 ms |
+| 100 000 | **4.9 ms** local / 871 ms under load | **0.29** | 0.68 ms |
+
+and on a real three-host fleet with 18 000 runs asleep (2026-09-05, #391
+T2) the difference is what an operator actually feels — the lag between a
+reminder falling due and its actor waking:
+
+| runs asleep | sharded wake lag p50 / p99 | `redisReminders()` p50 / p99 |
+|---:|---:|---:|
+| 4 500 | 514 ms / 1.00 s | 402 ms / 888 ms |
+| 9 000 | 712 ms / 8.92 s | 395 ms / 888 ms |
+| 18 000 | **2 210 ms / 48.2 s** | **338 ms / 878 ms** |
+
+on roughly half the Redis CPU (17.6 % against 8.7 % for the same work),
+with zero lost wakes and zero CAS failures on both arms. The sharded
+column degrades with the sleeping population; the indexed one does not
+move. Note what is NOT there: the CAS never failed on either arm at any
+size, so the ceiling was never contention — the table's cost is the bytes
+it rewrites, and adding hosts does not divide them.
+
+Because an empty claim on an index costs one round trip — three commands
+at ten thousand members and three at a million — those providers can also
+run a much shorter `reminderTickMs`, a few seconds where the default needs
+30. That is what turns a durable wake's lag from half a tick of fifteen
+seconds into one of two, and it is why the tick cadence is a property of
+the provider you chose rather than a number to tune on its own.
 
 Every provider runs `remindersConformance` (`@sigx/actors/testing`, #385) —
 see [`conformance-suites.md`](conformance-suites.md); the cases above are
