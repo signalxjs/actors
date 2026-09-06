@@ -788,8 +788,13 @@ export interface TopicDeliveryFailure {
 
 /**
  * What `publish()` resolves to. Delivery is BEST-EFFORT, at-most-once:
- * "delivered" means the subscriber's handler turn settled without throwing,
- * bounded by the call deadline. Nothing is persisted, retried, or replayed.
+ * nothing is persisted, retried, or replayed.
+ *
+ * What "delivered" MEANS depends on `delivery`, which is why the report
+ * carries it: under `'settled'` the subscriber's handler turn finished
+ * without throwing, bounded by the call deadline; under `'accepted'` the
+ * delivery was queued, and a handler that threw afterwards is counted as a
+ * one-way failure rather than reported here (#49).
  */
 export interface TopicPublishReport {
     /** Subscriber refs targeted (the deploy's subscribing types). */
@@ -964,10 +969,15 @@ export interface ActorContextBase<S extends object> {
      */
     readonly principal: unknown;
     /**
-     * Publish to a topic. Settles when every subscriber's handler turn has
-     * settled; subscriber failures land in the report, never here. Carries
-     * this turn's call chain, so a subscription cycling back into this
-     * actor is a detected deadlock (a `failures` entry), not a hang.
+     * Publish to a topic. Under the default `delivery: 'settled'` this
+     * settles when every subscriber's handler turn has settled, and
+     * subscriber failures land in the report, never here; under
+     * `'accepted'` (#49) it settles once each delivery is queued and later
+     * failures are dropped-with-counter. Carries
+     * this turn's call chain, so a SETTLED publish whose subscription
+     * cycles back into this actor is a detected deadlock (a `failures`
+     * entry), not a hang — an accepted one cannot deadlock, because
+     * nothing waits on it.
      */
     /**
      * Fan out to this deploy's `subscriptions:`. Default `delivery:

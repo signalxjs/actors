@@ -84,10 +84,15 @@ const fanout: Scenario = {
                     const placement = harness.placements[0]!;
                     // Warm: activate every subscriber and claim directory
                     // entries, so the measured publish is the steady state.
-                    await publisher.publish(BENCH_TOPIC, 0);
+                    // Every publish in this arm, warm-up included, runs
+                    // under the arm's mode — an arm whose option is
+                    // declared and never read measures the default twice
+                    // and reports it as agreement.
+                    const opts = { delivery: arm.delivery ?? ('settled' as const) };
+                    await publisher.publish(BENCH_TOPIC, 0, opts);
 
                     const remoteBefore = placement.counters().remoteDispatches;
-                    const report = await publisher.publish(BENCH_TOPIC, 1);
+                    const report = await publisher.publish(BENCH_TOPIC, 1, opts);
                     const remote = placement.counters().remoteDispatches - remoteBefore;
 
                     metrics.push(
@@ -121,7 +126,7 @@ const fanout: Scenario = {
                     const until = performance.now() + sliceMs;
                     let publishes = 0;
                     while (performance.now() < until) {
-                        await publisher.publish(BENCH_TOPIC, publishes);
+                        await publisher.publish(BENCH_TOPIC, publishes, opts);
                         publishes += 1;
                     }
                     metrics.push({
