@@ -282,10 +282,16 @@ export function workflowClusterSuite(name: string, harness: () => Promise<Workfl
          * came back 500 — the signal was in flight to the host that died.
          * A run in that state still holds its OWN timeout, and the timeout
          * is what has to rescue it. `signalTimeoutMs` is above
-         * `WF_TIMER_THRESHOLD_MS` here so the wake is a durable reminder,
-         * exactly as it was in production (30 s timeout, 30 s threshold),
-         * which means no touch should even be needed: the shard is re-owned
-         * by a survivor and the tick fires it.
+         * `WF_TIMER_THRESHOLD_MS` here so the wake is a durable reminder —
+         * the same SIDE of the threshold production was on, not the same
+         * numbers (this suite runs a 100 ms threshold against a 400 ms
+         * timeout; production sat exactly ON the boundary, 30 s against
+         * 30 s, and `sleep()` takes the durable branch there because the
+         * test is `ms < threshold`). That boundary is why #409's stated
+         * cause is wrong, so it is worth being precise about rather than
+         * calling the two identical. Durable means no touch should even be
+         * needed: the shard is re-owned by a survivor and the tick fires
+         * it.
          */
         it('times out on its own when the owner dies and the signal never arrives', async () => {
             const version = await seed({ signalTimeoutMs: 400 });
