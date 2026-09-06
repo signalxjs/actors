@@ -274,6 +274,42 @@ export function workflowClusterSuite(name: string, harness: () => Promise<Workfl
             expect(wf.workflowCounters.signalTimeouts).toBe(0);
         });
 
+        /**
+         * The #409 case, and the one the signal test above does NOT cover:
+         * the signal never arrives at all.
+         *
+         * In the chaos run five runs were left `waiting` and five signals
+         * came back 500 — the signal was in flight to the host that died.
+         * A run in that state still holds its OWN timeout, and the timeout
+         * is what has to rescue it. `signalTimeoutMs` is above
+         * `WF_TIMER_THRESHOLD_MS` here so the wake is a durable reminder —
+         * the same SIDE of the threshold production was on, not the same
+         * numbers (this suite runs a 100 ms threshold against a 400 ms
+         * timeout; production sat exactly ON the boundary, 30 s against
+         * 30 s, and `sleep()` takes the durable branch there because the
+         * test is `ms < threshold`). That boundary is why #409's stated
+         * cause is wrong, so it is worth being precise about rather than
+         * calling the two identical. Durable means no touch should even be
+         * needed: the shard is re-owned by a survivor and the tick fires
+         * it.
+         */
+        it('times out on its own when the owner dies and the signal never arrives', async () => {
+            const version = await seed({ signalTimeoutMs: 400 });
+            const id = fresh('lost-signal');
+            const tag = 'lost-signal';
+            await run(id).start({ workflow: 'approval', version, template: 'approval', tag });
+            const waiting = await untilStatus(id, ['waiting']);
+            // Durable, as in production — a volatile wake would be a
+            // different bug and this case would not be measuring #409.
+            expect(waiting.wake?.kind).toBe('reminder');
+            const owner = await ownerOf('WorkflowRun', id);
+            await kill(owner);
+            // No signal, and no touch: the timeout is the only thing left.
+            const event = await untilEvent(id, tag, 8_000);
+            expect(event.status).toBe('completed');
+            expect(wf.workflowCounters.signalTimeouts).toBeGreaterThan(0);
+        });
+
         it('a parent killed mid-fan-out is re-placed by its children reporting in', async () => {
             const version = await seed({});
             const child = fresh('slowchild');
