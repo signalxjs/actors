@@ -885,20 +885,40 @@ export class Activation {
      * the conflict reload schedule on `turns` directly.
      */
     enqueue(method: string, args: readonly unknown[], call: ActorCallContext): Promise<unknown> {
-        const cap = this.#maxQueued;
-        const depth = this.turns.depth;
-        if (cap > 0 && depth >= cap) {
-            this.#host.admission.refusals++;
-            throw new ActorOverloadedError('actor', actorLabel(this.ref), depth, cap);
-        }
-        const admission = this.#host.admission;
-        const hostCap = admission.maxInflightTurns;
-        // `inflight` counts EVERY turn on the host — timer ticks and task
-        // turns included, which never come through here — so a host whose
-        // loop is saturated by its actors' own work refuses new calls too.
-        if (hostCap > 0 && admission.inflight >= hostCap) {
-            admission.refusals++;
-            throw new ActorOverloadedError('host', actorLabel(this.ref), admission.inflight, hostCap);
+        // Admission applies at the ENTRANCE and nowhere else (#408). An
+        // empty call chain is the definition of entering: every outside
+        // mount mints one (`actor-endpoint`, the live and socket
+        // endpoints, `host.actor()`), while a call made from inside a turn
+        // carries its caller (`[...current.callChain, self.id]`), a
+        // self-started timer or task turn carries `[self]`, and a
+        // cross-host hop carries the ORIGINATING chain through the
+        // envelope — so a peer cannot launder accepted work into new work
+        // by crossing a wire.
+        //
+        // Refusing a chained call is not shedding, it is destroying: the
+        // work was admitted, is part-done, and its caller is a turn that
+        // will now fail with it. Measured on a real fleet, a host-wide cap
+        // that refused a run's own worker-pool calls HALVED throughput at
+        // the knee and stranded runs the uncapped fleet completed
+        // (BASELINES 2026-09-05). A saturated loop is answered by refusing
+        // the next arrival, not by abandoning the last one.
+        if (call.callChain.length === 0) {
+            const cap = this.#maxQueued;
+            const depth = this.turns.depth;
+            if (cap > 0 && depth >= cap) {
+                this.#host.admission.refusals++;
+                throw new ActorOverloadedError('actor', actorLabel(this.ref), depth, cap);
+            }
+            const admission = this.#host.admission;
+            const hostCap = admission.maxInflightTurns;
+            // `inflight` still counts EVERY turn on the host — timer ticks
+            // and task turns included, which never come through here — so
+            // the number a new arrival is judged against is the whole
+            // loop's occupancy, not just the part of it that entered.
+            if (hostCap > 0 && admission.inflight >= hostCap) {
+                admission.refusals++;
+                throw new ActorOverloadedError('host', actorLabel(this.ref), admission.inflight, hostCap);
+            }
         }
         return this.enqueueSystem(method, args, call);
     }

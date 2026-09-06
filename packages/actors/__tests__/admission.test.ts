@@ -260,6 +260,115 @@ describe('host in-flight cap', () => {
     });
 });
 
+describe('admission is at the entrance (#408)', () => {
+    const selfPolicy: PlacementPolicy = { choose: (_ref, _view, self) => self };
+
+    /**
+     * The rule the cluster taught: a cap sheds what ARRIVES, never what is
+     * already in flight. On a real fleet a host-wide cap that refused a
+     * run's own worker-pool calls halved throughput at the knee and
+     * stranded runs the uncapped fleet finished — refusing a chained call
+     * is not shedding, it is destroying part-done work and failing the
+     * turn that owns it.
+     */
+    it('never refuses a call made from inside a turn, however full the host is', async () => {
+        const pool = gated('PoolBehindWork');
+        const Caller = defineActor({
+            type: 'CallerAtEntrance',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                // A turn that reaches for another actor, exactly as a
+                // workflow run reaches for its compute pool.
+                async work() {
+                    return ctx.actor(pool.def, 'p').hold('inner');
+                }
+            })
+        });
+        const host = createHost({
+            actors: [Caller, pool.def],
+            defaults: { ...quiet, maxInflightTurns: 1 }
+        });
+        running = host;
+        await host.start();
+
+        // One turn in flight fills the host: the Caller's own turn.
+        const outer = host.actor(Caller, 'k').work();
+        await vi.waitFor(() => expect(host.stats().queued).toBeGreaterThanOrEqual(1));
+
+        // A NEW arrival is refused — the cap still works.
+        const refused = await host.actor(Caller, 'other').work().then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(refused).toMatchObject({ kind: 'overloaded', scope: 'host' });
+
+        // …while the inner call, which the host already accepted work for,
+        // goes through and the outer turn completes. Before #408 this
+        // rejected and took its caller down with it.
+        pool.releaseAll();
+        await expect(outer).resolves.toBe('inner');
+    });
+
+    it('exempts a chained call that crossed a wire — the envelope carries the chain, so a hop is not an arrival', async () => {
+        // The failure this guards: if a cross-host hop arrived with an
+        // empty chain it would read as new work and be refused, which is
+        // exactly what halved throughput on the cluster — most of a
+        // workflow run's calls cross hosts.
+        const pool = gated('PoolOnPeer');
+        const Caller = defineActor({
+            type: 'CallerNearby',
+            allowAnonymous: true,
+            state: () => ({}),
+            methods: (ctx) => ({
+                async work() {
+                    return ctx.actor(pool.def, 'p').hold('inner');
+                }
+            })
+        });
+        cluster = await createCluster(2, {
+            actors: [pool.def, Caller],
+            defaults: { ...quiet, maxInflightTurns: 1 },
+            // Both self-placing: the pool is claimed by whichever host
+            // touches it first, which below is deliberately the peer. A
+            // peer-seeking policy would place it differently depending on
+            // who asked, and the directory winner would be a race.
+            typePolicies: { PoolOnPeer: selfPolicy, CallerNearby: selfPolicy }
+        });
+        const [near, peer] = [cluster.hosts[0]!, cluster.hosts[1]!];
+
+        // Fill the PEER — the pool's owner — with one arrival of its own.
+        const first = peer.dispatch({ type: pool.def.type, key: 'p' }, 'hold', ['first'], {
+            callChain: [],
+            callId: 'first'
+        });
+        await vi.waitFor(() => expect(peer.stats().queued).toBeGreaterThanOrEqual(1));
+
+        // A fresh arrival at the full peer is refused…
+        const arrival = await peer
+            .dispatch({ type: pool.def.type, key: 'p' }, 'hold', ['arrival'], {
+                callChain: [],
+                callId: 'arrival'
+            })
+            .then(
+                () => null,
+                (e: unknown) => e
+            );
+        expect(arrival).toMatchObject({ kind: 'overloaded' });
+
+        // …while a turn on the near host reaching the SAME full peer is
+        // admitted, because its chain survived the hop. Waiting for the
+        // peer to actually hold BOTH turns is what makes this a test: if
+        // the hop were judged an arrival it would be refused there and the
+        // peer would stay at one, so the wait is the assertion.
+        const outer = near.actor(Caller, 'k').work();
+        await vi.waitFor(() => expect(peer.stats().queued).toBe(2));
+        pool.releaseAll();
+        await expect(outer).resolves.toBe('inner');
+        await expect(first).resolves.toBe('first');
+    });
+});
+
 describe('drop-on-dequeue', () => {
     it('never runs the body of a queued call whose deadline already passed', async () => {
         const { def, ran, release, releaseAll } = gated('Expiring');
