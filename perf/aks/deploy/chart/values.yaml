@@ -222,11 +222,13 @@ workflow:
     WF_MAX_INFLIGHT_TURNS: ""
     # Which ActorReminders the host runs (#385): sharded (the runtime's
     # default table over the storage) or redis (the due-time index, which
-    # needs REDIS_URL). Empty means sharded, so an unset knob is the shape
-    # every earlier baseline was recorded on. Listed here because it
+    # needs REDIS_URL). The empty default below is NOT passed to the
+    # container — the template omits an empty value, like every knob here —
+    # so the variable is absent and the app falls back to sharded, which is
+    # the shape every earlier baseline was recorded on. Listed because it
     # selects a PROVIDER rather than tuning one, and the chart would render
-    # it either way — an unlisted knob is one nobody reading the chart
-    # knows exists.
+    # it either way: an unlisted knob is one nobody reading the chart knows
+    # exists.
     REMINDERS: ""
 
 # The WebSocket load generator (#172) — connections held and messages

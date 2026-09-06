@@ -279,7 +279,7 @@ and on a real three-host fleet with 18 000 runs asleep (2026-09-05, #391
 T2) the difference is what an operator actually feels — the lag between a
 reminder falling due and its actor waking:
 
-| runs asleep | sharded wake lag p50 / p99 | `redisReminders()` p50 / p99 |
+| runs asleep | sharded wake lag p50 / p99 | `redisReminders` p50 / p99 |
 |---:|---:|---:|
 | 4 500 | 514 ms / 1.00 s | 402 ms / 888 ms |
 | 9 000 | 712 ms / 8.92 s | 395 ms / 888 ms |
@@ -292,10 +292,10 @@ move. Note what is NOT there: the CAS never failed on either arm at any
 size, so the ceiling was never contention — the table's cost is the bytes
 it rewrites, and adding hosts does not divide them.
 
-Because an empty claim on an index costs one round trip — three commands
-at ten thousand members and three at a million — those providers can also
-run a much shorter `reminderTickMs`, a few seconds where the default needs
-30. That is what turns a durable wake's lag from half a tick of fifteen
+Because an empty claim on an index costs one round trip — three commands,
+the same count whether ten thousand or a million reminders are asleep —
+those providers can also run a much shorter `reminderTickMs`, a few seconds
+where the default needs 30. That is what turns a durable wake's lag from half a tick of fifteen
 seconds into one of two, and it is why the tick cadence is a property of
 the provider you chose rather than a number to tune on its own.
 
