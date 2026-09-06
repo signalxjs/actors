@@ -49,7 +49,7 @@ describe('topics without a framework', () => {
     it('host.publish() from outside any actor reaches the same handler, unattributed', async () => {
         const host = await start([Gate, Tally]);
         const report = await host.publish(gatePassed('side-door'), { count: 7 });
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         const tally = await host.actor(Tally, 'all').totals();
         expect(tally).toEqual({
             deliveries: 1,

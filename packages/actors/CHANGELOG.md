@@ -4,6 +4,25 @@
 
 ### Added
 
+- **`PublishOptions.delivery`** (#49): `'settled'` (the default and the
+  previous behaviour) waits for every subscriber's handler turn, so a
+  handler that throws is a `failures[]` entry the publisher can act on;
+  `'accepted'` resolves once each delivery is queued and drops later
+  failures with a counter, as any one-way call does. Available on
+  `host.publish()`, `publishTopic()` and `ctx.publish()`.
+  `TopicPublishReport` now always carries `delivery`, because `delivered`
+  means different things under the two — accepted cannot report a handler
+  that threw, by construction. An `'accepted'` publish also cannot
+  deadlock: a subscription cycling back into the publisher is an ordinary
+  queued turn, since nothing is waiting on it.
+
+  It decouples the PUBLISHER, not the subscriber. A singleton subscriber
+  remains a cluster-wide ceiling on consumption, and an accepted publish
+  queues on it rather than failing — which is the point, and why such a
+  subscriber wants `maxQueued` so it sheds instead of growing without
+  bound. Motivation: a cluster's workflow completion path fanned into one
+  aggregator and produced 13 363 publish failures at its drowning rung,
+  each failing a run that had otherwise finished.
 - **`remindersConformance`** on the workspace-only `@sigx/actors/testing`
   (#385): the `ActorReminders` seam as sixteen outcome cases — the
   `ReminderApi` round-trips, the floor, one-shot and periodic firing

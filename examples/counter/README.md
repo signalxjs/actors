@@ -268,7 +268,7 @@ sees it as an error:
 
 ```
 === 1. A turn publishes — the report says who heard it ===
-north.pass() → { count: 1, subscribers: 1, delivered: 1, failures: [] }
+north.pass() → { count: 1, subscribers: 1, delivered: 1, failures: [], delivery: 'settled' }
 ```
 
 The subscriber (`src/tally.actor.ts`) maps every gate's key to one
@@ -291,7 +291,7 @@ server code — a script, a serverFn, a cron — rides the same fan-out through
 
 ```
 === 3. Publishing from outside any actor ===
-host.publish() → { subscribers: 1, delivered: 1, failures: [] }
+host.publish() → { subscribers: 1, delivered: 1, failures: [], delivery: 'settled' }
 Tally "all" → deliveries=4 lastFrom=outside any actor
 ```
 
@@ -303,7 +303,7 @@ is a report, not a failure:
 
 ```
 === 4. No subscriber in the deploy, no delivery — and no error ===
-north.pass() on a host without Tally → { count: 1, subscribers: 0, delivered: 0, failures: [] }
+north.pass() on a host without Tally → { count: 1, subscribers: 0, delivered: 0, failures: [], delivery: 'settled' }
 ```
 
 Delivery is best-effort, at-most-once, bounded by the call deadline. For the

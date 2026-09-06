@@ -126,7 +126,7 @@ describe('publish', () => {
         const Feed = makeFeed();
         const host = await startHost([Feed]);
         const report = await host.publish(chat, 'hello');
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         await expect(host.actor(Feed, 'room-1').log()).resolves.toEqual(['hello']);
     });
 
@@ -353,7 +353,7 @@ describe('subscription cycles', () => {
         });
         const host = await startHost([Loop]);
         const report = await host.actor(Loop, 'self').trigger();
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         expect(handled).toBe(1);
     });
 
@@ -376,7 +376,7 @@ describe('subscription cycles', () => {
         // The publishing turn awaits the fan-out; the delivery lands as an
         // interleaved turn of the same activation instead of deadlocking.
         const report = await host.actor(Loop, 'self').trigger();
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         expect(handled).toBe(1);
     });
 });
@@ -384,11 +384,104 @@ describe('subscription cycles', () => {
 // ---------------------------------------------------------------------------
 // Edges
 
+
+describe("delivery: 'accepted' (#49)", () => {
+    /**
+     * The publisher stops waiting for its subscribers. Measured motivation:
+     * on a cluster the completion path of every workflow run fanned into
+     * one aggregator and produced 13 363 publish failures at the drowning
+     * rung, each of which failed a run that had otherwise finished
+     * (`BASELINES.md`, 2026-09-05).
+     */
+    it('resolves before the handler runs, and the handler still runs', async () => {
+        const seen: string[] = [];
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        const Slow = defineActor({
+            type: 'SlowSubscriber',
+            allowAnonymous: true,
+            state: () => ({}),
+            subscriptions: { [chat.name]: async (_ctx, event) => {
+                await gate;
+                seen.push(event.payload as string);
+            } },
+            methods: () => ({})
+        });
+        const host = await startHost([Slow]);
+
+        const report = await host.publish(chat, 'one', { delivery: 'accepted' });
+        // Resolved with the handler still parked on the gate.
+        expect(report).toEqual({
+            subscribers: 1,
+            delivered: 1,
+            failures: [],
+            delivery: 'accepted'
+        });
+        expect(seen).toEqual([]);
+
+        release();
+        await vi.waitFor(() => expect(seen).toEqual(['one']));
+    });
+
+    it('cannot report a handler that throws — the failure is post-acceptance', async () => {
+        const Throwing = defineActor({
+            type: 'ThrowingSubscriber',
+            allowAnonymous: true,
+            state: () => ({}),
+            subscriptions: { [chat.name]: () => {
+                throw new Error('handler blew up');
+            } },
+            methods: () => ({})
+        });
+        const host = await startHost([Throwing]);
+
+        // Settled sees it…
+        const settled = await host.publish(chat, 'a');
+        expect(settled.failures).toHaveLength(1);
+        expect(settled.delivery).toBe('settled');
+
+        // …accepted cannot, by construction: the publish was already done.
+        const accepted = await host.publish(chat, 'b', { delivery: 'accepted' });
+        expect(accepted).toMatchObject({ delivered: 1, failures: [], delivery: 'accepted' });
+    });
+
+    it('lets a subscription cycle back into the publisher instead of deadlocking', async () => {
+        // A settled self-publish on a non-reentrant actor is a detected
+        // deadlock; accepted is an ordinary queued turn, because nothing
+        // is waiting on it.
+        const seen: string[] = [];
+        const Cycler = defineActor({
+            type: 'CyclingPublisher',
+            allowAnonymous: true,
+            state: () => ({}),
+            subscriptions: { [chat.name]: (_ctx, event) => {
+                seen.push(event.payload as string);
+            } },
+            methods: (ctx) => ({
+                async fire(mode: 'settled' | 'accepted') {
+                    return ctx.publish(chat, mode, { delivery: mode });
+                }
+            })
+        });
+        const host = await startHost([Cycler]);
+
+        // Keyed to the TOPIC's key, so the subscription really does
+        // land back on the publishing activation — keyed anything else it
+        // is a different actor and there is no cycle to detect.
+        const settled = await host.actor(Cycler, 'room-1').fire('settled');
+        expect(settled.failures[0]?.kind).toBe('deadlock');
+
+        const accepted = await host.actor(Cycler, 'room-1').fire('accepted');
+        expect(accepted).toMatchObject({ delivered: 1, failures: [], delivery: 'accepted' });
+        await vi.waitFor(() => expect(seen).toContain('accepted'));
+    });
+});
+
 describe('edges', () => {
     it('publishing to a topic nobody subscribes to reports zero subscribers', async () => {
         const host = await startHost([makeFeed()]);
         const report = await host.publish(topic('nobody-listens'), 1);
-        expect(report).toEqual({ subscribers: 0, delivered: 0, failures: [] });
+        expect(report).toEqual({ subscribers: 0, delivered: 0, failures: [], delivery: 'settled' });
     });
 
     it('a delivery for a subscription this build removed is a warned no-op', async () => {

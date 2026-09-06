@@ -55,11 +55,16 @@ function subscribers(s: number): AnyActorDefinition[] {
 const SIZES = [1, 4, 16] as const;
 const QUICK_SIZES = [1, 4] as const;
 
-const ARMS: { label: string; policy: PlacementPolicy }[] = [
+const ARMS: { label: string; policy: PlacementPolicy; delivery?: 'accepted' }[] = [
     // Everything local: the publish must not touch the wire at all (0).
     { label: 'local', policy: selfPolicy },
     // Everything remote: exactly one internal dispatch per subscriber (S).
-    { label: 'peer', policy: peerPolicy }
+    { label: 'peer', policy: peerPolicy },
+    // The same remote fan-out under `delivery: 'accepted'` (#49). The
+    // COUNTS must not move — the same subscribers, reached by the same
+    // number of dispatches — which is what pins one-way publish as a
+    // change to WHEN the publisher resolves and to nothing else.
+    { label: 'peer-accepted', policy: peerPolicy, delivery: 'accepted' }
 ];
 
 const fanout: Scenario = {
@@ -79,10 +84,15 @@ const fanout: Scenario = {
                     const placement = harness.placements[0]!;
                     // Warm: activate every subscriber and claim directory
                     // entries, so the measured publish is the steady state.
-                    await publisher.publish(BENCH_TOPIC, 0);
+                    // Every publish in this arm, warm-up included, runs
+                    // under the arm's mode — an arm whose option is
+                    // declared and never read measures the default twice
+                    // and reports it as agreement.
+                    const opts = { delivery: arm.delivery ?? ('settled' as const) };
+                    await publisher.publish(BENCH_TOPIC, 0, opts);
 
                     const remoteBefore = placement.counters().remoteDispatches;
-                    const report = await publisher.publish(BENCH_TOPIC, 1);
+                    const report = await publisher.publish(BENCH_TOPIC, 1, opts);
                     const remote = placement.counters().remoteDispatches - remoteBefore;
 
                     metrics.push(
@@ -116,7 +126,7 @@ const fanout: Scenario = {
                     const until = performance.now() + sliceMs;
                     let publishes = 0;
                     while (performance.now() < until) {
-                        await publisher.publish(BENCH_TOPIC, publishes);
+                        await publisher.publish(BENCH_TOPIC, publishes, opts);
                         publishes += 1;
                     }
                     metrics.push({

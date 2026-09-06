@@ -140,6 +140,15 @@ This is a design commitment, not a diagnostic nicety: the alternative is a
 re-entry — the cycle runs inline against your own turn — and
 `reentrant: 'always'` makes the deadlock impossible by construction.
 
+A `ctx.publish()` under `delivery: 'accepted'` (#49) is outside all of
+this, and deliberately: it resolves at enqueue, so a subscription that
+cycles back into the publisher is an ordinary queued turn rather than a
+wait on oneself. The chain still travels with the delivery, so tracing and
+attribution are unchanged — what one-way drops is the *waiting*, and a
+cycle is only a deadlock because somebody waits. A `'settled'` publish
+keeps the old behaviour and still reports the cycle as a `failures[]`
+entry with kind `deadlock`.
+
 ## Persistence and the conflict path
 
 `ctx.save()` writes through `ActorStorage` with an etag. A conflicting writer

@@ -24,6 +24,7 @@ import {
     type TopicSubscriberEntry
 } from './topics';
 import type {
+    TopicDeliveryMode,
     ActivationInfo,
     ActivationsOptions,
     ActorCallContext,
@@ -440,8 +441,8 @@ class HostImpl implements Host {
                     stringify: (value) => stringifyWithHandlers(value, this.#types)
                 }),
             actorClient: (def, key, outbound) => this.#client(def, key, outbound),
-            publish: (topic, payload, call, publisher) =>
-                this.#publish(topic, payload, call ?? this.#externalCall(), publisher),
+            publish: (topic, payload, call, publisher, delivery) =>
+                this.#publish(topic, payload, call ?? this.#externalCall(), publisher, delivery),
             // `deactivateOne`, not `deactivate`: both callbacks target the
             // ACTIVATION that faulted / asked to go — for a stateless pool
             // member, taking the whole pool down would punish its siblings.
@@ -680,14 +681,21 @@ class HostImpl implements Host {
         payload: T,
         options?: PublishOptions
     ): Promise<TopicPublishReport> {
-        return this.#publish(topic, payload, this.#externalCall(options?.signal), undefined);
+        return this.#publish(
+            topic,
+            payload,
+            this.#externalCall(options?.signal),
+            undefined,
+            options?.delivery
+        );
     }
 
     async #publish(
         topic: Topic,
         payload: unknown,
         call: ActorCallContext,
-        publisher: ActorRef | undefined
+        publisher: ActorRef | undefined,
+        delivery: TopicDeliveryMode = 'settled'
     ): Promise<TopicPublishReport> {
         // Re-checked here, not only in topic(): a publish may be handed a
         // hand-built object, and a malformed name must fail the caller, not
@@ -695,8 +703,14 @@ class HostImpl implements Host {
         assertTopic(topic);
         const index = await this.#subscriberIndex();
         const entries = index.get(topic.name) ?? [];
-        return publishToSubscribers(entries, topic, payload, call, publisher, (ref, m, args, c) =>
-            this.dispatch(ref, m, args, c)
+        return publishToSubscribers(
+            entries,
+            topic,
+            payload,
+            call,
+            publisher,
+            (ref, m, args, c) => this.dispatch(ref, m, args, c),
+            delivery
         );
     }
 
