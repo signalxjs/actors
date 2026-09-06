@@ -97,6 +97,7 @@ export type {
     Topic,
     TopicDeliveryFailure,
     TopicEvent,
+    TopicDeliveryMode,
     TopicPublishReport,
     TopicSubscription,
     TopicSubscriptionHandler,

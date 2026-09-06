@@ -55,11 +55,16 @@ function subscribers(s: number): AnyActorDefinition[] {
 const SIZES = [1, 4, 16] as const;
 const QUICK_SIZES = [1, 4] as const;
 
-const ARMS: { label: string; policy: PlacementPolicy }[] = [
+const ARMS: { label: string; policy: PlacementPolicy; delivery?: 'accepted' }[] = [
     // Everything local: the publish must not touch the wire at all (0).
     { label: 'local', policy: selfPolicy },
     // Everything remote: exactly one internal dispatch per subscriber (S).
-    { label: 'peer', policy: peerPolicy }
+    { label: 'peer', policy: peerPolicy },
+    // The same remote fan-out under `delivery: 'accepted'` (#49). The
+    // COUNTS must not move — the same subscribers, reached by the same
+    // number of dispatches — which is what pins one-way publish as a
+    // change to WHEN the publisher resolves and to nothing else.
+    { label: 'peer-accepted', policy: peerPolicy, delivery: 'accepted' }
 ];
 
 const fanout: Scenario = {

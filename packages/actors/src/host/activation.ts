@@ -49,7 +49,9 @@ import {
     type Topic,
     type TopicEvent,
     type TopicPublishReport,
-    type ActorTaskLiveness
+    type ActorTaskLiveness,
+    type PublishOptions,
+    type TopicDeliveryMode
 } from '../types';
 import {
     TASK_REMINDER,
@@ -297,7 +299,8 @@ export interface ActivationHost {
         topic: Topic,
         payload: unknown,
         call: ActorCallContext | null,
-        publisher: ActorRef
+        publisher: ActorRef,
+        delivery?: TopicDeliveryMode
     ): Promise<TopicPublishReport>;
     /**
      * `__DEV__` only (#221) — absent from production hosts, so the hot path
@@ -2938,14 +2941,21 @@ export class Activation {
                     };
                 });
             },
-            publish<T>(topicRef: Topic<T>, payload: T): Promise<TopicPublishReport> {
+            publish<T>(
+                topicRef: Topic<T>,
+                payload: T,
+                options?: PublishOptions
+            ): Promise<TopicPublishReport> {
                 // Same chain rule as ctx.actor(): the outbound context
                 // appends SELF, so a subscription that cycles back into this
                 // actor is a detected deadlock in the report, not a hang —
                 // the publishing turn is awaiting the fan-out, so an
                 // undetected cycle could never complete.
                 const current = self.#callContext();
-                if (!current && __DEV__) {
+                // Only a SETTLED publish can deadlock: 'accepted' resolves
+                // at enqueue, so a subscription cycling back is an ordinary
+                // queued turn rather than a wait on oneself.
+                if (!current && __DEV__ && options?.delivery !== 'accepted') {
                     console.warn(
                         `[sigx actors] ctx.publish() called on ${actorLabel(self.ref)} with ` +
                             `no turn in progress (a detached callback?) — the publish starts ` +
@@ -2966,7 +2976,7 @@ export class Activation {
                           abortSignal: current.abortSignal
                       }
                     : null;
-                return self.#host.publish(topicRef, payload, call, self.ref);
+                return self.#host.publish(topicRef, payload, call, self.ref, options?.delivery);
             },
             deactivate(): void {
                 self.#deactivateRequested = true;

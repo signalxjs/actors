@@ -52,7 +52,7 @@ describe('topics across hosts', () => {
         });
         const before = cluster.placements[0]!.counters().remoteDispatches;
         const report = await cluster.hosts[0]!.publish(chat, 'over the wire');
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] , delivery: 'settled' });
         // The cost model: exactly one remote dispatch for the one remote
         // subscriber — the invariant the bench scenario will gate.
         expect(cluster.placements[0]!.counters().remoteDispatches - before).toBe(1);

@@ -794,14 +794,48 @@ export interface TopicDeliveryFailure {
 export interface TopicPublishReport {
     /** Subscriber refs targeted (the deploy's subscribing types). */
     readonly subscribers: number;
+    /**
+     * How many deliveries got where they were going — which is what the
+     * publish WAITED for, so read it with `delivery`: under `'settled'` a
+     * delivery counts once its handler's turn has finished, under
+     * `'accepted'` once the turn was queued. An `'accepted'` publish
+     * therefore cannot report a handler that threw, by construction.
+     */
     readonly delivered: number;
     readonly failures: readonly TopicDeliveryFailure[];
+    /** Which mode produced the counts above (#49). Always present. */
+    readonly delivery: TopicDeliveryMode;
 }
 
-/** Options for `host.publish()` / `publishTopic()`. A bag from day one so a
- *  future delivery mode has somewhere to live. */
+/**
+ * What a publish waits for.
+ *
+ *  - `'settled'` (the default, and the only behaviour before #49): the
+ *    publish resolves when every subscriber's handler turn has finished,
+ *    so a handler that throws is a `failures[]` entry the publisher can
+ *    act on — and a slow subscriber is the publisher's problem too.
+ *  - `'accepted'`: it resolves once each delivery is QUEUED. Failures
+ *    after that are dropped-with-counter (`oneWayFailures` in `metrics()`)
+ *    exactly as any one-way call's are.
+ */
+export type TopicDeliveryMode = 'settled' | 'accepted';
+
+/** Options for `host.publish()` / `publishTopic()` / `ctx.publish()`. */
 export interface PublishOptions {
     signal?: AbortSignal;
+    /**
+     * Default `'settled'`. Choose `'accepted'` when the publisher's own
+     * progress must not depend on its subscribers — the completion path of
+     * a workflow, an audit feed, anything fanning into one aggregator.
+     *
+     * What it does and does not buy: it decouples the PUBLISHER, not the
+     * subscriber. A singleton subscriber is still a cluster-wide ceiling
+     * on how fast events can be consumed (`BASELINES.md`), and an
+     * `'accepted'` publish will queue on it rather than fail — which is
+     * the point, and also why a subscriber that cannot keep up wants
+     * `maxQueued` so it sheds rather than grows without bound.
+     */
+    delivery?: TopicDeliveryMode;
 }
 
 /** A `subscriptions:` handler — an ordinary turn, free to mutate
@@ -935,7 +969,18 @@ export interface ActorContextBase<S extends object> {
      * this turn's call chain, so a subscription cycling back into this
      * actor is a detected deadlock (a `failures` entry), not a hang.
      */
-    publish<T>(topic: Topic<T>, payload: T): Promise<TopicPublishReport>;
+    /**
+     * Fan out to this deploy's `subscriptions:`. Default `delivery:
+     * 'settled'` — the publishing turn waits for every handler, so a
+     * subscriber's failure is a `failures[]` entry it can act on.
+     * `'accepted'` resolves at enqueue instead (#49): choose it when this
+     * actor's progress must not depend on its subscribers.
+     */
+    publish<T>(
+        topic: Topic<T>,
+        payload: T,
+        options?: PublishOptions
+    ): Promise<TopicPublishReport>;
     /** Finish the queue, then deactivate. */
     deactivate(): void;
     /**

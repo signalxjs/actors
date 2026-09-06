@@ -11,6 +11,7 @@
  */
 import { isActorError } from '../errors';
 import type {
+    TopicDeliveryMode,
     ActorCallContext,
     ActorRef,
     AnyActorDefinition,
@@ -115,7 +116,8 @@ export async function publishToSubscribers(
         method: string,
         args: readonly unknown[],
         call: ActorCallContext
-    ) => Promise<unknown>
+    ) => Promise<unknown>,
+    delivery: TopicDeliveryMode = 'settled'
 ): Promise<TopicPublishReport> {
     const event: TopicEvent = {
         topic: { name: topic.name, key: topic.key },
@@ -138,7 +140,18 @@ export async function publishToSubscribers(
                     );
                 }
                 key = mapped;
-                await dispatch({ type: entry.type, key }, TOPIC_METHOD, [event], call);
+                // `oneWay` is what makes 'accepted' accepted: the local
+                // host resolves at enqueue and detaches, and the host wire
+                // carries the flag, so a remote subscriber behaves the
+                // same. Failures past that point are counted
+                // (`oneWayFailures`) rather than reported here — which is
+                // why `delivered` is documented against `delivery`.
+                await dispatch(
+                    { type: entry.type, key },
+                    TOPIC_METHOD,
+                    [event],
+                    delivery === 'accepted' ? { ...call, oneWay: true } : call
+                );
                 delivered += 1;
             } catch (error) {
                 failures.push({
@@ -152,5 +165,5 @@ export async function publishToSubscribers(
             }
         })
     );
-    return { subscribers: entries.length, delivered, failures };
+    return { subscribers: entries.length, delivered, failures, delivery };
 }
