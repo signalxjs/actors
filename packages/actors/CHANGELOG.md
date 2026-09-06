@@ -12,6 +12,13 @@
   `surrealReminders`, `redisReminders` and (its API half) the Durable
   Object alarm. Its red proof is a deliberately broken provider with one
   bug at a time. No shipped code changes.
+- **Admission applies to arrivals only** (#408): a call is subject to a cap
+  exactly when its `callChain` is empty — work entering the deployment.
+  A call made from inside a turn, a self-started timer or task turn, and a
+  cross-host hop (the envelope carries the originating chain) are never
+  refused, because refusing them destroys work already admitted rather
+  than shedding new work. Measured: a host-wide cap that refused a run's
+  own worker-pool calls halved throughput at the knee and stranded runs.
 - **Admission control** (#384). `defineActor({ maxQueued })` and
   `HostDefaults.maxQueuedPerActor` cap one activation's queued-plus-running
   turns; `HostDefaults.maxInflightTurns` caps the host's (every turn on it,

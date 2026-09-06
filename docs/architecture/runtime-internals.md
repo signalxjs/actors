@@ -45,8 +45,22 @@ either is refused **before it is queued**, synchronously, with
 two integer compares on `Activation.enqueue`; with both caps at 0 the hot
 path is byte for byte what it was.
 
-**Only calls are refused.** The runtime's own turns never come through
-admission: a watch loop's reads (`enqueueSystem`), the write-behind flush, a
+**Only ARRIVALS are refused** (#408). A cap sheds what enters the
+deployment, never what is already inside it: admission applies exactly when
+`call.callChain` is empty, which is what every outside mount mints and what
+nothing inside the runtime does — a call from within a turn carries its
+caller, a self-started timer or task turn carries `[self]`, and a
+cross-host hop carries the ORIGINATING chain through the envelope, so a
+peer cannot launder accepted work into a fresh arrival by crossing a wire.
+Refusing a chained call would not shed load, it would destroy work already
+admitted and fail the turn that owns it: measured on a fleet, a host-wide
+cap that refused a run's own worker-pool calls halved throughput at the
+knee and stranded runs an uncapped fleet finished (`BASELINES.md`,
+2026-09-05). The occupancy a new arrival is judged against is still the
+whole loop's, `inflight` counting every turn on the host.
+
+The runtime's own turns never come through admission at all: a watch loop's
+reads (`enqueueSystem`), the write-behind flush, a
 conflict reload, a timer tick and a task's `ctx.turn` all schedule on
 `Turns` directly. They *count* toward `maxInflightTurns` — they are what
 fills the loop — but a cap exists to shed a caller's load, and refusing the
@@ -70,7 +84,13 @@ read the turn already takes, so it too adds nothing to the hot path — and
 it is why the control arm of `dispatch/overload-shed` runs ~80 of 400
 bodies rather than all of them.
 
-**Sizing.** `maxQueued ≈ callTimeoutMs / p50 turn ms`: never admit more than
+**Sizing.** Cap the ARRIVAL rate, and note that the two caps answer
+different shapes: `maxQueuedPerActor` is for a hot key whose single queue
+is the backlog, `maxInflightTurns` for a fleet of many short-lived actors
+that fills the loop between them — a workload of the second kind is
+untouched by the first cap, and measuring one on the other says nothing
+(`BASELINES.md`, 2026-09-04 and 2026-09-05).
+`maxQueued ≈ callTimeoutMs / p50 turn ms`: never admit more than
 the queue can drain inside the deadline, so that an admitted call completes
 and a refused one fails in microseconds — the two outcomes a caller can act
 on. The same arithmetic sizes `maxInflightTurns` against the loop as a
