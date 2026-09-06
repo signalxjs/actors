@@ -126,7 +126,7 @@ describe('publish', () => {
         const Feed = makeFeed();
         const host = await startHost([Feed]);
         const report = await host.publish(chat, 'hello');
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] , delivery: 'settled' });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         await expect(host.actor(Feed, 'room-1').log()).resolves.toEqual(['hello']);
     });
 
@@ -353,7 +353,7 @@ describe('subscription cycles', () => {
         });
         const host = await startHost([Loop]);
         const report = await host.actor(Loop, 'self').trigger();
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] , delivery: 'settled' });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         expect(handled).toBe(1);
     });
 
@@ -376,7 +376,7 @@ describe('subscription cycles', () => {
         // The publishing turn awaits the fan-out; the delivery lands as an
         // interleaved turn of the same activation instead of deadlocking.
         const report = await host.actor(Loop, 'self').trigger();
-        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [] , delivery: 'settled' });
+        expect(report).toEqual({ subscribers: 1, delivered: 1, failures: [], delivery: 'settled' });
         expect(handled).toBe(1);
     });
 });
@@ -481,7 +481,7 @@ describe('edges', () => {
     it('publishing to a topic nobody subscribes to reports zero subscribers', async () => {
         const host = await startHost([makeFeed()]);
         const report = await host.publish(topic('nobody-listens'), 1);
-        expect(report).toEqual({ subscribers: 0, delivered: 0, failures: [] , delivery: 'settled' });
+        expect(report).toEqual({ subscribers: 0, delivered: 0, failures: [], delivery: 'settled' });
     });
 
     it('a delivery for a subscription this build removed is a warned no-op', async () => {
