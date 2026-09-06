@@ -41,9 +41,10 @@ it — timer ticks, task turns and watch reads included, because a loop
 saturated by its actors' own work is just as full. A call that would pass
 either is refused **before it is queued**, synchronously, with
 `ActorOverloadedError` (`kind: 'overloaded'`, `scope: 'actor' | 'host'`,
-`depth`, `limit`), and `HostStats.overloadRefusals` counts it. The check is
-two integer compares on `Activation.enqueue`; with both caps at 0 the hot
-path is byte for byte what it was.
+`depth`, `limit`), and `HostStats.overloadRefusals` counts it. The check on
+`Activation.enqueue` is one array-length test and, for an arrival, two
+integer compares; a call already inside a chain pays only the length test
+and a call on a host with both caps at 0 pays nothing beyond it.
 
 **Only ARRIVALS are refused** (#408). A cap sheds what enters the
 deployment, never what is already inside it: admission applies exactly when
@@ -52,6 +53,10 @@ nothing inside the runtime does — a call from within a turn carries its
 caller, a self-started timer or task turn carries `[self]`, and a
 cross-host hop carries the ORIGINATING chain through the envelope, so a
 peer cannot launder accepted work into a fresh arrival by crossing a wire.
+The chain, not the hop, is what decides: an external call that a host
+merely ROUTES onward still carries the empty chain its mount minted, so it
+arrives at the owner as the arrival it is and is refused there if the owner
+is full. Only a hop that carries a non-empty chain is exempt.
 Refusing a chained call would not shed load, it would destroy work already
 admitted and fail the turn that owns it: measured on a fleet, a host-wide
 cap that refused a run's own worker-pool calls halved throughput at the

@@ -15,9 +15,11 @@
 - **Admission applies to arrivals only** (#408): a call is subject to a cap
   exactly when its `callChain` is empty — work entering the deployment.
   A call made from inside a turn, a self-started timer or task turn, and a
-  cross-host hop (the envelope carries the originating chain) are never
-  refused, because refusing them destroys work already admitted rather
-  than shedding new work. Measured: a host-wide cap that refused a run's
+  hop that carries a non-empty chain across hosts (the envelope preserves
+  the originating one) are never refused, because refusing them destroys
+  work already admitted rather than shedding new work. An external call a
+  host merely routes onward still carries an empty chain, so it stays an
+  arrival at the owner and is still subject to the caps there. Measured: a host-wide cap that refused a run's
   own worker-pool calls halved throughput at the knee and stranded runs.
 - **Admission control** (#384). `defineActor({ maxQueued })` and
   `HostDefaults.maxQueuedPerActor` cap one activation's queued-plus-running
