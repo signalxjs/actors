@@ -365,6 +365,37 @@ export const WorkflowRun = defineActor({
             if (config.deactivateOnSleep) ctx.deactivate();
         };
 
+        /**
+         * A run parked on a node with NO wake at all (#409). Not the same
+         * failure as an overdue one: the stale check needs a `due` to
+         * measure, so with the wake gone from state every touch walked
+         * past and the run was stranded for good.
+         *
+         * Recovery re-arms a FRESH wake instead of firing the lost one,
+         * because the time already served cannot be recovered from state —
+         * a node record's `startedAt` is when the NODE began, not when the
+         * sleep did, and a retry's is neither. A fresh wake keeps both
+         * contracts a stale-fire would break: a delay promises "at least
+         * ms", and a wait node's signal can still arrive inside the new
+         * window while its timeout edge still bounds the run. The cost is
+         * that the run waits longer than it strictly had left, which is
+         * the right side to err on against never finishing.
+         *
+         * `sleep()` mints a new token from `s.seq`, so a wake that was not
+         * lost after all — one whose reminder fires late, say — arrives
+         * carrying the old token and is discarded as stale rather than
+         * double-driving the run.
+         */
+        const rearmLostWake = async (
+            cursor: NodeId,
+            ms: number,
+            reason: WakeReason
+        ): Promise<void> => {
+            C.wakesLost++;
+            s.stats.wakes.lost++;
+            await sleep(cursor, ms, reason);
+        };
+
         // ---- node execution --------------------------------------------
 
         const callWorker = async (id: NodeId, spec: TaskSpec, attempt: number): Promise<void> => {
@@ -665,12 +696,43 @@ export const WorkflowRun = defineActor({
                     const cursor = s.cursor;
                     const n = cursor ? node(d, cursor) : null;
                     if (!n || n.type !== 'wait' || !cursor) throw new Error('[workflow] waiting off a wait node');
-                    if (!deliverSignal(n)) return;
+                    if (!deliverSignal(n)) {
+                        // Parked with the wake gone: re-arm the timeout
+                        // edge, which is the only thing that guarantees a
+                        // wait node ever leaves.
+                        if (!s.wake) await rearmLostWake(cursor, n.timeoutMs, 'signal-timeout');
+                        return;
+                    }
                     cancelWake();
                     s.status = 'running';
                     sample('wait', Date.now() - record(cursor).startedAt);
                     await moveTo(cursor, n.next);
                     continue;
+                }
+                if (s.status === 'sleeping') {
+                    // Same hole, the other parked status. A sleep is armed
+                    // for a `delay` node or for a task's retry backoff, and
+                    // the node itself says which.
+                    const cursor = s.cursor;
+                    if (s.wake) return;
+                    // A cursor-less sleeper is the corruption this branch
+                    // exists to notice, so it is raised rather than
+                    // returned past: `guarded` funnels the throw into
+                    // `finish('failed')` with the message attached, which
+                    // ends the run and says why. Returning would leave it
+                    // parked in exactly the state being recovered from,
+                    // and silently — the failure mode of #409 itself.
+                    if (!cursor) throw new Error('[workflow] sleeping with no cursor');
+                    const n = node(d, cursor);
+                    if (n.type === 'delay') {
+                        await rearmLostWake(cursor, n.ms, 'delay');
+                    } else if (n.type === 'task' && n.retry) {
+                        const attempts = Math.max(1, record(cursor).attempts);
+                        await rearmLostWake(cursor, n.retry.backoffMs * attempts, 'retry');
+                    } else {
+                        throw new Error('[workflow] sleeping off a node that cannot sleep');
+                    }
+                    return;
                 }
                 if (s.status !== 'running' && s.status !== 'compensating') return;
                 const cursor = s.cursor;
@@ -900,9 +962,19 @@ export const WorkflowRun = defineActor({
                     }
                     return;
                 }
-                // No wake and not driving: a crash mid-drive, or a join
-                // to re-check. Either way the advance turn sorts it out.
-                if (!driving && (s.status === 'running' || s.status === 'compensating' || s.status === 'blocked')) {
+                // No wake and not driving: a crash mid-drive, a join to
+                // re-check, or a run parked with its wake gone (#409).
+                // Either way the advance turn sorts it out — for the two
+                // parked statuses by re-arming a fresh wake, which is why
+                // they belong here even though nothing is running.
+                if (
+                    !driving &&
+                    (s.status === 'running' ||
+                        s.status === 'compensating' ||
+                        s.status === 'blocked' ||
+                        s.status === 'waiting' ||
+                        s.status === 'sleeping')
+                ) {
                     armAdvance();
                 }
             }
@@ -991,11 +1063,23 @@ export const WorkflowRun = defineActor({
              * leaving the wake in state: what a host death between "shard
              * persisted" and "dispatched" looks like from the run's side.
              * Perf rig only; no production caller.
+             *
+             * `forget` also clears the wake FROM STATE and persists that,
+             * which is the harder shape (#409): a run parked on a node with
+             * no wake at all is invisible to a stale-wake check, because
+             * there is no `due` left to be stale. No normal transition can
+             * write it — `waiting` and `sleeping` are both set immediately
+             * before `sleep()` assigns the wake, and the first save comes
+             * after — so it takes a hook to reach.
              */
-            async debugDropWake(): Promise<void> {
+            async debugDropWake(forget = false): Promise<void> {
                 wakeTimer?.cancel();
                 wakeTimer = null;
                 await ctx.reminders.clear(REMINDER_WAKE).catch(() => {});
+                if (forget) {
+                    s.wake = null;
+                    await save();
+                }
             }
         };
     },

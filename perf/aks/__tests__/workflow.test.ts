@@ -408,6 +408,54 @@ describe('WorkflowRun — lost wakes and cancellation', () => {
         expect((await eventFor(id, 'l')).status).toBe('completed');
     });
 
+    /**
+     * The #409 shape: not an OVERDUE wake but NO wake, on a run parked at a
+     * node. The stale-wake check cannot see it — there is no `due` left to
+     * be stale — so before the fix every touch the engine has (`status()`,
+     * a fresh activation, the join watchdog) walked straight past it and
+     * the run was stranded for good.
+     *
+     * Recovery re-arms a FRESH wake rather than firing one. That keeps each
+     * node's contract: a delay promises "at least ms", which waking early
+     * would break, and a wait node's signal can still arrive inside the new
+     * window while the timeout edge still bounds it. What it costs is
+     * exactness — the run waits longer than it strictly had left — which is
+     * the right trade against never finishing, and it is counted as a lost
+     * wake so it is visible.
+     */
+    it('a parked run whose wake is GONE from state is re-armed by a touch — waiting', async () => {
+        const version = await seed(knobs({ signalTimeoutMs: 400 }));
+        const id = fresh('forgotten-wait');
+        await run(id).start({ workflow: 'approval', version, template: 'approval', tag: 'fw' });
+        const waiting = await untilStatus(id, 'waiting');
+        expect(waiting.wake).toBeTruthy();
+
+        // The wake vanishes from state, not merely from the scheduler.
+        await run(id).debugDropWake(true);
+        expect((await run(id).status()).wake).toBeNull();
+
+        // A touch is all the engine gets, and it must be enough.
+        await run(id).status();
+        const done = await untilTerminal(id);
+        expect(done.status).toBe('completed');
+        expect(wf.workflowCounters.wakesLost).toBeGreaterThanOrEqual(1);
+    });
+
+    it('a parked run whose wake is GONE from state is re-armed by a touch — sleeping', async () => {
+        const version = await seed(knobs({ delayMs: 150 }));
+        const id = fresh('forgotten-sleep');
+        await run(id).start({ workflow: 'order', version, template: 'order', tag: 'fs' });
+        const sleeping = await untilStatus(id, 'sleeping');
+        expect(sleeping.wake).toBeTruthy();
+
+        await run(id).debugDropWake(true);
+        expect((await run(id).status()).wake).toBeNull();
+
+        await run(id).status();
+        const done = await untilTerminal(id);
+        expect(done.status).toBe('completed');
+    });
+
     it('a volatile timer lost with its activation is re-armed on the next activation', async () => {
         const version = await seed(knobs({ delayMs: 60 }));
         const id = fresh('volatile');
