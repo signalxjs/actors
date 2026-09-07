@@ -53,6 +53,35 @@ async function start(
     return host;
 }
 
+/**
+ * `memoryStorage()` whose WRITES can be made to fail on demand. Reads keep
+ * working, so an actor still activates and still knows what it was doing —
+ * which is the situation being tested: recovery runs, and the recovery
+ * itself cannot reach its store.
+ */
+function breakableStorage(inner = memoryStorage()) {
+    let failing = false;
+    const boom = () => Promise.reject(new Error('storage is down'));
+    const s = inner as unknown as Record<string, unknown>;
+    const wrapped: Record<string, unknown> = { ...s };
+    for (const m of ['save', 'saveText', 'appendText', 'clear']) {
+        const orig = s[m] as ((...a: unknown[]) => Promise<unknown>) | undefined;
+        if (!orig) continue;
+        wrapped[m] = (...a: unknown[]) => (failing ? boom() : orig.call(inner, ...a));
+    }
+    wrapped['load'] = (...a: unknown[]) =>
+        (s['load'] as (...x: unknown[]) => Promise<unknown>).call(inner, ...a);
+    return {
+        storage: wrapped as unknown as ReturnType<typeof memoryStorage>,
+        break: () => {
+            failing = true;
+        },
+        heal: () => {
+            failing = false;
+        }
+    };
+}
+
 const read = (host: Host, wf: ReturnType<typeof engineWith>, id: string) =>
     (host.actor(wf.run, id) as never as { status(): Promise<RunInfo> }).status();
 
@@ -182,6 +211,61 @@ describe('sleeping', () => {
         await vi.waitFor(async () => expect((await read(host, wf, 'o7')).status).toBe('completed'), {
             timeout: 4000
         });
+    });
+
+    it('a recovery that cannot reach storage does not crash the host', async () => {
+        // nudge() runs from onActivate and from a plain status() read,
+        // neither of which awaits it. An unobserved rejection there
+        // reaches Node's unhandled-rejection handler, which by default
+        // ends the PROCESS — one run's storage error taking down a host
+        // carrying every other run on it.
+        const rejections: unknown[] = [];
+        const onRejection = (e: unknown) => rejections.push(e);
+        process.on('unhandledRejection', onRejection);
+        try {
+            const napping: WorkflowDefinition = {
+                name: 'order',
+                version: 1,
+                start: 'nap',
+                nodes: { nap: { type: 'delay', ms: 120, next: 'done' }, done: { type: 'end' } }
+            };
+            const broken = breakableStorage();
+            const wf = engineWith({}, [napping]);
+            const first = await start(wf, 'o9', {}, broken.storage);
+            await vi.waitFor(async () => expect((await read(first, wf, 'o9')).status).toBe('sleeping'));
+
+            // The host dies mid-nap, so the volatile timer dies with it
+            // and the wake is owed by whoever loads the run next.
+            await first.stop({ timeoutMs: 1000 });
+            running = null;
+            await new Promise((r) => setTimeout(r, 160)); // now overdue
+
+            broken.break();
+            const second = createHost({ actors: [...wf.actors], storage: broken.storage, defaults: quiet });
+            hosts.push(second);
+            await second.start();
+
+            // Activating takes the overdue-wake path, whose append fails.
+            // The host survives it and the read still answers — no
+            // unhandled rejection, which is the whole point.
+            await read(second, wf, 'o9');
+            await new Promise((r) => setTimeout(r, 50));
+            expect(rejections).toEqual([]);
+
+            // And nothing was lost: recovery is idempotent, so once the
+            // store is back a touch carries the same run to completion.
+            // (`ctx.append` folds the entry into memory BEFORE it
+            // persists, so a failed append leaves the in-memory view
+            // ahead of the record — which is exactly why the assertion
+            // that matters is this one and not the status mid-outage.)
+            broken.heal();
+            await vi.waitFor(async () => expect((await read(second, wf, 'o9')).status).toBe('completed'), {
+                timeout: 4000
+            });
+            expect(rejections).toEqual([]);
+        } finally {
+            process.off('unhandledRejection', onRejection);
+        }
     });
 });
 

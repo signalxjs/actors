@@ -167,6 +167,31 @@ export function defineWorkflow(options: WorkflowOptions) {
              * idle clock and postpones its collection. At one run that is
              * invisible; the engine is built for a million.
              */
+            /**
+             * Run a recovery step whose failure must not escape.
+             *
+             * `nudge` is called from `onActivate` and from a plain
+             * `status()` read, neither of which is awaiting anything, so
+             * an unobserved rejection here reaches Node's unhandled
+             * rejection handler — which terminates the process by
+             * default. One run's storage error would take down a host
+             * carrying every other run on it.
+             *
+             * Swallowing is safe SPECIFICALLY here and nowhere else,
+             * because nudge is idempotent recovery rather than progress:
+             * the next touch of this run runs it again, and until then
+             * the run's durable state is exactly what it was. It is
+             * reported in `__DEV__`, matching how the runtime treats a
+             * timer turn that throws.
+             */
+            const recover = (what: string, p: Promise<unknown>): void => {
+                void p.catch((error: unknown) => {
+                    if (__DEV__) {
+                        console.error(`[workflow] ${what} for run ${ctx.key} failed:`, error);
+                    }
+                });
+            };
+
             const clearWake = (): void => {
                 wakeTimer?.cancel();
                 wakeTimer = null;
@@ -248,7 +273,7 @@ export function defineWorkflow(options: WorkflowOptions) {
                         // the at-most-once one that did not arrive. Take
                         // it now — this is the recovery path, and the
                         // fence makes a duplicate harmless.
-                        void wake(seq);
+                        recover('overdue wake', wake(seq));
                         return;
                     }
                     // Still owed. Arm ONLY if this activation has not —
@@ -264,7 +289,7 @@ export function defineWorkflow(options: WorkflowOptions) {
                         // `status()` across many runs would otherwise
                         // resurrect every one it looked at and hold it
                         // until idle collection.
-                        void ctx.reminders.set(REMINDER_WAKE, { due: left });
+                        recover('re-arming the durable wake', ctx.reminders.set(REMINDER_WAKE, { due: left }));
                         ctx.deactivate();
                     } else {
                         clearWake();
