@@ -3630,3 +3630,97 @@ kill are expected (#142); nine permanently stuck runs are not.
 | The knee is coordination, not CPU: hosts at 70% and Redis at 21% while completed/s falls | the T1 table and the timeline peaks | #49 (one-way publish), #389 |
 | The due-time reminder index is flat where the sharded table degrades 4× at p50 and 48× at p99 | the T2 A/B | #400 confirmed; make `redisReminders` the deployment default |
 | TCP does not move the workflow knee | the T3 ladder, `transportFallbacks` 0 | #203 stays a socket-count justification |
+
+## 2026-09-07 · Tier 3 — admission control and one-way publish, accepted (#391: #412, #416, #417)
+
+| | |
+|---|---|
+| Shape | `wf replicas=3 nodes=3 cpu=1800m sku=Standard_D2ls_v6 image=26796f4 knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` plus the arm's own knob |
+| Driver | one in-cluster generator pod, Poisson arrivals, 60 s per rung, `WF_DELAY_MS=2000`, the default mix; hand-run `wf-load` |
+| Runs | Actions 34130943787 (control), 34133329886 (`WF_MAX_INFLIGHT_TURNS=256`), 34134610006 (`WF_PUBLISH_DELIVERY=accepted`), 34136754726 (`WF_MAX_INFLIGHT_TURNS=512`) |
+| Why | The acceptance test for three changes at once: does admission now shed instead of halving (#412), do the publish failures go (#416), and what does the join path actually cost once the cap is correct (#417). |
+
+### The four arms
+
+| | control | cap 256 | accepted | **cap 512** |
+|---|---:|---:|---:|---:|
+| completed/s @ 10 | 5.55 | 5.05 | 5.05 | 5.05 |
+| @ 25 | 15.33 | 11.55 | 11.70 | 13.10 |
+| @ 50 | **24.27** | 18.04 | 22.47 | 20.65 |
+| @ 100 | 15.93 | 17.95 | 16.10 | **21.57** |
+| @ 200 | 20.78 | 17.40 | 20.33 | 19.79 |
+| started/s @ 200 | 195.2 | 37.1 | 201.8 | 46.7 |
+| completions the aggregator never saw | 6 234 | **0** | 6 698 | **0** |
+| publish failures | 12 836 | **0** | **0** | **0** |
+| join repairs | 7 888 | **0** | 8 537 | **0** |
+| child-start failures | 7 968 | **0** | 8 644 | **0** |
+| stuck | 0 | 0 | 0 | 0 |
+| host CPU peak | 69.5% | 59.1% | 70.2% | — |
+
+The control reproduces 2026-09-05 within run-to-run variance on every
+counter, so the runtime changes are inert with their knobs off, as
+intended.
+
+### ✅ #412 — admission control now sheds, and the difference is not subtle
+
+At the same cap value that HALVED throughput and stranded 81 runs two days
+ago, the fleet now refuses at the entrance and finishes what it takes:
+**17.40 completed/s against 9.57, and 0 stuck against 81.** `started/s`
+flattens at ~37–47 whatever is offered, which is what admission control
+looks like when it works.
+
+**Past the knee it is now better than no cap at all.** Uncapped, completed/s
+COLLAPSES from 24.3 at 50 offered to 15.9 at 100 — a third of the fleet's
+throughput lost to its own backlog — and 6 234 completions are never
+reported. At `512` the curve is flat instead: 20.7 → 21.6 → 19.8, and
+nothing is lost. **A collapse became a plateau.**
+
+The cost is at the knee, and it is a sizing cost rather than a design one:
+`512` starts refusing at 50 offered (399 refusals) and gives up ~15% of the
+uncapped peak, `256` refuses harder and gives up ~26%. The documented rule
+(`≈ callTimeoutMs / p50 turn ms` — 30 s over a 53 ms turn ≈ 566) points
+slightly above both, so a cap sized to sit just past the knee should keep
+the plateau and recover the peak. That is the next thing to measure, and it
+is a knob, not a change.
+
+### ⚠️ #416 — the publish failures go, and the aggregator's backlog does not
+
+`WF_PUBLISH_DELIVERY=accepted` takes publish failures from **12 836 to 0**:
+a finishing run no longer waits on the singleton aggregator's turn, which
+is exactly what it was built to do.
+
+`completed_unreported` is **unchanged** — 6 698 against the control's
+6 234 — and the aggregator still processed only 37 599 of 51 139 publishes.
+This is the limitation the PR documented rather than a surprise: one-way
+publish decouples the PUBLISHER, not the subscriber. A singleton subscriber
+remains a cluster-wide consumption ceiling, and an accepted publish queues
+on it instead of failing. Losing the events later rather than earlier is
+worth something — the run itself is no longer implicated — but the ceiling
+is the pattern, and only sharding the aggregator key or shedding at it will
+move that.
+
+Note the pairing the two arms make: the CAPPED runs report zero unreported
+completions, because a fleet that only accepts what it can finish never
+generates a backlog for the aggregator either.
+
+### ✅ #417 — the join repairs were overload damage, and admission removes them
+
+7 888 join repairs and 7 968 child-start failures in the control; **0 and 0
+in both capped arms**; 8 537 and 8 644 under accepted-publish alone. So the
+join path was never independently expensive — those counters were the
+watchdog repairing damage the fleet did to itself by admitting work it
+could not finish. Shed at the entrance and the join has nothing to repair.
+
+That answers #417 as posed: there is no separate join-path problem to
+design against on this shape. What remains is the aggregator, which is
+#416's limitation above.
+
+### What this rig found, and where each went
+
+| finding | evidence | where |
+|---|---|---|
+| Admission at the entrance turns the post-knee collapse into a plateau, with nothing stranded and nothing lost | 24.3 → 15.9 uncapped against 20.7 → 21.6 → 19.8 at cap 512; unreported 6 234 → 0 | #412 accepted |
+| The cap costs ~15% of peak when sized below the knee; the sizing rule points higher | 399 refusals already at 50 offered under `512` | a knob, not a change — size it just past the knee |
+| One-way publish removes the publisher's failures and not the subscriber's backlog | publish failures 12 836 → 0, unreported 6 698 ≈ 6 234 | #416 accepted, with its documented limitation confirmed |
+| The join path is not independently expensive — its repairs were overload damage | 7 888 → 0 join repairs under either cap | #417 answered; close it |
+| The aggregator is now the whole of the remaining coordination ceiling | 37 599 of 51 139 publishes reached it | shard the key, or shed at it |
