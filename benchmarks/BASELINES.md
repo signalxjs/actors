@@ -3637,7 +3637,7 @@ kill are expected (#142); nine permanently stuck runs are not.
 |---|---|
 | Shape | `wf replicas=3 nodes=3 cpu=1800m sku=Standard_D2ls_v6 image=26796f4 knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` plus the arm's own knob |
 | Driver | one in-cluster generator pod, Poisson arrivals, 60 s per rung, `WF_DELAY_MS=2000`, the default mix; hand-run `wf-load` |
-| Runs | 34130943787 (control), 34133329886 (`WF_MAX_INFLIGHT_TURNS=256`), 34134610006 (`WF_PUBLISH_DELIVERY=accepted`), 34136754726 (`=512`) |
+| Runs | Actions 34130943787 (control), 34133329886 (`WF_MAX_INFLIGHT_TURNS=256`), 34134610006 (`WF_PUBLISH_DELIVERY=accepted`), 34136754726 (`WF_MAX_INFLIGHT_TURNS=512`) |
 | Why | The acceptance test for three changes at once: does admission now shed instead of halving (#412), do the publish failures go (#416), and what does the join path actually cost once the cap is correct (#417). |
 
 ### The four arms
