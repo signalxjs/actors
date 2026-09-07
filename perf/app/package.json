@@ -21,7 +21,7 @@
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "@sigx/server-renderer": "catalog:",
-        "ioredis": "^5.4.1",
+        "ioredis": "^6.0.0",
         "sigx": "catalog:",
         "undici": "^7.16.0"
     },
