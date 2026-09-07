@@ -394,6 +394,26 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   *client* of the deployment (#99), not a cluster peer, and a WS host
   transport can be rebuilt out-of-repo on `./cluster/frames` if one-port
   L7-ingress traversal ever matters.
+- `packages/actors-workflow` → `@sigx/actors-workflow` — durable
+  workflows, one actor per run (#390). A definition is DATA — nodes, not
+  functions — so it can be stored, versioned, and read by a run that
+  resumes days later on a host that never saw the process that wrote it; a
+  run pins the version it started on, so editing a workflow never touches a
+  run in flight. State is a durable EVENT LOG folded through `applyEntry`,
+  because a step is then O(entry) where a whole-state save is O(state), and
+  a workflow is the shape that punishes hardest — its variables only grow
+  and it takes a step per node (#312). Full saves happen only at the
+  compaction points, where the record is rewritten anyway: a durable sleep
+  and the terminal state. Task execution is AT-LEAST-ONCE by construction
+  (the attempt is recorded before the call, so a host dying mid-task
+  re-runs rather than skips) and `TaskContext.idempotencyKey` is the
+  handler's side of that contract. Derived from the pinned Tier-3 workload
+  in `perf/aks/src/workflow`, keeping its four hard-won rules — methods
+  record and `advance` acts through a timer hop, no turn awaits another
+  host, every wake is token-fenced, a lost wake is an outcome a touch
+  recovers — and correcting the one that stranded runs on a cluster: a
+  touch re-arms for EVERY non-terminal status (#409). Peers `@sigx/actors`
+  only; zero runtime deps.
 - `packages/actors-ws` → `@sigx/actors-ws` — the CLIENT-facing WebSocket
   transport (#99): `socketTransport()` on `./client`, WinterCG-clean,
   speaking `@sigx/actors/socket-wire` to `createActorSocketSession` on

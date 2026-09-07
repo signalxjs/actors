@@ -132,6 +132,14 @@
     ]
   },
   {
+    "name": "@sigx/actors-workflow",
+    "path": "packages/actors-workflow/dist/index.prod.js",
+    "limit": "2.1 KB",
+    "ignore": [
+      "@sigx/actors"
+    ]
+  },
+  {
     "name": "@sigx/actors-otel",
     "path": "packages/actors-otel/dist/index.prod.js",
     "limit": "3 KB",
