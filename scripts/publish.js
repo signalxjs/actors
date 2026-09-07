@@ -52,6 +52,7 @@ const PACKAGES = [
     'packages/actors-sqlite',
     'packages/actors-surreal',
     'packages/actors-tcp',
+    'packages/actors-workflow',
     'packages/actors-ws',
 ];
 

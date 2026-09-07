@@ -41,6 +41,7 @@ architecture notes in [`docs/`](docs).
 | [`@sigx/actors-sqlite`](packages/actors-sqlite) | SQLite actor storage — etag-CAS persistence in one file on `node:sqlite`, for the single-node host with nothing to operate (Node ≥ 22.13) |
 | [`@sigx/actors-k8s`](packages/actors-k8s) | Kubernetes membership provider — host liveness via coordination Leases, no extra store |
 | [`@sigx/actors-tcp`](packages/actors-tcp) | Framed TCP transport — one multiplexed connection per peer |
+| [`@sigx/actors-workflow`](packages/actors-workflow) | Durable workflows — definitions as data, one actor per run |
 | [`@sigx/actors-ws`](packages/actors-ws) | Client-facing WebSocket transport — browsers calling actors over one multiplexed socket |
 | [`@sigx/actors-cloudflare`](packages/actors-cloudflare) | Cloudflare Durable Objects backend — run an actor app on Workers, one DO per actor |
 | [`@sigx/actors-monitor`](packages/actors-monitor) | Renderer-free dashboard data layer — ops polling, rate derivation across resets, alerts and shard states |

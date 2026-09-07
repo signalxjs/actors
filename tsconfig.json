@@ -34,6 +34,7 @@
       "@sigx/actors-otel": ["./packages/actors-otel/src/index.ts"],
       "@sigx/actors-k8s": ["./packages/actors-k8s/src/index.ts"],
       "@sigx/actors-tcp": ["./packages/actors-tcp/src/index.ts"],
+      "@sigx/actors-workflow": ["./packages/actors-workflow/src/index.ts"],
       "@sigx/actors-pg": ["./packages/actors-pg/src/index.ts"],
       "@sigx/actors-sqlite": ["./packages/actors-sqlite/src/index.ts"],
       "@sigx/actors-surreal": ["./packages/actors-surreal/src/index.ts"],
