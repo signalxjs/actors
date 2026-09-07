@@ -80,7 +80,12 @@ export const config = {
      * a run under the other.
      */
     publishDelivery: (() => {
-        const raw = process.env.WF_PUBLISH_DELIVERY ?? 'settled';
+        // '' is UNSET, the same rule `num()` above follows — and not a
+        // pedantic one here: the chart expresses "leave this alone" by
+        // setting the value to an empty string, so treating it as invalid
+        // would turn the default configuration into a boot crash.
+        const raw = process.env.WF_PUBLISH_DELIVERY;
+        if (raw === undefined || raw === '') return 'settled' as const;
         if (raw !== 'settled' && raw !== 'accepted') {
             throw new Error(`[workflow] WF_PUBLISH_DELIVERY must be settled or accepted, got '${raw}'`);
         }
