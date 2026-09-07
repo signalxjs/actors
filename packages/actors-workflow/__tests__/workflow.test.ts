@@ -5,12 +5,20 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHost, memoryStorage, type Host } from '@sigx/actors/host';
-import { defineWorkflow, type WorkflowDefinition } from '@sigx/actors-workflow';
+import {
+    applyRunEntry,
+    defineWorkflow,
+    emptyRun,
+    type RunInfo,
+    type WorkflowDefinition
+} from '@sigx/actors-workflow';
 
 const quiet = { sweepIntervalMs: 0, reminderTickMs: 50 } as const;
 
+const hosts: Host[] = [];
 let running: Host | null = null;
 afterEach(async () => {
+    for (const h of hosts.splice(0)) await h.stop({ timeoutMs: 1000 });
     await running?.stop({ timeoutMs: 1000 });
     running = null;
 });
@@ -32,8 +40,13 @@ function engineWith(handlers: Record<string, (i: unknown, c: unknown) => unknown
     return defineWorkflow({ definitions: defs, handlers: handlers as never, timerThresholdMs: 200 });
 }
 
-async function start(wf: ReturnType<typeof engineWith>, id: string, vars: Record<string, unknown>) {
-    const host = createHost({ actors: [...wf.actors], storage: memoryStorage(), defaults: quiet });
+async function start(
+    wf: ReturnType<typeof engineWith>,
+    id: string,
+    vars: Record<string, unknown>,
+    storage = memoryStorage()
+) {
+    const host = createHost({ actors: [...wf.actors], storage, defaults: quiet });
     running = host;
     await host.start();
     await (host.actor(wf.run, id) as never as { start(n: string, v: unknown): Promise<unknown> }).start('order', vars);
@@ -41,7 +54,7 @@ async function start(wf: ReturnType<typeof engineWith>, id: string, vars: Record
 }
 
 const read = (host: Host, wf: ReturnType<typeof engineWith>, id: string) =>
-    (host.actor(wf.run, id) as never as { status(): Promise<{ status: string; vars: Record<string, unknown>; transitions: number; error?: string }> }).status();
+    (host.actor(wf.run, id) as never as { status(): Promise<RunInfo> }).status();
 
 describe('a run makes progress', () => {
     it('walks task → branch → task → end and keeps what each step produced', async () => {
@@ -173,15 +186,42 @@ describe('sleeping', () => {
 });
 
 describe('the log is the state', () => {
-    it('replays to the same run through applyEntry alone', async () => {
+    it('replays to the same run on a host that never saw it run', async () => {
+        const storage = memoryStorage();
         const wf = engineWith({ charge: () => ({ id: 'r-9' }), ship: () => null });
-        const host = await start(wf, 'o8', { amount: 7, to: 'abisko' });
-        await vi.waitFor(async () => expect((await read(host, wf, 'o8')).status).toBe('completed'));
+        const first = await start(wf, 'o8', { amount: 7, to: 'abisko' }, storage);
+        await vi.waitFor(async () => expect((await read(first, wf, 'o8')).status).toBe('completed'));
 
-        // A fresh host over the SAME storage: everything the run knows has
-        // to have come off the record, since nothing else survived.
-        const info = await read(host, wf, 'o8');
+        // STOP it. Reading back from the same host would only prove the
+        // in-memory state is intact, which is not what the log is for —
+        // a broken reducer would sail past that.
+        await first.stop({ timeoutMs: 1000 });
+        running = null;
+
+        // A second host over the same storage, which has never run this
+        // workflow: everything it can tell us came off the record and
+        // through `applyRunEntry`.
+        const second = createHost({ actors: [...wf.actors], storage, defaults: quiet });
+        hosts.push(second);
+        await second.start();
+        const info = await read(second, wf, 'o8');
+        expect(info.status).toBe('completed');
         expect(info.vars).toEqual({ amount: 7, to: 'abisko', receipt: { id: 'r-9' } });
         expect(info.transitions).toBe(4);
+        expect(info.cursor).toBe('done');
+    });
+
+    it('a malformed entry is ignored rather than stranding the run', () => {
+        // The reducer runs on activation, so a throw here fails the
+        // activation and stands the run up dead — which is why it is
+        // total. An entry from a newer build is where a surprise shape
+        // would come from.
+        const state = emptyRun();
+        for (const bad of [null, undefined, 42, 'nope', {}, { t: 'unknown' },
+            { t: 'start', def: 'd', version: 1, at: 1, vars: null },
+            { t: 'vars', set: 'not-a-record' }]) {
+            expect(() => applyRunEntry(state, bad)).not.toThrow();
+        }
+        expect(state.vars).toEqual({});
     });
 });

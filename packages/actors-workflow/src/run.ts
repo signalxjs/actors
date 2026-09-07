@@ -154,6 +154,24 @@ export function defineWorkflow(options: WorkflowOptions) {
             let armedSeq = -1;
             let wakeTimer: TimerHandle | null = null;
 
+            /**
+             * Drop a pending volatile wake.
+             *
+             * Hygiene, not correctness, and worth being precise about
+             * which: the `seq` fence in `wake` already makes a stale
+             * timer a no-op, and the runtime clears an activation's
+             * timers when it deactivates, so nothing is stranded and
+             * nothing is held resident either way. What cancelling
+             * removes is the pointless turn a superseded timer would
+             * still run on arrival — which also touches the activation's
+             * idle clock and postpones its collection. At one run that is
+             * invisible; the engine is built for a million.
+             */
+            const clearWake = (): void => {
+                wakeTimer?.cancel();
+                wakeTimer = null;
+            };
+
             const definition = (): WorkflowDefinition => {
                 const def = byKey.get(`${s.def}@${s.version}`);
                 if (!def) {
@@ -181,6 +199,7 @@ export function defineWorkflow(options: WorkflowOptions) {
                 const durable = ms >= threshold;
                 await append({ t: 'sleep', until, seq, durable, after });
                 armedSeq = seq;
+                clearWake();
                 if (durable) {
                     // `due` is ms FROM NOW, not an epoch — `until` is kept
                     // in state because that is what a touch on another
@@ -202,7 +221,7 @@ export function defineWorkflow(options: WorkflowOptions) {
                 if (!s.wake || s.wake.seq !== seq) return;
                 // Read BEFORE the entry clears the wake.
                 const after = s.wake.after;
-                wakeTimer = null;
+                clearWake();
                 await append({ t: 'wake', seq });
                 if (after !== null) await moveTo(after);
                 else armAdvance();
@@ -237,8 +256,20 @@ export function defineWorkflow(options: WorkflowOptions) {
                     // later touch of the same activation has.
                     if (armedSeq === seq) return;
                     armedSeq = seq;
-                    if (durable) void ctx.reminders.set(REMINDER_WAKE, { due: left });
-                    else wakeTimer = ctx.timer('wake', () => wake(seq), { due: left });
+                    if (durable) {
+                        // …and go back to sleep. A touch must not PIN a
+                        // durably sleeping run: the whole point of the
+                        // durable branch is that the fleet holds none of
+                        // them in memory, and a consumer polling
+                        // `status()` across many runs would otherwise
+                        // resurrect every one it looked at and hold it
+                        // until idle collection.
+                        void ctx.reminders.set(REMINDER_WAKE, { due: left });
+                        ctx.deactivate();
+                    } else {
+                        clearWake();
+                        wakeTimer = ctx.timer('wake', () => wake(seq), { due: left });
+                    }
                     return;
                 }
                 armAdvance();
@@ -248,6 +279,7 @@ export function defineWorkflow(options: WorkflowOptions) {
                 status: 'completed' | 'failed',
                 error?: string
             ): Promise<void> => {
+                clearWake();
                 await append({
                     t: 'end',
                     status,
@@ -299,6 +331,7 @@ export function defineWorkflow(options: WorkflowOptions) {
                     await finish('completed');
                     return;
                 }
+                clearWake();
                 await append({ t: 'move', to: next, seq: s.seq });
                 armAdvance();
             };

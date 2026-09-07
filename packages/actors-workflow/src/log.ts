@@ -97,6 +97,9 @@ export const emptyRun = (): RunState => ({
  * on — a run written by a newer build must still load on an older one
  * during a rollout, and refusing would strand it.
  */
+const isRecord = (v: unknown): v is Record<string, Json> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+
 export function applyRunEntry(state: RunState, entry: unknown): void {
     const e = entry as RunEntry;
     if (!e || typeof e !== 'object' || typeof (e as { t?: unknown }).t !== 'string') return;
@@ -105,7 +108,12 @@ export function applyRunEntry(state: RunState, entry: unknown): void {
             state.def = e.def;
             state.version = e.version;
             state.startedAt = e.at;
-            state.vars = { ...e.vars };
+            // Guarded, not trusting: a reducer that throws on a malformed
+            // entry fails ACTIVATION, which stands the run up dead — the
+            // precise outcome the totality rule above exists to avoid, and
+            // an entry from a newer build is exactly where a surprise
+            // shape would come from.
+            state.vars = isRecord(e.vars) ? { ...e.vars } : {};
             state.status = 'running';
             break;
         case 'move':
@@ -119,7 +127,7 @@ export function applyRunEntry(state: RunState, entry: unknown): void {
             state.status = 'running';
             break;
         case 'vars':
-            Object.assign(state.vars, e.set);
+            if (isRecord(e.set)) Object.assign(state.vars, e.set);
             break;
         case 'attempt':
             state.attempt = e.n;
