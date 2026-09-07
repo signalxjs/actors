@@ -114,7 +114,7 @@
         "@sigx/vite": "catalog:",
         "@types/node": "^25.9.1",
         "sigx": "catalog:",
-        "typescript": "^6.0.3",
+        "typescript": "^7.0.2",
         "undici": "^7.29.0",
         "vite": "^8.0.3"
     },
