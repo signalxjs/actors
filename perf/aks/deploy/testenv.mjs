@@ -291,6 +291,62 @@ function helmAtLeast(major, minor) {
     );
 }
 
+/**
+ * Wait for a Deployment to converge, and SAY WHY if it does not.
+ *
+ * Two lessons are baked in here (#424).
+ *
+ * **One gate, not two.** `ws-up` used to pass `helm --wait --timeout 10m`
+ * and then run this check as well. Two timeouts against one rollout means
+ * the shorter one decides, and helm's only verdict is "context deadline
+ * exceeded" — which it reported for a five-replica arm that had in fact
+ * converged moments later. A rollout that is merely slow was
+ * indistinguishable from one that could never schedule.
+ *
+ * **The timeout is arithmetic, not a guess.** Worst case per pod is the
+ * startup budget (`failureThreshold 30 × periodSeconds 2` = 60 s, sized to
+ * cover a Redis join) plus `terminationGracePeriodSeconds` (60 s: preStop
+ * plus the 30 s actor drain). `pdb.maxUnavailable: 1` replaces pods
+ * roughly one at a time, so N replicas is N × 120 s — 600 s at the five of
+ * the host-per-core arm, which is why a flat 420 s could never pass it and
+ * 10 m was marginal. Margin on top, and never shorter than the old floor.
+ */
+function awaitRollout(ns, deploy) {
+    // Read the Deployment once, and fail fast if it is not there: waiting
+    // on an absent Deployment is a silent 10-minute no-op.
+    const raw = kube(['-n', ns, 'get', 'deploy', deploy, '-o', 'json'], { quiet: true, allowFail: true });
+    if (!raw) throw new Error(`${ns}/${deploy} does not exist — nothing to wait for`);
+    const spec = JSON.parse(raw).spec ?? {};
+    const replicas = Number(spec.replicas ?? 1);
+    // The Deployment's OWN selector, never a hardcoded label: this gate is
+    // used for chat-host as well as sigx-host, and a label that happens to
+    // match one of them would quietly diagnose the wrong pods — or none,
+    // which reads as "no problem found" at exactly the wrong moment.
+    const selector = Object.entries(spec.selector?.matchLabels ?? {})
+        .map(([k, v]) => `${k}=${v}`).join(',');
+    const timeoutS = Math.max(420, replicas * 120 + 180);
+    const ok = kube(['-n', ns, 'rollout', 'status', `deploy/${deploy}`, `--timeout=${timeoutS}s`],
+        { allowFail: true });
+    if (ok !== null) return;
+    // The diagnosis the bare timeout never gave. Pending-for-capacity,
+    // crash-looping and merely-slow are three different findings on this
+    // rig, and a packed arm makes the first one plausible.
+    log(`✗ ${ns}/${deploy} did not converge within ${timeoutS}s (${replicas} replica(s)). Not ready:`);
+    const pods = kube(['-n', ns, 'get', 'pods', ...(selector ? ['-l', selector] : []),
+        '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\t"}{.status.phase}{"\\t"}' +
+        '{range .status.conditions[?(@.type=="Ready")]}{.status}{" "}{.reason}{" "}{.message}{end}{"\\n"}{end}'],
+        { quiet: true, allowFail: true }) ?? '';
+    for (const line of pods.split('\n').filter(Boolean)) {
+        if (!line.includes('\tRunning\tTrue')) log(`    ${line}`);
+    }
+    // Unschedulable is reported on the pod, not the Deployment, and is the
+    // one an over-packed node produces.
+    const ev = kube(['-n', ns, 'get', 'events', '--field-selector', 'reason=FailedScheduling',
+        '-o', 'jsonpath={range .items[*]}{.message}{"\\n"}{end}'], { quiet: true, allowFail: true }) ?? '';
+    for (const line of [...new Set(ev.split('\n').filter(Boolean))].slice(-3)) log(`    FailedScheduling: ${line}`);
+    throw new Error(`${ns}/${deploy} did not converge within ${timeoutS}s`);
+}
+
 function release(name, chart, ns, extra) {
     const exists = helm(['list', '-n', ns, '-q'], { quiet: true, allowFail: true })?.split('\n').includes(name);
     kube(['create', 'namespace', ns], { quiet: true, allowFail: true });
@@ -473,8 +529,8 @@ async function up() {
     ]);
 
     step('waiting for rollouts');
-    kube(['-n', cfg.actorsNs, 'rollout', 'status', 'deploy/sigx-host', '--timeout=420s']);
-    kube(['-n', cfg.chatNs, 'rollout', 'status', 'deploy/chat-host', '--timeout=420s']);
+    awaitRollout(cfg.actorsNs, 'sigx-host');
+    awaitRollout(cfg.chatNs, 'chat-host');
     ensureDns(ingressIp());
     await status();
     log(`\n✓ up. https://${cfg.chatHost} — tear down with: node ${'testenv.mjs'} down`);
@@ -586,8 +642,8 @@ async function wsUp(args) {
     step('enabling the socket endpoint on the actors release');
     const sets = ['socket.enabled=true', ...args].flatMap((kv) => ['--set', kv]);
     helm(['upgrade', '--install', 'sigx', join(here, 'chart'), '-n', cfg.actorsNs,
-        '--reset-then-reuse-values', '--wait', '--timeout', '10m', ...sets]);
-    kube(['-n', cfg.actorsNs, 'rollout', 'status', 'deploy/sigx-host', '--timeout=420s']);
+        '--reset-then-reuse-values', ...sets]);
+    awaitRollout(cfg.actorsNs, 'sigx-host');
     const mounted = kube(['-n', cfg.actorsNs, 'get', 'pod', '-l',
         'app.kubernetes.io/component=host', '-o',
         'jsonpath={.items[*].metadata.name}'], { quiet: true, allowFail: true })
