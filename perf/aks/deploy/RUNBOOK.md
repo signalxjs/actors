@@ -1090,6 +1090,14 @@ gh workflow run cluster-test.yml -f verb=ws-up -f env="$d8env" \
 gh workflow run cluster-test.yml -f verb=wf-bench -f env="$d8env"
 ```
 
+Each `ws-up` waits for the rollout in proportion to the arm: a replica
+costs its startup budget (60 s, sized for the Redis join) plus its
+termination grace (60 s), and `pdb.maxUnavailable: 1` replaces them
+roughly one at a time — so five replicas is ten minutes of chart before
+anything has gone wrong (#424). Do not read a slow arm as a stuck one; if
+it genuinely fails, the verb now names the not-Ready pods and any
+`FailedScheduling` message rather than reporting a bare deadline.
+
 **What to read.** `runsCompletedPerSec` at the knee, arm A over arm B:
 
 - **A/B ≈ 5** — the box scales with hosts; the recipe stands and 20 × D8
