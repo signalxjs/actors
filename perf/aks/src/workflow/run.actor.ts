@@ -748,7 +748,9 @@ export const WorkflowRun = defineActor({
                 error: s.error,
                 stats: ctx.snapshot(s.stats)
             };
-            void ctx.publish(workflowEvents(ctx.key), event).then(
+            void ctx.publish(workflowEvents(ctx.key), event, {
+                delivery: config.publishDelivery
+            }).then(
                 (report) => {
                     C.publishes++;
                     if (report.failures.length > 0) C.publishFailures++;

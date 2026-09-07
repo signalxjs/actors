@@ -220,6 +220,9 @@ workflow:
     # Admission caps (#384): per-actor queue and host-wide in-flight turns.
     WF_MAX_QUEUED: ""
     WF_MAX_INFLIGHT_TURNS: ""
+    # settled (default, every recorded baseline) | accepted — whether a
+    # completion publish waits for the aggregator's turn (#416).
+    WF_PUBLISH_DELIVERY: ""
     # Which ActorReminders the host runs (#385): sharded (the runtime's
     # default table over the storage) or redis (the due-time index, which
     # needs REDIS_URL). The empty default below is NOT passed to the

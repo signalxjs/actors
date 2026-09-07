@@ -28,6 +28,11 @@
  *                           gets its idempotent `start()` re-issued and a
  *                           `status()` nudge by the parent's join watchdog.
  *                           Default 120 s.
+ *   WF_PUBLISH_DELIVERY     `settled` (default, and every recorded
+ *                           baseline) or `accepted`: whether a run's
+ *                           completion publish waits for the singleton
+ *                           aggregator's turn (#416). Unset behaves
+ *                           exactly as before the knob existed.
  *   WF_STATS_SAVE_EVERY     the aggregator saves every N events (default 25;
  *                           1 is the "visibility store on the completion
  *                           path" arm — at 200 000 ring entries a save per
@@ -65,6 +70,22 @@ export const config = {
     deactivateOnSleep: process.env.WF_DEACTIVATE_ON_SLEEP !== '0',
     staleWakeMs: num('WF_STALE_WAKE_MS', 2 * reminderTickMs + 5_000),
     childStaleMs: num('WF_CHILD_STALE_MS', 120_000),
+    /**
+     * `delivery` for the completion publish (#416). UNSET IS 'settled',
+     * which is byte-identical to every recorded baseline — the knob exists
+     * so the two can be A/B'd in one session rather than across a
+     * re-baseline. `accepted` resolves the publish at enqueue, so a
+     * completion queues on the aggregator instead of timing out against
+     * it; it is in INFRA_SHAPE, so a run under one is not comparable with
+     * a run under the other.
+     */
+    publishDelivery: (() => {
+        const raw = process.env.WF_PUBLISH_DELIVERY ?? 'settled';
+        if (raw !== 'settled' && raw !== 'accepted') {
+            throw new Error(`[workflow] WF_PUBLISH_DELIVERY must be settled or accepted, got '${raw}'`);
+        }
+        return raw;
+    })(),
     statsSaveEvery: Math.max(1, num('WF_STATS_SAVE_EVERY', 25)),
     statsRing: num('WF_STATS_RING', 50_000),
     // Floored: 0 would be an immediate re-send loop (wake → notify → wake).
