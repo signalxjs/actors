@@ -714,7 +714,15 @@ export const WorkflowRun = defineActor({
                     // for a `delay` node or for a task's retry backoff, and
                     // the node itself says which.
                     const cursor = s.cursor;
-                    if (s.wake || !cursor) return;
+                    if (s.wake) return;
+                    // A cursor-less sleeper is the corruption this branch
+                    // exists to notice, so it is raised rather than
+                    // returned past: `guarded` funnels the throw into
+                    // `finish('failed')` with the message attached, which
+                    // ends the run and says why. Returning would leave it
+                    // parked in exactly the state being recovered from,
+                    // and silently — the failure mode of #409 itself.
+                    if (!cursor) throw new Error('[workflow] sleeping with no cursor');
                     const n = node(d, cursor);
                     if (n.type === 'delay') {
                         await rearmLostWake(cursor, n.ms, 'delay');
