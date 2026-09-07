@@ -312,8 +312,18 @@ function helmAtLeast(major, minor) {
  * 10 m was marginal. Margin on top, and never shorter than the old floor.
  */
 function awaitRollout(ns, deploy) {
-    const replicas = Number(kube(['-n', ns, 'get', 'deploy', deploy, '-o', 'jsonpath={.spec.replicas}'],
-        { quiet: true, allowFail: true }) || 1);
+    // Read the Deployment once, and fail fast if it is not there: waiting
+    // on an absent Deployment is a silent 10-minute no-op.
+    const raw = kube(['-n', ns, 'get', 'deploy', deploy, '-o', 'json'], { quiet: true, allowFail: true });
+    if (!raw) throw new Error(`${ns}/${deploy} does not exist — nothing to wait for`);
+    const spec = JSON.parse(raw).spec ?? {};
+    const replicas = Number(spec.replicas ?? 1);
+    // The Deployment's OWN selector, never a hardcoded label: this gate is
+    // used for chat-host as well as sigx-host, and a label that happens to
+    // match one of them would quietly diagnose the wrong pods — or none,
+    // which reads as "no problem found" at exactly the wrong moment.
+    const selector = Object.entries(spec.selector?.matchLabels ?? {})
+        .map(([k, v]) => `${k}=${v}`).join(',');
     const timeoutS = Math.max(420, replicas * 120 + 180);
     const ok = kube(['-n', ns, 'rollout', 'status', `deploy/${deploy}`, `--timeout=${timeoutS}s`],
         { allowFail: true });
@@ -322,7 +332,7 @@ function awaitRollout(ns, deploy) {
     // crash-looping and merely-slow are three different findings on this
     // rig, and a packed arm makes the first one plausible.
     log(`✗ ${ns}/${deploy} did not converge within ${timeoutS}s (${replicas} replica(s)). Not ready:`);
-    const pods = kube(['-n', ns, 'get', 'pods', '-l', 'app.kubernetes.io/component=host',
+    const pods = kube(['-n', ns, 'get', 'pods', ...(selector ? ['-l', selector] : []),
         '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\t"}{.status.phase}{"\\t"}' +
         '{range .status.conditions[?(@.type=="Ready")]}{.status}{" "}{.reason}{" "}{.message}{end}{"\\n"}{end}'],
         { quiet: true, allowFail: true }) ?? '';

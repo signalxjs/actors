@@ -61,8 +61,24 @@ describe('awaitRollout', () => {
         expect(wsUp).toContain('awaitRollout(');
         // The failure mode is a SECOND wait, so assert on the helm call
         // rather than on the whole function: `--wait` reappearing anywhere
-        // in wsUp is the regression.
-        expect(wsUp).not.toContain("'--wait'");
-        expect(wsUp).not.toContain("'--timeout'");
+        // in wsUp is the regression. Quote-agnostic — the flag coming
+        // back double-quoted or spaced differently is the same bug, and a
+        // literal substring would wave it through.
+        expect(wsUp).not.toMatch(/['"`]--wait['"`]/);
+        expect(wsUp).not.toMatch(/['"`]--timeout['"`]/);
+        expect(wsUp).not.toMatch(/--wait\b/);
+    });
+
+    it('diagnoses the deployment it was actually given', () => {
+        const fn = /function awaitRollout\(ns, deploy\) \{([\s\S]*?)\n\}/.exec(source)?.[1];
+        if (!fn) throw new Error('awaitRollout not found in testenv.mjs — did it move?');
+        // It gates chat-host as well as sigx-host. A hardcoded label that
+        // matches only one of them diagnoses the wrong pods, or none —
+        // which reads as "no problem found" at the worst moment.
+        expect(fn).not.toContain('component=host');
+        expect(fn).toContain('spec.selector?.matchLabels');
+        // Waiting on a Deployment that is not there is a silent no-op for
+        // the whole timeout.
+        expect(fn).toMatch(/does not exist/);
     });
 });
