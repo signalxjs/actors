@@ -975,6 +975,14 @@ laptop reference is `wf-local/drown-vs-shed` with and without them
 (BASELINES 2026-09-04). The `pool` ops section (`boundedFetch().stats()`)
 says whether hops queued behind the fetch pool — the #302 gauge.
 
+`WF_PUBLISH_DELIVERY` is the third, and the one to pair with an
+admission arm: `accepted` (#416) resolves a run's completion publish at
+enqueue, so a finishing run stops waiting on the singleton aggregator's
+turn. Unset is `settled`, which is what every recorded baseline ran, so
+an A/B is one rollout apart rather than a re-baseline. Read it against
+`publish_failures` and `completed_unreported`, which are the two counters
+the aggregator's backlog shows up in.
+
 **Chaos voids the counter delta.** A replaced pod takes its `ops.workflow`
 counters with it, so a `chaos=owner-kill` run reports no delta (and no
 `join_repairs`); `wakesLost` and `stuck` ride the row from the aggregator
