@@ -55,12 +55,12 @@
     "devDependencies": {
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/sdk-metrics": "^2.0.0",
-        "@opentelemetry/sdk-trace-base": "^2.0.0",
+        "@opentelemetry/sdk-trace-base": "^2.11.0",
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
         "@types/node": "^25.9.1",
         "typescript": "^6.0.3",
-        "vite": "^8.0.3"
+        "vite": "^8.2.2"
     },
     "publishConfig": {
         "access": "public"
