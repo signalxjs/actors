@@ -30,6 +30,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
+import { workloadSets } from './workload-sets.mjs';
+import { podTrouble } from './pod-trouble.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -428,7 +430,7 @@ export async function runWsLoad(options) {
         '-s', 'templates/wsloadgen-job.yaml',
         '--set', `image.repository=${imageRepository}`,
         '--set', `image.tag=${imageTag}`,
-        '--set', `nodeSelector.workload=${workload}`,
+        ...workloadSets(workload),
         ...sets]);
 
     // BEFORE the apply. Taken after it, the first rung is already opening
@@ -461,7 +463,13 @@ export async function runWsLoad(options) {
     let peakBufferedBytes = null;
     let samples = 0;
     let partial = false;
-    const deadline = Date.now() + timeoutMs;
+    const started = Date.now();
+    const deadline = started + timeoutMs;
+    // A pod that can never start is not `failed` from the Job's point of
+    // view — kubelet retries it forever — so this loop would otherwise wait
+    // out the whole budget and report only the cancellation (#426).
+    const stuckGraceMs = 120_000;
+    let sawRunning = false;
     for (;;) {
         const live = socketTotals(kube, namespace);
         if (live.hosts > 0) {
@@ -476,6 +484,16 @@ export async function runWsLoad(options) {
         const state = kube(['-n', namespace, 'get', 'job', job, '-o',
             'jsonpath={.status.succeeded}|{.status.failed}'], { allowFail: true }) ?? '';
         const [succeeded, failed] = state.split('|').map((v) => Number(v) || 0);
+        if (!sawRunning) {
+            const active = Number(kube(['-n', namespace, 'get', 'job', job, '-o',
+                'jsonpath={.status.active}'], { quiet: true, allowFail: true })) || 0;
+            if (active > 0 || succeeded > 0) sawRunning = true;
+            else if (Date.now() - started > stuckGraceMs) {
+                const { blocked, lines } = podTrouble(kube, namespace, `job-name=${job}`);
+                for (const line of lines) onLog(`  ${line}`);
+                if (blocked) throw new Error(`${job}: no pod can start — ${lines[0] ?? 'see above'}`);
+            }
+        }
         if (succeeded >= wanted || failed > 0) {
             if (failed > 0) {
                 onLog(`✗ ${job}: ${failed} pod(s) failed — results are PARTIAL`);

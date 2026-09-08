@@ -166,17 +166,14 @@ describe('testenv.mjs identity validation', () => {
      */
     it('sends every workload-bound release through the one set of flags', () => {
         const source = readFileSync(SCRIPT, 'utf8');
-        const helper = /const workloadSets = \(workload\) => \[/.test(source);
-        expect(helper).toBe(true);
-        // No release may hand-roll either flag: one spelling, one place.
-        // Located by INDEX, not by text — a stray that happens to read the
-        // same as a line inside the helper is exactly the case this is for,
-        // and a substring test would excuse it.
-        const span = /const workloadSets = \(workload\) => \[[\s\S]*?\];/.exec(source);
-        expect(span).not.toBeNull();
-        const [from, to] = [span!.index, span!.index + span![0].length];
+        // The helper moved to its own module in #427, so that the two
+        // standalone load verbs could import it too — they could not take
+        // it from here, and each had hand-rolled the selector WITHOUT the
+        // toleration, which left every generator pod unschedulable on a
+        // second estate. Nothing may hand-roll either flag in any of the
+        // three; here that means the import and no literals at all.
+        expect(source).toContain("from './workload-sets.mjs'");
         const strays = [...source.matchAll(/'--set',\s*[`'](?:nodeSelector\.workload|tolerations\[0\])[^`']*[`']/g)]
-            .filter((m) => m.index < from || m.index >= to)
             .map((m) => `${m[0]} @${m.index}`);
         expect(strays).toEqual([]);
         expect([...source.matchAll(/\.\.\.workloadSets\(cfg\.workload\)/g)].length).toBeGreaterThan(0);

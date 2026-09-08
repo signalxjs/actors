@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * The node-pool `--set` flags testenv.mjs hands helm must render a
+ * The node-pool `--set` flags the rig hands helm must render a
  * SCHEDULABLE toleration.
  *
  * This exists because `--set tolerations[0].value=x` on its own does not
@@ -14,7 +14,8 @@
  *
  * The assertion is on the RENDER rather than on the flag text: what matters
  * is that the toleration Kubernetes receives is complete, not how testenv
- * spells it. The flags themselves are read out of testenv.mjs so the test
+ * spells it. The flags themselves are read out of `workload-sets.mjs` —
+ * their one definition since #427 — so the test
  * cannot drift from the script by being updated alongside it.
  *
  * Needs `helm` on PATH and skips with the reason otherwise, matching
@@ -34,12 +35,18 @@ const helmVersion = (() => {
 })();
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
-const source = readFileSync(fileURLToPath(new URL('../deploy/testenv.mjs', import.meta.url)), 'utf8');
+const source = readFileSync(fileURLToPath(new URL('../deploy/workload-sets.mjs', import.meta.url)), 'utf8');
+/** The verbs that render a pod onto the estate's pool, and the flag list
+ *  each one hands helm — read from the scripts so the test cannot drift. */
+const verbSources = ['testenv.mjs', 'wf-load.mjs', 'ws-load.mjs'].map((f) => ({
+    file: f,
+    text: readFileSync(fileURLToPath(new URL(`../deploy/${f}`, import.meta.url)), 'utf8')
+}));
 
 /** The `--set` flags of `workloadSets`, read from the script itself. */
 function workloadSetFlags(workload: string): string[] {
-    const body = /const workloadSets = \(workload\) => \[([\s\S]*?)\];/.exec(source)?.[1];
-    if (!body) throw new Error('workloadSets not found in testenv.mjs — did it move?');
+    const body = /export const workloadSets = \(workload\) => \[([\s\S]*?)\];/.exec(source)?.[1];
+    if (!body) throw new Error('workloadSets not found in workload-sets.mjs — did it move?');
     return [...body.matchAll(/'--set',\s*[`']([^`']+)[`']/g)].map((m) =>
         m[1].replace('${workload}', workload)
     );
@@ -95,6 +102,45 @@ describe.skipIf(!helmVersion)(`testenv node-pool flags (helm ${helmVersion})`, (
             });
         });
     }
+
+
+    // The generator Job is a pod on the same tainted pool, and it was the
+    // one place only the selector reached (#427).
+    for (const [template, on] of [
+        ['templates/loadgen-job.yaml', ['loadgen.enabled=true', 'loadgen.nameSuffix=t1']],
+        ['templates/wsloadgen-job.yaml', ['wsLoadgen.enabled=true', 'wsLoadgen.nameSuffix=t1']]
+    ] as const) {
+        it(`renders a complete, schedulable toleration for ${template}`, () => {
+            // Both Jobs are rendered per run behind an `enabled` guard, so
+            // the render needs turning on before there is anything to check.
+            const t = renderedToleration('perf/aks/deploy/chart', template, [
+                ...workloadSetFlags('some-pool'),
+                ...on
+            ]);
+            expect(t).toMatchObject({
+                key: 'workload',
+                operator: 'Equal',
+                value: 'some-pool',
+                effect: 'NoSchedule'
+            });
+        });
+    }
+
+    it('has every verb that renders onto the pool use the one flag list', () => {
+        // The bug was not a wrong toleration — it was a verb that passed
+        // the selector ALONE, so the pod chose exactly the nodes whose
+        // taint it could not tolerate and stayed Pending for hours. Assert
+        // on the call, because the render above cannot see which flags a
+        // given verb actually sends.
+        for (const { file, text } of verbSources) {
+            expect(text, `${file} must import the shared flags`).toContain(
+                "from './workload-sets.mjs'"
+            );
+            expect(text, `${file} must not hand-roll the node selector`).not.toMatch(
+                /'--set',\s*`nodeSelector\.workload=\$\{workload\}`/
+            );
+        }
+    });
 
     it('goes red for the flag that shipped — a lone value drops the rest of the element', () => {
         // The negative control, and the actual #406 bug: helm replaces the
