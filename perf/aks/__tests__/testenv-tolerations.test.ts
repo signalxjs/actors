@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * The node-pool `--set` flags testenv.mjs hands helm must render a
+ * The node-pool `--set` flags the rig hands helm must render a
  * SCHEDULABLE toleration.
  *
  * This exists because `--set tolerations[0].value=x` on its own does not
@@ -14,7 +14,8 @@
  *
  * The assertion is on the RENDER rather than on the flag text: what matters
  * is that the toleration Kubernetes receives is complete, not how testenv
- * spells it. The flags themselves are read out of testenv.mjs so the test
+ * spells it. The flags themselves are read out of `workload-sets.mjs` —
+ * their one definition since #427 — so the test
  * cannot drift from the script by being updated alongside it.
  *
  * Needs `helm` on PATH and skips with the reason otherwise, matching
@@ -45,7 +46,7 @@ const verbSources = ['testenv.mjs', 'wf-load.mjs', 'ws-load.mjs'].map((f) => ({
 /** The `--set` flags of `workloadSets`, read from the script itself. */
 function workloadSetFlags(workload: string): string[] {
     const body = /export const workloadSets = \(workload\) => \[([\s\S]*?)\];/.exec(source)?.[1];
-    if (!body) throw new Error('workloadSets not found in testenv.mjs — did it move?');
+    if (!body) throw new Error('workloadSets not found in workload-sets.mjs — did it move?');
     return [...body.matchAll(/'--set',\s*[`']([^`']+)[`']/g)].map((m) =>
         m[1].replace('${workload}', workload)
     );
