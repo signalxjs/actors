@@ -47,6 +47,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
+import { workloadSets } from './workload-sets.mjs';
+import { podTrouble } from './pod-trouble.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -566,7 +568,7 @@ export async function runWfLoad(options) {
         '-s', 'templates/loadgen-job.yaml',
         '--set', `image.repository=${imageRepository}`,
         '--set', `image.tag=${imageTag}`,
-        '--set', `nodeSelector.workload=${workload}`,
+        ...workloadSets(workload),
         ...sets]);
 
     const before = await waitForQuietFleet(kube, namespace, { quietQueued, quietTimeoutMs, onLog });
@@ -593,6 +595,12 @@ export async function runWfLoad(options) {
     let killed = null;
     const started = Date.now();
     const deadline = started + timeoutMs;
+    // A pod that can never start is not `failed` from the Job's point of
+    // view — kubelet retries it forever — so the poll below would wait out
+    // the entire budget and report only the cancellation (#426). Give it a
+    // grace period to pull and boot, then insist on a reason.
+    const stuckGraceMs = 120_000;
+    let sawRunning = false;
     for (;;) {
         const live = workflowTotals(kube, namespace);
         if (live.hosts > 0) {
@@ -617,6 +625,22 @@ export async function runWfLoad(options) {
         const state = kube(['-n', namespace, 'get', 'job', job, '-o',
             'jsonpath={.status.succeeded}|{.status.failed}'], { allowFail: true }) ?? '';
         const [succeeded, failed] = state.split('|').map((v) => Number(v) || 0);
+        if (!sawRunning) {
+            const active = Number(kube(['-n', namespace, 'get', 'job', job, '-o',
+                'jsonpath={.status.active}'], { quiet: true, allowFail: true })) || 0;
+            if (active > 0 || succeeded > 0) sawRunning = true;
+            else if (Date.now() - started > stuckGraceMs) {
+                const { blocked, lines } = podTrouble(kube, namespace, `job-name=${job}`);
+                for (const line of lines) onLog(`  ${line}`);
+                if (blocked) {
+                    throw new Error(
+                        `${job}: no pod can start — ${lines[0] ?? 'see above'}. ` +
+                        'The generator image tag defaults to the runner\'s git HEAD; ' +
+                        'pass image.tag=<the tag the hosts run> to pin it.'
+                    );
+                }
+            }
+        }
         if (succeeded >= wanted || failed > 0) {
             if (failed > 0) {
                 onLog(`✗ ${job}: ${failed} pod(s) failed — results are PARTIAL`);

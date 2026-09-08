@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { createHmac } from 'node:crypto';
 import { postMessageFnId } from '../../app/deploy/post-fn.mjs';
 import { spawnable } from '../../../benchmarks/src/spawn.mjs';
+import { workloadSets } from './workload-sets.mjs';
 import { shapeMismatch } from '../../../benchmarks/src/shape.mjs';
 import { runWsLoad, transportGate } from './ws-load.mjs';
 import { runWfLoad } from './wf-load.mjs';
@@ -142,23 +143,6 @@ const helm = (args, opts) => sh('helm', ['--kube-context', cfg.cluster, ...args]
 
 const gitSha = () => sh('git', ['rev-parse', '--short', 'HEAD'], { quiet: true });
 
-/**
- * The `--set` flags that point a release at this estate's node pool.
- *
- * The toleration is written WHOLE, and that is not verbosity: helm merges
- * maps but REPLACES list elements, so `--set tolerations[0].value=x` alone
- * discards the key, operator and effect that `values.yaml` gives the same
- * element, and the API server rejects the Deployment — "operator must be
- * Exists when `key` is empty". `nodeSelector.workload` is a map key and
- * merges, which is why only its sibling needed fixing (#406).
- */
-const workloadSets = (workload) => [
-    '--set', `nodeSelector.workload=${workload}`,
-    '--set', 'tolerations[0].key=workload',
-    '--set', 'tolerations[0].operator=Equal',
-    '--set', `tolerations[0].value=${workload}`,
-    '--set', 'tolerations[0].effect=NoSchedule'
-];
 
 // ---------------------------------------------------------------------------
 

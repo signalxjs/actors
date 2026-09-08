@@ -1019,12 +1019,24 @@ what one did, and a saturated host process sat at **138–151 % of a core**
 — the JS loop plus V8's GC helpers and libuv. The rule that follows:
 
 > **sum of the hosts' CPU requests ≤ node allocatable − 1 core**, at
-> **~1.4 cores per host**. An 8-vCPU node (`Standard_D8ls_v6`, ~7 usable
-> cores) packs **5 hosts at `requests.cpu 1300m`**, with `limits = requests`
-> so no host bursts into another's slice. Oversubscription — limits
-> summing past the cores — is the packing hazard, not packing itself: a
-> throttled host lands its heartbeat late and fences (§ `clustering.md`
-> "One host per core").
+> **~1.4 cores per host**. An 8-vCPU node (`Standard_D8ls_v6`) reports
+> **7820m allocatable** — measured, not assumed — so **5 hosts at
+> `requests.cpu 1300m`** is 6500m and fits, with `limits = requests` so no
+> host bursts into another's slice. Oversubscription — limits summing past
+> the cores — is the packing hazard, not packing itself: a throttled host
+> lands its heartbeat late and fences (§ `clustering.md` "One host per
+> core").
+
+> ⚠️ **That is the steady state. A ROLLING UPDATE needs one pod more than
+> it.** Going from the 3-replica default to five at 1300m deadlocks: the
+> new ReplicaSet's last pod is Pending on `Insufficient cpu`, the old
+> ReplicaSet will not give its pods up until the new ones are Ready, and
+> with `POOL_MAX=2` the autoscaler cannot add a node (the hosts' anti-Redis
+> affinity bars the second one). It sits there indefinitely — and
+> `readyReplicas` still reads 5/5 while `updatedReplicas` is 3, so
+> `status` looks healthy. **Scale to 0 and back up when changing an arm**,
+> or give the pool a spare node for the surge; check
+> `kubectl -n $ACTORS_NS get rs` shows exactly one ReplicaSet with pods.
 
 This is a SECOND estate on the same cluster, reached by env alone — the
 pool is labelled and tainted with `WORKLOAD`, and every release passes it
@@ -1045,20 +1057,28 @@ carries `cpu=<limits.cpu> sku=<instance-type>` (#380), so an arm here can
 never be compared with a D2 run by accident.
 
 The two arms are rollouts of the actors release — `ws-up` is the "roll
-with these values" verb — each followed by the throughput ladder:
+with these values" verb — each followed by the throughput ladder. Use
+`wf-load` for the arms: `wf-bench` runs all seven `workflow/*` scenarios
+and needs well over two hours on this shape, where the A/B only wants
+`runsCompletedPerSec` at the knee.
+
+**Pin `image.tag` to the tag the hosts run.** The generator's tag defaults
+to the runner's git HEAD, so anything merged to `main` mid-session
+repoints it at a commit that has no image (#426). `up` prints the tag it
+built; `wf-load` prints both, one line apart.
 
 ```sh
 # arm A — five hosts, one core-and-a-bit each, no burst
 node perf/aks/deploy/testenv.mjs ws-up replicaCount=5 \
   resources.requests.cpu=1300m resources.limits.cpu=1300m
-node perf/aks/deploy/testenv.mjs wf-load sweep=25,50,100,200 WF_DELAY_MS=2000
+node perf/aks/deploy/testenv.mjs wf-load image.tag=<tag> sweep=25,50,100,200 WF_DELAY_MS=2000
 
 # arm B — ONE host handed the whole node: the maxLocal/threads question,
 #         and the control that makes arm A's number a fleet number
 node perf/aks/deploy/testenv.mjs ws-up replicaCount=1 \
   resources.requests.cpu=7000m resources.limits.cpu=7000m \
   workflow.env.WF_COMPUTE_MAX_LOCAL=16
-node perf/aks/deploy/testenv.mjs wf-load sweep=25,50,100,200 WF_DELAY_MS=2000
+node perf/aks/deploy/testenv.mjs wf-load image.tag=<tag> sweep=25,50,100,200 WF_DELAY_MS=2000
 
 # arm C (optional) — the chart's burstable default, five hosts
 node perf/aks/deploy/testenv.mjs ws-up replicaCount=5 \
