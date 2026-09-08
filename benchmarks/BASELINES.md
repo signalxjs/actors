@@ -3736,11 +3736,12 @@ design against on this shape. What remains is the aggregator, which is
 | Why | The roadmap's G1: a host is one Node process on one JS thread, so the only way it uses a second core is a second host. Does that hold on real hardware, and what does a node buy when packed? |
 
 **Both arms get the SAME total CPU — 5 × 1300m = 6500m — on the same node.**
-The runbook's arm B said 7000m; that does not fit once the chat release's
-600 m on the host node is counted (7820 m allocatable − 1050 m of
-kube-system and chat = 6770 m of room), and it is the worse experiment
-anyway: matching the budget makes the ratio isolate *one process against
-five* instead of confounding it with a different allowance.
+The runbook's arm B said 7000m, which does not fit. Measured on the live
+node: **7820m allocatable, less 1050m already requested there by
+kube-system daemonsets (450m) and the chat release (600m), leaves 6770m**
+for a single host pod. 6500m is also the better experiment, because
+matching arm A's budget makes the ratio isolate *one process against five*
+rather than confounding it with a different allowance.
 
 ### The ladder
 
@@ -3758,11 +3759,11 @@ five* instead of confounding it with a different allowance.
 
 ### ✅ One process cannot use a machine, and the number is 1.3 cores
 
-Handed a 6500 m allowance, the single host peaked at **1289 m — 1.29
+Handed a 6500m allowance, the single host peaked at **1289m — 1.29
 cores, under a fifth of what it was given.** Five hosts on the identical
-budget peaked at 1202 m *each*, 92 % of their limit. That is the one-JS-thread
+budget peaked at 1202m *each*, 92% of their limit. That is the one-JS-thread
 ceiling measured on real hardware, and it lands where the Tier-2 laptop run
-put it (2026-09-04: a saturated host at 138–151 % of a core).
+put it (2026-09-04: a saturated host at 138–151% of a core).
 
 **So host-per-core is a deployment recipe, and nothing in the runtime has to
 change to use a whole box.** Five host processes on one node reach 26.2
@@ -3801,7 +3802,7 @@ measured outside the hosts and stand. This is the counter-reset rule from
 
 ### The store was never the limit
 
-Redis peaked at 25.6 % of a core in arm A and 4.2 % in arm B, at ~9 000 and
+Redis peaked at 25.6% of a core in arm A and 4.2% in arm B, at ~9 000 and
 ~7 500 ops/s. On this shape the hosts saturate and the store does not,
 which answers RUNBOOK (c) for the workflow axis: **the next capacity comes
 from cores, not from the store.**
