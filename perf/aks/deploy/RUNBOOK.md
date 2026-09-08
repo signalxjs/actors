@@ -1210,6 +1210,20 @@ Lua `GET` (the key carries a NUL: `'sigx:dir:WorkflowStats\0all'`), map the
 host id to a pod through the membership hash's `address`, and print it
 beside `kubectl top pods` every 15 s.
 
+> ⚠️ **The stock aggregator fills the store's disk.** Every save of the
+> 50 000-event `WorkflowStats` ring appends its ~12 MB record to Redis's
+> AOF — 16.6 GB of Redis input in one 15-minute rung at 50 runs/s. The
+> chart's 2 GiB volume filled during the sleep ladder; Redis then answers
+> every write with `MISCONF … unable to persist to disk`, a host's
+> membership join is a write, and all sixteen hosts crash-loop at boot.
+> Recovery is scale the hosts to 0, delete the PVC, and `ws-up` with
+> `redis.persistence.size=20Gi redis.resources.limits.memory=6Gi` plus a
+> ring the disk can carry — `workflow.env.WF_STATS_RING=10000
+> workflow.env.WF_STATS_SAVE_EVERY=200` (both in the shape). Run state is
+> never deleted either: ~1.5 KB per run for ever, 457 MB for 300k keys.
+> Anything longer than ten minutes on the workflow axis needs the bigger
+> volume and the smaller ring, or a sharded aggregator.
+
 **Stopping the cost** is the same as (u): scale both Deployments to 0 and
 let the autoscaler drain the pool; `down` also deletes the DNS record and
 the load-VM resource group, which are not pool-scoped.

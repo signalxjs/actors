@@ -3814,3 +3814,258 @@ The 26 completed/s plateau is this node's, on this mix, with a singleton
 the aggregator ceiling the roadmap already names. G1 measures *packing*,
 not the fleet maximum; 3 → 16 hosts (G2) is a separate question and
 unmeasured.
+
+## 2026-09-08 · Tier 3 — G2: sixteen hosts, and G3: the soak (#391, #387, #430)
+
+| | |
+|---|---|
+| Shape | `wf replicas=16 nodes=4 cpu=1300m sku=Standard_D8ls_v6 image=a025bdc knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` — sixteen hosts packed 5/5/5/1 on four D8s, Redis and the generator on D8s of their own; the sleep ladder and the soak add `WF_REMINDER_TICK_MS=1000` |
+| Driver | one in-cluster generator pod, Poisson arrivals, 60 s per rung unless a row says otherwise; hand-run `wf-load` from a laptop against the cluster (RUNBOOK (v)) |
+| Against | G1 arm A (§2026-09-08 above): five hosts on the same pod spec, same image, one node |
+| Why | The roadmap's G2 — does 5 → 16 hosts stay linear, what does a real fleet pay to roll, and what do sixteen tickers do to durable sleeps — and G3, a 90-minute soak at the knee with a fifth of the runs asleep on durable reminders |
+
+### The ladder: sixteen hosts complete 1.9× what five do, on 3.2× the cores
+
+| offered | 5 × 1300m (G1 A) | **16 × 1300m** | 16/5 | stuck @16 |
+|---|---:|---:|---:|---:|
+| 25 | 11.38 | 12.81 | 1.13× | 0 |
+| 50 | 23.52 | 23.02 | 0.98× | 0 |
+| 100 | **26.24** | **49.93** (44.10 on the first pass) | **1.90×** | 0 |
+| 200 | 25.66 | 29.20 | 1.14× | 1 |
+| 400 | — | 34.72 | | 4 |
+| transitions/s @100 | 408 | 404–616 | | |
+| start p50 / p99 @100 | 216 / 613 ms | **32 / 261 ms** | | |
+
+Below the five-host knee the rows are identical — the work is bounded by
+the offered rate and the templates' own waits, not by hosts. At 100 offered
+the fleet completes **49.9 runs/s with nothing stuck** where five hosts
+plateaued at 26.2, and the start latency drops from 216 ms to 32 ms at the
+median: the knee moved. It did not move 3.2×. Past 100 the sixteen-host
+curve falls back to ~30, and the reason is below, not in the store: Redis
+peaked at 26% of a core in G1 and stayed there here — the steady-state
+mix on sixteen hosts is 5–6k ops/s and ~150 commands per completed run.
+
+### ⚠️ Past the knee the aggregator's host dies, then the next one
+
+Every rung past 100 — and, once the aggregator's ring had filled, a plain
+50 runs/s — killed hosts by liveness probe, one at a time, ~90 s apart:
+
+```
+Liveness probe failed: Get "http://…:7311/_sigx/health": context deadline exceeded
+Container host failed liveness probe, will be restarted
+```
+
+g8xph → pplpd → bshbx in the first ladder; tcjgl → 57tzp in the re-run;
+pf58w → w45pt → xm7cd → lbn8d → p28fn → kp6ps in the fifteen-minute rung
+at 50/s after the rollout. Not memory (peaks 300 MB of 1 Gi), not the
+host's CPU (the hottest host sat at 481–970m of 1300m when killed). It is
+the `WorkflowStats` singleton: a 50 000-event ring (`WF_STATS_RING`) is a
+~12 MB record saved every 25 events (`WF_STATS_SAVE_EVERY`); the Redis
+slowlog shows each save at 35 ms and the serialisation blocks the event
+loop that answers `/_sigx/health` past its 1-second timeout. The kill moves
+the singleton to another host, which then follows. This is the aggregator
+ceiling the roadmap names, now with its failure mode: **a hot singleton
+does not slow its host down, it gets its host killed**, and G1 arm B's
+liveness failure was the same mechanism on one fat host.
+
+The rig could not see six of those kills: `restartsDuringRun` counted only
+pods present at both ends of a run, and a rolling update replaces every
+pod. Fixed in this PR (`restartDelta`); the timeline's per-sample host
+count (16 → 8 → 13 → 16) is what gave it away.
+
+### The first real-fleet join cost — #430
+
+A rolling update of all sixteen hosts, fired at t+60 s of a 15-minute rung
+at 50 runs/s (a `helm upgrade` that changed one pod-template annotation,
+the same image and values): the sixteen replacements converged in **65 s**,
+the rung completed 25.3 runs/s against 23.0 for an untouched fleet at the
+same rate, 4 runs stuck, 19 wakes lost and recovered by the sweep.
+
+Redis paid for it. `INFO commandstats` over the rollout window:
+
+| command | calls | usec/call |
+|---|---:|---:|
+| `get` (inside Lua) | 1 255 102 | 0.61 |
+| `eval` (`DEL_IF_OWNER`) | 1 240 976 | 3.31 |
+| `scan` | 127 232 | **87.7** |
+| `evalsha` (storage CAS) | 79 916 | 39.7 |
+
+2.89M commands and 1.6 GB of input in 55 s, **83% of a Redis core and
+83k ops/s** against a 5–6k steady state — to evict **38** directory
+entries (`sweptEntries`, summed over the new pods; `hostSweeps` 284). Every
+surviving host sweeps the directory for every departed host, and
+`redisDirectory.evictHost` is a keyspace-wide `SCAN MATCH sigx:dir:*`
+(272 calls at COUNT 500 over 136k keys, 133k of them run state) plus an
+`EVAL` per entry returned: ~430 sweeps for sixteen departures. A graceful
+leaver had already released its claims, so almost none of it removed
+anything. O(survivors × departures × keyspace) — at the roadmap's 1M
+sleeping runs one departure costs each survivor ~2 000 SCANs over 1M keys.
+The options are in #430; B5 (#387) was gated on this measurement and now
+has it.
+
+### The rig trap that voided a rung: the autoscaler evicted Redis
+
+The first ladder's 200 and 400 rungs are not in the table. Ten minutes
+after provisioning the pool, the cluster autoscaler judged the node holding
+only Redis "unneeded" (under 50% requested) and scaled it away mid-rung:
+the Service had no endpoint for ~40 s while the PVC re-attached on another
+node, every host's heartbeat lapsed, all sixteen fenced (liveness `503`,
+by design) and restarted within ten seconds, and the generator recorded
+`sweep:fenced` ×4 788. Job pods are controller-backed and evictable too, so
+a 90-minute generator was one quiet node away from the same fate. Every pod
+template in both charts now refuses eviction
+(`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`), asserted by
+`chart-equivalence.test.ts`; RUNBOOK (v) has the signature.
+
+### ✅ Sixteen tickers flatten the sharded table
+
+Order-only, a 90 s durable sleep per run, `WF_REMINDER_TICK_MS=1000`, the
+sharded default — T2's ladder (§2026-09-05) on sixteen hosts instead of
+three:
+
+| offered | asleep ≈ | 3 hosts, sharded (T2) | **16 hosts, sharded** | 3 hosts, `redisReminders` (T2) |
+|---:|---:|---:|---:|---:|
+| 50 | 4 500 | 514 ms / 1.00 s | **495 ms / 995 ms** | 402 ms / 888 ms |
+| 100 | 9 000 | 712 ms / 8.92 s | **504 ms / 998 ms** | 395 ms / 888 ms |
+| 200 | 18 000 | **2 210 ms / 48.2 s** | **507 ms / 1.00 s** | 338 ms / 878 ms |
+
+Wake lag p50 / p99. Zero lost wakes, zero CAS failures, zero stuck, on
+every rung. The sharded table's ceiling was never the CAS rate but the
+per-tick scan of a whole shard record, and a host owns `16 / hosts`
+shards: three hosts each tick five or six records, sixteen tick one. At
+18 000 sleepers the sixteen-host fleet sits where three hosts sat at
+4 500, half a tick from the floor — within 100 ms of the due-time index.
+`redisReminders` at sixteen tickers is unmeasured and no longer urgent
+below ~20k sleepers; above it the T2 argument stands.
+
+The 400 rung (36 000 asleep) is void, and not because of reminders.
+
+### ⚠️ The aggregator's ring filled the store's disk
+
+Every save of the 50 000-event ring appends its ~12 MB record to Redis's
+AOF. The 15-minute restart rung at 50 runs/s pushed **16.6 GB** into Redis
+(`total_net_input_bytes`), the ladder before it 10 GB; the chart's 2 GiB
+volume held a 673 MB AOF base plus 1.6 GB of increments when the sleep
+ladder reached its top rung, `BGREWRITEAOF` had nowhere to write, and Redis
+answered every write with:
+
+```
+MISCONF Redis is configured to save RDB snapshots, but it's currently unable
+to persist to disk. Commands that may modify the data set are disabled
+```
+
+A host's membership join is a write, so every host exited at boot and all
+sixteen crash-looped (7 restarts each) until the fleet was scaled to zero
+and the volume replaced. The dataset itself was 457 MB for 300 000 keys —
+run state is never deleted, so the store grows ~1.5 KB per run for ever;
+that is a retention finding for the product engine, not a rig bug. The soak
+below therefore runs on a 20 GiB volume with `WF_STATS_RING=10000` and
+`WF_STATS_SAVE_EVERY=200` — both in the shape — because the stock ring
+cannot survive 90 minutes on any disk the chart provisions.
+
+### G3 at the knee: the aggregator's host dies every minute, and the soak measures nothing else
+
+The first soak ran at 60 offered — 82% of the knee's work on a mix with a
+fifth of the runs asleep for 90 s (`order:20,approval:32,etl:32,saga:16`,
+`WF_DELAY_MS=90000`) — on the 10 000-event ring, a fresh 20 GiB store, and
+sixteen freshly rolled hosts. The owner watch (RUNBOOK (v)) read the
+`WorkflowStats` directory entry beside `kubectl top pods` every 20 s:
+
+| t | killed (liveness) | it was the owner | it was the hottest host |
+|---|---|---|---|
+| +94 s | s2kvp | yes | yes, 834m |
+| +144 s | n76ls | yes | |
+| +184 s | 6cfxd | yes | |
+| +224 s | z4htp | | yes |
+| +304 s | wv7fv | yes | yes |
+| +344 s | zsb8c | yes | |
+| +384 s | nr4pb | | |
+
+Seven hosts in six minutes, 40–80 s apart, each the singleton's new home.
+The generator's own progress stopped at +2 min: its `drain` calls hang on
+an aggregator that is mid-migration, so from then on nothing was being
+counted — `inflight` 4 250 and climbing, `completed` frozen. A ring a fifth
+the size did not change the cadence, so the record's serialisation is not
+the whole mechanism: the singleton's host also takes the fleet's entire
+publish stream on one accept queue (`remoteInflightPeak` 6 473 fleet-wide
+during the restart rung), and the kubelet's probe waits behind it. The run
+was stopped at six minutes; ninety of them would have said the same thing
+ninety times. **At the knee, the soak IS the chain.**
+
+### ✅ G3 below the knee: sixty minutes at 25 runs/s, nothing moves
+
+The same mix and knobs at 25 offered (a third of the knee's work), one
+rung of 3 600 s, `WF_DRAIN_S=240`, the generator's default in-flight cap:
+
+| | |
+|---|---:|
+| runs started / completed / failed (injected) / compensated | 90 945 / 86 715 / 1 629 / 2 601 — every run accounted for |
+| child runs | 233 824 |
+| completed/s over the hour | 23.5 (started 25.3) |
+| stuck · unreported · lost wakes · deferred starts · errors · restarts | **0 · 0 · 0 · 0 · 0 · 0** |
+| durable sleeps (90 s) | 16 571 — wake lag p50 / p90 / p99 / max **526 / 928 / 1 136 / 3 487 ms** |
+| start p50 / p99 | 6 / 377 ms |
+| host CPU, fleet sum, per quarter | 4.3 · 4.7 · 4.5 · 4.7 cores — flat; the aggregator's host at 950m of 1300m throughout |
+| host memory, mean per host, per quarter | 98 · 104 · 107 · 107 MB — flat from Q3; peak 182 MB (the aggregator's host) |
+| activations at 10 min / at the end | 172 / 123 |
+| reminder shards at the end | 16 records, 4 352 bytes (the fleet drained; ~450 asleep at any moment during) |
+| Redis memory, start → end | **120 → 592 MB, +471 MB/h**; keys 80k → 405k |
+| Redis CPU peak · ops/s peak | 6.3% · 5 496 |
+
+A 30-minute window of the hosts' own counters (q1 → q3 of the quarter-hour
+samples, all sixteen hosts): 162 862 runs and children started, 1.22M
+saves, 37 729 reminders armed with **0 CAS failures**, 11 352 fired,
+**0 lost wakes, 0 publish failures, 0 join repairs, 0 claim conflicts, 0
+dispatch retries, 0 membership changes, 0 sweeps.** Every non-zero failure
+counter of the sessions above reads zero here; the fleet at a third of its
+knee is quiet in every dimension the runbook names. The aggregator's
+10 000-event ring dropped 52 372 events the generator did not drain in
+time — all child events; every parent run was counted.
+
+**The one slope is the store's, and it is retention, not leakage.** Run
+state is never deleted, so Redis gains ~1.45 KB and a key per run and
+child — 325 000 keys and 471 MB an hour at this rate, 22 commands per run
+including its children (14.4M over the hour at ~3 900 ops/s, 6% of a core).
+Host memory and activations do not grow; wake lag does not grow. The
+product engine needs a retention rule for finished runs before anything
+else on this axis; nothing in the runtime moved in an hour.
+
+Wake lag per quarter hour was not read: a rung reports one histogram, and
+`mergeWfRows` keys rungs by rate, so a `sweep=25,25,25,25` would have
+merged into one row (RUNBOOK (v)). The 90 s order latencies (p50 90 576 ms
+= 90 s of sleep plus 526 ms of lag) say the lag did not drift.
+
+### ⚠️ Admission control does not save the singleton's host (one rung each — an indication)
+
+The last arm of the day: `WF_MAX_INFLIGHT_TURNS=512` and
+`WF_PUBLISH_DELIVERY=accepted` — the cap of #412 and the one-way publish of
+#416, accepted on three hosts on 2026-09-07 — rolled onto the sixteen (with
+the soak's 10 000-event ring still in the shape), then the 100 and 200
+rungs, 60 s each, default mix:
+
+| offered | stock (re-run above) | **cap 512 + accepted** | restarts |
+|---:|---:|---:|---:|
+| 100 | **49.93**, 0 stuck | **31.61**, 0 stuck, 265 unreported | **3** |
+| 200 | 29.20 | 25.90, 1 stuck, 1 664 unreported | |
+
+`publishFailures` fell from 3 326 to 231 — the one-way delivery does what
+it says for the publishers — and `start:overloaded` appeared (5), so the
+cap was live. The aggregator's host was killed three times anyway, and at
+100 offered the cap refused work the stock fleet completed: this is the
+"512 refuses below the knee" cost the 2026-09-07 section priced at ~15%,
+paid here as 37% because sixteen hosts reach the same singleton with three
+times the concurrency. One rung per point, on a shape that also carries the
+small ring, so an indication rather than a verdict — but the direction is
+that neither knob reaches the failure mode: the singleton's host is killed
+by the probe timeout, and admission at the turn queue happens after the
+accept queue the probe is waiting in. The fix is the pattern (shard the
+aggregator; `ctx.append` its ring), not a knob.
+
+### What this does not say
+
+The 49.9 completed/s is this mix on this node count with the stock
+aggregator; a sharded aggregator (the pattern B4 names) would move the
+knee and is unmeasured. Sixteen hosts on four nodes is not a hundred hosts
+on twenty; the join cost is the one number here that extrapolates, and it
+extrapolates badly. The sleep ladder ran the sharded default only —
+`redisReminders` at sixteen tickers is still T2's three-host number.
