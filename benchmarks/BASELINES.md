@@ -3724,3 +3724,92 @@ design against on this shape. What remains is the aggregator, which is
 | One-way publish removes the publisher's failures and not the subscriber's backlog | publish failures 12 836 → 0, unreported 6 698 ≈ 6 234 | #416 accepted, with its documented limitation confirmed |
 | The join path is not independently expensive — its repairs were overload damage | 7 888 → 0 join repairs under either cap | #417 answered; close it |
 | The aggregator is now the whole of the remaining coordination ceiling | 37 599 of 51 139 publishes reached it | shard the key, or shed at it |
+
+## 2026-09-08 · Tier 3 — G1: one host per core on a D8, and the ceiling of one process (#391, #386)
+
+| | |
+|---|---|
+| Shape A | `wf replicas=5 nodes=1 cpu=1300m sku=Standard_D8ls_v6 image=a025bdc knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` |
+| Shape B | `wf replicas=1 nodes=1 cpu=6500m sku=Standard_D8ls_v6 image=a025bdc knobs=FETCH_CONNECTIONS=64,TRANSPORT=http,WF_COMPUTE_MAX_LOCAL=16` |
+| Driver | one in-cluster generator pod, Poisson arrivals, 60 s per rung, `WF_DELAY_MS=2000`, the default mix; hand-run `wf-load` |
+| Runs | Actions 34217895560 (arm A), 34219193184 (arm B) |
+| Why | The roadmap's G1: a host is one Node process on one JS thread, so the only way it uses a second core is a second host. Does that hold on real hardware, and what does a node buy when packed? |
+
+**Both arms get the SAME total CPU — 5 × 1300m = 6500m — on the same node.**
+The runbook's arm B said 7000m; that does not fit once the chat release's
+600 m on the host node is counted (7820 m allocatable − 1050 m of
+kube-system and chat = 6770 m of room), and it is the worse experiment
+anyway: matching the budget makes the ratio isolate *one process against
+five* instead of confounding it with a different allowance.
+
+### The ladder
+
+| offered | A: 5 × 1300m | B: 1 × 6500m | A/B |
+|---|---:|---:|---:|
+| 25 | 11.38 | 9.70 | 1.17× |
+| 50 | **23.52** | 7.55 | **3.12×** |
+| 100 | **26.24** | 7.41 | **3.54×** |
+| 200 | 25.66 | 7.60 | 3.38× |
+| transitions/s @ 200 | 598.3 | 213.2 | 2.81× |
+| stuck @ 100 / @ 200 | 52 / 288 | 316 / 285 | |
+| host CPU peak | **1202m of 1300m (92%)** | **1289m of 6500m (19.8%)** | |
+| Redis CPU peak | 25.6% | 4.2% | |
+| restarts during run | **0** | **2** | |
+
+### ✅ One process cannot use a machine, and the number is 1.3 cores
+
+Handed a 6500 m allowance, the single host peaked at **1289 m — 1.29
+cores, under a fifth of what it was given.** Five hosts on the identical
+budget peaked at 1202 m *each*, 92 % of their limit. That is the one-JS-thread
+ceiling measured on real hardware, and it lands where the Tier-2 laptop run
+put it (2026-09-04: a saturated host at 138–151 % of a core).
+
+**So host-per-core is a deployment recipe, and nothing in the runtime has to
+change to use a whole box.** Five host processes on one node reach 26.2
+completed/s where one process on the same cores reaches 7.4.
+
+### ⚠️ The multiplier is 3.4×, not 5× — parallelism is not free
+
+Arm A pays coordination arm B never does: 111 424 remote dispatches,
+65 182 directory lookups and 2 106 claim conflicts across the five, against
+zero remote dispatches for the single host. Five processes therefore buy
+**~3.4× the throughput, not 5×**. The direction is not in doubt; the
+linearity is. Quote 3.4, not 5, when sizing a fleet.
+
+### ⚠️ A fat host does not just run slower — it fails its liveness probe
+
+Arm B **restarted twice mid-run**; arm A restarted zero times. It was not
+memory (peak 300 MB against a 1 Gi limit) and the container exited 0:
+
+```
+Liveness probe failed: Get "http://…:7311/_sigx/health": context deadline exceeded
+Container host failed liveness probe, will be restarted
+```
+
+The single event loop that runs the actors is the same thread that answers
+health, so saturating it makes the host look **dead** rather than busy. The
+damage follows: 192–316 runs stranded per rung where arm A stranded 0 at 25
+and 50, and 3 286 completions unreported at 200 offered. **The failure mode
+of over-packing one host is worse than the slowdown**, which is the real
+argument for the recipe — not the throughput alone.
+
+It also means arm B's host-side counters are **not comparable**: a restart
+resets them, so its `transitions=1138` is only the tail after the last
+restart, against 123 125 for arm A. The generator-side rows above are
+measured outside the hosts and stand. This is the counter-reset rule from
+`@sigx/actors-monitor` biting a measurement rather than a dashboard.
+
+### The store was never the limit
+
+Redis peaked at 25.6 % of a core in arm A and 4.2 % in arm B, at ~9 000 and
+~7 500 ops/s. On this shape the hosts saturate and the store does not,
+which answers RUNBOOK (c) for the workflow axis: **the next capacity comes
+from cores, not from the store.**
+
+### What this does not say
+
+The 26 completed/s plateau is this node's, on this mix, with a singleton
+`WorkflowStats` aggregator that absorbed 7 321 publish failures in arm A —
+the aggregator ceiling the roadmap already names. G1 measures *packing*,
+not the fleet maximum; 3 → 16 hosts (G2) is a separate question and
+unmeasured.

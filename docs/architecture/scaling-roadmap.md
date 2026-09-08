@@ -25,7 +25,7 @@ overturned by an issue comment rather than rediscovered.
 |---|---|---|
 | Target | make.com-class: ~1,000 runs/s sustained cluster-wide, ~1M runs asleep at once, 100+ hosts, multi-tenant | A mid-scale target (100 runs/s, 20 hosts) needs only phases 0–2 below; phases 3–4 become optional |
 | Language | Node-first. The 2026-09-02 "Go host PoC bar" (`BASELINES.md` §2026-09-02) stays a comparison bar | If a Go host is the plan, B3 (one host per core) is deprioritised and the ladder's job becomes defining that host's contract |
-| Estate | The Azure rig may grow within reason: `POOL_MAX` ~16, one D8 pool, 1–2 h soak sessions | On the current shape only, phase 3's G1–G3 are modelled, not measured, and this note must say so wherever it quotes them |
+| Estate | The Azure rig may grow within reason: `POOL_MAX` ~16, one D8 pool, 1–2 h soak sessions | G1 is now **measured** (§2026-09-08); G2 and G3 remain modelled, not measured, and this note must say so wherever it quotes them |
 
 ## The honest answer today
 
@@ -207,7 +207,14 @@ at 138–151% of a core, and 5 × `requests.cpu 1300m` fits the rule
 sum(requests) ≤ allocatable − 1 core; resources in the shape); the fence is
 the watchdog and the packing hazard is oversubscription. Later a
 `spawnHosts()` helper on `@sigx/actors/node` for non-k8s users. Gate met
-(L1: 5.93× at 8 hosts); proven by G1.
+(L1: 5.93× at 8 hosts); **proven by G1 on 2026-09-08** — five hosts reach
+**3.4×** what one process reaches on the SAME 6500m, because a single host
+peaks at **1.29 of the 6.5 cores it was given**. Quote 3.4×, not L1's
+5.93×: the cloud arm pays 111k remote dispatches and 65k directory lookups
+that the single host does not. G1 also found the packing argument is not
+only throughput — the fat host **failed its liveness probe twice** and
+stranded runs, because the event loop that runs the actors is the thread
+that answers health.
 
 **B4. One-way publish (S–M) — #49.** `PublishOptions.delivery:
 'settled' | 'accepted'`; the wire already carries one-way end to end. Opts
@@ -217,10 +224,17 @@ refused at acceptance rather than silently queued. The engine
 pattern beside it: shard the aggregator by `key:` and persist its ring with
 `ctx.append`.
 
-**Tier-3 sessions on the grown estate — #391.** G1 the D8 shape, five hosts
-at 1.3 vCPU against one at 7; G2 sixteen hosts (the ladder, the sleep ladder on
-sixteen distinct tickers, a rolling restart mid-ladder with command counts);
-G3 a 90 min soak at the knee with 20% durable sleeps.
+**Tier-3 sessions on the grown estate — #391.** ✅ **G1 done**
+(§2026-09-08): five hosts at 1300m against one at 6500m — matched budgets,
+not the runbook's 7000m, which does not fit once the chat release's 600m on
+the host node is counted. Three rig defects blocked it and are fixed: the
+generator Job got the node selector but not the toleration (#427), so it
+could never be scheduled on a second estate; nothing reported a stuck pod,
+so each failure cost a full timeout (#426); and `ws-up` held two timeouts
+against one rollout (#424). **G1 had therefore never run, on any date.**
+Still open: G2 sixteen hosts (the ladder, the sleep ladder on sixteen
+distinct tickers, a rolling restart mid-ladder with command counts); G3 a
+90 min soak at the knee with 20% durable sleeps.
 
 ### Phase 4 — 100+ hosts and the long tail
 
