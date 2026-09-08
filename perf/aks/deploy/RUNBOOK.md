@@ -1140,3 +1140,90 @@ it genuinely fails, the verb now names the not-Ready pods and any
 **Then tear the pool down** — `down` deletes `$POOL`, and with the same
 env exported it is the D8 pool it deletes, not the D2 one. `POOL_MAX=2`
 keeps the autoscaler from adding a third D8 under load.
+
+### (v) Sixteen hosts on the same pool — G2 and G3 (#391)
+
+The G2/G3 sessions of 2026-09-08 ran on the D8 pool of (u) with **sixteen**
+hosts, and were driven from a laptop rather than the Actions tab. Everything
+below cost time once; none of it is in the numbers.
+
+**Growing the pool is one `az` call, not `up`.** `up` creates a pool that is
+missing and never touches the bounds of one that exists, so `POOL_MAX=16` in
+the env does nothing to a pool made with `POOL_MAX=2`:
+
+```sh
+az aks nodepool update -g $RG --cluster-name $CLUSTER -n $POOL \
+  --update-cluster-autoscaler --min-count 0 --max-count 16
+```
+
+The autoscaler then provisions what the pending pods need in one round
+(six D8s for 16 hosts at 1300m plus Redis, ~3 minutes); hosts pack 5/5/5/1,
+so the shape reads `replicas=16 nodes=4`.
+
+**Drive it locally.** `ws-up` needs only `RG` and `CLUSTER`; `wf-load` needs
+those and `ACR`. With the (u) estate env plus those three exported, both
+verbs run from a checkout against the live cluster — no build per verb, no
+120-minute job ceiling, and `kubectl exec` into the Redis pod for `INFO
+commandstats` while a rung is in flight. A dispatch is still what produces
+an Actions artifact; a local run's evidence is the log and the saved result,
+quoted in `BASELINES.md`. `wf-load`'s orchestration (`runWfLoad`) gives a
+run **60 minutes** by default and the verb cannot raise it: a soak imports
+`runWfLoad` from `wf-load.mjs` and passes `timeoutMs` itself.
+
+> ⚠️ **The cluster autoscaler will evict Redis.** A node whose requested
+> CPU sits under 50% for 10 minutes is "unneeded", and it empties it by
+> evicting every controller-backed pod — Deployments AND Jobs. A Redis or
+> a generator alone on a D8 is under 10%. On 2026-09-08 it scaled the Redis
+> node away in the middle of a ladder: the Service had no endpoint for ~40 s
+> while the PVC re-attached elsewhere, every host's heartbeat lapsed, all
+> sixteen fenced (liveness `503` is the designed answer) and restarted
+> inside ten seconds of each other, and the rung was void. Every pod
+> template in both charts now carries
+> `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, asserted by
+> `chart-equivalence.test.ts`. The signature if it ever comes back:
+> `ScaleDown: marked the node as toBeDeleted/unschedulable` on the Redis
+> node, `Multi-Attach error` on its replacement, a gap in the timeline's
+> `redis` samples, and sixteen `Completed exit=0` restarts at once.
+
+**A replaced pod's restarts were invisible.** `restartsDuringRun` counted
+only pods present at both ends of a run, so after a rolling update — which
+replaces every pod — six liveness kills in the same rung read as 0.
+`restartDelta` now adds a replacement's own count; `podsReplaced` still
+says a rollout happened. Read them together.
+
+**A rolling update at sixteen is fast, and its cost is in Redis.** The
+sixteen replacements converged in 65 s (`maxSurge 1`, a new host is Ready
+in ~4 s; the old ones drain in parallel afterwards). The join cost is not
+the hosts': every survivor sweeps the directory for every departed host,
+and each sweep is a keyspace-wide `SCAN` plus an `EVAL` per directory
+entry — ~430 sweeps and 2.5M commands, 83% of a Redis core, to remove 38
+entries a graceful leaver had already released. Filed as #430; the rung's
+own `runsCompletedPerSec` barely moved.
+
+**The hot host is the aggregator's host.** Past the knee, whichever host
+owns `WorkflowStats` fails its liveness probe (timeout 1 s) and is killed,
+the singleton moves, and the next host follows ~90 s later — a chain, not a
+random casualty. Its 50 000-event ring is a ~12 MB record rewritten every 25
+events; the slowlog shows each save at 35 ms and the serialisation blocks
+the loop that answers health. To watch it: read the directory entry with a
+Lua `GET` (the key carries a NUL: `'sigx:dir:WorkflowStats\0all'`), map the
+host id to a pod through the membership hash's `address`, and print it
+beside `kubectl top pods` every 15 s.
+
+> ⚠️ **The stock aggregator fills the store's disk.** Every save of the
+> 50 000-event `WorkflowStats` ring appends its ~12 MB record to Redis's
+> AOF — 16.6 GB of Redis input in one 15-minute rung at 50 runs/s. The
+> chart's 2 GiB volume filled during the sleep ladder; Redis then answers
+> every write with `MISCONF … unable to persist to disk`, a host's
+> membership join is a write, and all sixteen hosts crash-loop at boot.
+> Recovery is scale the hosts to 0, delete the PVC, and `ws-up` with
+> `redis.persistence.size=20Gi redis.resources.limits.memory=6Gi` plus a
+> ring the disk can carry — `workflow.env.WF_STATS_RING=10000
+> workflow.env.WF_STATS_SAVE_EVERY=200` (both in the shape). Run state is
+> never deleted either: ~1.5 KB per run for ever, 457 MB for 300k keys.
+> Anything longer than ten minutes on the workflow axis needs the bigger
+> volume and the smaller ring, or a sharded aggregator.
+
+**Stopping the cost** is the same as (u): scale both Deployments to 0 and
+let the autoscaler drain the pool; `down` also deletes the DNS record and
+the load-VM resource group, which are not pool-scoped.

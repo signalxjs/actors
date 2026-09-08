@@ -25,7 +25,7 @@ overturned by an issue comment rather than rediscovered.
 |---|---|---|
 | Target | make.com-class: ~1,000 runs/s sustained cluster-wide, ~1M runs asleep at once, 100+ hosts, multi-tenant | A mid-scale target (100 runs/s, 20 hosts) needs only phases 0–2 below; phases 3–4 become optional |
 | Language | Node-first. The 2026-09-02 "Go host PoC bar" (`BASELINES.md` §2026-09-02) stays a comparison bar | If a Go host is the plan, B3 (one host per core) is deprioritised and the ladder's job becomes defining that host's contract |
-| Estate | The Azure rig may grow within reason: `POOL_MAX` ~16, one D8 pool, 1–2 h soak sessions | G1 is now **measured** (§2026-09-08); G2 and G3 remain modelled, not measured, and this note must say so wherever it quotes them |
+| Estate | The Azure rig may grow within reason: `POOL_MAX` ~16, one D8 pool, 1–2 h soak sessions | G1, G2 and G3 are all **measured** (§2026-09-08, twice); sixteen hosts on four D8s is the largest fleet any figure here rests on |
 
 ## The honest answer today
 
@@ -48,6 +48,20 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
 - **Activation cost is flat in cluster size.** Two directory operations per
   cold activation, identical at N=1 and N=100; CI gates it as an `exact`
   metric (§2026-07-28).
+- **Sixteen hosts complete 1.9× what five do — not 3.2×.** 49.9 completed
+  runs/s at 100 offered with nothing stuck, against 26.2 on five hosts of
+  the same spec; start latency 32 ms at the median where five hosts gave
+  216 ms. Past the knee the curve falls to ~30, and the cause is the
+  singleton aggregator, not the store: Redis peaked at 26% (§2026-09-08 G2).
+- **Sixteen tickers flatten the sharded reminder table.** Wake lag
+  507 ms / 1.0 s at 18 000 sleepers where three hosts gave 2.2 s / 48 s —
+  each host owns a sixteenth of the table, so the per-tick scan shrinks with
+  the fleet (§2026-09-08 G2). `redisReminders` at sixteen tickers is still
+  unmeasured; the sharded default no longer needs it below ~20k sleepers.
+- **A rolling update of sixteen hosts converges in 65 s and costs 2.9M Redis
+  commands** — every survivor sweeps the directory for every departed host,
+  and each sweep walks the whole keyspace (#430, §2026-09-08 G2). The
+  rung's throughput barely moved; Redis sat at 83% of a core for a minute.
 - **Failure is exercised, not argued.** The in-process three-host suite
   kills the owner of a run while it sleeps on a durable reminder, on a
   volatile timer, mid fan-out, mid wait, and kills the aggregator
@@ -57,14 +71,17 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
 
 ### What is not proven
 
-- No Tier-3 run above 7 hosts, and only one above 3 (§2026-08-02, with the
-  edge hash silently off). Every socket and workflow figure is
-  `replicas=3 nodes=3`.
-- No run has ever measured a host with more than one usable core, or a
-  node packed with several hosts. The single 8-core data point is one host
-  on a D8 at 1.07× (§2026-08-02 "Mailboxes are not cores").
-- No soak: rungs are 20–60 s. Memory growth, activation counts and
-  reminder-shard bytes over an hour are unknown.
+- No Tier-3 run above 16 hosts or four host nodes; every socket figure is
+  still `replicas=3 nodes=3`, and the workflow figures above 5 hosts are
+  one day's (§2026-09-08).
+- No run with a sharded aggregator. Every workflow figure past the knee is
+  bounded by one `WorkflowStats` host being liveness-killed, and the
+  pattern B4 names (shard by key, persist the ring with `ctx.append`) is
+  designed, not measured.
+- One soak (G3, 90 min at 60 runs/s) — on a 10 000-event ring, because the
+  stock 50 000-event ring writes ~12 MB to the store per save and filled a
+  2 GiB Redis volume in the session before it. Longer than 90 minutes, or
+  the stock ring on a bigger disk, is unmeasured.
 - The 100 and 200 runs/s rungs were never re-run after #304 fixed the wedge
   they produced; they are excluded from the default ladder
   (`benchmarks/src/scenarios/workflow.ts`, `INFRA_WF_RATE_LADDER`).
@@ -222,7 +239,13 @@ out of deadlock detection because nobody waits. Its safety precondition is
 met — B1 shipped, so a one-way delivery into a saturated singleton is
 refused at acceptance rather than silently queued. The engine
 pattern beside it: shard the aggregator by `key:` and persist its ring with
-`ctx.append`.
+`ctx.append`. **G2 measured what the unsharded pattern costs** (§2026-09-08):
+the 50 000-event ring is a ~12 MB record saved every 25 events, the save
+blocks the loop past the 1 s liveness timeout, the host is killed, the
+singleton moves and the next host follows ~90 s later — and every save
+appends 12 MB to the AOF, 17 GB per fifteen minutes at 50 runs/s. A hot
+singleton does not slow its host down; it gets its host killed and fills
+the store's disk. That is the case for `ctx.append`, with numbers.
 
 **Tier-3 sessions on the grown estate — #391.** ✅ **G1 done**
 (§2026-09-08): five hosts at 1300m against one at 6500m — matched budgets,
@@ -232,9 +255,17 @@ generator Job got the node selector but not the toleration (#427), so it
 could never be scheduled on a second estate; nothing reported a stuck pod,
 so each failure cost a full timeout (#426); and `ws-up` held two timeouts
 against one rollout (#424). **G1 had therefore never run, on any date.**
-Still open: G2 sixteen hosts (the ladder, the sleep ladder on sixteen
-distinct tickers, a rolling restart mid-ladder with command counts); G3 a
-90 min soak at the knee with 20% durable sleeps.
+✅ **G2 done** (§2026-09-08, second section): 1.9× for 3.2× hosts, the
+sleep ladder flat to 18 000 sleepers on sixteen tickers, and the rolling
+restart costed in Redis commands — #430. Two rig traps found and fixed on
+the way: the cluster autoscaler evicted Redis mid-ladder (every pod template
+now refuses eviction), and a replaced pod's restarts were invisible
+(`restartDelta`). ✅ **G3 done** (same section): at the knee (60 runs/s) the soak is the aggregator chain — seven hosts
+killed in six minutes, nothing else measurable; below it (25 runs/s, one
+hour) nothing moves: every run accounted for, zero in every failure
+counter, wake lag and host memory flat, and one slope — Redis at
++471 MB/h, because finished run state is never deleted. That is B7's
+(#389) first number, and it is retention, not leakage.
 
 ### Phase 4 — 100+ hosts and the long tail
 
@@ -242,7 +273,10 @@ distinct tickers, a rolling restart mid-ladder with command counts); G3 a
   refresh three commands at any N; ~35× fewer commands per join at n=100;
   opt-in layout with a loud failure on mixed layouts. Measure
   `k8sMembership` at scale first — a Lease watch is O(1) per change and may
-  already be the answer on Kubernetes. Gated on G2's churn measurement.
+  already be the answer on Kubernetes. G2 measured the churn (#430): the
+cost of a departure is the directory sweep, O(survivors × departures ×
+keyspace), not the membership refresh — so the first fix is the sweep, and
+the HASH layout is second.
 - **B6. Hot-key attribution (S) — #388.** Attribute the 289 ops/s (serial
   versus `reentrant: 'always'` versus a routed client) before touching the
   runtime; write the rule for track C — no per-tenant singleton on the hot

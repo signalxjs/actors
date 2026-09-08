@@ -18,6 +18,13 @@ spec:
     type: Recreate
   template:
     metadata:
+      # The cluster autoscaler may evict a controller-backed pod to empty a
+      # node it judges unneeded (< 50% requested for 10 min), and a Redis or a
+      # generator alone on a node IS unneeded by that rule: on 2026-09-08 it
+      # scaled the Redis node away mid-ladder, every host fenced, and the rung
+      # was void (#391 G2). A measurement rig pins its pods to their nodes.
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
       labels:
         {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis

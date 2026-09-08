@@ -8,7 +8,13 @@
  * 1000%, and both look like a finding.
  */
 import { describe, expect, it } from 'vitest';
-import { parseCpuMillis, parseRedisInfo, parseTopPods, timelinePeaks } from '../deploy/wf-load.mjs';
+import {
+    parseCpuMillis,
+    parseRedisInfo,
+    parseTopPods,
+    restartDelta,
+    timelinePeaks
+} from '../deploy/wf-load.mjs';
 
 describe('parseTopPods', () => {
     it('reads millicores and bytes off `kubectl top pods --no-headers`', () => {
@@ -117,5 +123,28 @@ describe('timelinePeaks', () => {
         // an earlier one does not stand in for it.
         expect(gapped.redisMemEndBytes).toBeUndefined();
         expect(gapped.redisCpuPeakRatio).toBeCloseTo(0.5, 6);
+    });
+});
+
+describe('restartDelta', () => {
+    it('counts a restart on a pod present at both ends', () => {
+        expect(restartDelta({ a: 0, b: 2 }, { a: 1, b: 2 })).toEqual({ restartsDuringRun: 1, podsReplaced: 0 });
+    });
+
+    // A rolling update replaces every pod, and the replacements start at 0.
+    // Six hosts were then liveness-killed during the same rung on
+    // 2026-09-08 (#391 G2) and the rig reported 0, because only pods seen
+    // BEFORE the run were counted. The replacement itself is not a restart;
+    // the replacement's own restarts are.
+    it('counts the restarts of a pod that replaced one mid-run', () => {
+        expect(restartDelta({ a: 0, b: 0 }, { a: 0, c: 2, d: 0 })).toEqual({
+            restartsDuringRun: 2,
+            podsReplaced: 2
+        });
+    });
+
+    it('is null when either end could not be observed', () => {
+        expect(restartDelta(null, { a: 1 })).toEqual({ restartsDuringRun: null, podsReplaced: null });
+        expect(restartDelta({ a: 0 }, null)).toEqual({ restartsDuringRun: null, podsReplaced: null });
     });
 });
