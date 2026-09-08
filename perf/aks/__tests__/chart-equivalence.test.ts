@@ -195,6 +195,22 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
     const names = Object.keys(CHARTS);
     const host = (name: string) => hostDeployment(rendered(name));
 
+    // The cluster autoscaler evicts controller-backed pods to empty a node it
+    // judges unneeded, and on a pool sized for one workload per node a Redis
+    // or a generator alone on a node is exactly that: on 2026-09-08 it scaled
+    // the Redis node away in the middle of a ladder and the rung was void
+    // (#391 G2). Every pod template a chart renders pins its pod.
+    it.each(names)('%s: every pod template refuses autoscaler eviction', (name) => {
+        const templated = rendered(name).filter((m) => m.kind === 'Deployment' || m.kind === 'Job');
+        expect(templated.length).toBeGreaterThanOrEqual(2);
+        for (const m of templated) {
+            expect(
+                m.spec.template.metadata.annotations?.['cluster-autoscaler.kubernetes.io/safe-to-evict'],
+                `${name}: ${m.kind}/${m.metadata.name}`
+            ).toBe('false');
+        }
+    });
+
     it.each(names)('%s: rolls out surge-first, drain-second', (name) => {
         const { strategy } = host(name).spec;
         expect(strategy.type).toBe('RollingUpdate');

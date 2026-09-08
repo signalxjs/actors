@@ -140,7 +140,8 @@ export interface WfLoadResult {
     timeline: TimelineSample[];
     peaks: TimelinePeaks;
     hostCpuLimitM: number | null;
-    /** Container restarts on host pods present at both ends of the run; null when unobservable. */
+    /** Container restarts on host pods during the run — growth on pods present at both ends, plus the
+     *  full count of any pod that replaced one mid-run; null when unobservable. */
     restartsDuringRun: number | null;
     /** Host pods that appeared during the run (a replaced victim); null when unobservable. */
     podsReplaced: number | null;
@@ -182,6 +183,12 @@ export function workflowTotals(
 export function parseCpuMillis(text: string | null | undefined): number | null;
 export function parseTopPods(text: string | null | undefined): TimelineHost[];
 export function parseRedisInfo(text: string | null | undefined): TimelineRedis | null;
+/** The restart delta between two `{ pod: restartCount }` snapshots; nulls when either is missing. */
+export function restartDelta(
+    before: Record<string, number> | null,
+    after: Record<string, number> | null
+): { restartsDuringRun: number | null; podsReplaced: number | null };
+
 export function timelinePeaks(
     timeline: TimelineSample[],
     options: { hostCpuLimitM: number | null }

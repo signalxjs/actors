@@ -335,6 +335,31 @@ function restartCounts(kube, namespace) {
     return counts;
 }
 
+/**
+ * Container restarts during the run from the two `restartCounts` snapshots.
+ * A pod present at both ends contributes the growth of its count — a fence
+ * that the kubelet restarted. A pod REPLACED mid-run (a chaos victim, or
+ * every pod of a rolling update) is a new name whose count starts at 0:
+ * the replacement itself is not a restart, but its own restarts ARE, and
+ * counting only pods seen before the run hid six liveness kills in a
+ * rung that a rollout had just re-created every pod of (#391 G2). `null`
+ * when either end could not be observed — "could not observe" must not
+ * read as "zero restarts".
+ */
+export function restartDelta(before, after) {
+    if (!before || !after) return { restartsDuringRun: null, podsReplaced: null };
+    let restartsDuringRun = 0;
+    let podsReplaced = 0;
+    for (const [pod, n] of Object.entries(after)) {
+        if (pod in before) restartsDuringRun += Math.max(0, n - before[pod]);
+        else {
+            podsReplaced++;
+            restartsDuringRun += n;
+        }
+    }
+    return { restartsDuringRun, podsReplaced };
+}
+
 /** The host Deployment's CPU limit in millicores, for the ratio. */
 function hostCpuLimitM(kube, namespace, release) {
     return parseCpuMillis(kube(['-n', namespace, 'get', 'deploy', `${release}-host`, '-o',
@@ -656,19 +681,7 @@ export async function runWfLoad(options) {
         await sleep(sampleIntervalMs);
     }
     const after = workflowTotals(kube, namespace);
-    // Container restarts on pods present at both ends: a fence that the
-    // kubelet restarted. A pod REPLACED (the chaos victim) is a new name
-    // with a count of 0 and is reported as such, not as a restart.
-    const restartsAfter = restartCounts(kube, namespace);
-    let restartsDuringRun = null;
-    let podsReplaced = null;
-    if (restartsBefore && restartsAfter) {
-        restartsDuringRun = 0;
-        for (const [pod, n] of Object.entries(restartsAfter)) {
-            if (pod in restartsBefore) restartsDuringRun += Math.max(0, n - restartsBefore[pod]);
-        }
-        podsReplaced = Object.keys(restartsAfter).filter((pod) => !(pod in restartsBefore)).length;
-    }
+    const { restartsDuringRun, podsReplaced } = restartDelta(restartsBefore, restartCounts(kube, namespace));
 
     const pods = kube(['-n', namespace, 'get', 'pod', '-l', `job-name=${job}`,
         '-o', 'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}'],
