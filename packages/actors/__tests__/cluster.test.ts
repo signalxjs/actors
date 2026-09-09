@@ -18,7 +18,7 @@ import {
     signAuth,
     verifyAuth,
     HOST_CALL_HEADER,
-    type ClusterMembership,
+    type ClusterMembership, type MembershipView,
     type HostDescriptor
 } from '@sigx/actors/cluster';
 import { createHost } from '@sigx/actors/host';
@@ -655,6 +655,69 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
 
             // Any later membership change re-runs the diff; the store now
             // tells the truth and the sweep completes.
+            const late = hub.providers();
+            await late.membership.join({
+                hostId: 's.late',
+                epoch: 1,
+                address: 'http://late.test',
+                status: 'active'
+            });
+            await vi.waitFor(async () => {
+                await expect(hub.directory.lookup(key)).resolves.toBeNull();
+            });
+        } finally {
+            await host.stop({ timeoutMs: 1000 });
+        }
+    });
+
+    // #430 review: an empty view is "solo / not started" (a store failover),
+    // not everyone departing at once — a pending departure must survive it.
+    it('an empty view neither sweeps nor forgets a pending departure', async () => {
+        const hub = memoryClusterHub();
+        const providers = hub.providers();
+        let lieOnce = true;
+        let deliver: ((view: MembershipView) => void) | undefined;
+        const membership: ClusterMembership = {
+            ...providers.membership,
+            isAlive: async (id) => {
+                if (id === 's.phantom' && lieOnce) {
+                    lieOnce = false;
+                    return true;
+                }
+                return providers.membership.isAlive(id);
+            },
+            onChange: (cb) => {
+                deliver = cb;
+                return providers.membership.onChange(cb);
+            }
+        };
+        const placement = clusterPlacement({
+            membership,
+            directory: providers.directory,
+            advertise: 'http://self.test'
+        });
+        const host = createHost({ actors: [counterActor()], placement, defaults: quiet });
+        await host.start();
+        try {
+            const phantom = hub.providers();
+            await phantom.membership.join({
+                hostId: 's.phantom',
+                epoch: 1,
+                address: 'http://phantom.test',
+                status: 'active'
+            });
+            const key = ['Counter', 'ghost'].join(String.fromCharCode(0));
+            await hub.directory.claim(key, { hostId: 's.phantom', activationId: 's.phantom/1/1' });
+            hub.kill('s.phantom');
+            await new Promise((r) => setTimeout(r, 20));
+            await expect(hub.directory.lookup(key)).resolves.not.toBeNull();
+
+            // A transient empty view: nothing may be written off on it.
+            deliver!({ version: 999, hosts: [] });
+            await new Promise((r) => setTimeout(r, 20));
+            expect(placement.counters().sweepsDelegated).toBe(0);
+            await expect(hub.directory.lookup(key)).resolves.not.toBeNull();
+
             const late = hub.providers();
             await late.membership.join({
                 hostId: 's.late',

@@ -298,6 +298,43 @@ describe('cluster ops: counters', () => {
         expect(counters.sweptEntries).toBeGreaterThanOrEqual(1);
     });
 
+    // #430: on a sixteen-host rollout every survivor swept every departed
+    // host — ~430 keyspace-wide sweeps, 2.9M Redis commands, to remove 38
+    // entries. One sweeper per departure is enough; eviction is idempotent
+    // and lazy eviction on lookup remains the backstop.
+    it('a crashed host is swept by ONE survivor, not by every survivor', async () => {
+        const cluster = await createCluster(3, { actors: [Counter], policy: selfPolicy });
+        running = cluster;
+        await cluster.hosts[2]!.actor(Counter, 'orphan').increment(1);
+        cluster.crash(2);
+        await new Promise((r) => setTimeout(r, 30));
+
+        const survivors = [cluster.placements[0]!, cluster.placements[1]!].map((p) => p.counters());
+        const sum = (pick: (c: (typeof survivors)[number]) => number): number =>
+            survivors.reduce((total, c) => total + pick(c), 0);
+        expect(sum((c) => c.hostSweeps)).toBe(1);
+        expect(sum((c) => c.sweptEntries)).toBeGreaterThanOrEqual(1);
+        // The other survivor saw the departure and left it to the sweeper.
+        expect(sum((c) => c.sweepsDelegated)).toBe(1);
+    });
+
+    // A graceful leaver announces 'leaving', drains — releasing every
+    // claim as it goes — and only then leaves. Sweeping after it finds
+    // nothing, at the cost of a keyspace walk per survivor.
+    it('a host that left gracefully is not swept — its drain released its claims', async () => {
+        const cluster = await createCluster(2, { actors: [Counter], policy: selfPolicy });
+        running = cluster;
+        await cluster.hosts[1]!.actor(Counter, 'orphan').increment(1);
+        await cluster.apps[1]!.stop({ timeoutMs: 1000 });
+        await new Promise((r) => setTimeout(r, 30));
+
+        const counters = cluster.placements[0]!.counters();
+        expect(counters.hostSweeps).toBe(0);
+        expect(counters.sweepsSkippedGraceful).toBe(1);
+        // And the actor is simply claimable again — nothing stale was left.
+        await expect(cluster.hosts[0]!.actor(Counter, 'orphan').increment(1)).resolves.toBe(2);
+    });
+
     it('an HMAC rejection increments authFailures — otherwise a 403 is silent', async () => {
         const cluster = await createCluster(2, { actors: [Counter], secret: 'right' });
         running = cluster;

@@ -71,6 +71,19 @@
 
 ### Changed
 
+- **One directory sweep per departed host, and none after a graceful
+  leave** (#430). Every survivor used to sweep the directory for every
+  host that left the view — correct, since eviction is idempotent, but a
+  sweep is a keyspace-wide `SCAN` plus a script per entry, and a
+  sixteen-host rolling update cost ~430 of them (2.9M Redis commands, 83%
+  of a core) to remove 38 entries. Now the smallest id among the live
+  hosts a survivor had already seen sweeps and the others count the
+  departure as `sweepsDelegated`; a host
+  seen announcing `'leaving'` is not swept at all
+  (`sweepsSkippedGraceful`), because its drain released its claims on the
+  way out. Lazy eviction on lookup remains the backstop for a sweeper that
+  dies first or a leaver that died mid-drain. Two new `ClusterCounters`.
+
 - A call whose deadline had already expired when it reached the head of
   its queue used to run its body anyway; it is now skipped (#384). The
   `deadline.test.ts` contract "runs the turn" became "skips the turn".

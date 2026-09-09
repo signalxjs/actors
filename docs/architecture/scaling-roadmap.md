@@ -276,7 +276,10 @@ counter, wake lag and host memory flat, and one slope — Redis at
   already be the answer on Kubernetes. G2 measured the churn (#430): the
 cost of a departure is the directory sweep, O(survivors × departures ×
 keyspace), not the membership refresh — so the first fix is the sweep, and
-the HASH layout is second.
+the HASH layout is second. **The sweep fix shipped**: one sweeper per
+departure and none after a graceful leave (`sweepsDelegated`,
+`sweepsSkippedGraceful`); the restart rung of §2026-09-08 is its
+before/after, still to be re-run.
 - **B6. Hot-key attribution (S) — #388.** Attribute the 289 ops/s (serial
   versus `reentrant: 'always'` versus a routed client) before touching the
   runtime; write the rule for track C — no per-tenant singleton on the hot

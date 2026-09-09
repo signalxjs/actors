@@ -109,10 +109,26 @@ export interface ClusterCounterTotals {
     claimConflicts: number;
     directoryReleases: number;
     directoryEvictions: number;
-    /** Departed peers whose entries this host swept. */
+    /**
+     * Departed peers whose entries this host swept. One live host sweeps a
+     * departure — the smallest id among the hosts that were around to see
+     * it — so across a
+     * fleet this sums to the departures, not to survivors × departures
+     * (#430: a sixteen-host rollout cost ~430 keyspace-wide sweeps to
+     * remove 38 entries before that rule).
+     */
     hostSweeps: number;
     /** Entries removed by those sweeps. */
     sweptEntries: number;
+    /** Departures this host saw and left to the elected sweeper. */
+    sweepsDelegated: number;
+    /**
+     * Departures not swept by anyone because the host announced
+     * 'leaving' first: its drain released every claim on the way out, and
+     * a sweep would walk the keyspace to find nothing. Lazy eviction on
+     * lookup covers a leaver that died mid-drain.
+     */
+    sweepsSkippedGraceful: number;
 
     // --- failure classification (the `#noteFailure` funnel) ---------------
     /** 421s received: we called the wrong owner and re-routed. */
@@ -217,6 +233,8 @@ export function createCounters(): ClusterCounterTotals {
         directoryEvictions: 0,
         hostSweeps: 0,
         sweptEntries: 0,
+        sweepsDelegated: 0,
+        sweepsSkippedGraceful: 0,
         wrongHostRedirects: 0,
         overloadedReplies: 0,
         unreachableRetries: 0,

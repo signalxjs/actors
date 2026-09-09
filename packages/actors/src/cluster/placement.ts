@@ -624,6 +624,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
     #retryBackoffMs: number;
     /** Host ids seen in a membership view — the departure diff base. */
     #seenHosts = new Set<string>();
+    /** Peers seen announcing 'leaving' — their departure needs no sweep. */
+    #leavingSeen = new Set<string>();
     /** The configured chain, in order. First non-null dispatcher wins. */
     #transports: readonly HostTransport[];
     /** hostId → the chain entry that reaches it. Dropped on a view change. */
@@ -1742,25 +1744,76 @@ class ClusterPlacementImpl implements ClusterPlacement {
 
     /**
      * Proactive directory hygiene: when a host we have seen disappears
-     * from the view AND the store confirms it dead (a graceful leaver
-     * already released its claims), sweep its entries so callers never
-     * trip over them. Racing survivors are fine — eviction is idempotent.
-     * Lazy eviction on lookup remains the backstop.
+     * from the view AND the store confirms it dead, sweep its entries so
+     * callers never trip over them. Lazy eviction on lookup remains the
+     * backstop.
+     *
+     * ONE sweeper per departure (#430). Every survivor used to sweep every
+     * departed host — eviction is idempotent, so it was correct — but a
+     * sweep is a keyspace-wide SCAN plus a script per directory entry, and
+     * a sixteen-host rolling update cost ~430 of them (2.9M Redis commands,
+     * 83% of a core) to remove 38 entries. The smallest id among the live
+     * hosts this host had already seen sweeps; the others count the
+     * departure as delegated and drop it. If the sweeper dies before it
+     * gets there the departure is nobody's — that is what the lazy
+     * eviction on lookup is for.
+     *
+     * A GRACEFUL leaver is not swept at all: it announced 'leaving', and
+     * host.stop() released every claim as it drained before the entry
+     * went, so the sweep would walk the keyspace to find nothing — which is
+     * exactly what those 430 sweeps did. A leaver that died mid-drain
+     * leaves a few stale entries to the same backstop.
      */
     async #sweepDeparted(view: MembershipView): Promise<void> {
+        // An empty view is "solo / not started" (`#checkSelfPresence` reads
+        // it the same way — a store failover, not everyone leaving at once):
+        // nothing departed, nothing to elect; the pending list keeps until a
+        // view with hosts in it says otherwise.
+        if (view.hosts.length === 0) return;
         const live = new Set(view.hosts.map((s) => s.hostId));
-        const departed = [...this.#seenHosts].filter(
+        for (const host of view.hosts) {
+            if (host.status === 'leaving') this.#leavingSeen.add(host.hostId);
+        }
+        const seenBefore = new Set(this.#seenHosts);
+        const departed = [...seenBefore].filter(
             (id) => !live.has(id) && id !== this.identity.hostId
         );
         for (const id of live) this.#seenHosts.add(id);
         if (departed.length === 0 || !this.#options.directory.evictHost) return;
+        // The sweeper is the smallest id among the live hosts THIS host had
+        // already seen before this change. Those were around while the
+        // departed host was, so the departed is on their own lists; a host
+        // that joined after the departure never saw it and cannot sweep it.
+        // Self is always a candidate (a live host appears in its own view).
+        // Survivors whose views interleaved a join and a departure in
+        // different orders may elect differently — two sweeps then, never a
+        // wrong one — and the one gap left (a chain of late joiners) is what
+        // the lazy eviction on lookup is for.
+        let sweeper = this.identity.hostId;
+        for (const id of live) if (seenBefore.has(id) && id < sweeper) sweeper = id;
         for (const id of departed) {
+            if (sweeper !== this.identity.hostId) {
+                // Dropped, not forgotten: a transient drop re-adds the host
+                // the moment it is back in a view.
+                this.#seenHosts.delete(id);
+                this.#leavingSeen.delete(id);
+                this.#counters.sweepsDelegated++;
+                continue;
+            }
             // A host only stops being "seen" once its sweep completed (or
             // the store says it is in fact alive-and-absent-from-view for
             // now) — a transient view drop or a failed sweep keeps it on
-            // the list, so the next membership change tries again.
+            // the list, so the next membership change tries again. That
+            // holds for the graceful case too: the store confirms the
+            // leaver gone before its departure is written off.
             try {
                 if (await this.#options.membership.isAlive(id)) continue;
+                if (this.#leavingSeen.has(id)) {
+                    this.#leavingSeen.delete(id);
+                    this.#seenHosts.delete(id);
+                    this.#counters.sweepsSkippedGraceful++;
+                    continue;
+                }
                 this.#counters.hostSweeps++;
                 this.#counters.sweptEntries += await this.#options.directory.evictHost(id);
                 this.#seenHosts.delete(id);

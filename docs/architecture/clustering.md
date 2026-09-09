@@ -368,6 +368,37 @@ same rule is why the TCP transport *retires* the loser of a simultaneous
 dial instead of closing it (see
 [wire-and-frames.md](wire-and-frames.md#behaviours-a-transport-must-preserve)).
 
+## When a host departs
+
+A host that leaves the view leaves its directory claims behind unless it
+released them itself. Two mechanisms clean up, and they are deliberately
+unequal:
+
+- **Lazy eviction on lookup** is the backstop and always on: a caller that
+  finds a claim whose host the store says is dead evicts it and re-resolves
+  (the `unreachable` path above). It costs one liveness probe per stale
+  entry, paid by whoever trips over it.
+- **The departure sweep** (`#sweepDeparted`, `directory.evictHost`) is
+  proactive hygiene: on a membership change, the entries of a host that
+  vanished are removed before anyone trips. It is not free — on the Redis
+  directory it is a keyspace-wide `SCAN` plus a script per entry — so it
+  runs **once per departure, fleet-wide**: the smallest id among the live
+  hosts a survivor had already seen sweeps (a host that joined after the
+  departure never saw it and cannot), the others count `sweepsDelegated`.
+  A delegating host drops the id without a store read — a transient drop
+  puts it back the moment the host is in a view again — while the sweeper
+  writes a departure off only once the store confirms the host gone, so a
+  transient drop stays on its list for the next change. And a host seen
+  announcing `'leaving'` is not swept at all (`sweepsSkippedGraceful`):
+  `host.stop()` released every claim as it drained before the entry went,
+  so the sweep would find nothing. Before that rule a sixteen-host rolling
+  update cost ~430 sweeps and 2.9M Redis commands to remove 38 entries
+  (#430, BASELINES §2026-09-08).
+
+The two failure cases both land on the backstop: a sweeper that dies before
+sweeping, and a graceful leaver that died mid-drain. Neither loses an actor;
+each leaves a few stale entries for lookups to evict.
+
 ## Shutdown ordering
 
 The sequence is deliberately not the obvious one:
