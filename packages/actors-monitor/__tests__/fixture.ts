@@ -103,7 +103,7 @@ export const demoSnapshot: MonitorSnapshot = {
                 routingFailures: 0, targetedDispatches: 0, inboundDispatches: 1280, inboundStreams: 0, inboundWatches: 0,
                 routeCacheHits: 238, routeCacheMisses: 44, directoryLookups: 44,
                 directoryClaims: 37, claimConflicts: 4, directoryReleases: 0,
-                directoryEvictions: 0, hostSweeps: 2, sweptEntries: 4,
+                directoryEvictions: 0, hostSweeps: 2, sweptEntries: 4, sweepsDelegated: 0, sweepsSkippedGraceful: 0,
                 wrongHostRedirects: 3, unreachableRetries: 0, drainingRetries: 0,
                 authFailures: 0, transportFallbacks: 0, membershipChanges: 5,
                 selfFences: 0, rejoinAttempts: 0, rejoins: 0, rebalanceRounds: 0, rebalanceMigrations: 0, claimed: 32, routeCacheSize: 39, locates: 44, locateRemote: 12,

@@ -303,7 +303,7 @@ describe('screens render', () => {
                         directoryReleases: 0,
                         directoryEvictions: 0,
                         hostSweeps: 0,
-                        sweptEntries: 0,
+                        sweptEntries: 0, sweepsDelegated: 0, sweepsSkippedGraceful: 0,
                         wrongHostRedirects: 0,
                         unreachableRetries: 0,
                         drainingRetries: 0,
