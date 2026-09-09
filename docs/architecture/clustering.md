@@ -385,8 +385,10 @@ unequal:
   runs **once per departure, fleet-wide**: the smallest id among the live
   hosts a survivor had already seen sweeps (a host that joined after the
   departure never saw it and cannot), the others count `sweepsDelegated`.
-  Either skip is written off only once the store confirms the host gone —
-  a transient view drop keeps it on the list. And a host seen
+  A delegating host drops the id without a store read — a transient drop
+  puts it back the moment the host is in a view again — while the sweeper
+  writes a departure off only once the store confirms the host gone, so a
+  transient drop stays on its list for the next change. And a host seen
   announcing `'leaving'` is not swept at all (`sweepsSkippedGraceful`):
   `host.stop()` released every claim as it drained before the entry went,
   so the sweep would find nothing. Before that rule a sixteen-host rolling
