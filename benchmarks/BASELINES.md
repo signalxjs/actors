@@ -4069,3 +4069,88 @@ knee and is unmeasured. Sixteen hosts on four nodes is not a hundred hosts
 on twenty; the join cost is the one number here that extrapolates, and it
 extrapolates badly. The sleep ladder ran the sharded default only —
 `redisReminders` at sixteen tickers is still T2's three-host number.
+
+## 2026-09-09 · Tier 3 — the join cost after #435, and the liveness probe as a knob (#430, #434, #391)
+
+| | |
+|---|---|
+| Shape | `wf replicas=16 nodes=4 cpu=1300m sku=Standard_D8ls_v6 image=0cd86ac knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` — the G2 shape on the image that carries #435 (one sweeper per departure) and #436 (the probe knobs, at their defaults unless a row says otherwise); Redis on a fresh 20 GiB volume with a 6 GiB limit |
+| Driver | hand-run `wf-load` from a laptop, 60 s rungs; the restart rung 600 s at 50 offered with `kubectl rollout restart` at t+60 s and `INFO commandstats` snapshots before, at the restart, at convergence and after |
+| Against | §2026-09-08 (second section): the same rungs on a025bdc |
+| Why | #430 shipped a fix for the measured join cost and needs its after-number; #434 asks how much of the aggregator's kill chain is the probe's 1-second timeout |
+
+### The control: the new image is the old image
+
+| offered | a025bdc (2026-09-08) | **0cd86ac** |
+|---:|---:|---:|
+| 100 | 49.93, 0 stuck | **48.03**, 0 stuck |
+| 200 | 29.20, 1 stuck | **32.69**, 1 stuck |
+
+Within run-to-run noise on both rungs; #435 does not touch a dispatch path
+and the numbers say so.
+
+### ✅ The join cost: 2.89M → 374k commands, and the sweep is gone from the profile
+
+The same rolling update of sixteen hosts, the same 50 runs/s underneath,
+the Redis counters continuous this time (nothing recreated the Redis pod):
+
+| rollout window | before (#431, 55 s) | **after (#435, 65 s)** |
+|---|---:|---:|
+| commands | 2 890 000 | **374 000** |
+| `eval` (`DEL_IF_OWNER`) | 1 240 976 | **9 595** |
+| `get` (inside that script) | 1 255 102 | 23 528 (the workload's own) |
+| `scan` | 127 232 | **3 834** |
+| Redis CPU peak | 83% | **35%** |
+| Redis input | 1.6 GB | 0.9 GB |
+| rollout converged in | 65 s | 54 s |
+
+The window's command profile is now the workload's steady mix — `hget`,
+`evalsha`, `del`, `hset` at the same proportions as the quiet minute before
+it. 3 834 SCANs at ~272 per sweep is **~14 sweeps for 16 departures**: the
+election worked (one sweeper, not sixteen), and the graceful-leave skip
+mostly did not fire — a host with a handful of activations goes from
+`'leaving'` to gone inside one membership refresh, so most survivors never
+saw the status. That is a cheap sweep of a small directory now, not a
+finding; the counters (`sweepsDelegated`, `sweepsSkippedGraceful`) were
+not sampled before the fleet was scaled down, and the next session should
+read them. B5 (#387) is unblocked: the join cost is no longer the
+membership work's problem to solve.
+
+The rung around it is the one thing that did not improve, and was not
+expected to: 32.4 completed/s with 15 stuck, 4 290 unreported and **three
+liveness kills** on the stock 50 000-event ring — the aggregator chain of
+§2026-09-08, now visible to the rig (`restartsDuringRun` 3 with
+`podsReplaced` 16, where the old counter read 0), and 13.7 GB of AOF in
+the eleven minutes after the rollout for the same reason.
+
+### ⚠️ A 5-second probe timeout does not stop the chain — #434 answered
+
+The same two rungs with `probes.liveness.timeoutSeconds=5` and
+`failureThreshold=6` (a host must fail to answer within five seconds six
+times in a minute to be restarted, against once-a-second-thrice before):
+
+| offered | stock probes (control above) | **timeout 5 s / threshold 6** | kills |
+|---:|---:|---:|---:|
+| 100 | 48.03, 0 stuck | **54.46**, 0 stuck | 0 |
+| 200 | 32.69, 1 stuck, 1 kill | **29.93**, 0 stuck, 16 unreported | **1** |
+
+One host was still killed in the 200 rung, its liveness probe timing out
+at five seconds six times running: the aggregator's host is not answering
+late, it is not answering for over a minute. Throughput is within noise
+of the control on both rungs. So the chain of §2026-09-08 is not the
+probe's impatience, and there is no probe setting that turns a saturated
+singleton's host back into a busy one. #432 — shard the aggregator and
+append its ring — is the only fix, and the RUNBOOK's "a saturated host
+looks dead" now has its number: a minute of silence at 200 offered.
+
+`publishFailures` read 3 on this arm against 3 326 on the stock re-run,
+which is the other face of the same fact: with one kill instead of three,
+almost nothing was published into a dead aggregator.
+
+### What this does not say
+
+Both arms are one 60-second rung per point, and the probe arm's first run
+was lost to a network drop on the laptop driving it (the estate ran
+unattended for ten minutes before the retry scaled it down). The sweep
+counters were not read before the fleet went down, so how often the
+graceful-leave skip fired is inferred from SCAN counts, not counted.
