@@ -58,10 +58,12 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
   each host owns a sixteenth of the table, so the per-tick scan shrinks with
   the fleet (§2026-09-08 G2). `redisReminders` at sixteen tickers is still
   unmeasured; the sharded default no longer needs it below ~20k sleepers.
-- **A rolling update of sixteen hosts converges in 65 s and costs 2.9M Redis
-  commands** — every survivor sweeps the directory for every departed host,
-  and each sweep walks the whole keyspace (#430, §2026-09-08 G2). The
-  rung's throughput barely moved; Redis sat at 83% of a core for a minute.
+- **A rolling update of sixteen hosts costs 374k Redis commands, down from
+  2.9M** (#430 → #435, §2026-09-09). Before, every survivor swept the
+  directory for every departed host and each sweep walked the whole
+  keyspace; now one host sweeps a departure, and the rollout window's
+  profile is the workload's own — Redis peaked at 35% of a core instead of
+  83%. The rung's throughput did not move either way.
 - **Failure is exercised, not argued.** The in-process three-host suite
   kills the owner of a run while it sleeps on a durable reminder, on a
   volatile timer, mid fan-out, mid wait, and kills the aggregator
@@ -245,7 +247,10 @@ blocks the loop past the 1 s liveness timeout, the host is killed, the
 singleton moves and the next host follows ~90 s later — and every save
 appends 12 MB to the AOF, 17 GB per fifteen minutes at 50 runs/s. A hot
 singleton does not slow its host down; it gets its host killed and fills
-the store's disk. That is the case for `ctx.append`, with numbers.
+the store's disk. That is the case for `ctx.append`, with numbers. And it
+is not the probe's impatience: with a 5 s liveness timeout and six strikes
+the aggregator's host was still killed at 200 offered (#434, §2026-09-09)
+— a minute of silence, not a late answer.
 
 **Tier-3 sessions on the grown estate — #391.** ✅ **G1 done**
 (§2026-09-08): five hosts at 1300m against one at 6500m — matched budgets,
@@ -274,12 +279,14 @@ counter, wake lag and host memory flat, and one slope — Redis at
   opt-in layout with a loud failure on mixed layouts. Measure
   `k8sMembership` at scale first — a Lease watch is O(1) per change and may
   already be the answer on Kubernetes. G2 measured the churn (#430): the
-cost of a departure is the directory sweep, O(survivors × departures ×
-keyspace), not the membership refresh — so the first fix is the sweep, and
-the HASH layout is second. **The sweep fix shipped**: one sweeper per
-departure and none after a graceful leave (`sweepsDelegated`,
-`sweepsSkippedGraceful`); the restart rung of §2026-09-08 is its
-before/after, still to be re-run.
+  cost of a departure is the directory sweep, O(survivors × departures ×
+  keyspace), not the membership refresh — so the first fix is the sweep,
+  and the HASH layout is second. **The sweep fix shipped and is measured**
+  (#435, §2026-09-09): one sweeper per departure and none after a graceful
+  leave (`sweepsDelegated`, `sweepsSkippedGraceful`) took the rollout
+  window from 2.89M to 374k commands, `EVAL` from 1.24M to 9.6k, `SCAN`
+  from 127k to 3.8k. What is left of the join cost is the membership
+  refresh itself, which is this item.
 - **B6. Hot-key attribution (S) — #388.** Attribute the 289 ops/s (serial
   versus `reentrant: 'always'` versus a routed client) before touching the
   runtime; write the rule for track C — no per-tenant singleton on the hot
