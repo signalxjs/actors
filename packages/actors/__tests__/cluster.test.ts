@@ -18,7 +18,7 @@ import {
     signAuth,
     verifyAuth,
     HOST_CALL_HEADER,
-    type ClusterMembership, MembershipView,
+    type ClusterMembership, type MembershipView,
     type HostDescriptor
 } from '@sigx/actors/cluster';
 import { createHost } from '@sigx/actors/host';
