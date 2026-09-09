@@ -1765,6 +1765,11 @@ class ClusterPlacementImpl implements ClusterPlacement {
      * leaves a few stale entries to the same backstop.
      */
     async #sweepDeparted(view: MembershipView): Promise<void> {
+        // An empty view is "solo / not started" (`#checkSelfPresence` reads
+        // it the same way — a store failover, not everyone leaving at once):
+        // nothing departed, nothing to elect; the pending list keeps until a
+        // view with hosts in it says otherwise.
+        if (view.hosts.length === 0) return;
         const live = new Set(view.hosts.map((s) => s.hostId));
         for (const host of view.hosts) {
             if (host.status === 'leaving') this.#leavingSeen.add(host.hostId);
@@ -1784,9 +1789,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
         // different orders may elect differently — two sweeps then, never a
         // wrong one — and the one gap left (a chain of late joiners) is what
         // the lazy eviction on lookup is for.
-        const sweeper = [...live]
-            .filter((id) => id === this.identity.hostId || seenBefore.has(id))
-            .sort()[0];
+        let sweeper = this.identity.hostId;
+        for (const id of live) if (seenBefore.has(id) && id < sweeper) sweeper = id;
         for (const id of departed) {
             if (sweeper !== this.identity.hostId) {
                 // Dropped, not forgotten: a transient drop re-adds the host
