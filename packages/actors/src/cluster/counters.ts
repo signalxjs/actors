@@ -111,7 +111,8 @@ export interface ClusterCounterTotals {
     directoryEvictions: number;
     /**
      * Departed peers whose entries this host swept. One live host sweeps a
-     * departure — the one whose id sorts first in the view — so across a
+     * departure — the smallest id among the hosts that were around to see
+     * it — so across a
      * fleet this sums to the departures, not to survivors × departures
      * (#430: a sixteen-host rollout cost ~430 keyspace-wide sweeps to
      * remove 38 entries before that rule).

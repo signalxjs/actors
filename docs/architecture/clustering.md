@@ -382,8 +382,11 @@ unequal:
   proactive hygiene: on a membership change, the entries of a host that
   vanished are removed before anyone trips. It is not free — on the Redis
   directory it is a keyspace-wide `SCAN` plus a script per entry — so it
-  runs **once per departure, fleet-wide**: the live host whose id sorts
-  first sweeps, the others count `sweepsDelegated`. And a host seen
+  runs **once per departure, fleet-wide**: the smallest id among the live
+  hosts a survivor had already seen sweeps (a host that joined after the
+  departure never saw it and cannot), the others count `sweepsDelegated`.
+  Either skip is written off only once the store confirms the host gone —
+  a transient view drop keeps it on the list. And a host seen
   announcing `'leaving'` is not swept at all (`sweepsSkippedGraceful`):
   `host.stop()` released every claim as it drained before the entry went,
   so the sweep would find nothing. Before that rule a sixteen-host rolling

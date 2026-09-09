@@ -76,8 +76,9 @@
   host that left the view — correct, since eviction is idempotent, but a
   sweep is a keyspace-wide `SCAN` plus a script per entry, and a
   sixteen-host rolling update cost ~430 of them (2.9M Redis commands, 83%
-  of a core) to remove 38 entries. Now the live host whose id sorts first
-  sweeps and the others count the departure as `sweepsDelegated`; a host
+  of a core) to remove 38 entries. Now the smallest id among the live
+  hosts a survivor had already seen sweeps and the others count the
+  departure as `sweepsDelegated`; a host
   seen announcing `'leaving'` is not swept at all
   (`sweepsSkippedGraceful`), because its drain released its claims on the
   way out. Lazy eviction on lookup remains the backstop for a sweeper that
