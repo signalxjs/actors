@@ -247,9 +247,10 @@ blocks the loop past the 1 s liveness timeout, the host is killed, the
 singleton moves and the next host follows ~90 s later — and every save
 appends 12 MB to the AOF, 17 GB per fifteen minutes at 50 runs/s. A hot
 singleton does not slow its host down; it gets its host killed and fills
-the store's disk. That is the case for `ctx.append`, with numbers. And it is not the probe's impatience: with a 5 s liveness timeout and six
-strikes the aggregator's host was still killed at 200 offered (#434,
-§2026-09-09) — a minute of silence, not a late answer.
+the store's disk. That is the case for `ctx.append`, with numbers. And it
+is not the probe's impatience: with a 5 s liveness timeout and six strikes
+the aggregator's host was still killed at 200 offered (#434, §2026-09-09)
+— a minute of silence, not a late answer.
 
 **Tier-3 sessions on the grown estate — #391.** ✅ **G1 done**
 (§2026-09-08): five hosts at 1300m against one at 6500m — matched budgets,
@@ -278,14 +279,14 @@ counter, wake lag and host memory flat, and one slope — Redis at
   opt-in layout with a loud failure on mixed layouts. Measure
   `k8sMembership` at scale first — a Lease watch is O(1) per change and may
   already be the answer on Kubernetes. G2 measured the churn (#430): the
-cost of a departure is the directory sweep, O(survivors × departures ×
-keyspace), not the membership refresh — so the first fix is the sweep, and
-the HASH layout is second. **The sweep fix shipped and is measured** (#435,
-§2026-09-09): one sweeper per departure and none after a graceful leave
-(`sweepsDelegated`, `sweepsSkippedGraceful`) took the rollout window from
-2.89M to 374k commands, `EVAL` from 1.24M to 9.6k, `SCAN` from 127k to
-3.8k. What is left of the join cost is the membership refresh itself,
-which is this item.
+  cost of a departure is the directory sweep, O(survivors × departures ×
+  keyspace), not the membership refresh — so the first fix is the sweep,
+  and the HASH layout is second. **The sweep fix shipped and is measured**
+  (#435, §2026-09-09): one sweeper per departure and none after a graceful
+  leave (`sweepsDelegated`, `sweepsSkippedGraceful`) took the rollout
+  window from 2.89M to 374k commands, `EVAL` from 1.24M to 9.6k, `SCAN`
+  from 127k to 3.8k. What is left of the join cost is the membership
+  refresh itself, which is this item.
 - **B6. Hot-key attribution (S) — #388.** Attribute the 289 ops/s (serial
   versus `reentrant: 'always'` versus a routed client) before touching the
   runtime; write the rule for track C — no per-tenant singleton on the hot
