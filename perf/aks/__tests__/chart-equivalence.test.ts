@@ -176,7 +176,8 @@ const probeShape = (probe: Manifest | undefined) =>
     probe && {
         path: probe.httpGet?.path,
         failureThreshold: probe.failureThreshold,
-        periodSeconds: probe.periodSeconds
+        periodSeconds: probe.periodSeconds,
+        timeoutSeconds: probe.timeoutSeconds
     };
 
 describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
@@ -327,6 +328,25 @@ describe.skipIf(!helm)('charts: the shared hardening lessons agree', () => {
         it('spread off renders no spread', () => {
             const dep = hostDeployment(render(CHARTS['perf/app'], 'spread.enabled=false'));
             expect(spreadMechanism(dep)).toBeNull();
+        });
+
+        // #434: every host killed on 2026-09-08 died of a liveness probe with
+        // the 1 s default timeout on a busy loop. The timeout and the failure
+        // threshold are knobs so one rung can say how much of that chain was
+        // the probe's impatience — and the defaults stay Kubernetes' own, so
+        // no recorded shape moves.
+        it.each(names)('%s: the liveness timeout and failure threshold are knobs with the k8s defaults', (name) => {
+            const stock = container(host(name), 'host').livenessProbe;
+            expect(stock.timeoutSeconds).toBe(1);
+            expect(stock.failureThreshold).toBe(3);
+            const tuned = container(
+                hostDeployment(
+                    render(CHARTS[name], 'probes.liveness.timeoutSeconds=5', 'probes.liveness.failureThreshold=6')
+                ),
+                'host'
+            ).livenessProbe;
+            expect(tuned.timeoutSeconds).toBe(5);
+            expect(tuned.failureThreshold).toBe(6);
         });
 
         it('pdb off renders no PDB', () => {
