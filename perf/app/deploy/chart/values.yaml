@@ -115,6 +115,13 @@ probes:
     periodSeconds: 2
   liveness:
     periodSeconds: 10
+    # Kubernetes' own defaults, made explicit so they are knobs (#434): a
+    # saturated event loop answers /_sigx/health late, and at 1 s × 3 the
+    # host that owns a hot singleton is restarted rather than left busy —
+    # every liveness kill of 2026-09-08 (BASELINES §2026-09-08 G2/G3). An
+    # arm that raises them measures how much of that chain was the probe.
+    timeoutSeconds: 1
+    failureThreshold: 3
   readiness:
     periodSeconds: 5
 

@@ -1224,6 +1224,25 @@ beside `kubectl top pods` every 15 s.
 > Anything longer than ten minutes on the workflow axis needs the bigger
 > volume and the smaller ring, or a sharded aggregator.
 
+**The probe experiment (#434).** Every kill above was the liveness probe
+timing out (1 s, three strikes at a 10 s period) on a busy loop. The
+timeout and the threshold are chart knobs with the Kubernetes defaults, so
+the stock shape is unchanged and one arm says how much of the chain is
+the probe's impatience:
+
+```sh
+node perf/aks/deploy/testenv.mjs ws-up probes.liveness.timeoutSeconds=5 \
+  probes.liveness.failureThreshold=6
+node perf/aks/deploy/testenv.mjs wf-load image.tag=<tag> sweep=100,200 WF_DELAY_MS=2000
+```
+
+Read `restartsDuringRun` and the 200 rung against the stock 29.2
+completed/s with three kills (§2026-09-08). Kills gone and throughput back
+means the chain was the probe and #432 is about the disk; kills still there
+means the host is genuinely unresponsive for over five seconds and #432 is
+the only fix. The probe values are not part of `INFRA_SHAPE` — say which
+arm a number came from.
+
 **Stopping the cost** is the same as (u): scale both Deployments to 0 and
 let the autoscaler drain the pool; `down` also deletes the DNS record and
 the load-VM resource group, which are not pool-scoped.
