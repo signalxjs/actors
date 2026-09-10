@@ -1224,6 +1224,27 @@ beside `kubectl top pods` every 15 s.
 > Anything longer than ten minutes on the workflow axis needs the bigger
 > volume and the smaller ring, or a sharded aggregator.
 
+**The aggregator arm (#432).** The knee of the workflow axis is the
+`WorkflowStats` singleton and its whole-ring saves. Three host knobs, all
+in `INFRA_SHAPE` and all defaulting to the recorded behaviour, make the
+alternative an arm rather than a rewrite: `WF_STATS_SHARDS=N` hashes each
+run id onto one of N actors (`s0`..`s{N-1}`; the generator learns N from
+`snapshot('all')` and drains one cursor per shard), `WF_STATS_APPEND=1`
+persists each event as an O(entry) `ctx.append` instead of a whole-record
+save, and `WF_STATS_COMPACT_EVERY` (5 000) is the full-save cadence in
+append mode — the log between two compactions is what a fresh activation
+replays. The arm, against the stock 100/200/400 rungs:
+
+```sh
+node perf/aks/deploy/testenv.mjs ws-up workflow.env.WF_STATS_SHARDS=4 \
+  workflow.env.WF_STATS_APPEND=1
+node perf/aks/deploy/testenv.mjs wf-load image.tag=<tag> sweep=100,200,400 WF_DELAY_MS=2000
+```
+
+Read `restartsDuringRun` (the chain), `total_net_input_bytes` per rung
+(the AOF), and the knee. Percentiles in the row's `nodeMs`/`wakeLagMs`
+come from shard 0 only — counts sum across shards, percentiles do not.
+
 **The probe experiment (#434).** Every kill above was the liveness probe
 timing out (1 s, three strikes at a 10 s period) on a busy loop. The
 timeout and the threshold are chart knobs with the Kubernetes defaults, so

@@ -1,7 +1,7 @@
 /** The workflow engine (#297) — the actors `server.mjs` registers. */
 export { WorkflowRun, workflowEvents } from './run.actor.ts';
 export { WorkflowDefinition } from './definition.actor.ts';
-export { WorkflowStats } from './stats.actor.ts';
+export { WorkflowStats, statsShardKey, statsShardKeys } from './stats.actor.ts';
 export { ComputeWorker, IoWorker, WORKER_KEY } from './workers.ts';
 export { workflowCounters, snapshotCounters, resetCounters } from './counters.ts';
 export { config as workflowConfig } from './config.ts';

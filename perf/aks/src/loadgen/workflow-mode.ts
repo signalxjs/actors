@@ -147,12 +147,26 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
     const jobName = process.env.JOB_NAME;
     const seeder = jobIndex === undefined || jobIndex === '' || jobIndex === '0';
     const marker = jobName ? `seed-${jobName}` : null;
+    // The aggregator says how many shards share the stream (#432): one
+    // knob on the hosts, learned here rather than duplicated on the
+    // generator. `all` is always answerable — on a sharded fleet it is an
+    // empty actor whose snapshot still carries the count.
+    const shardsSnap = await call('WorkflowStats', 'snapshot', ['all']);
+    if (shardsSnap.error) {
+        log(`WorkflowStats.snapshot failed: ${shardsSnap.error}`);
+        process.exit(1);
+    }
+    const statsShards = Math.max(1, Number((shardsSnap.data as { shards?: number }).shards ?? 1));
+    const shardKeys =
+        statsShards === 1 ? ['all'] : Array.from({ length: statsShards }, (_v, i) => `s${i}`);
     if (seeder) {
         // Reset FIRST: a pod that sees the marker must see a reset aggregator.
-        const reset = await call('WorkflowStats', 'reset', ['all']);
-        if (reset.error) {
-            log(`WorkflowStats.reset failed: ${reset.error}`);
-            process.exit(1);
+        for (const key of shardKeys) {
+            const reset = await call('WorkflowStats', 'reset', [key]);
+            if (reset.error) {
+                log(`WorkflowStats.reset(${key}) failed: ${reset.error}`);
+                process.exit(1);
+            }
         }
         const definitions = allDefinitions(knobs);
         for (const def of definitions) {
@@ -291,7 +305,8 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         const started = performance.now();
         const arrivalsEnd = started + durationS * 1000;
         const drainEnd = arrivalsEnd + drainS * 1000;
-        let cursor = 0;
+        // One drain cursor per shard (#432).
+        const cursors = new Map<string, number>(shardKeys.map((key) => [key, 0]));
         let lastReport = started;
 
         const applyEvent = (e: DrainedEvent) => {
@@ -327,21 +342,23 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         };
 
         const drain = async () => {
-            for (;;) {
-                const r = await call('WorkflowStats', 'drain', ['all', tag, cursor, 5000]);
-                if (r.error) {
-                    tally(`drain:${r.error}`);
-                    return;
+            for (const key of shardKeys) {
+                for (;;) {
+                    const r = await call('WorkflowStats', 'drain', [key, tag, cursors.get(key) ?? 0, 5000]);
+                    if (r.error) {
+                        tally(`drain:${r.error}`);
+                        return;
+                    }
+                    const { cursor: next, events, dropped } = r.data as {
+                        cursor: number;
+                        events: DrainedEvent[];
+                        dropped: number;
+                    };
+                    counts.droppedEvents = (counts.droppedEvents ?? 0) + dropped;
+                    for (const e of events) applyEvent(e);
+                    cursors.set(key, next);
+                    if (events.length < 5000) break;
                 }
-                const { cursor: next, events, dropped } = r.data as {
-                    cursor: number;
-                    events: DrainedEvent[];
-                    dropped: number;
-                };
-                counts.droppedEvents = (counts.droppedEvents ?? 0) + dropped;
-                for (const e of events) applyEvent(e);
-                cursor = next;
-                if (events.length < 5000) return;
             }
         };
 
@@ -456,13 +473,29 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             }
         }
 
-        const snap = await call('WorkflowStats', 'snapshot', ['all']);
         interface Snap {
             nodeMs: Record<string, NonNullable<Pct>>;
             wakeLagMs: NonNullable<Pct>;
             sums: Record<string, number>;
         }
-        const stats = (snap.data as Snap | undefined) ?? null;
+        // Counts sum across shards; percentiles do not, so `nodeMs` and
+        // `wakeLagMs` come from the first shard and the row says so.
+        const snaps: Snap[] = [];
+        for (const key of shardKeys) {
+            const snap = await call('WorkflowStats', 'snapshot', [key]);
+            if (snap.data) snaps.push(snap.data as Snap);
+        }
+        const stats: Snap | null =
+            snaps.length === 0
+                ? null
+                : {
+                      nodeMs: snaps[0]!.nodeMs,
+                      wakeLagMs: snaps[0]!.wakeLagMs,
+                      sums: snaps.reduce<Record<string, number>>((acc, s) => {
+                          for (const [k, v] of Object.entries(s.sums)) acc[k] = (acc[k] ?? 0) + v;
+                          return acc;
+                      }, {})
+                  };
         const nodeMs: Record<string, Pct> = {};
         for (const [type, p] of Object.entries(stats?.nodeMs ?? {})) nodeMs[type] = pct(p);
         const latencyMs: Record<string, Pct> = {};

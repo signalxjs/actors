@@ -40,6 +40,22 @@
  *                           and part of how #302 built up).
  *   WF_STATS_RING           events the aggregator retains for `drain`
  *                           (default 50 000 — ~1000 s of history at 50/s).
+ *   WF_STATS_SHARDS         how many `WorkflowStats` actors share the
+ *                           completion stream (#432). 1 (default, every
+ *                           recorded baseline) is the singleton on key
+ *                           `all`; N > 1 hashes each run id onto `s0`..
+ *                           `s{N-1}`. The generator learns N from a
+ *                           snapshot and drains one cursor per shard.
+ *   WF_STATS_APPEND         1: the aggregator persists each event with
+ *                           `ctx.append` — O(entry) — and full-saves the
+ *                           ring only every WF_STATS_COMPACT_EVERY events.
+ *                           0 (default): a whole-record `ctx.save()` every
+ *                           WF_STATS_SAVE_EVERY events, which at 50 000
+ *                           ring entries is ~12 MB of JSON and 12 MB of
+ *                           AOF per save (§2026-09-08).
+ *   WF_STATS_COMPACT_EVERY  in append mode, the full-save cadence in
+ *                           events (default 5 000). The log between two
+ *                           compactions is what a fresh activation replays.
  *   WF_NOTIFY_RETRY_MS      how long a finished child waits for its detached
  *                           `childDone` to land before sending it again.
  *                           Default 15 s, floor 100 ms.
@@ -93,6 +109,9 @@ export const config = {
     })(),
     statsSaveEvery: Math.max(1, num('WF_STATS_SAVE_EVERY', 25)),
     statsRing: num('WF_STATS_RING', 50_000),
+    statsShards: Math.max(1, Math.floor(num('WF_STATS_SHARDS', 1))),
+    statsAppend: process.env.WF_STATS_APPEND === '1',
+    statsCompactEvery: Math.max(1, num('WF_STATS_COMPACT_EVERY', 5_000)),
     // Floored: 0 would be an immediate re-send loop (wake → notify → wake).
     notifyRetryMs: Math.max(100, num('WF_NOTIFY_RETRY_MS', 15_000)),
     computeMaxLocal: optional('WF_COMPUTE_MAX_LOCAL'),
