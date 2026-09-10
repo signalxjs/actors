@@ -142,7 +142,7 @@ describe('the sharded default, as storage-op counts', () => {
         expect(counts).toMatchObject({ loads: 1, saves: 2 });
         // Nothing was lost either way.
         expect(await api.list()).toEqual(['warm', 'a']);
-        expect(Object.keys(((await inner.load(REMINDER_TYPE, 'p5'))!.state as Record<string, unknown>))).toContain('Waking0000other');
+        expect(Object.keys(((await inner.load(REMINDER_TYPE, 'p5'))!.state as Record<string, unknown>))).toContain(`Waking${NUL}other`);
 
         // Contended now: the next set loads first — today's two ops.
         counts.reset();
