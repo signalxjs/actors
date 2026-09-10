@@ -4372,13 +4372,39 @@ compaction, the resident in-flight population, or the reminders the
 approval waits arm — is unmeasured, because the timeline was lost with
 the row.
 
+### ✅ The arm sustained: ninety minutes at 60 offered on a 10 000-event ring
+
+The same arm with `WF_STATS_RING=10000` (the shape gains it), image
+2e10f62 — main after #445 — dispatched from the Actions runner with the
+run budget that now follows the rungs (run 34480835647). One rung of
+5 400 s at 60 offered, the default mix and 2 s volatile delays:
+
+| | |
+|---|---:|
+| started / completed / failed (injected) / compensated | 327 896 / 307 311 / 14 705 / 5 880 — every run accounted for |
+| completed/s over the 90 min (started/s) | **56.4** (60.7) |
+| stuck · unreported · deferred · dropped · errors · restarts | **0 · 0 · 0 · 0 · 0 · 0** |
+| in-flight | ~190 throughout, against a cap of 5 000 |
+| wake lag p50 / p99 / max | 0 / 15 / 105 ms |
+| start p50 / p99 | 17 / 129 ms |
+| host CPU peak · memory peak | 1 053m (81%) · 151 MB |
+| Redis CPU peak · ops/s peak · memory at the end | 7.7% · 10.2k · 1.31 GB |
+| hosts' counters over the run | 855 440 runs and children finished, 2.49M transitions, 6.65M saves, 2.17M remote dispatches, 855 440 publishes with **0 failures**, 0 claim conflicts, 0 retries, 0 reminder CAS failures, 0 lost wakes, 0 join repairs |
+
+With a ring the compaction can carry, the sharded aggregator holds 60
+runs/s — 158 runs and children a second — for an hour and a half with
+nothing in any failure counter and no host touched, where the singleton
+lost a host every ninety seconds at half that rate and the 50 000-ring arm
+above sank to ~26 with its cap saturated. The fleet's cores are the
+workflow axis' ceiling now, and the one slope left in the store is
+retention (#433): 1.31 GB after 855k records, ~1.5 KB each, never
+deleted.
+
 ### What this does not say
 
-The ladder is one 60-second rung per point on four shards; eight or
-sixteen shards, and the arm at a rate it can sustain (the soak says that
-is under 100 offered with this ring), are the next measurements — with
-`WF_STATS_RING=10000` (RUNBOOK (v)), since append mode makes the ring's
-size the compaction's size. Two soak attempts produced no row: the first
-lost its orchestrator to the laptop driving it, the second to the rig's
-hour. Both are fixed for the next one: the run budget follows the rungs,
-and a soak is dispatched from the runner.
+The ladder is one 60-second rung per point on four shards and the soak
+is one rate on one ring size; eight or sixteen shards, the arm at 100
+offered on the small ring, and what caps the fleet once its cores are
+full are the next measurements. The sweep counters (`hostSweeps`,
+`sweepsDelegated`, `sweepsSkippedGraceful`) were not in the rig's
+allowlist for this run; they are now.

@@ -92,6 +92,13 @@ const CLUSTER_COUNTERS = [
     'inboundDispatches',
     'retries',
     'unreachableRetries',
+    // The departure sweep (#430/#435): how many a rollout cost, and how many
+    // were delegated or skipped as graceful — the join-cost rung reads them.
+    'hostSweeps',
+    'sweptEntries',
+    'sweepsDelegated',
+    'sweepsSkippedGraceful',
+    'membershipChanges',
     // Links that fell through to a later transport (#223) — what the tcp
     // gate reads on a TRANSPORT=tcp run.
     'transportFallbacks',
