@@ -292,8 +292,9 @@ export function declaresDistinct(opts: WatchDeclarationOptions, method: string):
  * with a number or a string). The common live read returns one — a count,
  * a status, a flag — and walking a one-element array through the codec to
  * compare it measured ~12% of a trivial read's turn (`streams/live-watch`
- * at zero rows, the #447 A/B). Objects still go through `encode` and
- * `JSON.stringify`, which is the form the wire carries; a key-order
+ * at zero rows, the #447 A/B). Everything else — objects, and a function or
+ * symbol, which the codec refuses exactly as it did before — goes through
+ * `encode` and `JSON.stringify`, the form the wire carries; a key-order
  * difference between two reads of the same object costs one redundant
  * delivery, never a wrong dedupe.
  */
