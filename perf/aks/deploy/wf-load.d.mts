@@ -58,6 +58,8 @@ export interface WfLoadRow {
     startMs: Percentile | null;
     deferredMs: Percentile | null;
     latencyFromPods: number;
+    /** The WorkflowStats shard whose percentiles the row carries (#432); absent on rows from before it. */
+    statsPercentilesFrom?: string | null;
     /** Engine sums, read from the aggregator by one pod. */
     transitions?: number | null;
     timersFired?: number | null;

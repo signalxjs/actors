@@ -308,8 +308,16 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         const started = performance.now();
         const arrivalsEnd = started + durationS * 1000;
         const drainEnd = arrivalsEnd + drainS * 1000;
-        // One drain cursor per shard (#432).
-        const cursors = new Map<string, number>(shardKeys.map((key) => [key, 0]));
+        // One drain cursor per shard (#432), starting at the shard's CURRENT
+        // seq: seq is global across tags and the aggregator is not reset
+        // between rungs, so a cursor at 0 would read an earlier rung's
+        // turned-over history as this rung's `dropped`.
+        const cursors = new Map<string, number>();
+        for (const key of shardKeys) {
+            const snap = await call('WorkflowStats', 'snapshot', [key]);
+            const seq = Number((snap.data as { seq?: unknown } | undefined)?.seq);
+            cursors.set(key, Number.isInteger(seq) && seq >= 0 ? seq : 0);
+        }
         let lastReport = started;
 
         const applyEvent = (e: DrainedEvent) => {

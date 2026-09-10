@@ -430,7 +430,9 @@ const SUMMED = [
 const FROM_ONE = [
     'transitions', 'timersFired', 'remindersFired', 'wakesFallback', 'wakesLost', 'wakesStale',
     'signalsDelivered', 'signalsBuffered', 'signalsLate', 'signalTimeouts', 'taskAttempts',
-    'taskFailures', 'compensations', 'nodeMs', 'wakeLagMs'
+    'taskFailures', 'compensations', 'nodeMs', 'wakeLagMs',
+    // Which shard the percentiles above came from (#432) — named, never merged.
+    'statsPercentilesFrom'
 ];
 
 /**
