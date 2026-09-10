@@ -123,7 +123,10 @@ describe('dispatchWatch', () => {
         // what a watch is), but its result is what was last delivered, so
         // nothing is pushed (#442) — subscribers could not tell the two apart.
         await s.actor(Cart, 'w2').add('c');
-        await new Promise((r) => setTimeout(r, 20));
+        // Wait for the re-read itself, not a fixed interval.
+        for (let i = 0; i < 50 && invocations === before; i++) {
+            await new Promise((r) => setTimeout(r, 2));
+        }
         expect(invocations).toBe(before + 1);
         const raced = await Promise.race([
             iterator.next().then(() => 'emitted'),

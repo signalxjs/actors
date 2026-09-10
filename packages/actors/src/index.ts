@@ -74,6 +74,7 @@ export type {
     ActorStorage,
     ActorStorageRecord,
     ActorWatchDeclaration,
+    ActorWatchDeclarationFlags,
     AnyActorDefinition,
     DeactivationReason,
     PlacementBindings,

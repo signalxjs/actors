@@ -1637,7 +1637,17 @@ export type ActorReadCache = ServerFnReadCache;
  * the wrapping object exists so a later property (a forced per-principal
  * split, say) does not need a second `ActorOptions` key.
  */
-export interface ActorWatchDeclaration {
+export type ActorWatchDeclaration =
+    | (ActorWatchDeclarationFlags & { principalIndependent: true })
+    | (ActorWatchDeclarationFlags & { distinct: false });
+
+/**
+ * The two flags a watch declaration may carry. `ActorWatchDeclaration` is
+ * the union that requires at least one of them, so an empty `{}` is a type
+ * error rather than the activation failure `validateWatchDeclarations`
+ * would otherwise raise for it (#442).
+ */
+export interface ActorWatchDeclarationFlags {
     /**
      * This read's result does NOT depend on `ctx.principal`.
      *
