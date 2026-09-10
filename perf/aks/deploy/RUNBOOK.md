@@ -1248,7 +1248,8 @@ shard's host was liveness-killed once, all four within a second, at the
 first compaction of a full ring (t+11 min at 100 offered), and never again
 in the following eighty minutes. Pass `workflow.env.WF_STATS_RING=10000`
 with the arm; the generator drains every two seconds and needs far less
-than that.
+than that. With that ring the arm held 60 offered for ninety minutes with
+nothing in any failure counter (§2026-09-10).
 
 Read `restartsDuringRun` (the chain), `total_net_input_bytes` per rung
 (the AOF), and the knee. Percentiles in the row's `nodeMs`/`wakeLagMs`

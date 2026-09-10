@@ -80,8 +80,10 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
   still `replicas=3 nodes=3`, and the workflow figures above 5 hosts are
   one day's (§2026-09-08).
 - The sharded aggregator has one day's numbers (§2026-09-10): a ladder to
-  400 offered and one soak, four shards, on sixteen hosts. Eight or sixteen
-  shards, and what caps the fleet once its cores are full, are unmeasured.
+  400 offered and a clean 90-minute soak at 60 offered on a 10 000-event
+  ring, four shards, on sixteen hosts. Eight or sixteen shards, the arm at
+  100 offered sustained, and what caps the fleet once its cores are full
+  are unmeasured.
 - One soak (G3, 90 min at 60 runs/s) — on a 10 000-event ring, because the
   stock 50 000-event ring writes ~12 MB to the store per save and filled a
   2 GiB Redis volume in the session before it. Longer than 90 minutes, or
@@ -258,7 +260,10 @@ knee from ~50 to ~87 completed runs/s with no kill at 400 offered, a fifth
 of the store bytes for twice the completions, and Redis at 11% of a core.
 Shipped as three host knobs on the perf workload (`WF_STATS_SHARDS`,
 `WF_STATS_APPEND`, `WF_STATS_COMPACT_EVERY`), defaults unchanged so every
-recorded baseline keeps its shape.
+recorded baseline keeps its shape. **Sustained, with a 10 000-event
+ring:** 90 minutes at 60 offered, 327 896 runs all accounted for, zero in
+every failure counter, no host touched, Redis at 8% of a core — the
+singleton lost a host every ninety seconds at half that rate.
 
 **Tier-3 sessions on the grown estate — #391.** ✅ **G1 done**
 (§2026-09-08): five hosts at 1300m against one at 6500m — matched budgets,
