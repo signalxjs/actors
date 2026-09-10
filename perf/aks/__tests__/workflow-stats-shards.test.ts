@@ -52,6 +52,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
     await host.stop();
+    // The knobs are read at module load, but a worker that runs another
+    // workflow suite next must not inherit them.
+    for (const name of ['WF_STATS_SHARDS', 'WF_STATS_APPEND', 'WF_STATS_COMPACT_EVERY', 'WF_STATS_RING']) {
+        delete process.env[name];
+    }
 });
 
 beforeEach(() => {
