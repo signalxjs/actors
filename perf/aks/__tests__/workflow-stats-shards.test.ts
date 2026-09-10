@@ -165,5 +165,24 @@ describe('WorkflowStats — sharded and appending', { timeout: 20_000 }, () => {
         expect(after.sums).toEqual(before.sums);
         const drained = await host.actor(wf.WorkflowStats, 's0').drain('append', 0, 100_000);
         expect(drained.events).toHaveLength(20);
+        // The compaction cadence survives the restart: the four replayed
+        // entries count, so four more events (24 = 3 × 8) compact the ring
+        // rather than starting a fresh count of eight.
+        const more: string[] = [];
+        for (let i = 1000; more.length < 4; i++) {
+            const id = `append-${i}`;
+            if (wf.statsShardKey(id) === 's0') more.push(id);
+        }
+        await Promise.all(
+            more.map((id) => host.actor(wf.WorkflowRun, id).start({ workflow: 'quick', template: 'q', tag: 'append' }))
+        );
+        const deadline = Date.now() + 8_000;
+        while ((await host.actor(wf.WorkflowStats, 's0').snapshot()).total < 24) {
+            if (Date.now() > deadline) throw new Error('s0 did not see 24 events');
+            await sleep(20);
+        }
+        const record = await storage.load('WorkflowStats', 's0');
+        expect((record!.state as { total: number }).total).toBe(24);
+        expect(record!.log).toHaveLength(0);
     });
 });

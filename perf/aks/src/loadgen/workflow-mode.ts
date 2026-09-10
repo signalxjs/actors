@@ -156,7 +156,10 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         log(`WorkflowStats.snapshot failed: ${shardsSnap.error}`);
         process.exit(1);
     }
-    const statsShards = Math.max(1, Number((shardsSnap.data as { shards?: number }).shards ?? 1));
+    // A positive integer or the singleton: anything else (an older host that
+    // does not report `shards`, a garbled body) must not size an array.
+    const reported = Number((shardsSnap.data as { shards?: unknown } | undefined)?.shards);
+    const statsShards = Number.isInteger(reported) && reported >= 1 ? reported : 1;
     const shardKeys =
         statsShards === 1 ? ['all'] : Array.from({ length: statsShards }, (_v, i) => `s${i}`);
     if (seeder) {

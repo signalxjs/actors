@@ -183,8 +183,7 @@ export const WorkflowStats = defineActor({
                 side.latency.clear();
                 side.nodes.clear();
                 side.wakeLag = new Samples(SAMPLE_CAPACITY);
-                // A reset is a full save, so it is a compaction point too.
-                side.sinceCompaction = 0;
+                ctx.state.sinceCompaction = 0;
                 await ctx.save();
             }
         };
@@ -233,14 +232,18 @@ export const WorkflowStats = defineActor({
                     // save every WF_STATS_COMPACT_EVERY is the compaction —
                     // the only time the whole ring is written.
                     await ctx.append(entry);
-                    if (++side.sinceCompaction >= config.statsCompactEvery) {
-                        side.sinceCompaction = 0;
+                    if (ctx.state.sinceCompaction >= config.statsCompactEvery) {
+                        // Zeroed BEFORE the save so the compacted record
+                        // carries 0 and the next activation counts only the
+                        // log written after it.
+                        ctx.state.sinceCompaction = 0;
                         await ctx.save();
                     }
                 } else {
                     fold(ctx.state, entry);
                     if (++ctx.state.unsaved >= config.statsSaveEvery) {
                         ctx.state.unsaved = 0;
+                        ctx.state.sinceCompaction = 0;
                         await ctx.save();
                     }
                 }
@@ -257,7 +260,14 @@ function initialState() {
         byTemplate: {} as Record<string, Record<string, number>>,
         sums: emptySums(),
         /** Events since the last save — the cadence knob's counter (save mode). */
-        unsaved: 0
+        unsaved: 0,
+        /**
+         * Entries folded since the last full save — append mode's compaction
+         * counter, and DURABLE on purpose: a fresh activation replays the log
+         * through `fold`, so it resumes at the log's length rather than at 0
+         * and a restart never stretches the cadence.
+         */
+        sinceCompaction: 0
     };
 }
 type State = ReturnType<typeof initialState>;
@@ -266,6 +276,7 @@ type State = ReturnType<typeof initialState>;
 function fold(s: State, entry: StatsEntry): void {
     s.seq++;
     s.total++;
+    s.sinceCompaction++;
     s.events.push({ seq: s.seq, ...entry.e });
     if (s.events.length > config.statsRing) {
         s.events.splice(0, s.events.length - config.statsRing);
@@ -284,8 +295,6 @@ interface Side {
     latency: Map<string, Samples>;
     nodes: Map<string, Samples>;
     wakeLag: Samples;
-    /** Appends since the last full save — append mode's compaction counter. */
-    sinceCompaction: number;
     sample(map: Map<string, Samples>, key: string): Samples;
 }
 const sides = new WeakMap<object, Side>();
@@ -296,7 +305,6 @@ function sideTable(ctx: object): Side {
             latency: new Map(),
             nodes: new Map(),
             wakeLag: new Samples(SAMPLE_CAPACITY),
-            sinceCompaction: 0,
             sample(map, key) {
                 let s = map.get(key);
                 if (!s) map.set(key, (s = new Samples(SAMPLE_CAPACITY)));
