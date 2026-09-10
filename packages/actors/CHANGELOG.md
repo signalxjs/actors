@@ -34,6 +34,9 @@
   now takes either flag alone or both. `live/distinct` gates the counts:
   deliveries per unrelated mutation 0 (default) / 1 (declared), per
   relevant mutation 1, reads per mutation 1.
+  A primitive result — a count, a status, a flag — is fingerprinted without
+  the codec (#449): the walk over a one-element array measured ~12% of a
+  trivial live read's turn on the #447 A/B.
 - **`PublishOptions.delivery`** (#49): `'settled'` (the default and the
   previous behaviour) waits for every subscriber's handler turn, so a
   handler that throws is a `failures[]` entry the publisher can act on;

@@ -4478,3 +4478,20 @@ fraction of an actor's mutating turns that do not change a given watched
 projection. For `Fanout.current()` in the Tier-3 socket rig every publish
 changes the value, so `sockets/hot-fanout` should not move; a chat room whose
 presence map churns under a watched message list is the shape that does.
+
+## 2026-09-10 · The distinct fingerprint, without the codec for a primitive (#449)
+
+#447's A/B called `streams/live-watch` `rows=0/ops_per_sec` 258.7k → 229.9k
+(−12.6%, 5/5 rounds): the fingerprint walked a one-element array through
+the codec and stringified it, on a read whose result is a number. The
+`rows=200` arm did not move — there the read's own cost is the turn.
+
+`watchFingerprint` now tags a primitive by type and spells it itself
+(`n:`/`s:`/`t`/`f`/`u`/`b:`/`z`, with `-0`, `NaN` and bigint kept apart);
+only an object reaches `encode` + `JSON.stringify`. Injectivity across the
+values a read returns is unit-pinned (`watch-fingerprint.test.ts`), and
+`live/distinct`'s counts are unchanged (0 / 1 / 1 and 1 / 1 / 1).
+
+Local, contended laptop, informational: `rows=0` 184.6k → 210.3k
+(±18–28%, direction only). The bench VM's A/B on the PR is the figure to
+quote against the −12.6% it is meant to give back.

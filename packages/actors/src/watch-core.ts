@@ -283,6 +283,39 @@ export function declaresDistinct(opts: WatchDeclarationOptions, method: string):
 }
 
 /**
+ * The key a distinct live read compares consecutive results under (#442,
+ * #449). Injective across the values a read returns, so two results
+ * fingerprint alike only when the wire would carry the same bytes for them.
+ *
+ * A primitive is fingerprinted WITHOUT the codec: a tag for its type plus
+ * its own text (`-0`, `NaN` and a bigint spelled so they cannot collide
+ * with a number or a string). The common live read returns one — a count,
+ * a status, a flag — and walking a one-element array through the codec to
+ * compare it measured ~12% of a trivial read's turn (`streams/live-watch`
+ * at zero rows, the #447 A/B). Objects still go through `encode` and
+ * `JSON.stringify`, which is the form the wire carries; a key-order
+ * difference between two reads of the same object costs one redundant
+ * delivery, never a wrong dedupe.
+ */
+export function watchFingerprint(value: unknown, encode: (value: unknown) => unknown): string {
+    switch (typeof value) {
+        case 'number':
+            return `n:${Object.is(value, -0) ? '-0' : String(value)}`;
+        case 'string':
+            return `s:${value}`;
+        case 'boolean':
+            return value ? 't' : 'f';
+        case 'undefined':
+            return 'u';
+        case 'bigint':
+            return `b:${value}`;
+        default:
+            if (value === null) return 'z';
+            return `o:${JSON.stringify(encode(value))}`;
+    }
+}
+
+/**
  * Did this method declare its watched read principal-independent (#138)?
  *
  * Read INDEPENDENTLY by both sides — the relay, to drop the principal from
