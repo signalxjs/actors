@@ -50,8 +50,22 @@ function watched(distinct: boolean) {
 
 const MUTATIONS = 50;
 
-/** Let a mutating turn's boundary reach the loop and the loop's re-read settle. */
+/** One macrotask boundary — the smallest step that lets queued microtasks and a `throttleMs: 0` window run. */
 const drain = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
+ * Wait for the loop's RE-READ, not for time to pass: after a mutating turn
+ * the read counter moves exactly once, and only after it has can an
+ * emission (or its deliberate absence) be counted. Bounded so a broken loop
+ * fails the scenario instead of hanging it; the bound is generous because
+ * it is never reached on a working one. Then one more boundary, so a push
+ * that follows the read has landed in the consumer before the count is read.
+ */
+async function afterReRead(expected: number): Promise<void> {
+    for (let i = 0; i < 1_000 && reads < expected; i++) await drain();
+    if (reads < expected) throw new Error(`live/distinct: the watch never re-read (reads=${reads}, expected ${expected})`);
+    await drain();
+}
 
 const distinctDeliveries: Scenario = {
     name: 'live/distinct',
@@ -101,8 +115,7 @@ const distinctDeliveries: Scenario = {
                 reads = 0;
                 for (let i = 0; i < MUTATIONS; i++) {
                     await fixture.host.dispatch(ref, 'view', [], call);
-                    await drain();
-                    await drain();
+                    await afterReRead(i + 1);
                 }
                 const unrelatedEmissions = emissions;
                 const unrelatedReads = reads;
@@ -111,8 +124,7 @@ const distinctDeliveries: Scenario = {
                 reads = 0;
                 for (let i = 0; i < MUTATIONS; i++) {
                     await fixture.host.dispatch(ref, 'add', [`i${i}`], call);
-                    await drain();
-                    await drain();
+                    await afterReRead(i + 1);
                 }
                 const relevantEmissions = emissions;
 

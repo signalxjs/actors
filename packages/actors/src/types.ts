@@ -1633,9 +1633,10 @@ export type ActorReadCache = ServerFnReadCache;
 /**
  * What one watched method promises about how it is shared (#138).
  *
- * The only member today is {@link ActorWatchDeclaration.principalIndependent};
- * the wrapping object exists so a later property (a forced per-principal
- * split, say) does not need a second `ActorOptions` key.
+ * Two flags today — {@link ActorWatchDeclarationFlags.principalIndependent}
+ * (#138) and {@link ActorWatchDeclarationFlags.distinct} (#442) — and a
+ * declaration must carry at least one; the wrapping object exists so a
+ * later property does not need a second `ActorOptions` key.
  */
 export type ActorWatchDeclaration =
     | (ActorWatchDeclarationFlags & { principalIndependent: true })

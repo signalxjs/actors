@@ -105,7 +105,7 @@ export function validateWatchDeclarations(
     if (typeof map !== 'object' || map === null || Array.isArray(map)) {
         throw new Error(
             `${at} \`watches\` must be an object mapping method names to ` +
-                `{ principalIndependent: true } and/or { distinct: false }.`
+                `\`{ principalIndependent: true }\` and/or \`{ distinct: false }\`.`
         );
     }
     for (const method of Object.keys(map)) {
