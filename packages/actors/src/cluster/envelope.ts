@@ -210,12 +210,35 @@ export function decodeEnvelope(header: string): DecodedEnvelope {
 // hosts. Extending the HMAC over the bag would be a HOST_PROTO bump and a
 // mixed-version deploy problem — deliberately not taken for v1.
 //
-// Cost: ~9µs per sign/verify with the key cached (import is ~2ms, paid
-// once per secret per process) vs ≥200µs for even a loopback hop.
+// Cost: the arithmetic is ~2µs; what a call actually pays depends on WHICH
+// HMAC runs it (#440). WebCrypto's `subtle.sign` is asynchronous by
+// contract and on Node hops the libuv threadpool — measured at ~27µs per
+// call sequentially (~6µs amortized at 64 in flight), with the key cached
+// (import is ~2ms, paid once per secret per process). `node:crypto`'s
+// `createHmac` does the same arithmetic synchronously in ~2µs. Sign and
+// verify both sit on a cross-host call's critical path, so the seam below
+// lets a Node deployment swap the implementation without touching the wire.
 
 /** Accept signatures this far from the receiver's clock, either way. A
  *  generous window so HMAC does not reintroduce clock-skew sensitivity. */
 const AUTH_WINDOW_MS = 5 * 60_000;
+
+/**
+ * How the cluster computes its HMAC-SHA-256 (#440).
+ *
+ * The seam is the hash alone — the message format, the header grammar and
+ * the freshness window stay in this module, so two hosts on different
+ * implementations verify each other byte for byte and a fleet can roll
+ * from one to the other with no flag day. `hex` may return synchronously;
+ * every caller branches on the result rather than awaiting it, so a sync
+ * implementation costs no microtask and, more to the point, no threadpool
+ * round trip. `webCryptoHmac` is the WinterCG-clean default;
+ * `nodeHmac()` on `@sigx/actors/node` is the synchronous one.
+ */
+export interface HostHmac {
+    /** Lowercase hex HMAC-SHA-256 of `message` under `secret`. */
+    hex(secret: string, message: string): string | Promise<string>;
+}
 
 const encoder = new TextEncoder();
 const keyCache = new Map<string, Promise<CryptoKey>>();
@@ -235,33 +258,72 @@ function keyFor(secret: string): Promise<CryptoKey> {
     return key;
 }
 
+/** Byte → two lowercase hex digits, built once. */
+const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+
 function toHex(bytes: ArrayBuffer): string {
-    return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('');
+    const view = new Uint8Array(bytes);
+    let out = '';
+    for (let i = 0; i < view.length; i++) out += HEX[view[i] as number];
+    return out;
 }
 
-async function hmacHex(
+/** The default `HostHmac`: WebCrypto, asynchronous, runs everywhere. */
+export const webCryptoHmac: HostHmac = {
+    hex: (secret, message) =>
+        keyFor(secret)
+            .then((key) => crypto.subtle.sign('HMAC', key, encoder.encode(message)))
+            .then(toHex)
+};
+
+function authMessage(symbol: string, callId: string, timestamp: number): string {
+    return `${HOST_PROTO}\n${symbol}\n${callId}\n${timestamp}`;
+}
+
+/**
+ * The auth header value for one outbound host call, under `hmac`. A string
+ * when the implementation is synchronous, a promise otherwise — branch on
+ * it rather than `await`ing, or the sync path pays a microtask for nothing.
+ */
+export function signAuthWith(
+    hmac: HostHmac,
     secret: string,
     symbol: string,
-    callId: string,
-    timestamp: number
-): Promise<string> {
-    const message = `${HOST_PROTO}\n${symbol}\n${callId}\n${timestamp}`;
-    return toHex(await crypto.subtle.sign('HMAC', await keyFor(secret), encoder.encode(message)));
+    callId: string
+): string | Promise<string> {
+    const timestamp = Date.now();
+    const hex = hmac.hex(secret, authMessage(symbol, callId, timestamp));
+    return typeof hex === 'string'
+        ? `v1.${timestamp}.${hex}`
+        : hex.then((h) => `v1.${timestamp}.${h}`);
 }
 
 /** Produce the auth header value for one outbound host call. */
-export async function signAuth(secret: string, symbol: string, callId: string): Promise<string> {
-    const timestamp = Date.now();
-    return `v1.${timestamp}.${await hmacHex(secret, symbol, callId, timestamp)}`;
+export function signAuth(
+    secret: string,
+    symbol: string,
+    callId: string,
+    hmac: HostHmac = webCryptoHmac
+): Promise<string> {
+    try {
+        return Promise.resolve(signAuthWith(hmac, secret, symbol, callId));
+    } catch (error) {
+        return Promise.reject(error);
+    }
 }
 
-/** Verify an inbound auth header against the call it claims to authorize. */
-export async function verifyAuth(
+/**
+ * Verify an inbound auth header against the call it claims to authorize,
+ * under `hmac`. Same sync-or-promise contract as `signAuthWith`; every
+ * format rejection is synchronous whichever implementation is in use.
+ */
+export function verifyAuthWith(
+    hmac: HostHmac,
     secret: string,
     header: string | null,
     symbol: string,
     callId: string
-): Promise<boolean> {
+): boolean | Promise<boolean> {
     if (!header) return false;
     const parts = header.split('.');
     if (parts.length !== 3) return false;
@@ -272,6 +334,23 @@ export async function verifyAuth(
     const timestamp = Number(timestampRaw);
     if (!Number.isSafeInteger(timestamp)) return false;
     if (Math.abs(Date.now() - timestamp) > AUTH_WINDOW_MS) return false;
-    const expected = await hmacHex(secret, symbol, callId, timestamp);
-    return timingSafeEquals(signature, expected);
+    const expected = hmac.hex(secret, authMessage(symbol, callId, timestamp));
+    return typeof expected === 'string'
+        ? timingSafeEquals(signature, expected)
+        : expected.then((e) => timingSafeEquals(signature, e));
+}
+
+/** Verify an inbound auth header against the call it claims to authorize. */
+export function verifyAuth(
+    secret: string,
+    header: string | null,
+    symbol: string,
+    callId: string,
+    hmac: HostHmac = webCryptoHmac
+): Promise<boolean> {
+    try {
+        return Promise.resolve(verifyAuthWith(hmac, secret, header, symbol, callId));
+    } catch (error) {
+        return Promise.reject(error);
+    }
 }

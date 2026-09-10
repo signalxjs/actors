@@ -22,7 +22,7 @@ import {
     FrameType,
     type Frame
 } from './frames';
-import { decodeEnvelope, verifyAuth } from './envelope';
+import { decodeEnvelope, verifyAuthWith, webCryptoHmac } from './envelope';
 import type { HostCallMode, HostTransportConfig, HostTransportRuntime } from './seam';
 import { parseWatchOptions } from './watch-symbol';
 import type { ActorCallContext } from '../types';
@@ -622,7 +622,7 @@ export class HostConnection {
             return false;
         }
         if (callId === '') return false;
-        return await verifyAuth(secret, p?.h ?? null, symbol, callId);
+        return verifyAuthWith(this.#o.config.hmac ?? webCryptoHmac, secret, p?.h ?? null, symbol, callId);
     }
 
     #prepare(

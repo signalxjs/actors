@@ -79,7 +79,11 @@ export {
     decodeEnvelope,
     encodeEnvelope,
     signAuth,
-    verifyAuth
+    signAuthWith,
+    verifyAuth,
+    verifyAuthWith,
+    webCryptoHmac,
+    type HostHmac
 } from './envelope';
 export type {
     ActorDirectory,

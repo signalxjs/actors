@@ -1559,13 +1559,44 @@ export class Activation {
     // -----------------------------------------------------------------------
     // Internals
 
-    async #turn(
+    /**
+     * NOT `async` (#438). This frame used to be an async function whose
+     * body awaited the method and ran the epilogue in a `finally`; the
+     * language then resolved the frame's own promise with the method's —
+     * a thenable adoption that costs two microtask turns per turn on top of
+     * the await. Now the epilogue rides `result.then(ok, err)` directly and
+     * the frame returns that promise (or the method's plain value), which
+     * `Turns.run` adopts once. Behaviour is the same, and each rule below is
+     * the one the async form had:
+     *
+     *  - a prologue failure (pending reload failing, a faulted activation,
+     *    an expired deadline) throws BEFORE the observer is armed, so no
+     *    observer call and no boundary — exactly as a throw before the old
+     *    `try` did; `Turns.run` invokes this inside a `then` handler, so a
+     *    synchronous throw is that turn's rejection, never anyone else's;
+     *  - `#currentCall` is set for as long as the method is running and
+     *    cleared in the epilogue, whether it succeeded or threw;
+     *  - the epilogue runs exactly once, after the method settles, in the
+     *    order the async `finally` ran it: observer first, `#afterTurn` last.
+     */
+    #turn(
         method: string,
         args: readonly unknown[],
         call: ActorCallContext,
         enqueuedAt = 0
-    ): Promise<unknown> {
-        if (this.#reloadPending) await this.#reload();
+    ): unknown {
+        if (this.#reloadPending) {
+            return this.#reload().then(() => this.#turnNow(method, args, call, enqueuedAt));
+        }
+        return this.#turnNow(method, args, call, enqueuedAt);
+    }
+
+    #turnNow(
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        enqueuedAt: number
+    ): unknown {
         if (this.#faulted) throw this.#faulted;
         const started = Date.now();
         // Drop-on-dequeue (#384): the caller's deadline passed while this
@@ -1585,100 +1616,114 @@ export class Activation {
         const timing = __DEV__ || observer !== undefined;
         const startedAt = timing ? performance.now() : 0;
         this.#currentCall = call;
-        let failed = true;
+        const end = (failed: boolean): void =>
+            this.#endTurn(method, call, started, startedAt, timing, observer, enqueuedAt, failed);
+        let result: unknown;
         try {
             // On an interleaving activation the invoke runs under the call
-            // store; the serial path is byte-for-byte what it was (one
-            // null-check, no extra promise hop or allocation).
-            const result = this.#als
-                ? await this.#als.run(call, () => this.#invoke(method, args))
-                : await this.#invoke(method, args);
-            failed = false;
-            return result;
-        } finally {
-            this.#currentCall = null;
-            // The dev slow-turn warning and the observer want the same
-            // number, so compute it once and only when someone reads it.
-            const elapsed = timing ? performance.now() - startedAt : 0;
-            if (__DEV__ && elapsed > this.#host.slowTurnMs) {
-                const interleaved =
-                    this.#interleaveAll ||
-                    (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
-                console.warn(
-                    interleaved
-                        ? `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() ran for ` +
-                              `${elapsed}ms. Interleaved turns block no queued messages, but a ` +
-                              `slow one still delays deactivation and pins the activation.`
-                        : `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
-                              `activation for ${elapsed}ms. Awaits inside a turn block every queued ` +
-                              `message — move slow I/O out of the actor or split the method.`
-                );
-            }
-            if (observer) {
-                try {
-                    // enqueuedAt is 0 when observation was switched ON
-                    // between this message being queued and its turn
-                    // running. `startedAt - 0` would report process uptime as
-                    // a queue wait, so the first such turn reports 0 instead.
-                    const queued = enqueuedAt === 0 ? 0 : startedAt - enqueuedAt;
-                    observer(this.ref, method, queued, elapsed, failed, call);
-                } catch (error) {
-                    // A metrics plugin must never be able to fail a turn, nor
-                    // mask the real error this `finally` may be unwinding.
-                    if (__DEV__) {
-                        console.error(
-                            `[sigx actors] a turn observer threw for ` +
-                                `${actorLabel(this.ref)}.${method}():`,
-                            error
-                        );
-                    }
-                }
-            }
-            // AFTER the observer, on purpose: `failed` is "the method threw",
-            // and a bookkeeping failure here (a boundary snapshot whose codec
-            // throws) reaches the caller for a turn already reported as
-            // succeeded — the documented, test-pinned contract (#53). The
-            // rest of #afterTurn's bookkeeping still runs when that throws
-            // (#338).
-            this.#afterTurn(started);
+            // store; the serial path is one null-check and the invoke.
+            result = this.#als
+                ? this.#als.run(call, () => this.#invoke(method, args))
+                : this.#invoke(method, args);
+        } catch (error) {
+            // The method threw before its first await (or the method does
+            // not exist): the same epilogue the async `finally` ran.
+            end(true);
+            throw error;
         }
+        if (isPromiseLike(result)) {
+            return result.then(
+                (value) => {
+                    end(false);
+                    return value;
+                },
+                (error) => {
+                    end(true);
+                    throw error;
+                }
+            );
+        }
+        end(false);
+        return result;
     }
 
-    async #invoke(method: string, args: readonly unknown[]): Promise<unknown> {
-        const opts = this.def.__sigxActor;
-        if (method === REMINDER_METHOD) {
-            const name = String(args[0]);
-            if (name === TASK_REMINDER) {
-                // The runtime's liveness reminder — never the user's. Its
-                // real work already happened: delivery re-activated the
-                // actor and `create` resumed the ledgered runs. Here, only
-                // self-heal: restart an entry that somehow has no run, and
-                // disarm a reminder whose ledger is gone.
-                const ledger = await this.#loadLedger();
-                const entries = Object.entries(ledger);
-                if (entries.length === 0) {
-                    if (this.#tasks.size === 0) {
-                        await this.#ctx.reminders.clear(TASK_REMINDER);
-                    }
-                    return undefined;
-                }
-                for (const [taskName, entry] of entries) {
-                    if (!this.#tasks.has(taskName)) await this.#resumeTask(taskName, entry);
-                }
-                return undefined;
-            }
-            if (!opts.onReminder) {
+    /** The turn epilogue — what the async `#turn`'s `finally` block was. */
+    #endTurn(
+        method: string,
+        call: ActorCallContext,
+        started: number,
+        startedAt: number,
+        timing: boolean,
+        observer: ActivationHost['onTurn'],
+        enqueuedAt: number,
+        failed: boolean
+    ): void {
+        this.#currentCall = null;
+        // The dev slow-turn warning and the observer want the same
+        // number, so compute it once and only when someone reads it.
+        const elapsed = timing ? performance.now() - startedAt : 0;
+        if (__DEV__ && elapsed > this.#host.slowTurnMs) {
+            const interleaved =
+                this.#interleaveAll ||
+                (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
+            console.warn(
+                interleaved
+                    ? `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() ran for ` +
+                          `${elapsed}ms. Interleaved turns block no queued messages, but a ` +
+                          `slow one still delays deactivation and pins the activation.`
+                    : `[sigx actors] slow turn: ${actorLabel(this.ref)}.${method}() held the ` +
+                          `activation for ${elapsed}ms. Awaits inside a turn block every queued ` +
+                          `message — move slow I/O out of the actor or split the method.`
+            );
+        }
+        if (observer) {
+            try {
+                // enqueuedAt is 0 when observation was switched ON
+                // between this message being queued and its turn
+                // running. `startedAt - 0` would report process uptime as
+                // a queue wait, so the first such turn reports 0 instead.
+                const queued = enqueuedAt === 0 ? 0 : startedAt - enqueuedAt;
+                observer(this.ref, method, queued, elapsed, failed, call);
+            } catch (error) {
+                // A metrics plugin must never be able to fail a turn, nor
+                // mask the real error this epilogue may be unwinding.
                 if (__DEV__) {
-                    console.warn(
-                        `[sigx actors] reminder "${name}" fired on ${actorLabel(this.ref)}, which ` +
-                            `has no onReminder handler — clearing it.`
+                    console.error(
+                        `[sigx actors] a turn observer threw for ` +
+                            `${actorLabel(this.ref)}.${method}():`,
+                        error
                     );
                 }
-                await this.#ctx.reminders.clear(name);
-                return undefined;
             }
-            return opts.onReminder(this.#ctx, name);
         }
+        // AFTER the observer, on purpose: `failed` is "the method threw",
+        // and a bookkeeping failure here (a boundary snapshot whose codec
+        // throws) reaches the caller for a turn already reported as
+        // succeeded — the documented, test-pinned contract (#53). The
+        // rest of #afterTurn's bookkeeping still runs when that throws
+        // (#338).
+        //
+        // `elapsed` is a `performance.now()` difference — fractional — and
+        // `started` an integer wall-clock ms. Floored, so the activity stamp
+        // can never sit AHEAD of the sweeper's own `Date.now()`: a
+        // fractional stamp made `idleAfterMs: 0` skip an activation whose
+        // turn ended in the same millisecond the sweep ran (CI caught it on
+        // a fast box).
+        this.#afterTurn(started + Math.floor(elapsed));
+    }
+
+    /**
+     * NOT `async` (#438): the common path returns the method's own promise
+     * (or plain value) straight through. Wrapping it in an async frame cost
+     * one promise and two microtask turns per call for nothing — the caller
+     * awaits the result either way, and a synchronous throw here
+     * (`ActorMethodNotFoundError`, a method body throwing before its first
+     * await) lands in the same `try` an async rejection would have. The
+     * reminder delivery is the one branch that awaits, so it keeps its own
+     * async helper.
+     */
+    #invoke(method: string, args: readonly unknown[]): unknown {
+        if (method === REMINDER_METHOD) return this.#invokeReminder(String(args[0]));
         if (method === TOPIC_METHOD) {
             const event = args[0] as TopicEvent;
             const handler = subscriptionHandler(
@@ -1713,8 +1758,54 @@ export class Activation {
         return fn(...(args as unknown[]));
     }
 
-    #afterTurn(startedMs: number): void {
-        this.lastActivityMs = Math.max(this.lastActivityMs, startedMs, Date.now());
+    async #invokeReminder(name: string): Promise<unknown> {
+        const opts = this.def.__sigxActor;
+        if (name === TASK_REMINDER) {
+            // The runtime's liveness reminder — never the user's. Its
+            // real work already happened: delivery re-activated the
+            // actor and `create` resumed the ledgered runs. Here, only
+            // self-heal: restart an entry that somehow has no run, and
+            // disarm a reminder whose ledger is gone.
+            const ledger = await this.#loadLedger();
+            const entries = Object.entries(ledger);
+            if (entries.length === 0) {
+                if (this.#tasks.size === 0) {
+                    await this.#ctx.reminders.clear(TASK_REMINDER);
+                }
+                return undefined;
+            }
+            for (const [taskName, entry] of entries) {
+                if (!this.#tasks.has(taskName)) await this.#resumeTask(taskName, entry);
+            }
+            return undefined;
+        }
+        if (!opts.onReminder) {
+            if (__DEV__) {
+                console.warn(
+                    `[sigx actors] reminder "${name}" fired on ${actorLabel(this.ref)}, which ` +
+                        `has no onReminder handler — clearing it.`
+                );
+            }
+            await this.#ctx.reminders.clear(name);
+            return undefined;
+        }
+        return opts.onReminder(this.#ctx, name);
+    }
+
+    /**
+     * `activeMs` is the wall-clock moment this turn was last known active:
+     * its start, plus its measured duration whenever the turn was being
+     * timed (an observer attached, or any `__DEV__` build). Not a fresh
+     * `Date.now()` — that was a second clock read on every turn (#438), and
+     * the only thing it bought was precision for a turn that ran longer than
+     * `idleAfterMs` (20 min by default) with nothing timing it: such a
+     * turn's END is now approximated by its START, so the sweeper may
+     * collect that activation one tick sooner than before. A running turn is
+     * never swept (`idle` is false while `turns.depth > 0`), so nothing
+     * in flight is affected.
+     */
+    #afterTurn(activeMs: number): void {
+        if (activeMs > this.lastActivityMs) this.lastActivityMs = activeMs;
         // Fold the turn's writes into #version FIRST — the walk that
         // re-subscribes anything this turn added happens here, once per
         // dirty boundary, before the comparisons below read #version.
@@ -3172,3 +3263,16 @@ export class Activation {
 }
 
 export { mintCallId };
+
+/**
+ * The thenable test `#turnNow` branches on. Duck-typed rather than
+ * `instanceof Promise`, because a method may return a foreign-realm or
+ * userland thenable and the epilogue must still wait for it.
+ */
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+    return (
+        value !== null &&
+        (typeof value === 'object' || typeof value === 'function') &&
+        typeof (value as { then?: unknown }).then === 'function'
+    );
+}

@@ -13,7 +13,7 @@ authority on posture.
 | | Public actor endpoint | Internal host-to-host |
 |---|---|---|
 | Who calls it | browsers, service clients | peer hosts only |
-| Auth | your guards, `ctx.principal` | shared-secret HMAC per call |
+| Auth | your guards, `ctx.principal` | shared-secret HMAC per call; the hash is a seam, `cluster({ hmac })` — `webCryptoHmac` by default, `nodeHmac()` for a synchronous `node:crypto` path (#440) |
 | Reserved methods | **refused outright** | this is where they arrive |
 | `internal: true` types | **refused as unregistered** (404) | served |
 | Exists when | always | only if a transport declares a route |

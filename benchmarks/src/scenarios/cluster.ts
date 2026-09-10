@@ -19,6 +19,7 @@ import {
     preferLocalPolicy,
     randomPlacementPolicy
 } from '@sigx/actors/cluster';
+import { nodeHmac } from '@sigx/actors/node';
 import { createCluster, selfPolicy } from '../cluster-harness.ts';
 import { benchCall } from '../host-fixture.ts';
 import { closedLoop, LATENCY_NOISE_FLOOR_MS } from '../loop.ts';
@@ -720,7 +721,79 @@ const localityWarm: Scenario = {
     }
 };
 
+/**
+ * How many times a secured cross-host call enters `crypto.subtle.sign`
+ * (#440) — a COUNT, so it gates. Under the default `webCryptoHmac` a hop is
+ * one sign on the caller and one verify on the owner, both through
+ * `subtle.sign`, both a libuv threadpool round trip on Node: 2 per hop.
+ * Under `nodeHmac()` the same HMAC-SHA-256 runs synchronously on the
+ * calling thread: 0. The wire is identical either way, which the harness
+ * proves by the calls succeeding at all.
+ *
+ * Counted by wrapping `SubtleCrypto.prototype.sign` for the measured
+ * window only; the route is warmed first so the count is the steady-state
+ * hop and not the directory lookup.
+ */
+const hopHmacCalls: Scenario = {
+    name: 'cluster/hop-hmac-calls',
+    description: 'crypto.subtle.sign calls per secured cross-host call, webCryptoHmac vs nodeHmac() (exact)',
+    async run(): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        const CALLS = 200;
+        for (const [label, hmac] of [
+            ['webcrypto', undefined],
+            ['node', nodeHmac()]
+        ] as const) {
+            const harness = await createCluster(2, {
+                actors: [Counted],
+                policy: selfPolicy,
+                secret: 'bench-secret',
+                ...(hmac ? { hmac } : {})
+            });
+            try {
+                const [a, b] = harness.hosts as [
+                    (typeof harness.hosts)[number],
+                    (typeof harness.hosts)[number]
+                ];
+                const call = benchCall();
+                const remoteRef = { type: Counted.type, key: 'remote' };
+                // b owns it; a's first call learns the route.
+                await b.dispatch(remoteRef, 'noop', [], call);
+                await a.dispatch(remoteRef, 'noop', [], call);
+
+                const subtle = Object.getPrototypeOf(globalThis.crypto.subtle) as {
+                    sign: (...args: unknown[]) => Promise<ArrayBuffer>;
+                };
+                const original = subtle.sign;
+                let signs = 0;
+                subtle.sign = function (this: unknown, ...args: unknown[]) {
+                    signs++;
+                    return original.apply(this, args);
+                };
+                try {
+                    for (let i = 0; i < CALLS; i++) await a.dispatch(remoteRef, 'noop', [], call);
+                } finally {
+                    subtle.sign = original;
+                }
+                metrics.push({
+                    name: `${label}/subtle_sign_per_hop`,
+                    value: signs / CALLS,
+                    unit: 'count',
+                    direction: 'lower',
+                    // Deterministic by construction: a hop signs once and
+                    // verifies once, or not at all.
+                    exact: true
+                });
+            } finally {
+                await harness.stop();
+            }
+        }
+        return metrics;
+    }
+};
+
 export const clusterScenarios: Scenario[] = [
+    hopHmacCalls,
     membershipFanout,
     directoryOpsPerActivation,
     placementChoose,
