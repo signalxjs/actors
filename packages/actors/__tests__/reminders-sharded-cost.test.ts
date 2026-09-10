@@ -115,6 +115,9 @@ describe('the sharded default, as storage-op counts', () => {
         counts.reset();
         await api.clear('never-set');
         expect(counts.saves).toBe(0);
+        // An inherited name is not a reminder either — own keys only.
+        await api.clear('toString');
+        expect(counts.saves).toBe(0);
         await api.clear('warm');
         expect(counts.saves).toBe(1);
         expect(await api.list()).toEqual([]);
@@ -178,7 +181,14 @@ describe('the sharded default, as storage-op counts', () => {
         const { service } = bind(storage);
         const stalled = service.apiFor({ type: 'Waking', key: keyInShard(1) }).set('slow', { due: FAR_MS });
         const other = service.apiFor({ type: 'Waking', key: keyInShard(2) }).set('fast', { due: FAR_MS });
-        const raced = await Promise.race([other.then(() => 'other'), new Promise((r) => setTimeout(() => r('timeout'), 200))]);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const raced = await Promise.race([
+            other.then(() => 'other'),
+            new Promise((r) => {
+                timer = setTimeout(() => r('timeout'), 200);
+            })
+        ]);
+        clearTimeout(timer);
         expect(raced).toBe('other');
         release();
         await stalled;

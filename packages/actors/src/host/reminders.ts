@@ -178,7 +178,10 @@ export class ReminderService implements ActorReminders {
             clear: (name) =>
                 this.#mutate(shard, (table) => {
                     const entries = table[id];
-                    if (!entries || !(name in entries)) return false;
+                    // Own keys only: a reminder named `toString` is absent
+                    // unless the actor set it, and an absent name is a no-op
+                    // that must not write.
+                    if (!entries || !Object.hasOwn(entries, name)) return false;
                     delete entries[name];
                     if (Object.keys(entries).length === 0) delete table[id];
                     return true;
