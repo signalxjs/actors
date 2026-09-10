@@ -482,20 +482,25 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             sums: Record<string, number>;
         }
         // Counts sum across shards; percentiles do not, so `nodeMs` and
-        // `wakeLagMs` come from the first shard and the row says so.
-        const snaps: Snap[] = [];
+        // `wakeLagMs` come from ONE shard — the first key, or if its snapshot
+        // failed the first that answered — and the row names it
+        // (`statsPercentilesFrom`), so a row can never quietly switch source.
+        const snaps: { key: string; snap: Snap }[] = [];
         for (const key of shardKeys) {
             const snap = await call('WorkflowStats', 'snapshot', [key]);
-            if (snap.data) snaps.push(snap.data as Snap);
+            if (snap.data) snaps.push({ key, snap: snap.data as Snap });
+            else tally(`snapshot:${key}:${snap.error ?? 'no-data'}`);
         }
+        const source = snaps.find((s) => s.key === shardKeys[0]) ?? snaps[0];
+        const statsPercentilesFrom = source?.key ?? null;
         const stats: Snap | null =
-            snaps.length === 0
+            source === undefined
                 ? null
                 : {
-                      nodeMs: snaps[0]!.nodeMs,
-                      wakeLagMs: snaps[0]!.wakeLagMs,
-                      sums: snaps.reduce<Record<string, number>>((acc, s) => {
-                          for (const [k, v] of Object.entries(s.sums)) acc[k] = (acc[k] ?? 0) + v;
+                      nodeMs: source.snap.nodeMs,
+                      wakeLagMs: source.snap.wakeLagMs,
+                      sums: snaps.reduce<Record<string, number>>((acc, { snap }) => {
+                          for (const [k, v] of Object.entries(snap.sums)) acc[k] = (acc[k] ?? 0) + v;
                           return acc;
                       }, {})
                   };
@@ -521,6 +526,7 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             durationMs: Math.round(arrivalsMs),
             drainMs: Math.round(drainMs),
             generatorCpuMs,
+            statsPercentilesFrom,
             started: counts.started,
             startFailures: counts.startFailures,
             startsDeferred: counts.startsDeferred,
