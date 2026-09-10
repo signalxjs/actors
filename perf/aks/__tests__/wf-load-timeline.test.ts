@@ -164,9 +164,14 @@ describe('runBudgetMs', () => {
         expect(runBudgetMs({ durationS: '5400', WF_DRAIN_S: '240' })).toBe((5400 + 240 + 900) * 1000);
     });
 
+    it('reads a knob only from the keys the run path consumes', () => {
+        // `loadgen.WF_DRAIN_S` is not a key runWfLoad maps, so it must not shape the budget.
+        expect(runBudgetMs({ durationS: '5400', 'loadgen.WF_DRAIN_S': '60' })).toBe((5400 + 120 + 900) * 1000);
+    });
+
     it('sums a sweep', () => {
         // three rungs of 60 s, the default 120 s drain each, plus margin — still under an hour.
         expect(runBudgetMs({ sweep: '100,200,400', durationS: '60' })).toBe(3_600_000);
-        expect(runBudgetMs({ sweep: '100,200', durationS: '1800', 'loadgen.WF_DRAIN_S': '60' })).toBe((2 * (1800 + 60) + 900) * 1000);
+        expect(runBudgetMs({ sweep: '100,200', durationS: '1800', 'loadgen.wf.WF_DRAIN_S': '60' })).toBe((2 * (1800 + 60) + 900) * 1000);
     });
 });

@@ -370,8 +370,10 @@ export function restartDelta(before, after) {
  * generator still running and its row never written (2026-09-10).
  */
 export function runBudgetMs(values) {
+    // The keys the run path consumes: a chart value under `loadgen.`, a
+    // knob under `loadgen.wf.` (where runWfLoad puts a bare WF_* value).
     const num = (key, fallback) => {
-        const raw = values[key] ?? values[`loadgen.${key}`] ?? values[`loadgen.wf.${key}`];
+        const raw = values[key] ?? (key.startsWith('WF_') ? values[`loadgen.wf.${key}`] : values[`loadgen.${key}`]);
         const n = raw === undefined || raw === '' ? fallback : Number(raw);
         return Number.isFinite(n) && n > 0 ? n : fallback;
     };
