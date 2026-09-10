@@ -112,7 +112,7 @@ describe('WorkflowStats — sharded and appending', { timeout: 20_000 }, () => {
         for (const id of ids) expect(SHARDS).toContain(wf.statsShardKey(id));
     });
 
-    it('persists each event as an appended entry and compacts every WF_STATS_COMPACT_EVERY', async () => {
+    it('persists each event as an appended entry, compacts every WF_STATS_COMPACT_EVERY, and a fresh activation replays the log', async () => {
         // One shard on its own: hash-pick ids that land on s0 until we have 20.
         for (const key of SHARDS) await host.actor(wf.WorkflowStats, key).reset();
         const ids: string[] = [];
@@ -144,14 +144,11 @@ describe('WorkflowStats — sharded and appending', { timeout: 20_000 }, () => {
         const seqs = drained.events.map((e) => e.seq);
         const last = (await stats.snapshot()).seq;
         expect(seqs).toEqual(Array.from({ length: 20 }, (_, i) => last - 19 + i));
-    });
 
-    // The reason append mode is safe to run: a fresh activation on another
-    // host sees the compacted state PLUS the replayed log, not just the
-    // last full save. Same storage, new host, nothing else.
-    it('a fresh activation replays the appended log onto the compacted state', async () => {
-        const before = await host.actor(wf.WorkflowStats, 's0').snapshot();
-        expect(before.total).toBe(20);
+        // The reason append mode is safe to run: a fresh activation on
+        // another host sees the compacted state PLUS the replayed log, not
+        // just the last full save. Same storage, new host, nothing else.
+        const before = await stats.snapshot();
         await host.stop();
         host = await defineActorApp({
             actors: [...wf.workflowActors],
@@ -163,8 +160,8 @@ describe('WorkflowStats — sharded and appending', { timeout: 20_000 }, () => {
         expect(after.seq).toBe(before.seq);
         expect(after.byTemplate).toEqual(before.byTemplate);
         expect(after.sums).toEqual(before.sums);
-        const drained = await host.actor(wf.WorkflowStats, 's0').drain('append', 0, 100_000);
-        expect(drained.events).toHaveLength(20);
+        const replayed = await host.actor(wf.WorkflowStats, 's0').drain('append', 0, 100_000);
+        expect(replayed.events).toHaveLength(20);
         // The compaction cadence survives the restart: the four replayed
         // entries count, so four more events (24 = 3 × 8) compact the ring
         // rather than starting a fresh count of eight.
@@ -176,13 +173,13 @@ describe('WorkflowStats — sharded and appending', { timeout: 20_000 }, () => {
         await Promise.all(
             more.map((id) => host.actor(wf.WorkflowRun, id).start({ workflow: 'quick', template: 'q', tag: 'append' }))
         );
-        const deadline = Date.now() + 8_000;
+        const deadline2 = Date.now() + 8_000;
         while ((await host.actor(wf.WorkflowStats, 's0').snapshot()).total < 24) {
-            if (Date.now() > deadline) throw new Error('s0 did not see 24 events');
+            if (Date.now() > deadline2) throw new Error('s0 did not see 24 events');
             await sleep(20);
         }
-        const record = await storage.load('WorkflowStats', 's0');
-        expect((record!.state as { total: number }).total).toBe(24);
-        expect(record!.log).toHaveLength(0);
+        const compacted = await storage.load('WorkflowStats', 's0');
+        expect((compacted!.state as { total: number }).total).toBe(24);
+        expect(compacted!.log).toHaveLength(0);
     });
 });

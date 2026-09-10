@@ -485,11 +485,22 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         // `wakeLagMs` come from ONE shard — the first key, or if its snapshot
         // failed the first that answered — and the row names it
         // (`statsPercentilesFrom`), so a row can never quietly switch source.
+        // A body is a Snap only if its sums are all numbers: an older host or
+        // a garbled reply is tallied and left out rather than summed as NaN.
+        const isSnap = (d: unknown): d is Snap => {
+            if (!d || typeof d !== 'object') return false;
+            const sums = (d as { sums?: unknown }).sums;
+            return (
+                !!sums &&
+                typeof sums === 'object' &&
+                Object.values(sums as Record<string, unknown>).every((v) => typeof v === 'number' && Number.isFinite(v))
+            );
+        };
         const snaps: { key: string; snap: Snap }[] = [];
         for (const key of shardKeys) {
             const snap = await call('WorkflowStats', 'snapshot', [key]);
-            if (snap.data) snaps.push({ key, snap: snap.data as Snap });
-            else tally(`snapshot:${key}:${snap.error ?? 'no-data'}`);
+            if (isSnap(snap.data)) snaps.push({ key, snap: snap.data });
+            else tally(`snapshot:${key}:${snap.error ?? 'malformed'}`);
         }
         const source = snaps.find((s) => s.key === shardKeys[0]) ?? snaps[0];
         const statsPercentilesFrom = source?.key ?? null;
