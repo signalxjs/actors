@@ -44,6 +44,11 @@ function counting(inner: ActorStorage = memoryStorage()): { storage: ActorStorag
             this.saves = 0;
         }
     };
+    // A decorator forwards the OPTIONAL members too (the `ActorStorage`
+    // contract): dropping `saveText` would silently route the provider onto
+    // the two-walk `save` path and count something the real adapter never
+    // does. `saveText` IS a save for the count's purposes — one CAS write.
+    const { saveText, appendText } = inner;
     const storage: ActorStorage = {
         load: (type, key) => {
             if (type === REMINDER_TYPE) counts.loads++;
@@ -53,7 +58,16 @@ function counting(inner: ActorStorage = memoryStorage()): { storage: ActorStorag
             if (type === REMINDER_TYPE) counts.saves++;
             return inner.save(type, key, state, expectedEtag);
         },
-        clear: (type, key, expectedEtag) => inner.clear(type, key, expectedEtag)
+        clear: (type, key, expectedEtag) => inner.clear(type, key, expectedEtag),
+        ...(saveText
+            ? {
+                  saveText: (type: string, key: string, json: string, expectedEtag: string | null) => {
+                      if (type === REMINDER_TYPE) counts.saves++;
+                      return saveText.call(inner, type, key, json, expectedEtag);
+                  }
+              }
+            : {}),
+        ...(appendText ? { appendText: appendText.bind(inner) } : {})
     };
     return { storage, counts, inner };
 }
@@ -115,7 +129,11 @@ describe('the sharded default, as storage-op counts', () => {
 
         // Another host writes the same shard behind our back.
         const record = (await inner.load(REMINDER_TYPE, 'p5')) as ActorStorageRecord;
-        const foreign = { ...(record.state as Record<string, unknown>), ['Waking0000other']: { z: { nextDue: Date.now() + FAR_MS } } };
+        // The same `type NUL key` shape the production table uses.
+        const foreign = {
+            ...(record.state as Record<string, unknown>),
+            [`Waking${NUL}other`]: { z: { nextDue: Date.now() + FAR_MS } }
+        };
         await inner.save(REMINDER_TYPE, 'p5', foreign, record.etag);
 
         counts.reset();
