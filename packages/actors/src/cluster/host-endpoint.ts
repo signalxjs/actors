@@ -28,7 +28,14 @@ import {
     type ServerFnRequestOptions
 } from '@sigx/server/server';
 import type { ActorCallContext, ActorRef, AnyActorDefinition, Host } from '../types';
-import { decodeEnvelope, verifyAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from './envelope';
+import {
+    decodeEnvelope,
+    verifyAuthWith,
+    webCryptoHmac,
+    HOST_AUTH_HEADER,
+    HOST_CALL_HEADER,
+    type HostHmac
+} from './envelope';
 import type { ClusterPlacement } from './placement';
 import type { HostCallTarget, HostEndpointRuntime, HostTransportRuntime } from './seam';
 import {
@@ -53,6 +60,8 @@ export interface HostRequestOptions extends HostEndpointOptions {
     placement: ClusterPlacement;
     /** Shared cluster secret; when set, requests without it are 403'd. */
     secret?: string;
+    /** The HMAC implementation verifying under `secret` (#440). Default `webCryptoHmac`. */
+    hmac?: HostHmac;
 }
 
 /** The runtime-shaped form `httpTransport()` uses. */
@@ -65,7 +74,17 @@ export interface HostRuntimeRequestOptions extends HostEndpointOptions {
      */
     runtime: HostEndpointRuntime;
     secret?: string;
+    /** The HMAC implementation verifying under `secret` (#440). Default `webCryptoHmac`. */
+    hmac?: HostHmac;
 }
+
+/**
+ * The envelope a secured request already had decoded for its `callId`,
+ * handed to `prepare` so the header is parsed ONCE per call (#440). Keyed
+ * on the `Request` core passes through; a mount that hands `prepare` a
+ * different object simply misses and decodes, as it always did.
+ */
+const decodedEnvelopes = new WeakMap<Request, ReturnType<typeof decodeEnvelope>>();
 
 /** The internal mount's default path — must agree with `matchesHostRequest`
  *  and with what reaches core (signalxjs/core#563). */
@@ -249,7 +268,7 @@ export async function handleHostRequestForRuntime(
     request: Request,
     options: HostRuntimeRequestOptions
 ): Promise<Response> {
-    const { runtime, secret, ...rest } = options;
+    const { runtime, secret, hmac, ...rest } = options;
     // The same base core is about to route on, or the pre-check would read a
     // symbol out of a different slice of the path than the resolver does.
     const base = rest.base ?? DEFAULT_HOST_BASE;
@@ -284,13 +303,27 @@ export async function handleHostRequestForRuntime(
         const callHeader = request.headers.get(HOST_CALL_HEADER);
         let callId = '';
         try {
-            callId = callHeader ? decodeEnvelope(callHeader).call.callId : '';
+            if (callHeader) {
+                const decoded = decodeEnvelope(callHeader);
+                callId = decoded.call.callId;
+                decodedEnvelopes.set(request, decoded);
+            }
         } catch {
             callId = '';
         }
-        const ok =
-            callId !== '' &&
-            (await verifyAuth(secret, request.headers.get(HOST_AUTH_HEADER), symbol, callId));
+        let ok = false;
+        if (callId !== '') {
+            // Branch on the verdict rather than `await` it: under a
+            // synchronous `HostHmac` there is no promise to wait for.
+            const verdict = verifyAuthWith(
+                hmac ?? webCryptoHmac,
+                secret,
+                request.headers.get(HOST_AUTH_HEADER),
+                symbol,
+                callId
+            );
+            ok = typeof verdict === 'boolean' ? verdict : await verdict;
+        }
         if (!ok) {
             // Counted, because a 403 here is otherwise completely silent —
             // and during a secret rotation it is the only signal that half
@@ -425,18 +458,22 @@ function synthesize(
                 `host call "${symbol}" needs a non-empty string key as its first argument`
             );
         }
-        const header = rq.request.headers.get(HOST_CALL_HEADER);
-        if (!header) {
-            throw new ServerFnError(
-                400,
-                `host call "${symbol}" is missing the ${HOST_CALL_HEADER} envelope header`
-            );
-        }
-        let decoded;
-        try {
-            decoded = decodeEnvelope(header);
-        } catch (error) {
-            throw new ServerFnError(400, (error as Error).message);
+        // Already decoded by the auth pre-check on a secured mount (#440);
+        // an unsecured mount, or a request core re-wrapped, decodes here.
+        let decoded = decodedEnvelopes.get(rq.request);
+        if (decoded === undefined) {
+            const header = rq.request.headers.get(HOST_CALL_HEADER);
+            if (!header) {
+                throw new ServerFnError(
+                    400,
+                    `host call "${symbol}" is missing the ${HOST_CALL_HEADER} envelope header`
+                );
+            }
+            try {
+                decoded = decodeEnvelope(header);
+            } catch (error) {
+                throw new ServerFnError(400, (error as Error).message);
+            }
         }
         return {
             ref: { type, key },

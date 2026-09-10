@@ -15,6 +15,7 @@
 import type { ActorCallContext, ActorDispatcher, ActorRef } from '../types';
 import type { ActorRoute } from '../host/app';
 import type { MembershipView, HostDescriptor } from './types';
+import type { HostHmac } from './envelope';
 
 /**
  * Values ⇄ wire form. THE codec the public wire uses, handed over rather
@@ -60,6 +61,13 @@ export interface HostTransportConfig {
      * an HMAC per request.
      */
     readonly secret?: string;
+    /**
+     * The HMAC implementation signing and verifying under `secret` (#440).
+     * Absent means `webCryptoHmac`. A transport that signs per call uses
+     * `signAuthWith(config.hmac ?? webCryptoHmac, …)` and branches on the
+     * result, so a synchronous implementation pays no microtask.
+     */
+    readonly hmac?: HostHmac;
     /** Path prefix of the internal HTTP mount, for transports that ride it. */
     readonly internalBase: string;
     readonly codec: HostWireCodec;

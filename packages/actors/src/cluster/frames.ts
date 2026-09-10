@@ -94,24 +94,54 @@ export interface Frame {
  * body a TCP writer prefixes.
  */
 export function encodeFrameBody(frame: Frame): Uint8Array {
-    const json = frame.payload === undefined ? '' : JSON.stringify(frame.payload);
-    const body = json === '' ? new Uint8Array(0) : new TextEncoder().encode(json);
-    const out = new Uint8Array(FRAME_HEADER_BYTES_UNPREFIXED + body.length);
-    const view = new DataView(out.buffer);
-    out[0] = frame.type;
-    out[1] = frame.flags;
-    view.setUint16(2, frame.status, false);
-    view.setUint32(4, frame.corrId, false);
-    out.set(body, FRAME_HEADER_BYTES_UNPREFIXED);
-    return out;
+    return encodeWithPrefix(frame, 0);
 }
 
 /** Encode one frame WITH the u32 length prefix — the TCP form. */
 export function encodeFrame(frame: Frame): Uint8Array {
-    const body = encodeFrameBody(frame);
-    const out = new Uint8Array(4 + body.length);
-    new DataView(out.buffer).setUint32(0, body.length, false);
-    out.set(body, 4);
+    const out = encodeWithPrefix(frame, 4);
+    new DataView(out.buffer, out.byteOffset, 4).setUint32(0, out.length - 4, false);
+    return out;
+}
+
+// One encoder and one decoder for the module (#440): a `TextEncoder` per
+// frame was an allocation for a stateless object, and the TCP form then
+// copied the body twice — into the header buffer and again behind the
+// length prefix. Now every frame is ONE buffer with the prefix, the header
+// and the body written in place. `TextDecoder` without `stream: true` is
+// stateless per call, so sharing it is safe.
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+/**
+ * A small payload is UTF-8-encoded straight into the frame buffer:
+ * `encodeInto` needs at most 3 bytes per UTF-16 code unit, and over-
+ * allocating a 90-byte reply to 270 costs less than a second buffer and
+ * copy. Past this many code units the worst case is real memory — a 9 KB
+ * payload would reserve 27 — so the body is encoded on its own and copied
+ * once, which is still one copy fewer than before.
+ */
+const ENCODE_INTO_MAX_UNITS = 1024;
+
+function encodeWithPrefix(frame: Frame, prefixBytes: number): Uint8Array {
+    const json = frame.payload === undefined ? '' : JSON.stringify(frame.payload);
+    const headerAt = prefixBytes;
+    const bodyAt = prefixBytes + FRAME_HEADER_BYTES_UNPREFIXED;
+    let out: Uint8Array;
+    if (json.length <= ENCODE_INTO_MAX_UNITS) {
+        const buffer = new Uint8Array(bodyAt + json.length * 3);
+        const written = json === '' ? 0 : encoder.encodeInto(json, buffer.subarray(bodyAt)).written;
+        out = buffer.subarray(0, bodyAt + written);
+    } else {
+        const body = encoder.encode(json);
+        out = new Uint8Array(bodyAt + body.length);
+        out.set(body, bodyAt);
+    }
+    out[headerAt] = frame.type;
+    out[headerAt + 1] = frame.flags;
+    const view = new DataView(out.buffer, out.byteOffset + headerAt, FRAME_HEADER_BYTES_UNPREFIXED);
+    view.setUint16(2, frame.status, false);
+    view.setUint32(4, frame.corrId, false);
     return out;
 }
 
@@ -137,7 +167,7 @@ export function decodeFrameBody(
         corrId: view.getUint32(4, false)
     };
     if (body.length > FRAME_HEADER_BYTES_UNPREFIXED) {
-        const text = new TextDecoder().decode(body.subarray(FRAME_HEADER_BYTES_UNPREFIXED));
+        const text = decoder.decode(body.subarray(FRAME_HEADER_BYTES_UNPREFIXED));
         frame.payload = parseWireWith<unknown>(text, reviver);
     }
     return frame;

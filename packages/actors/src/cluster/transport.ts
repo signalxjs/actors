@@ -16,7 +16,13 @@ import type { ActorCallContext, ActorDispatcher } from '../types';
 import { relayStream } from '../stream-relay';
 import { parseWireWith, readNdjson, type WireError } from '../wire-shared';
 import { encodeSymbolPath } from '../wire-url';
-import { encodeEnvelope, signAuth, HOST_AUTH_HEADER, HOST_CALL_HEADER } from './envelope';
+import {
+    encodeEnvelope,
+    signAuthWith,
+    webCryptoHmac,
+    HOST_AUTH_HEADER,
+    HOST_CALL_HEADER
+} from './envelope';
 import type {
     HostTransport,
     HostTransportConfig,
@@ -85,7 +91,11 @@ export function httpTransport(options: HttpTransportOptions = {}): HostTransport
             };
             if (config.secret !== undefined) {
                 // Per-request HMAC bound to this symbol + callId (see envelope.ts).
-                headers[HOST_AUTH_HEADER] = await signAuth(config.secret, symbol, call.callId);
+                // Branch, don't `await`: a synchronous `HostHmac` (#440) hands
+                // the header back as a string and the hop pays no threadpool
+                // round trip and no microtask for it.
+                const auth = signAuthWith(config.hmac ?? webCryptoHmac, config.secret, symbol, call.callId);
+                headers[HOST_AUTH_HEADER] = typeof auth === 'string' ? auth : await auth;
             }
             try {
                 return await doFetch(url, {
@@ -245,7 +255,8 @@ export function httpTransport(options: HttpTransportOptions = {}): HostTransport
                 return handleHostRequestForRuntime(request, {
                     ...options.endpoint,
                     runtime,
-                    ...(config.secret !== undefined ? { secret: config.secret } : {})
+                    ...(config.secret !== undefined ? { secret: config.secret } : {}),
+                    ...(config.hmac !== undefined ? { hmac: config.hmac } : {})
                 });
             }
         };

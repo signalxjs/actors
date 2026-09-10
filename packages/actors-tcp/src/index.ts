@@ -32,8 +32,9 @@
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import {
     encodeEnvelope,
-    signAuth,
+    signAuthWith,
     watchSymbol,
+    webCryptoHmac,
     type MembershipView,
     type HostDescriptor,
     type HostTransport,
@@ -132,6 +133,23 @@ function nonNegative(value: number, name: string): number {
  * wants; without this a connect that never completes parked the caller
  * past its own deadline (#353).
  */
+/**
+ * The auth header for one call under the configured `HostHmac` (#440). A
+ * synchronous implementation (`nodeHmac()`) answers with a string and pays
+ * neither a threadpool hop nor an abort race; the default WebCrypto one is
+ * awaited under the call's signal as before.
+ */
+function authFor(
+    config: HostTransportConfig,
+    secret: string,
+    symbol: string,
+    callId: string,
+    signal: AbortSignal | undefined
+): string | Promise<string> {
+    const auth = signAuthWith(config.hmac ?? webCryptoHmac, secret, symbol, callId);
+    return typeof auth === 'string' ? auth : until(auth, signal);
+}
+
 function until<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
     if (!signal) return promise;
     if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'));
@@ -399,7 +417,7 @@ export function tcpTransport(options: TcpTransportOptions = {}): HostTransportFa
                     auth:
                         config.secret === undefined
                             ? undefined
-                            : await until(signAuth(config.secret, symbol, call.callId), signal)
+                            : await authFor(config, config.secret, symbol, call.callId, signal)
                 };
             };
 

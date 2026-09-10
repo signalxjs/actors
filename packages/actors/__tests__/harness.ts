@@ -30,6 +30,7 @@ import {
     memoryClusterHub,
     type ClusterPlacement,
     type ClusterPluginOptions,
+    type HostHmac,
     type MemoryClusterHub,
     type PlacementPolicy
 } from '@sigx/actors/cluster';
@@ -75,6 +76,8 @@ export interface ClusterOptions {
     typePolicies?: Record<string, PlacementPolicy>;
     /** `null` builds an UNAUTHENTICATED cluster; omitted uses the default. */
     secret?: string | null;
+    /** The HMAC implementation for host `i` (#440); omitted uses the default. */
+    hmacFor?: (index: number) => HostHmac | undefined;
     retries?: number;
     retryBackoffMs?: number;
     /** Spy hook: called with every URL crossing the pipe. */
@@ -154,6 +157,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             advertise: `http://host${i}.test`,
             ...(options.publicAddress ? { publicAddress: options.publicAddress(i) } : {}),
             ...(secret !== undefined ? { secret } : {}),
+            ...(options.hmacFor?.(i) !== undefined ? { hmac: options.hmacFor(i) } : {}),
             fetch: pipeFetch,
             ...(options.policy ? { policy: options.policy } : {}),
             ...(options.typePolicies ? { typePolicies: options.typePolicies } : {}),

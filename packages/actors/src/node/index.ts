@@ -18,3 +18,4 @@ export {
     type SignalHandlerOptions
 } from './handler';
 export { createAppHandler, type AppHandlerOptions } from './app-handler';
+export { nodeHmac } from './hmac';

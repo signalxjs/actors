@@ -4167,6 +4167,7 @@ counters were not read before the fleet went down, so how often the
 graceful-leave skip fired is inferred from SCAN counts, not counted.
 
 ## 2026-09-10 · The turn path's promise budget, counted (#438)
+## 2026-09-10 · The cross-host hop: the HMAC was a threadpool round trip (#440)
 
 | | |
 |---|---|
@@ -4225,3 +4226,59 @@ three shapes in isolation ran 0.65 → 2.07 M mock turns/s, which bounds the
 effect from above — the runtime around the mailbox (placement, admission,
 the deadline registry, the actor method itself) dilutes it, and the
 interleaved A/B on the bench VM is where that number belongs.
+| Command | `pnpm bench:run cluster/hop-hmac-calls` (exact), `pnpm bench:run frames/` (timings), plus a standalone probe of the primitives |
+
+`envelope.ts` priced the per-call HMAC at "~9 µs per sign/verify with the key
+cached". The arithmetic is; what a call pays is not. `crypto.subtle.sign` is
+asynchronous by contract, and on Node it runs on the libuv threadpool — so a
+sign is a thread hop and a promise, and so is the verify on the other side,
+and both sit on the critical path of every secured cross-host call.
+
+| primitive (standalone, 50 000 iterations) | per call |
+|---|---:|
+| `crypto.subtle.sign` HMAC-SHA-256, sequential, key cached | **27.1 µs** |
+| same, 64 in flight, amortized | 6.1 µs |
+| `node:crypto` `createHmac(...).digest('hex')`, synchronous | **2.1 µs** |
+
+So the seam: `HostHmac { hex(secret, message) }`, `webCryptoHmac` as the
+unchanged default, `nodeHmac()` on `@sigx/actors/node`, and every caller
+branching on the result instead of awaiting it. The bytes on the wire are
+the same, which the mixed-fleet test pins (one host per implementation,
+calls both ways).
+
+| `cluster/hop-hmac-calls` | `subtle.sign` calls per secured hop |
+|---|---:|
+| `webcrypto` (default) | **2** — one sign at the caller, one verify at the owner |
+| `node` (`nodeHmac()`) | **0** |
+
+Both `exact`, both in `BENCH_GATE_SCENARIOS`. A count is the right gate
+here for the same reason `microtask_turns` is: the threadpool hop is an
+event, not a duration, and a shared runner can see it.
+
+Three smaller hop costs went in the same change, each measured in isolation
+before it was touched:
+
+| what | was | now |
+|---|---:|---:|
+| frame encode (`TextEncoder` per frame, two copies) | 1.04 µs | 0.46 µs — one buffer, `encodeInto` up to 1 024 code units |
+| `#member(hostId)` on a route-cache hit, N=100 | 0.51 µs (`hosts.find`) | 0.04 µs (per-view `Map`) |
+| envelope header on the secured mount | decoded twice per call | once, handed to `prepare` |
+| `toHex` of the 32-byte digest | `Array.from(...).map().join('')` | a 256-entry table |
+
+`frames/encode` (new, timings only, contended laptop — read the ratio to
+`frames/decode`, not the numbers): small body 910 k/s, small prefixed
+755 k/s, 200-row body 15.9 k/s, 200-row prefixed 15.2 k/s. The prefixed
+(TCP) form is now within ~5–17% of the body form, where it used to pay a
+whole extra allocation and copy.
+
+What this does NOT claim: T3 (§2026-09-05) showed TCP does not move the
+workflow knee, and the same reasoning applies here — the knee is
+coordination. This is per-call latency and CPU on the hop, ~50 µs and two
+thread hops per secured call at low concurrency, plus a threadpool the
+host's `fs`, `zlib` and DNS work no longer share with its HMACs.
+
+Not done, deliberately: `resolverFor` on the public endpoint builds a
+4-element array and `join`s it per request (item 6 of #440). Measured at
+~0.1 µs; changing the memo's key shape to avoid it risks a resolver per
+request if a caller passes a fresh options object, which would lose the
+symbol cache — a worse trade than the allocation.

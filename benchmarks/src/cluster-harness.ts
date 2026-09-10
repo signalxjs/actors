@@ -25,7 +25,7 @@ import { defineActorApp, memoryStorage } from '@sigx/actors/host';
 import type { ActorApp, ActorStorage, Host, HostDefaults } from '@sigx/actors/host';
 import type { ActorReminders } from '@sigx/actors';
 import { handleActorRequest, matchesActorRequest } from '@sigx/actors/server';
-import { cluster, memoryClusterHub } from '@sigx/actors/cluster';
+import { cluster, memoryClusterHub, type HostHmac } from '@sigx/actors/cluster';
 import type {
     ActorDirectory,
     ClusterMembership,
@@ -188,6 +188,8 @@ export interface ClusterOptions {
      * to disable signing entirely — that is the A/B for what it costs.
      */
     secret?: string | null;
+    /** The HMAC implementation every host signs and verifies with (#440); omitted uses the default. */
+    hmac?: HostHmac;
     retries?: number;
     /**
      * Host defaults layered over `quiet`. A scenario that MEASURES background
@@ -250,6 +252,7 @@ export async function createCluster(n: number, options: ClusterOptions): Promise
             // point of this arm is dispatch cost WITHOUT signing.
             secret: options.secret === null ? null : (options.secret ?? 'bench-secret'),
             fetch: pipeFetch,
+            ...(options.hmac !== undefined ? { hmac: options.hmac } : {}),
             ...(options.policy ? { policy: options.policy } : {}),
             ...(options.retries !== undefined ? { retries: options.retries } : {})
         });

@@ -74,6 +74,7 @@ import type {
     HostDescriptor,
     HostIdentity
 } from './types';
+import type { HostHmac } from './envelope';
 
 /**
  * One coalesced cross-host watch stream and everything needed to police it
@@ -114,6 +115,8 @@ export interface ClusterPlacementOptions extends ClusterProviders {
     publicAddress?: string;
     /** Shared cluster secret for the internal mount. */
     secret?: string;
+    /** The HMAC implementation for `secret` (#440). Default `webCryptoHmac`. */
+    hmac?: HostHmac;
     /** Path prefix of the internal mount. Default `/_sigx/host`. */
     internalBase?: string;
     /**
@@ -500,6 +503,24 @@ function viewIds(view: MembershipView): Set<string> {
     }
     return ids;
 }
+
+/**
+ * hostId → descriptor, memoized per view object (#440). `#resolveTarget`
+ * looks the owner up on EVERY route-cache hit and every directory hit —
+ * the warm remote path — and did it with `hosts.find`, an O(N) scan that
+ * measured 0.5 µs at N=100 against 0.04 µs for the map. Same identity
+ * keying and same fresh-object caveat as `activeHostsCache`.
+ */
+const membersByIdCache = new WeakMap<MembershipView, Map<string, HostDescriptor>>();
+function memberById(view: MembershipView, hostId: string): HostDescriptor | undefined {
+    let byId = membersByIdCache.get(view);
+    if (byId === undefined) {
+        byId = new Map();
+        for (const host of view.hosts) byId.set(host.hostId, host);
+        membersByIdCache.set(view, byId);
+    }
+    return byId.get(hostId);
+}
 function eligibleFor(view: MembershipView, type: string): EligibleHosts {
     let perType = eligibleCache.get(view);
     if (perType === undefined) {
@@ -709,7 +730,8 @@ class ClusterPlacementImpl implements ClusterPlacement {
             codec: hostWireCodec,
             toWireError: toHostWireError,
             fromWireError: fromHostWireError,
-            ...(options.secret !== undefined ? { secret: options.secret } : {})
+            ...(options.secret !== undefined ? { secret: options.secret } : {}),
+            ...(options.hmac !== undefined ? { hmac: options.hmac } : {})
         };
         const factories = options.transport
             ? Array.isArray(options.transport)
@@ -1709,7 +1731,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
     }
 
     #member(hostId: string): HostDescriptor | undefined {
-        return this.#options.membership.view().hosts.find((s) => s.hostId === hostId);
+        return memberById(this.#options.membership.view(), hostId);
     }
 
     #cacheRoute(id: string, hostId: string): void {
