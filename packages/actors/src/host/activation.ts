@@ -82,7 +82,8 @@ const PRINCIPAL_MEMO_CAP = 256;
 import {
     DEFAULT_WATCH_THROTTLE_MS,
     declaresDistinct,
-    declaresPrincipalIndependent
+    declaresPrincipalIndependent,
+    watchFingerprint
 } from '../watch-core';
 export { DEFAULT_WATCH_THROTTLE_MS };
 
@@ -1293,12 +1294,13 @@ export class Activation {
                 throttleMs,
                 // Distinct deliveries (#442): the codec-encoded result is what
                 // the wire carries, so equal encodings ARE equal deliveries.
-                // `JSON.stringify` over the encoded tree rather than
-                // `canonicalKey`: a key-order difference between two reads of
-                // the same value costs one redundant delivery, never a wrong
-                // dedupe, and the native walk is the cheaper one.
+                // Primitives skip the codec entirely (#449); see
+                // `watchFingerprint` for the grammar and why.
                 ...(declaresDistinct(this.def.__sigxActor, method)
-                    ? { fingerprint: (value: unknown) => JSON.stringify(this.#host.encodeArgs([value])) }
+                    ? {
+                          fingerprint: (value: unknown) =>
+                              watchFingerprint(value, (v) => this.#host.encodeArgs([v]))
+                      }
                     : {})
             },
             () => {
