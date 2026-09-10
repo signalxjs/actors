@@ -262,7 +262,24 @@ function writeCanonical(value: unknown, out: string[]): void {
  * depend on the full `ActorOptions` generic to read one flag.
  */
 export interface WatchDeclarationOptions {
-    readonly watches?: Readonly<Record<string, { principalIndependent?: true } | undefined>>;
+    readonly watches?: Readonly<
+        Record<string, { principalIndependent?: true; distinct?: false } | undefined>
+    >;
+}
+
+/**
+ * Does this watched read deliver only DISTINCT consecutive results (#442)?
+ * The default — a re-read that returns what the last delivery carried is
+ * not pushed — unless the method declares `distinct: false`, which restores
+ * a delivery per mutating turn. Same own-keys, shape-guarded posture as
+ * `declaresPrincipalIndependent`, and read by the owner only: the relay
+ * sees whatever the owner's loop emits.
+ */
+export function declaresDistinct(opts: WatchDeclarationOptions, method: string): boolean {
+    const map = opts.watches as unknown;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) return true;
+    if (!Object.hasOwn(map, method)) return true;
+    return (map as Record<string, { distinct?: false } | undefined>)[method]?.distinct !== false;
 }
 
 /**

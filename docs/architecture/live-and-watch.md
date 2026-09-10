@@ -89,6 +89,28 @@ getter throws before the read completes and the invoke wrapper rethrows if
 the body catches it. The owner-side machinery here is unchanged; a declared
 method simply can never enter `#watchPrincipalDependent`.
 
+## Distinct deliveries (#442)
+
+The loop re-invokes the read after every mutating turn, but it pushes the
+result only when the result CHANGED: `createSharedWatch` fingerprints each
+re-read (`JSON.stringify` over the codec-encoded value — what the wire would
+carry) and drops a push whose fingerprint equals the last one delivered.
+The first value always goes out; a value that changes and changes back is
+two deliveries; the read still runs once per boundary, so `reads_per_mutation`
+is unchanged and only deliveries fall. On the socket path a delivery is one
+`writev` per subscriber — the 2026-08-14 profile's 77–83% — so a live page
+over an actor that mutates fields the read never looks at stops paying for
+them.
+
+`watches: { m: { distinct: false } }` opts a read out (a consumer that counts
+emissions, or a read whose result is deliberately identical while something
+else moved). Either flag may stand alone in a declaration; the validator
+refuses the defaults spelled out (`distinct: true`, `principalIndependent:
+false`) as the typos they usually are. A fingerprint that throws counts as
+changed — the value reaches subscribers exactly as an undeclared read's
+would. The cross-host relay inherits all of this: the owner's loop is its
+source. `live/distinct` gates the counts.
+
 ## What a shared turn carries (#137)
 
 The loop's invoke context is built once, in `#createWatchEntry`, from the

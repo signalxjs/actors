@@ -15,6 +15,7 @@ import { stateScenarios } from './state.ts';
 import { statelessScenarios } from './stateless.ts';
 import { liveFanoutScenarios } from './live-fanout.ts';
 import { livePrincipalScenarios } from './live-principal.ts';
+import { liveDistinctScenarios } from './live-distinct.ts';
 import { WS_ENABLED, wsHint as wsReason, socketScenarios } from './sockets.ts';
 import { WF_ENABLED, wfHint as wfReason, workflowScenarios } from './workflow.ts';
 import { WF_LOCAL_ENABLED, wfLocalHint as wfLocalReason, wfLocalScenarios } from './wf-local.ts';
@@ -64,6 +65,9 @@ export const ALL_SCENARIOS: Scenario[] = [
     ...topicScenarios,
     ...liveFanoutScenarios,
     ...livePrincipalScenarios,
+    // Distinct deliveries on a live read (#442): exact counts of what a
+    // mutating turn costs its subscribers, related or not.
+    ...liveDistinctScenarios,
     ...redisScenarios,
     // Same gate, two more questions about the sharded reminder table
     // against a real store (#382): `arm-fire` — the arm rate at which its

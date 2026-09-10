@@ -1633,11 +1633,22 @@ export type ActorReadCache = ServerFnReadCache;
 /**
  * What one watched method promises about how it is shared (#138).
  *
- * The only member today is {@link ActorWatchDeclaration.principalIndependent};
- * the wrapping object exists so a later property (a forced per-principal
- * split, say) does not need a second `ActorOptions` key.
+ * Two flags today — {@link ActorWatchDeclarationFlags.principalIndependent}
+ * (#138) and {@link ActorWatchDeclarationFlags.distinct} (#442) — and a
+ * declaration must carry at least one; the wrapping object exists so a
+ * later property does not need a second `ActorOptions` key.
  */
-export interface ActorWatchDeclaration {
+export type ActorWatchDeclaration =
+    | (ActorWatchDeclarationFlags & { principalIndependent: true })
+    | (ActorWatchDeclarationFlags & { distinct: false });
+
+/**
+ * The two flags a watch declaration may carry. `ActorWatchDeclaration` is
+ * the union that requires at least one of them, so an empty `{}` is a type
+ * error rather than the activation failure `validateWatchDeclarations`
+ * would otherwise raise for it (#442).
+ */
+export interface ActorWatchDeclarationFlags {
     /**
      * This read's result does NOT depend on `ctx.principal`.
      *
@@ -1668,7 +1679,25 @@ export interface ActorWatchDeclaration {
      * in `authorize` / `methodAuthorize`, which run per subscriber at the
      * entry point, outside any turn.
      */
-    principalIndependent: true;
+    principalIndependent?: true;
+    /**
+     * Deliver every re-read, changed or not (#442).
+     *
+     * By default a watched read is DISTINCT: after a mutating turn the loop
+     * re-invokes the read, and if the codec-encoded result equals the last
+     * one delivered — the turn touched state this read does not look at —
+     * nothing is pushed. Subscribers cannot tell the two apart (the wire
+     * would carry the same bytes), and on the socket path every delivery is
+     * one write per subscriber, so a live page over a chatty actor stops
+     * paying for changes it cannot see. The first value is always delivered,
+     * and a value that changes and changes back is two deliveries.
+     *
+     * `distinct: false` restores a delivery per mutating turn — for a
+     * consumer that counts emissions rather than reads values, or a read
+     * whose result is deliberately identical while something else moved.
+     * Either flag may stand alone; a declaration must name at least one.
+     */
+    distinct?: false;
 }
 
 /** Per-call options for `actor(...).with()`, mirroring `fn.with()`. */

@@ -21,6 +21,19 @@
   is encoded into one buffer (no per-frame `TextEncoder`, no second copy),
   and the membership lookup behind a warm remote dispatch is a per-view map
   instead of a scan.
+- **Distinct deliveries on a live read** (#442). A `$live` / `dispatchWatch`
+  loop re-invokes its read after every mutating turn; when the codec-encoded
+  result equals the last one delivered — the turn touched state the read
+  does not look at — nothing is pushed. Subscribers could not tell the two
+  apart (the wire would carry the same bytes), and on the socket path every
+  delivery is one write per subscriber, so a live page over a chatty actor
+  stops paying for changes it cannot see. The first value is always
+  delivered; a value that changes and changes back is two deliveries; the
+  read still runs once per mutating turn. `watches: { method: { distinct:
+  false } }` restores a delivery per re-read, and `ActorWatchDeclaration`
+  now takes either flag alone or both. `live/distinct` gates the counts:
+  deliveries per unrelated mutation 0 (default) / 1 (declared), per
+  relevant mutation 1, reads per mutation 1.
 - **`PublishOptions.delivery`** (#49): `'settled'` (the default and the
   previous behaviour) waits for every subscriber's handler turn, so a
   handler that throws is a `failures[]` entry the publisher can act on;

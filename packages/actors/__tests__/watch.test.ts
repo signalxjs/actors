@@ -105,17 +105,35 @@ describe('dispatchWatch', () => {
         await s.actor(Cart, 'w2').add('a');
         await s.actor(Cart, 'w2').add('b');
 
-        const watching = s.dispatchWatch!({ type: 'Cart', key: 'w2' }, 'firstN', [1], {
-            callChain: [],
-            callId: 'c'
-        });
-        const seen = await take(watching, 2, async (i) => {
-            if (i > 0) await s.actor(Cart, 'w2').add('c');
-        });
-
+        const iterator = s
+            .dispatchWatch!(
+                { type: 'Cart', key: 'w2' },
+                'firstN',
+                [1],
+                { callChain: [], callId: 'c' },
+                { throttleMs: 0 }
+            )
+            [Symbol.asyncIterator]();
         // `firstN(1)` — a projection no client could compute from state
         // alone without reimplementing the method.
-        expect(seen).toEqual([['a'], ['a']]);
+        expect((await iterator.next()).value).toEqual(['a']);
+        const before = invocations;
+
+        // A mutation the projection cannot see: the READ re-runs (that is
+        // what a watch is), but its result is what was last delivered, so
+        // nothing is pushed (#442) — subscribers could not tell the two apart.
+        await s.actor(Cart, 'w2').add('c');
+        // Wait for the re-read itself, not a fixed interval.
+        for (let i = 0; i < 50 && invocations === before; i++) {
+            await new Promise((r) => setTimeout(r, 2));
+        }
+        expect(invocations).toBe(before + 1);
+        const raced = await Promise.race([
+            iterator.next().then(() => 'emitted'),
+            new Promise((r) => setTimeout(() => r('quiet'), 60))
+        ]);
+        expect(raced).toBe('quiet');
+        await iterator.return?.();
     });
 
     it('a non-mutating turn emits nothing', async () => {

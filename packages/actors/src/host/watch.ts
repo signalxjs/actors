@@ -39,6 +39,18 @@ export interface WatchDeps {
     keepAlive(): () => void;
     scheduler: ActorScheduler;
     throttleMs: number;
+    /**
+     * A string equal for two results iff the wire would carry the same
+     * bytes for them (#442). When present, a re-read whose fingerprint
+     * equals the last delivered one is NOT pushed: a mutating turn that did
+     * not change what this read returns costs its subscribers nothing —
+     * and on the socket path a delivery is one `writev` per subscriber,
+     * the term the 2026-08-14 profile put at 77–83% of a fan-out host's
+     * busy time. Absent (the `distinct: false` declaration), every re-read
+     * is delivered as before. A fingerprint that THROWS counts as changed:
+     * the read's value reaches subscribers exactly as it would have.
+     */
+    fingerprint?: (value: unknown) => string;
 }
 
 /**
@@ -93,18 +105,31 @@ export function validateWatchDeclarations(
     if (typeof map !== 'object' || map === null || Array.isArray(map)) {
         throw new Error(
             `${at} \`watches\` must be an object mapping method names to ` +
-                `{ principalIndependent: true }.`
+                `\`{ principalIndependent: true }\` and/or \`{ distinct: false }\`.`
         );
     }
     for (const method of Object.keys(map)) {
         const where = `${at} watches "${method}"`;
         const value = (map as Record<string, unknown>)[method];
-        if (
-            typeof value !== 'object' ||
-            value === null ||
-            (value as { principalIndependent?: unknown }).principalIndependent !== true
-        ) {
-            throw new Error(`${where} must map to \`{ principalIndependent: true }\`.`);
+        // Exactly the two declared flags, each at its one meaningful value:
+        // `principalIndependent: true` (#138) and `distinct: false` (#442).
+        // `principalIndependent: false` or `distinct: true` are the defaults
+        // spelled out, and a typo for one of the real flags more often than
+        // not — refused, as an unknown key is.
+        const shape = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+        const keys = shape ? Object.keys(shape) : [];
+        const wellFormed =
+            shape !== null &&
+            keys.length > 0 &&
+            keys.every(
+                (k) =>
+                    (k === 'principalIndependent' && shape[k] === true) ||
+                    (k === 'distinct' && shape[k] === false)
+            );
+        if (!wellFormed) {
+            throw new Error(
+                `${where} must map to \`{ principalIndependent: true }\`, \`{ distinct: false }\`, or both.`
+            );
         }
         if (streamNames.includes(method)) {
             // A stream is per-subscriber by construction — `dispatchStream`
@@ -204,11 +229,35 @@ export function createSharedWatch(deps: WatchDeps, onEmpty: () => void): SharedW
         wakeLoop = null;
     };
 
+    /**
+     * The fingerprint of the last value pushed, or `undefined` when nothing
+     * has been (or when `fingerprint` is absent). Compared BEFORE the push,
+     * so a re-read that changed nothing subscribers can see is dropped here
+     * and never becomes N deliveries (#442). The first value always goes
+     * out: a subscriber's initial read is a value, not a change.
+     */
+    let last: string | undefined;
+    const fingerprintOf = (value: unknown): string | undefined => {
+        if (!deps.fingerprint) return undefined;
+        try {
+            return deps.fingerprint(value);
+        } catch {
+            // Not fingerprintable — deliver, as an undeclared read would.
+            return undefined;
+        }
+    };
+    const deliver = (value: unknown, initial: boolean): void => {
+        const print = fingerprintOf(value);
+        if (!initial && print !== undefined && print === last) return;
+        last = print;
+        fanOut.push(value);
+    };
+
     const loop = async (): Promise<void> => {
         try {
             // The initial value, so a subscriber never waits for a mutation
             // that may never come.
-            fanOut.push(await deps.invoke());
+            deliver(await deps.invoke(), true);
             while (!stopped) {
                 await waitForChange();
                 if (stopped) return;
@@ -218,7 +267,7 @@ export function createSharedWatch(deps: WatchDeps, onEmpty: () => void): SharedW
                 await settle();
                 if (stopped) return;
                 dirty = false;
-                fanOut.push(await deps.invoke());
+                deliver(await deps.invoke(), false);
             }
         } catch (error) {
             if (!stopped) fanOut.fail(error);
