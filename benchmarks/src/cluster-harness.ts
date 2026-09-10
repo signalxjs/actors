@@ -191,8 +191,7 @@ export interface ClusterOptions {
     /** The HMAC implementation every host signs and verifies with (#440); omitted uses the default. */
     hmac?: HostHmac;
     retries?: number;
-    /**
-     * Host defaults layered over `quiet`.| null;
+| null;
     retries?: number;
     /**
      * Host defaults layered over `quiet`. A scenario that MEASURES background

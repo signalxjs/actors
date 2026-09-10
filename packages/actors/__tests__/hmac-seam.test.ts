@@ -19,7 +19,7 @@ import {
     type HostHmac
 } from '@sigx/actors/cluster';
 import { nodeHmac } from '@sigx/actors/node';
-import { createCluster } from './harness';
+import { createCluster, selfPolicy } from './harness';
 
 const SECRET = 'a-shared-secret';
 
@@ -108,6 +108,9 @@ describe('a mixed fleet authenticates end to end', () => {
     it('host 0 on nodeHmac() and host 1 on the default call each other over the secured mount', async () => {
         const harness = await createCluster(2, {
             actors: [Counter],
+            // Deterministic ownership: the first host to touch a key owns it,
+            // so the calls below cross the wire by construction.
+            policy: selfPolicy,
             secret: SECRET,
             hmacFor: (i) => (i === 0 ? nodeHmac() : undefined)
         });
@@ -131,6 +134,9 @@ describe('a mixed fleet authenticates end to end', () => {
     it('a host on nodeHmac() with the WRONG secret is refused by a default host', async () => {
         const harness = await createCluster(2, {
             actors: [Counter],
+            // Deterministic ownership: the first host to touch a key owns it,
+            // so the calls below cross the wire by construction.
+            policy: selfPolicy,
             secret: SECRET,
             hmacFor: (i) => (i === 0 ? { hex: (_secret, message) => nodeHmac().hex('not-the-secret', message) } : undefined)
         });
