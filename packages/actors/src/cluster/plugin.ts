@@ -21,6 +21,7 @@ import {
 import type { HostTransportFactory } from './seam';
 import type { HostEndpointOptions } from './host-endpoint';
 import { httpTransport } from './transport';
+import type { HostHmac } from './envelope';
 import type { ClusterProviders, PlacementPolicy } from './types';
 
 export interface ClusterPluginOptions {
@@ -60,6 +61,17 @@ export interface ClusterPluginOptions {
      * in the diff rather than in the absence of a line.
      */
     secret?: string | null;
+    /**
+     * The HMAC implementation that signs and verifies under `secret` (#440).
+     * Default `webCryptoHmac` — WebCrypto, asynchronous, runs everywhere. On
+     * Node pass `nodeHmac()` from `@sigx/actors/node`: `crypto.subtle.sign`
+     * hops the libuv threadpool (~27 µs per call sequentially), where
+     * `node:crypto` does the same HMAC-SHA-256 synchronously in ~2 µs — and
+     * both a sign and a verify sit on every cross-host call's critical path.
+     * The bytes on the wire are identical, so hosts on different
+     * implementations interoperate and a fleet can switch host by host.
+     */
+    hmac?: HostHmac;
     /** Path prefix of the internal mount. Default `/_sigx/host`. */
     internalBase?: string;
     /**
@@ -239,6 +251,7 @@ export function cluster(options: ClusterPluginOptions): ClusterPlugin {
         // stays a construction-time concept rather than a third state to
         // thread through signing and verification.
         ...(typeof secret === 'string' ? { secret } : {}),
+        ...(options.hmac !== undefined ? { hmac: options.hmac } : {}),
         ...(options.policy ? { policy: options.policy } : {}),
         ...(options.typePolicies ? { typePolicies: options.typePolicies } : {}),
         ...(options.retries !== undefined ? { retries: options.retries } : {}),

@@ -14,6 +14,7 @@
  */
 import {
     decodeFrameBody,
+    encodeFrame,
     encodeFrameBody,
     FrameType,
     type Frame
@@ -99,4 +100,36 @@ const decode: Scenario = {
     }
 };
 
-export const frameScenarios: Scenario[] = [decode];
+/**
+ * The encoder's side (#440): one frame is one buffer now — header, body and
+ * (for TCP) the length prefix written in place — where it used to be a
+ * `TextEncoder` allocation plus two copies. Timings only, like `decode`.
+ */
+const encode: Scenario = {
+    name: 'frames/encode',
+    description: 'encode a frame body (WebSocket form) and a prefixed frame (TCP form), small and 200-row payloads',
+    async run(ctx: RunContext): Promise<Metric[]> {
+        const metrics: Metric[] = [];
+        const budget = Math.min(ctx.durationMs, 300);
+        for (const [size, payload] of [
+            ['small', SMALL_PAYLOAD],
+            ['rows200', ROWS_PAYLOAD]
+        ] as const) {
+            const frame: Frame = { type: FrameType.REPLY, flags: 0, status: 0, corrId: 7, payload };
+            for (const [form, op] of [
+                ['body', () => void encodeFrameBody(frame)],
+                ['prefixed', () => void encodeFrame(frame)]
+            ] as const) {
+                metrics.push({
+                    name: `${size}/${form}/ops_per_sec`,
+                    value: syncOpsPerSec(op, budget),
+                    unit: 'ops/s',
+                    direction: 'higher'
+                });
+            }
+        }
+        return metrics;
+    }
+};
+
+export const frameScenarios: Scenario[] = [decode, encode];

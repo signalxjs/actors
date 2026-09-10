@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`cluster({ hmac })` and `nodeHmac()`** (#440): the host-to-host HMAC is a
+  seam, `HostHmac { hex(secret, message) }`, with the WebCrypto default
+  (`webCryptoHmac`) unchanged and a synchronous `node:crypto` implementation
+  on `@sigx/actors/node`. `crypto.subtle.sign` is asynchronous by contract
+  and on Node hops the libuv threadpool — measured at ~27 µs per call
+  sequentially — where `createHmac` does the same HMAC-SHA-256 in ~2 µs on
+  the calling thread; a sign and a verify sit on every secured cross-host
+  call's critical path. The bytes on the wire are identical, so a fleet
+  can carry both during a roll. `signAuthWith`/`verifyAuthWith` are the
+  sync-or-promise forms every transport now branches on; `signAuth`/
+  `verifyAuth` keep their promise contract and accept an implementation.
+  `cluster/hop-hmac-calls` gates the count of `subtle.sign` calls per hop
+  (2 under the default, 0 under `nodeHmac()`). Also on the hop: the secured
+  mount decodes the envelope header once per call instead of twice, a frame
+  is encoded into one buffer (no per-frame `TextEncoder`, no second copy),
+  and the membership lookup behind a warm remote dispatch is a per-view map
+  instead of a scan.
 - **`PublishOptions.delivery`** (#49): `'settled'` (the default and the
   previous behaviour) waits for every subscriber's handler turn, so a
   handler that throws is a `failures[]` entry the publisher can act on;
