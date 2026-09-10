@@ -1702,7 +1702,14 @@ export class Activation {
         // succeeded — the documented, test-pinned contract (#53). The
         // rest of #afterTurn's bookkeeping still runs when that throws
         // (#338).
-        this.#afterTurn(started + elapsed);
+        //
+        // `elapsed` is a `performance.now()` difference — fractional — and
+        // `started` an integer wall-clock ms. Floored, so the activity stamp
+        // can never sit AHEAD of the sweeper's own `Date.now()`: a
+        // fractional stamp made `idleAfterMs: 0` skip an activation whose
+        // turn ended in the same millisecond the sweep ran (CI caught it on
+        // a fast box).
+        this.#afterTurn(started + Math.floor(elapsed));
     }
 
     /**
@@ -1787,11 +1794,12 @@ export class Activation {
 
     /**
      * `activeMs` is the wall-clock moment this turn was last known active:
-     * its start, plus its measured duration when an observer was timing it.
-     * Not a fresh `Date.now()` — that was a second clock read on every turn
-     * (#438), and the only thing it bought was precision for a turn that ran
-     * longer than `idleAfterMs` (20 min by default) with nobody observing:
-     * such a turn's END is now approximated by its START, so the sweeper may
+     * its start, plus its measured duration whenever the turn was being
+     * timed (an observer attached, or any `__DEV__` build). Not a fresh
+     * `Date.now()` — that was a second clock read on every turn (#438), and
+     * the only thing it bought was precision for a turn that ran longer than
+     * `idleAfterMs` (20 min by default) with nothing timing it: such a
+     * turn's END is now approximated by its START, so the sweeper may
      * collect that activation one tick sooner than before. A running turn is
      * never swept (`idle` is false while `turns.depth > 0`), so nothing
      * in flight is affected.

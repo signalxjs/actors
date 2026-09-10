@@ -344,9 +344,12 @@ describe('dispatchWatch', () => {
 
         // …and a NEW mutation still gets through. The loop arms its throttle
         // window a few microtasks after the mutating call resolves (the
-        // change tick travels pump → loop → `settle()`), so let those drain
-        // before the manual clock moves — otherwise the window is armed AFTER
-        // the advance and never fires. A real scheduler never sees this: the
+        // change tick travels pump → loop → `settle()`), so the whole
+        // microtask queue has to drain before the manual clock moves —
+        // otherwise the window is armed AFTER the advance and never fires.
+        // A macrotask boundary is what drains it: the chain is several
+        // microtasks deep, and a single `await Promise.resolve()` would only
+        // race it one tick at a time. A real scheduler never sees this: the
         // window is 50 ms and the gap is microseconds (#438).
         await s.actor(Cart, 'w8').add('d');
         await new Promise((r) => setTimeout(r, 0));
