@@ -316,7 +316,13 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         for (const key of shardKeys) {
             const snap = await call('WorkflowStats', 'snapshot', [key]);
             const seq = Number((snap.data as { seq?: unknown } | undefined)?.seq);
-            cursors.set(key, Number.isInteger(seq) && seq >= 0 ? seq : 0);
+            if (Number.isInteger(seq) && seq >= 0) cursors.set(key, seq);
+            else {
+                // Said, not hidden: a cursor at 0 reads earlier history as
+                // this rung's `dropped`, and the row should say why.
+                tally(`cursor:${key}:${snap.error ?? 'malformed'}`);
+                cursors.set(key, 0);
+            }
         }
         let lastReport = started;
 
