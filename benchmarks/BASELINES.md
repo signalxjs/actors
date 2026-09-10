@@ -4168,6 +4168,7 @@ graceful-leave skip fired is inferred from SCAN counts, not counted.
 
 ## 2026-09-10 · The turn path's promise budget, counted (#438)
 ## 2026-09-10 · The cross-host hop: the HMAC was a threadpool round trip (#440)
+## 2026-09-10 · The sharded reminder table: one storage op per set (#441)
 
 | | |
 |---|---|
@@ -4408,3 +4409,39 @@ offered on the small ring, and what caps the fleet once its cores are
 full are the next measurements. The sweep counters (`hostSweeps`,
 `sweepsDelegated`, `sweepsSkippedGraceful`) were not in the rig's
 allowlist for this run; they are now.
+| Command | `pnpm bench:run reminders/arm-cost` — the ops are exact, the bytes and latencies informational |
+
+The 2026-09-04 section (#382) fixed the sharded provider's invariant as "one
+load and one CAS save per set, whatever the population", and named table
+SIZE as its ceiling. This closes the smaller half of that sentence — the
+load — and three things beside it that the same code path paid for:
+
+| what a `set` did | before | after |
+|---|---|---|
+| load the shard record | every time | only when this host has never seen the shard, or its cached etag just lost a CAS |
+| `JSON.stringify` the table | twice (a no-op check, then the payload) | once; the edit reports whether it changed anything |
+| wait behind | every other shard's sets, clears AND ticks (one host-wide chain) | its own shard's writes only |
+| the tick, sixteen shards | one round trip after another | concurrently — one pipelined write under ioredis |
+
+The cache is safe for the reason the whole table is: the etag CAS. A `set`
+against a cached table whose etag went stale is refused by the store and
+replayed on a fresh load, which is exactly what a conflict always was. What
+the cache changes is who pays when a shard has several writers — a refused
+CAS is a third op, not a saved one — so a shard whose cached etag loses is
+marked contended and loads before every write for one tick period, or until
+the tick's own load re-primes it, whichever comes first — a host sets into
+shards it does not own and never ticks those, so the mark is time-bounded. Solo host or quiet shard: one op. Contended shard: what it
+cost before, plus one refused save per tick. The tick itself never reads the
+cache: other hosts arm reminders into the shards this host owns.
+
+| `reminders/arm-cost` | P = 1 000 | P = 10 000 | P = 100 000 |
+|---|---:|---:|---:|
+| `storage_ops_per_set`, before → after | 2 → **1** | 2 → **1** | 2 → **1** |
+| `loads_per_empty_tick` (unchanged, by design) | 16 | 16 | 16 |
+| `bytes_per_set` (unchanged — the O(table) term, `redisReminders()`'s to remove) | 7.2 KiB | 41.2 KiB | 386.9 KiB |
+
+`set_p50_us` before: 153 / 1 068 / 14 963 µs on a contended laptop. The
+second stringify gone and the load gone are both O(table), so the latency
+should roughly halve at every population; the run recorded in the PR says
+what it did on this box, and the bench VM's A/B is the number to quote.
+Nothing here moves the ceiling: a set still rewrites the whole record.

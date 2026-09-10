@@ -27,7 +27,11 @@ export function reminderShardOf(actorId: string): string {
     return `p${fnv1a(actorId) % REMINDER_SHARD_COUNT}`;
 }
 
-/** All shard keys, `p0`..`p15`. */
-export function reminderShardKeys(): string[] {
-    return Array.from({ length: REMINDER_SHARD_COUNT }, (_v, i) => `p${i}`);
+const SHARD_KEYS: readonly string[] = Object.freeze(
+    Array.from({ length: REMINDER_SHARD_COUNT }, (_v, i) => `p${i}`)
+);
+
+/** All shard keys, `p0`..`p15` — one frozen array, not sixteen strings per tick (#441). */
+export function reminderShardKeys(): readonly string[] {
+    return SHARD_KEYS;
 }

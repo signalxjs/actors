@@ -101,6 +101,23 @@
   4 → 2. No API or ordering change; a turn that ran longer than
   `idleAfterMs` with no observer attached now records its start rather
   than its end as the activation's last activity.
+- **The sharded reminder table costs one storage op per `set`** (#441). The
+  default `ActorReminders` loaded the shard record before every `set` and
+  `clear`, serialized the table twice per write (once to detect a no-op,
+  once for the store), queued every shard's mutations and ticks behind ONE
+  host-wide writer chain, and ticked its sixteen shards one round trip after
+  another. Now each shard has its own chain; the tick resolves ownership for
+  all shards first and loads the owned ones concurrently (one socket write
+  under a pipelining client); an edit says whether it changed anything, so a
+  write is one stringify and a no-op is none; and a `set`/`clear` applies
+  to the table this host last loaded or wrote and CAS-saves against its etag
+  — the same conflict path as before if anyone else wrote the shard
+  meanwhile, and a shard whose cached etag lost a CAS loads before every
+  write for one tick period, or until the tick re-primes it, whichever is
+  first (a host never ticks the shards it does not own). `reminders/arm-cost`
+  `storage_ops_per_set` 2 → 1; `loads_per_empty_tick` stays 16, because the
+  tick reads the store — other hosts arm reminders into the shards this host
+  owns. `reminderShardKeys()` returns one frozen array.
 - **One directory sweep per departed host, and none after a graceful
   leave** (#430). Every survivor used to sweep the directory for every
   host that left the view — correct, since eviction is idempotent, but a
