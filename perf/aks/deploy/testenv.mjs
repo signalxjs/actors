@@ -824,6 +824,7 @@ async function wsLoad(args) {
  * measurements of one deployment.
  */
 const SOCKET_KNOBS = [
+    'HMAC',
     'ENABLE_SOCKET',
     'ENABLE_SESSIONS',
     'FETCH_CONNECTIONS',
@@ -867,6 +868,7 @@ function liveSocketKnobs(names = SOCKET_KNOBS) {
 const WORKFLOW_KNOBS = [
     'FETCH_CONNECTIONS',
     'TRANSPORT',
+    'HMAC',
     'REMINDERS',
     'WF_TIMER_THRESHOLD_MS',
     'WF_REMINDER_TICK_MS',

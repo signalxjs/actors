@@ -787,6 +787,15 @@ against an HTTP one rather than being quietly diffed against it. That is the
 whole point: over TCP there is no pool to size, so the two are not two
 measurements of one deployment.
 
+**`HMAC` is part of `INFRA_SHAPE` too** (#452): `webcrypto` is the shape every
+recorded baseline ran; `node` swaps the host-to-host HMAC for `nodeHmac()` —
+the same bytes on the wire, computed on the calling thread instead of a
+threadpool round trip per sign and per verify (#443) — and a run under it is
+refused against a `webcrypto` baseline rather than compared.
+The arm is one `--set` on the verb: `wf-load env.hmac=node …` (the extra
+args of `wf-load`/`ws-load` are forwarded to `helm upgrade`), and the run's
+shape then prints `HMAC=node`.
+
 **Check `tcpHosts` and `cluster/transportFallbacks` before believing any of
 it.** Every socket run records how many hosts reported `tcp` in their
 transport chain — `tcpHosts` in the hand-run's `peak concurrency` line,

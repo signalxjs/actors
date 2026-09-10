@@ -122,6 +122,8 @@ spec:
               value: {{ .Values.env.fetchConnections | quote }}
             - name: TRANSPORT
               value: {{ .Values.env.transport | quote }}
+            - name: HMAC
+              value: {{ .Values.env.hmac | quote }}
             - name: TCP_PORT
               value: {{ .Values.env.tcpPort | quote }}
             - name: MEMBERSHIP

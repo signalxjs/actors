@@ -11,6 +11,7 @@
  *   SIGX_NAMESPACE      Redis key namespace                default sigx
  *   FETCH_CONNECTIONS   undici pool size per peer origin   default 64
  *   TRANSPORT           http | tcp — host-to-host link      default http
+ *   HMAC                webcrypto | node — the host-to-host HMAC (#452) default webcrypto
  *   TCP_PORT            listener port when TRANSPORT=tcp    default 7312
  *   MEMBERSHIP          redis | k8s                        default redis
  *   REMINDERS           sharded | redis — the reminder provider (#385):
@@ -54,7 +55,7 @@
 import { createServer } from 'node:http';
 import { health, metrics, ops } from '@sigx/actors/host';
 import { socketStats } from '@sigx/actors/server';
-import { createAppHandler, attachSignalHandlers, boundedFetch } from '@sigx/actors/node';
+import { createAppHandler, attachSignalHandlers, boundedFetch, nodeHmac } from '@sigx/actors/node';
 import { cluster, clusterStats, httpTransport } from '@sigx/actors/cluster';
 import { tcpTransport } from '@sigx/actors-tcp';
 import { redisCluster, redisDirectory } from '@sigx/actors-redis';
@@ -174,6 +175,15 @@ if (TRANSPORT !== 'http' && TRANSPORT !== 'tcp') {
     console.error(`[perf-aks] TRANSPORT must be http or tcp, got '${TRANSPORT}'`);
     process.exit(1);
 }
+// The host-to-host HMAC implementation (#452, the seam of #443). `webcrypto`
+// is what every recorded baseline ran; `node` is `nodeHmac()` — the same
+// bytes on the wire, computed synchronously instead of on the threadpool.
+// Part of INFRA_SHAPE: the two arms are different measurements.
+const HMAC = process.env.HMAC ?? 'webcrypto';
+if (HMAC !== 'webcrypto' && HMAC !== 'node') {
+    console.error(`[perf-aks] HMAC must be webcrypto or node, got '${HMAC}'`);
+    process.exit(1);
+}
 // Parsed only when it is USED. The chart always sets it (default 7312), so
 // under `TRANSPORT=http` a bad value can only come from someone deliberately
 // setting a knob this mode ignores — refusing to boot over it would be a
@@ -194,6 +204,7 @@ const plugin = cluster({
     providers,
     advertise: `http://${POD_IP}:${PORT}`,
     secret: CLUSTER_SECRET,
+    ...(HMAC === 'node' ? { hmac: nodeHmac() } : {}),
     ...(NODE_NAME ? { meta: { node: NODE_NAME } } : {}),
     // `tcpTransport` reads its bound address back after listening and
     // publishes it in this host's descriptor, so `advertiseHost` is the only

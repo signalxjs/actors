@@ -29,6 +29,8 @@ env:
   # ceiling (#194) does not apply to it. Part of INFRA_SHAPE: a run over one
   # is not comparable with a run over the other.
   transport: http
+  # Host-to-host HMAC implementation (#452): webcrypto (the recorded shape) or node (`nodeHmac()`, synchronous).
+  hmac: webcrypto
   tcpPort: 7312
 
 secrets:
