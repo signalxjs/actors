@@ -342,8 +342,14 @@ describe('dispatchWatch', () => {
         await new Promise((r) => setTimeout(r, 20));
         expect(invocations).toBe(1);
 
-        // …and a NEW mutation still gets through.
+        // …and a NEW mutation still gets through. The loop arms its throttle
+        // window a few microtasks after the mutating call resolves (the
+        // change tick travels pump → loop → `settle()`), so let those drain
+        // before the manual clock moves — otherwise the window is armed AFTER
+        // the advance and never fires. A real scheduler never sees this: the
+        // window is 50 ms and the gap is microseconds (#438).
         await s.actor(Cart, 'w8').add('d');
+        await new Promise((r) => setTimeout(r, 0));
         clock.advance(50);
         expect((await iterator.next()).value).toBe(4);
         expect(invocations).toBe(2);

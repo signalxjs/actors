@@ -71,6 +71,19 @@
 
 ### Changed
 
+- **A turn costs fewer promises** (#438). The serial turn lane settled
+  through `Promise.prototype.finally` plus a `catch`, and both the turn
+  frame and the method invoke were `async` functions that only ever
+  returned the method's own promise — each an extra promise and two
+  microtask turns per call. `Turns.run` now settles with a plain
+  `then(ok, err)` pair, the two frames return the method's promise (or
+  value) straight through, and the end-of-turn bookkeeping reuses the
+  turn's start time instead of reading the wall clock again. Measured as
+  the exact-gated counts: `dispatch/warm-turns` 7 → 3 microtask turns,
+  `dispatch/warm-turns-deadline` 8 → 4, `dispatch/always-warm-turns`
+  4 → 2. No API or ordering change; a turn that ran longer than
+  `idleAfterMs` with no observer attached now records its start rather
+  than its end as the activation's last activity.
 - **One directory sweep per departed host, and none after a graceful
   leave** (#430). Every survivor used to sweep the directory for every
   host that left the view — correct, since eviction is idempotent, but a
