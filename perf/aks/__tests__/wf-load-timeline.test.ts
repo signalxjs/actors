@@ -13,6 +13,7 @@ import {
     parseRedisInfo,
     parseTopPods,
     restartDelta,
+    runBudgetMs,
     timelinePeaks
 } from '../deploy/wf-load.mjs';
 
@@ -146,5 +147,31 @@ describe('restartDelta', () => {
     it('is null when either end could not be observed', () => {
         expect(restartDelta(null, { a: 1 })).toEqual({ restartsDuringRun: null, podsReplaced: null });
         expect(restartDelta({ a: 0 }, null)).toEqual({ restartsDuringRun: null, podsReplaced: null });
+    });
+});
+
+// A soak is longer than the hour the run budget used to allow, and the
+// verb could not raise it: the 2026-09-10 soak was cancelled at 60 min
+// with the generator still running and its row never written. The budget
+// now follows the rungs.
+describe('runBudgetMs', () => {
+    it('is an hour for the default 60 s rung', () => {
+        expect(runBudgetMs({})).toBe(3_600_000);
+    });
+
+    it('follows a long rung: its length, the drain, and margin — never under an hour', () => {
+        // 5 400 s of arrivals + 240 s drain + 15 min margin.
+        expect(runBudgetMs({ durationS: '5400', WF_DRAIN_S: '240' })).toBe((5400 + 240 + 900) * 1000);
+    });
+
+    it('reads a knob only from the keys the run path consumes', () => {
+        // `loadgen.WF_DRAIN_S` is not a key runWfLoad maps, so it must not shape the budget.
+        expect(runBudgetMs({ durationS: '5400', 'loadgen.WF_DRAIN_S': '60' })).toBe((5400 + 120 + 900) * 1000);
+    });
+
+    it('sums a sweep', () => {
+        // three rungs of 60 s, the default 120 s drain each, plus margin — still under an hour.
+        expect(runBudgetMs({ sweep: '100,200,400', durationS: '60' })).toBe(3_600_000);
+        expect(runBudgetMs({ sweep: '100,200', durationS: '1800', 'loadgen.wf.WF_DRAIN_S': '60' })).toBe((2 * (1800 + 60) + 900) * 1000);
     });
 });

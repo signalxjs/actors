@@ -48,11 +48,14 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
 - **Activation cost is flat in cluster size.** Two directory operations per
   cold activation, identical at N=1 and N=100; CI gates it as an `exact`
   metric (§2026-07-28).
-- **Sixteen hosts complete 1.9× what five do — not 3.2×.** 49.9 completed
-  runs/s at 100 offered with nothing stuck, against 26.2 on five hosts of
-  the same spec; start latency 32 ms at the median where five hosts gave
-  216 ms. Past the knee the curve falls to ~30, and the cause is the
-  singleton aggregator, not the store: Redis peaked at 26% (§2026-09-08 G2).
+- **Sixteen hosts complete 3.3× what five do once the aggregator is
+  sharded — 1.9× on the singleton.** 49.9 completed runs/s at 100 offered
+  on the singleton, where past the knee the curve fell to ~30 because its
+  host was liveness-killed (§2026-09-08 G2); **87 completed runs/s at 400
+  offered with nothing stuck and no kill** on four shards persisting by
+  `ctx.append`, the hosts at 90% of their limit and Redis at a tenth of a
+  core (§2026-09-10). The knee is now the fleet's cores, as G1 said it
+  should be.
 - **Sixteen tickers flatten the sharded reminder table.** Wake lag
   507 ms / 1.0 s at 18 000 sleepers where three hosts gave 2.2 s / 48 s —
   each host owns a sixteenth of the table, so the per-tick scan shrinks with
@@ -76,10 +79,9 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
 - No Tier-3 run above 16 hosts or four host nodes; every socket figure is
   still `replicas=3 nodes=3`, and the workflow figures above 5 hosts are
   one day's (§2026-09-08).
-- No run with a sharded aggregator. Every workflow figure past the knee is
-  bounded by one `WorkflowStats` host being liveness-killed, and the
-  pattern B4 names (shard by key, persist the ring with `ctx.append`) is
-  designed, not measured.
+- The sharded aggregator has one day's numbers (§2026-09-10): a ladder to
+  400 offered and one soak, four shards, on sixteen hosts. Eight or sixteen
+  shards, and what caps the fleet once its cores are full, are unmeasured.
 - One soak (G3, 90 min at 60 runs/s) — on a 10 000-event ring, because the
   stock 50 000-event ring writes ~12 MB to the store per save and filled a
   2 GiB Redis volume in the session before it. Longer than 90 minutes, or
@@ -250,7 +252,13 @@ singleton does not slow its host down; it gets its host killed and fills
 the store's disk. That is the case for `ctx.append`, with numbers. And it
 is not the probe's impatience: with a 5 s liveness timeout and six strikes
 the aggregator's host was still killed at 200 offered (#434, §2026-09-09)
-— a minute of silence, not a late answer.
+— a minute of silence, not a late answer. **The pattern is measured
+(#432, §2026-09-10):** four shards persisting by `ctx.append` take the
+knee from ~50 to ~87 completed runs/s with no kill at 400 offered, a fifth
+of the store bytes for twice the completions, and Redis at 11% of a core.
+Shipped as three host knobs on the perf workload (`WF_STATS_SHARDS`,
+`WF_STATS_APPEND`, `WF_STATS_COMPACT_EVERY`), defaults unchanged so every
+recorded baseline keeps its shape.
 
 **Tier-3 sessions on the grown estate — #391.** ✅ **G1 done**
 (§2026-09-08): five hosts at 1300m against one at 6500m — matched budgets,

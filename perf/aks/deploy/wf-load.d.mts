@@ -58,6 +58,8 @@ export interface WfLoadRow {
     startMs: Percentile | null;
     deferredMs: Percentile | null;
     latencyFromPods: number;
+    /** The WorkflowStats shard whose percentiles the row carries (#432); absent on rows from before it. */
+    statsPercentilesFrom?: string | null;
     /** Engine sums, read from the aggregator by one pod. */
     transitions?: number | null;
     timersFired?: number | null;
@@ -188,6 +190,9 @@ export function restartDelta(
     before: Record<string, number> | null,
     after: Record<string, number> | null
 ): { restartsDuringRun: number | null; podsReplaced: number | null };
+
+/** The run budget in ms for these loadgen values: rungs × (durationS + WF_DRAIN_S) + 15 min, never under an hour. */
+export function runBudgetMs(values: Record<string, unknown>): number;
 
 export function timelinePeaks(
     timeline: TimelineSample[],

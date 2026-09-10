@@ -18,6 +18,46 @@ import { config } from './config.ts';
 import { workflowCounters } from './counters.ts';
 import type { CompletionEvent, RunStatus } from './types.ts';
 
+/**
+ * FNV-1a 32-bit over the run id — the shard a completion lands on when
+ * `WF_STATS_SHARDS` > 1 (#432). Local on purpose: the runtime's hash is
+ * not public API, and this one only has to be stable for the life of one
+ * deployment (a run publishes once).
+ */
+function fnv1a(input: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < input.length; i++) {
+        h ^= input.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h >>> 0;
+}
+
+/** The `WorkflowStats` key a run's completion is published to. */
+export const statsShardKey = (runId: string): string =>
+    config.statsShards === 1 ? 'all' : `s${fnv1a(runId) % config.statsShards}`;
+
+/** Every shard key — what the generator resets and drains. */
+export const statsShardKeys = (shards: number = config.statsShards): string[] =>
+    shards === 1 ? ['all'] : Array.from({ length: shards }, (_v, i) => `s${i}`);
+
+/**
+ * One appended entry (#432): the event as the ring stores it (seq is
+ * assigned by the reducer, so a replay numbers it identically) and the
+ * per-run sums it contributes. `applyEntry` folds it; the handler folds
+ * the same object through `ctx.append`, or through the reducer directly
+ * in save mode.
+ */
+interface StatsEntry {
+    e: Omit<StatsEvent, 'seq'>;
+    sums: number[];
+}
+const SUM_KEYS: (keyof StatsSnapshot['sums'])[] = [
+    'attempts', 'failures', 'compensations', 'children', 'transitions', 'timers',
+    'reminders', 'fallback', 'lost', 'stale', 'signalsDelivered', 'signalsBuffered',
+    'signalsLate', 'signalTimeouts'
+];
+
 export interface StatsEvent {
     seq: number;
     runId: string;
@@ -32,6 +72,8 @@ export interface StatsEvent {
 }
 
 export interface StatsSnapshot {
+    /** How many shards share the stream — the generator drains them all. */
+    shards: number;
     total: number;
     seq: number;
     byTemplate: Record<string, Record<string, number>>;
@@ -83,15 +125,11 @@ export const WorkflowStats = defineActor({
     type: 'WorkflowStats',
     // Public on purpose: the load generator drains it bare.
     allowAnonymous: true,
-    state: () => ({
-        seq: 0,
-        total: 0,
-        events: [] as StatsEvent[],
-        byTemplate: {} as Record<string, Record<string, number>>,
-        sums: emptySums(),
-        /** Events since the last save — the cadence knob's counter. */
-        unsaved: 0
-    }),
+    state: initialState,
+    // The reducer behind `ctx.append` (#432): pure in (state, entry), run
+    // once at append and once per activation replaying the log. Save mode
+    // folds through the same function, so both modes agree byte for byte.
+    applyEntry: (state, entry) => fold(state, entry as StatsEntry),
     methods: (ctx) => {
         const side = sideTable(ctx);
         const percentiles = (map: Map<string, Samples>): Record<string, Percentiles> =>
@@ -125,6 +163,7 @@ export const WorkflowStats = defineActor({
             },
             async snapshot(): Promise<StatsSnapshot> {
                 return {
+                    shards: config.statsShards,
                     total: ctx.state.total,
                     seq: ctx.state.seq,
                     byTemplate: ctx.snapshot(ctx.state.byTemplate),
@@ -144,50 +183,38 @@ export const WorkflowStats = defineActor({
                 side.latency.clear();
                 side.nodes.clear();
                 side.wakeLag = new Samples(SAMPLE_CAPACITY);
+                ctx.state.sinceCompaction = 0;
                 await ctx.save();
             }
         };
     },
     subscriptions: {
         'workflow-events': {
-            key: () => 'all',
+            // The topic key is the run id; with one shard everything lands
+            // on `all`, with N the id is hashed onto `s0`..`s{N-1}`.
+            key: statsShardKey,
             handle: async (ctx, event) => {
                 const e = event.payload as CompletionEvent;
                 workflowCounters.statsEvents++;
-                const s = ctx.state;
-                s.seq++;
-                s.total++;
-                s.events.push({
-                    seq: s.seq,
-                    runId: e.runId,
-                    template: e.template,
-                    tag: e.tag,
-                    status: e.status,
-                    startedAt: e.startedAt,
-                    endedAt: e.endedAt,
-                    parent: e.parentRunId !== null,
-                    ...(e.error ? { error: e.error.slice(0, 120) } : {})
-                });
-                if (s.events.length > config.statsRing) {
-                    s.events.splice(0, s.events.length - config.statsRing);
-                }
-                const byStatus = (s.byTemplate[e.template] ??= {});
-                byStatus[e.status] = (byStatus[e.status] ?? 0) + 1;
                 const st = e.stats;
-                s.sums.attempts += st.attempts;
-                s.sums.failures += st.failures;
-                s.sums.compensations += st.compensations;
-                s.sums.children += st.children;
-                s.sums.transitions += st.transitions;
-                s.sums.timers += st.wakes.timers;
-                s.sums.reminders += st.wakes.reminders;
-                s.sums.fallback += st.wakes.fallback;
-                s.sums.lost += st.wakes.lost;
-                s.sums.stale += st.wakes.stale;
-                s.sums.signalsDelivered += st.signals.delivered;
-                s.sums.signalsBuffered += st.signals.buffered;
-                s.sums.signalsLate += st.signals.late;
-                s.sums.signalTimeouts += st.signals.timedOut;
+                const entry: StatsEntry = {
+                    e: {
+                        runId: e.runId,
+                        template: e.template,
+                        tag: e.tag,
+                        status: e.status,
+                        startedAt: e.startedAt,
+                        endedAt: e.endedAt,
+                        parent: e.parentRunId !== null,
+                        ...(e.error ? { error: e.error.slice(0, 120) } : {})
+                    },
+                    sums: [
+                        st.attempts, st.failures, st.compensations, st.children, st.transitions,
+                        st.wakes.timers, st.wakes.reminders, st.wakes.fallback, st.wakes.lost,
+                        st.wakes.stale, st.signals.delivered, st.signals.buffered,
+                        st.signals.late, st.signals.timedOut
+                    ]
+                };
                 // The in-memory half rides the SAME activation the methods
                 // closure holds — a subscription handler runs as a turn of
                 // it — but it has no access to that closure, so the samples
@@ -199,14 +226,67 @@ export const WorkflowStats = defineActor({
                     for (const v of values) target.record(v);
                 }
                 for (const v of st.wakeLagMs) side.wakeLag.record(v);
-                if (++s.unsaved >= config.statsSaveEvery) {
-                    s.unsaved = 0;
-                    await ctx.save();
+                if (config.statsAppend) {
+                    // O(entry): the reducer folds it into ctx.state and the
+                    // storage appends it under the record's etag. The full
+                    // save every WF_STATS_COMPACT_EVERY is the compaction —
+                    // the only time the whole ring is written.
+                    await ctx.append(entry);
+                    if (ctx.state.sinceCompaction >= config.statsCompactEvery) {
+                        // Zeroed BEFORE the save so the compacted record
+                        // carries 0 and the next activation counts only the
+                        // log written after it.
+                        ctx.state.sinceCompaction = 0;
+                        await ctx.save();
+                    }
+                } else {
+                    fold(ctx.state, entry);
+                    if (++ctx.state.unsaved >= config.statsSaveEvery) {
+                        ctx.state.unsaved = 0;
+                        ctx.state.sinceCompaction = 0;
+                        await ctx.save();
+                    }
                 }
             }
         }
     }
 });
+
+function initialState() {
+    return {
+        seq: 0,
+        total: 0,
+        events: [] as StatsEvent[],
+        byTemplate: {} as Record<string, Record<string, number>>,
+        sums: emptySums(),
+        /** Events since the last save — the cadence knob's counter (save mode). */
+        unsaved: 0,
+        /**
+         * Entries folded since the last full save — append mode's compaction
+         * counter, and DURABLE on purpose: a fresh activation replays the log
+         * through `fold`, so it resumes at the log's length rather than at 0
+         * and a restart never stretches the cadence.
+         */
+        sinceCompaction: 0
+    };
+}
+type State = ReturnType<typeof initialState>;
+
+/** Fold one entry into the state, in place — the one reducer both modes use. */
+function fold(s: State, entry: StatsEntry): void {
+    s.seq++;
+    s.total++;
+    s.sinceCompaction++;
+    s.events.push({ seq: s.seq, ...entry.e });
+    if (s.events.length > config.statsRing) {
+        s.events.splice(0, s.events.length - config.statsRing);
+    }
+    const byStatus = (s.byTemplate[entry.e.template] ??= {});
+    byStatus[entry.e.status] = (byStatus[entry.e.status] ?? 0) + 1;
+    for (let i = 0; i < SUM_KEYS.length; i++) {
+        s.sums[SUM_KEYS[i]!] += entry.sums[i] ?? 0;
+    }
+}
 
 // The methods factory and the subscription handler receive the same ctx
 // object, so a WeakMap keyed on it is the bridge. The factory above keeps

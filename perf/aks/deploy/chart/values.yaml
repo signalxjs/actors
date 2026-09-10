@@ -220,6 +220,11 @@ workflow:
     WF_CHILD_STALE_MS: ""
     WF_STATS_SAVE_EVERY: ""
     WF_STATS_RING: ""
+    # The aggregator's shape (#432): shards of the completion stream, and
+    # O(entry) appends with a compaction cadence instead of whole-ring saves.
+    WF_STATS_SHARDS: ""
+    WF_STATS_APPEND: ""
+    WF_STATS_COMPACT_EVERY: ""
     WF_NOTIFY_RETRY_MS: ""
     WF_COMPUTE_MAX_LOCAL: ""
     WF_IO_MAX_LOCAL: ""

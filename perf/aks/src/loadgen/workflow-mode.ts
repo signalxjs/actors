@@ -147,12 +147,29 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
     const jobName = process.env.JOB_NAME;
     const seeder = jobIndex === undefined || jobIndex === '' || jobIndex === '0';
     const marker = jobName ? `seed-${jobName}` : null;
+    // The aggregator says how many shards share the stream (#432): one
+    // knob on the hosts, learned here rather than duplicated on the
+    // generator. `all` is always answerable — on a sharded fleet it is an
+    // empty actor whose snapshot still carries the count.
+    const shardsSnap = await call('WorkflowStats', 'snapshot', ['all']);
+    if (shardsSnap.error) {
+        log(`WorkflowStats.snapshot failed: ${shardsSnap.error}`);
+        process.exit(1);
+    }
+    // A positive integer or the singleton: anything else (an older host that
+    // does not report `shards`, a garbled body) must not size an array.
+    const reported = Number((shardsSnap.data as { shards?: unknown } | undefined)?.shards);
+    const statsShards = Number.isInteger(reported) && reported >= 1 ? reported : 1;
+    const shardKeys =
+        statsShards === 1 ? ['all'] : Array.from({ length: statsShards }, (_v, i) => `s${i}`);
     if (seeder) {
         // Reset FIRST: a pod that sees the marker must see a reset aggregator.
-        const reset = await call('WorkflowStats', 'reset', ['all']);
-        if (reset.error) {
-            log(`WorkflowStats.reset failed: ${reset.error}`);
-            process.exit(1);
+        for (const key of shardKeys) {
+            const reset = await call('WorkflowStats', 'reset', [key]);
+            if (reset.error) {
+                log(`WorkflowStats.reset(${key}) failed: ${reset.error}`);
+                process.exit(1);
+            }
         }
         const definitions = allDefinitions(knobs);
         for (const def of definitions) {
@@ -291,7 +308,22 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         const started = performance.now();
         const arrivalsEnd = started + durationS * 1000;
         const drainEnd = arrivalsEnd + drainS * 1000;
-        let cursor = 0;
+        // One drain cursor per shard (#432), starting at the shard's CURRENT
+        // seq: seq is global across tags and the aggregator is not reset
+        // between rungs, so a cursor at 0 would read an earlier rung's
+        // turned-over history as this rung's `dropped`.
+        const cursors = new Map<string, number>();
+        for (const key of shardKeys) {
+            const snap = await call('WorkflowStats', 'snapshot', [key]);
+            const seq = Number((snap.data as { seq?: unknown } | undefined)?.seq);
+            if (Number.isInteger(seq) && seq >= 0) cursors.set(key, seq);
+            else {
+                // Said, not hidden: a cursor at 0 reads earlier history as
+                // this rung's `dropped`, and the row should say why.
+                tally(`cursor:${key}:${snap.error ?? 'malformed'}`);
+                cursors.set(key, 0);
+            }
+        }
         let lastReport = started;
 
         const applyEvent = (e: DrainedEvent) => {
@@ -327,21 +359,23 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
         };
 
         const drain = async () => {
-            for (;;) {
-                const r = await call('WorkflowStats', 'drain', ['all', tag, cursor, 5000]);
-                if (r.error) {
-                    tally(`drain:${r.error}`);
-                    return;
+            for (const key of shardKeys) {
+                for (;;) {
+                    const r = await call('WorkflowStats', 'drain', [key, tag, cursors.get(key) ?? 0, 5000]);
+                    if (r.error) {
+                        tally(`drain:${r.error}`);
+                        return;
+                    }
+                    const { cursor: next, events, dropped } = r.data as {
+                        cursor: number;
+                        events: DrainedEvent[];
+                        dropped: number;
+                    };
+                    counts.droppedEvents = (counts.droppedEvents ?? 0) + dropped;
+                    for (const e of events) applyEvent(e);
+                    cursors.set(key, next);
+                    if (events.length < 5000) break;
                 }
-                const { cursor: next, events, dropped } = r.data as {
-                    cursor: number;
-                    events: DrainedEvent[];
-                    dropped: number;
-                };
-                counts.droppedEvents = (counts.droppedEvents ?? 0) + dropped;
-                for (const e of events) applyEvent(e);
-                cursor = next;
-                if (events.length < 5000) return;
             }
         };
 
@@ -456,13 +490,45 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             }
         }
 
-        const snap = await call('WorkflowStats', 'snapshot', ['all']);
         interface Snap {
             nodeMs: Record<string, NonNullable<Pct>>;
             wakeLagMs: NonNullable<Pct>;
             sums: Record<string, number>;
         }
-        const stats = (snap.data as Snap | undefined) ?? null;
+        // Counts sum across shards; percentiles do not, so `nodeMs` and
+        // `wakeLagMs` come from ONE shard — the first key, or if its snapshot
+        // failed the first that answered — and the row names it
+        // (`statsPercentilesFrom`), so a row can never quietly switch source.
+        // A body is a Snap only if its sums are all numbers: an older host or
+        // a garbled reply is tallied and left out rather than summed as NaN.
+        const isSnap = (d: unknown): d is Snap => {
+            if (!d || typeof d !== 'object') return false;
+            const sums = (d as { sums?: unknown }).sums;
+            return (
+                !!sums &&
+                typeof sums === 'object' &&
+                Object.values(sums as Record<string, unknown>).every((v) => typeof v === 'number' && Number.isFinite(v))
+            );
+        };
+        const snaps: { key: string; snap: Snap }[] = [];
+        for (const key of shardKeys) {
+            const snap = await call('WorkflowStats', 'snapshot', [key]);
+            if (isSnap(snap.data)) snaps.push({ key, snap: snap.data });
+            else tally(`snapshot:${key}:${snap.error ?? 'malformed'}`);
+        }
+        const source = snaps.find((s) => s.key === shardKeys[0]) ?? snaps[0];
+        const statsPercentilesFrom = source?.key ?? null;
+        const stats: Snap | null =
+            source === undefined
+                ? null
+                : {
+                      nodeMs: source.snap.nodeMs,
+                      wakeLagMs: source.snap.wakeLagMs,
+                      sums: snaps.reduce<Record<string, number>>((acc, { snap }) => {
+                          for (const [k, v] of Object.entries(snap.sums)) acc[k] = (acc[k] ?? 0) + v;
+                          return acc;
+                      }, {})
+                  };
         const nodeMs: Record<string, Pct> = {};
         for (const [type, p] of Object.entries(stats?.nodeMs ?? {})) nodeMs[type] = pct(p);
         const latencyMs: Record<string, Pct> = {};
@@ -485,6 +551,7 @@ export async function runWorkflowMode(io: WorkflowModeIo): Promise<never> {
             durationMs: Math.round(arrivalsMs),
             drainMs: Math.round(drainMs),
             generatorCpuMs,
+            statsPercentilesFrom,
             started: counts.started,
             startFailures: counts.startFailures,
             startsDeferred: counts.startsDeferred,

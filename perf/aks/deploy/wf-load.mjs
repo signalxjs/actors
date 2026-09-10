@@ -360,6 +360,31 @@ export function restartDelta(before, after) {
     return { restartsDuringRun, podsReplaced };
 }
 
+/**
+ * How long a run may take before it is cancelled and reported PARTIAL,
+ * from the values that decide its length: every rung runs `durationS` of
+ * arrivals and then drains for up to `WF_DRAIN_S` (the generator's default
+ * is 120 s), plus fifteen minutes for the quiet-fleet wait, the render and
+ * the collection. Never under an hour, which is what the fixed budget
+ * used to be — and which cancelled a 90-minute soak at 60 min with the
+ * generator still running and its row never written (2026-09-10).
+ */
+export function runBudgetMs(values) {
+    // The keys the run path consumes: a chart value under `loadgen.`, a
+    // knob under `loadgen.wf.` (where runWfLoad puts a bare WF_* value).
+    const num = (key, fallback) => {
+        const raw = values[key] ?? (key.startsWith('WF_') ? values[`loadgen.wf.${key}`] : values[`loadgen.${key}`]);
+        const n = raw === undefined || raw === '' ? fallback : Number(raw);
+        return Number.isFinite(n) && n > 0 ? n : fallback;
+    };
+    const durationS = num('durationS', 60);
+    const drainS = num('WF_DRAIN_S', 120);
+    const rungs = String(values.sweep ?? values['loadgen.sweep'] ?? '')
+        .split(',')
+        .filter((s) => s.trim() !== '').length || 1;
+    return Math.max(3_600_000, (rungs * (durationS + drainS) + 900) * 1000);
+}
+
 /** The host Deployment's CPU limit in millicores, for the ratio. */
 function hostCpuLimitM(kube, namespace, release) {
     return parseCpuMillis(kube(['-n', namespace, 'get', 'deploy', `${release}-host`, '-o',
@@ -407,7 +432,9 @@ const SUMMED = [
 const FROM_ONE = [
     'transitions', 'timersFired', 'remindersFired', 'wakesFallback', 'wakesLost', 'wakesStale',
     'signalsDelivered', 'signalsBuffered', 'signalsLate', 'signalTimeouts', 'taskAttempts',
-    'taskFailures', 'compensations', 'nodeMs', 'wakeLagMs'
+    'taskFailures', 'compensations', 'nodeMs', 'wakeLagMs',
+    // Which shard the percentiles above came from (#432) — named, never merged.
+    'statsPercentilesFrom'
 ];
 
 /**
@@ -519,7 +546,7 @@ export async function runWfLoad(options) {
         values = {},
         onLog = () => {},
         sampleIntervalMs = 5000,
-        timeoutMs = 3_600_000,
+        timeoutMs = runBudgetMs(values),
         quietQueued = 50,
         quietTimeoutMs = 600_000
     } = options;

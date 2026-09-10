@@ -77,6 +77,13 @@ describe('mergeWfRows', () => {
         expect(merged!.transitionsPerSec).toBeCloseTo(700 / 70, 2);
     });
 
+    // #432: percentiles cannot merge across shards, so a row names the shard
+    // they came from — and the merge must carry the name, not drop it.
+    it('forwards which shard the percentiles came from', () => {
+        const merged = mergeWfRows([row({ statsPercentilesFrom: 's0' }), row({ runId: 'pod-2', statsPercentilesFrom: 's0' })]);
+        expect(merged[0]!.statsPercentilesFrom).toBe('s0');
+    });
+
     it('reports the OFFERED rate — the rung times the pods — beside the per-pod one (#380)', () => {
         // Four pods each offering 250/s offered 1,000/s to the fleet; a row
         // labelled r=250 would understate the load fourfold.
