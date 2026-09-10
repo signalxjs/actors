@@ -189,6 +189,9 @@ export function restartDelta(
     after: Record<string, number> | null
 ): { restartsDuringRun: number | null; podsReplaced: number | null };
 
+/** The run budget in ms for these loadgen values: rungs × (durationS + WF_DRAIN_S) + 15 min, never under an hour. */
+export function runBudgetMs(values: Record<string, unknown>): number;
+
 export function timelinePeaks(
     timeline: TimelineSample[],
     options: { hostCpuLimitM: number | null }

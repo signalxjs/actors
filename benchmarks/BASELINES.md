@@ -4154,3 +4154,103 @@ was lost to a network drop on the laptop driving it (the estate ran
 unattended for ten minutes before the retry scaled it down). The sweep
 counters were not read before the fleet went down, so how often the
 graceful-leave skip fired is inferred from SCAN counts, not counted.
+
+## 2026-09-10 · Tier 3 — the aggregator sharded and appending: does the knee move? (#432, #391)
+
+| | |
+|---|---|
+| Shape | `wf replicas=16 nodes=4 cpu=1300m sku=Standard_D8ls_v6 image=0d096b4 knobs=FETCH_CONNECTIONS=64,TRANSPORT=http` for the control; the arm adds `WF_STATS_SHARDS=4,WF_STATS_APPEND=1` — four `WorkflowStats` actors sharing the completion stream by run-id hash, each persisting events as O(entry) appends and full-saving its ring every 5 000 (`WF_STATS_COMPACT_EVERY`'s default) |
+| Driver | hand-run `wf-load`, 60 s rungs; the soak one rung of 5 400 s at 100 offered; `INFO commandstats` snapshots around each ladder for the store's input bytes |
+| Against | §2026-09-09 (the same rungs on 0cd86ac, stock aggregator) and §2026-09-08 G3 (the soak at the knee that was the chain) |
+| Why | Every knob that could reach the singleton's failure mode has been measured not to (admission, one-way publish, the probe's timeout); the roadmap's B4 pattern — shard by key, append the ring — is the one lever left, and this is its first measurement |
+
+### The control: the new image is the old image
+
+| offered | 0cd86ac (§2026-09-09) | **0d096b4, stock knobs** |
+|---:|---:|---:|
+| 100 | 48.03, 0 stuck | **47.16**, 0 stuck |
+| 200 | 32.69, 1 stuck, 1 kill | **38.39**, 3 stuck, 1 kill |
+
+The knobs at their defaults are the old code path fold for fold (the
+reducer is shared), and the numbers say so: within noise, the same one
+liveness kill in the 200 rung, Redis at 35% of a core.
+
+### The arm: the ladder
+
+| offered | stock (control) | **shards=4 append=1** | stuck | unreported | kills |
+|---:|---:|---:|---:|---:|---:|
+| 100 | 47.16 | **47.46** | 0 | 0 | 0 |
+| 200 | 38.39 | **82.26** | **0** | **0** | **0** |
+| 400 | — (29–35 on every stock run) | **87.10** | **0** | **0** | **0** |
+| start p50 / p99 @200 | 183 / 23 069 ms | **177 / 4 503 ms** | | | |
+| wake lag p50 / p99 @200 | 5 / 139 920 ms | **3 / 24 ms** | | | |
+| transitions/s @400 | — | 1 692 | | | |
+| host CPU peak | 947m (73%) | 1 166m (90%) | | | |
+| Redis CPU peak · ops/s | 35% · 19.6k | **10.7%** · 22.3k | | | |
+
+**The knee moved from ~50 to ~87 completed runs/s, and the chain is gone.**
+Below the old knee the arm and the control are the same run (47.5 against
+47.2 at 100 offered). At 200 the control lost its aggregator host and
+three runs; the arm completed 82 runs/s with every run accounted for and
+a start p99 five times lower. At 400 the arm reached 87 with the hosts at
+90% of their limit — the fleet's cores are now the ceiling, which is what
+G1 said they should be, and Redis sat at a tenth of a core doing it.
+Sixteen hosts on the sharded aggregator complete 3.3× what five did on
+the singleton, against 1.9× yesterday.
+
+### The arm: the store's bytes
+
+| | control, rungs 100+200 (5.7 min) | **arm, rungs 100+200+400 (7 min)** |
+|---|---:|---:|
+| Redis input bytes | 6.11 GB | **1.10 GB** |
+| Redis commands | 1.50M | 3.46M |
+| bytes per completed run (incl. children) | ~450 KB | **~30 KB** |
+
+Twice the commands — one append per event where there was one save per
+25 — and a fifth of the bytes for twice the completions: the ring is no
+longer rewritten per batch, only compacted every 5 000 events. At the
+old knee's 50 runs/s the stock aggregator wrote 17 GB per fifteen minutes
+into the AOF (§2026-09-08); the arm writes about 1 GB, which a 20 GiB
+volume carries for a day rather than an hour.
+
+### The arm: the soak at the old knee
+
+One rung of 5 400 s at 100 offered on the arm, dispatched from the
+Actions runner. **Its row was never written**: the rig gave a run a fixed
+hour and cancelled it at 60 minutes with the generator still going (fixed
+in this PR — `runBudgetMs` follows the rungs). What survives is the
+generator's progress lines from its last 27 minutes, the store's counters
+over the whole window, and the cluster's events for the last hour:
+
+| | |
+|---|---:|
+| started / finished by the cancel (t+60 min) | 180 317 / 175 511 |
+| finished/s, five-minute windows from t+33 min | 38.0 · 35.4 · 26.0 · 25.5 · 28.7 · 26.7 |
+| in-flight at the generator's cap | 4 600–4 900 of 5 000; 168 starts deferred |
+| liveness kills | **4 at t+11 min, one per shard, within a second; 1 more at t+51 min** |
+| Redis input over the run | 10.0 GB (the stock singleton wrote 17 GB per fifteen minutes at half the rate) |
+
+**Sustained, the arm does not hold the ladder's 82–87.** At 100 offered
+the fleet completed ~50 runs/s over the first forty minutes and ~26 by
+the end, with the generator's in-flight cap saturated throughout — the
+60-second rungs measure a burst that the drain finishes, not a rate the
+fleet can sustain. The four simultaneous kills are the first compaction:
+each shard's 50 000-event ring filled at t+11 min and its full save is
+still a 12 MB write, now every 5 000 events per shard rather than every
+25 on one host. The chain is gone (five kills in an hour where the
+singleton managed seven in six minutes), but the ring's size is the cost
+that remains, and what degrades the fleet after the rings fill —
+compaction, the resident in-flight population, or the reminders the
+approval waits arm — is unmeasured, because the timeline was lost with
+the row.
+
+### What this does not say
+
+The ladder is one 60-second rung per point on four shards; eight or
+sixteen shards, and the arm at a rate it can sustain (the soak says that
+is under 100 offered with this ring), are the next measurements — with
+`WF_STATS_RING=10000` (RUNBOOK (v)), since append mode makes the ring's
+size the compaction's size. Two soak attempts produced no row: the first
+lost its orchestrator to the laptop driving it, the second to the rig's
+hour. Both are fixed for the next one: the run budget follows the rungs,
+and a soak is dispatched from the runner.

@@ -1241,6 +1241,15 @@ node perf/aks/deploy/testenv.mjs ws-up workflow.env.WF_STATS_SHARDS=4 \
 node perf/aks/deploy/testenv.mjs wf-load image.tag=<tag> sweep=100,200,400 WF_DELAY_MS=2000
 ```
 
+Size the ring for append mode: the compaction is still a whole-ring
+save, so a 50 000-event ring is still a 12 MB write every
+`WF_STATS_COMPACT_EVERY` events per shard — in the 2026-09-10 soak each
+shard's host was liveness-killed once, all four within a second, at the
+first compaction of a full ring (t+11 min at 100 offered), and never again
+in the following eighty minutes. Pass `workflow.env.WF_STATS_RING=10000`
+with the arm; the generator drains every two seconds and needs far less
+than that.
+
 Read `restartsDuringRun` (the chain), `total_net_input_bytes` per rung
 (the AOF), and the knee. Percentiles in the row's `nodeMs`/`wakeLagMs`
 come from shard 0 only — counts sum across shards, percentiles do not.
