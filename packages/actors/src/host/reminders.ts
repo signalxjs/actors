@@ -70,9 +70,44 @@ export function shardedReminders(): ActorReminders {
     return new ReminderService();
 }
 
+/** A shard record as this host last saw it — the table and the etag that CAS-guards it. */
+interface ShardRecord {
+    table: ReminderTable;
+    etag: string | null;
+}
+
+const noop = (): void => {};
+
 export class ReminderService implements ActorReminders {
     #context: ActorRemindersContext | null = null;
-    #chain: Promise<unknown> = Promise.resolve();
+    /**
+     * One writer chain PER SHARD (#441). A single host-wide chain made every
+     * actor's `set`/`clear` and every shard's tick queue behind each other,
+     * so one slow save on `p3` held a set on `p9` that shared nothing with
+     * it. Shards are independent records with independent etags; only
+     * writes to the SAME shard need an order.
+     */
+    #chains = new Map<string, Promise<unknown>>();
+    /**
+     * The table and etag of each shard as this host last loaded or wrote it
+     * (#441). A `set`/`clear` applies to the cached table and CAS-saves
+     * against the cached etag — one storage op instead of a load and a
+     * save — and the CAS is what keeps that safe: if anyone else wrote the
+     * shard meanwhile the etag is stale, the save is refused, and the edit
+     * is replayed on a fresh load exactly as a conflict always was. The
+     * tick never reads the cache — other hosts write into the shards this
+     * host owns, and a due entry they armed must be found.
+     */
+    #cache = new Map<string, ShardRecord>();
+    /**
+     * Shards whose cached etag lost a CAS. A shard other hosts are writing
+     * would otherwise pay THREE ops per set (a refused save, a reload, a
+     * save) where the uncached path pays two, so once it loses it loads
+     * before every write until the tick's own load re-primes it — a solo
+     * host or a quiet shard costs one op per set, a contended one costs
+     * what it costs today plus one refused save per tick.
+     */
+    #contended = new Set<string>();
     #stopTick: (() => void) | null = null;
 
     bind(context: ActorRemindersContext): void {
@@ -137,79 +172,118 @@ export class ReminderService implements ActorReminders {
                         nextDue: Date.now() + opts.due,
                         ...(opts.period !== undefined ? { period: opts.period } : {})
                     };
+                    return true;
                 });
             },
             clear: (name) =>
                 this.#mutate(shard, (table) => {
                     const entries = table[id];
-                    if (entries) {
-                        delete entries[name];
-                        if (Object.keys(entries).length === 0) delete table[id];
-                    }
+                    if (!entries || !(name in entries)) return false;
+                    delete entries[name];
+                    if (Object.keys(entries).length === 0) delete table[id];
+                    return true;
                 }),
             list: async () => {
+                // Always the store's answer: a read must see what another
+                // host armed, and it is never on a hot path.
                 const { table } = await this.#load(shard);
                 return Object.keys(table[id] ?? {});
             }
         };
     }
 
-    /** Serialize every mutation through one writer chain (all shards). */
-    #mutate(shard: string, edit: (table: ReminderTable) => void): Promise<void> {
-        const work = (): Promise<void> => this.#mutateNow(shard, edit);
-        const run = this.#chain.then(work, work);
-        this.#chain = run.catch(() => {});
+    /**
+     * Serialize one shard's mutations behind each other. `edit` returns
+     * whether it changed the table; a no-op writes nothing. `fresh` makes
+     * the write start from the store rather than the cache — the tick's
+     * posture, since other hosts arm reminders into the shards this host
+     * owns.
+     */
+    #mutate(shard: string, edit: (table: ReminderTable) => boolean, fresh = false): Promise<void> {
+        const work = (): Promise<void> => this.#mutateNow(shard, edit, fresh);
+        const prev = this.#chains.get(shard) ?? Promise.resolve();
+        const run = prev.then(work, work);
+        this.#chains.set(shard, run.then(noop, noop));
         return run;
     }
 
-    async #mutateNow(shard: string, edit: (table: ReminderTable) => void): Promise<void> {
+    async #mutateNow(
+        shard: string,
+        edit: (table: ReminderTable) => boolean,
+        fresh: boolean
+    ): Promise<void> {
         // Reload-and-reapply on etag conflict: with N hosts over shared
         // storage a shard legitimately has concurrent writers, and every
         // edit here is expressed against the CURRENT table, so replaying it
-        // on a fresh load is safe.
+        // on a fresh load is safe — whether the first attempt started from
+        // the cache or from the store.
         for (let attempt = 1; ; attempt++) {
-            const { table, etag } = await this.#load(shard);
-            const before = JSON.stringify(table);
-            edit(table);
+            const cached = fresh || this.#contended.has(shard) ? undefined : this.#cache.get(shard);
+            const record = cached ?? (await this.#load(shard));
+            if (fresh) this.#contended.delete(shard);
+            const { table, etag } = record;
             // A no-op edit must not write. The tick loop reaches every owned
             // shard on every tick and most of them have nothing due, so
             // saving unconditionally would rewrite all 16 shard records
             // every `reminderTickMs` on a host with no reminders at all —
             // and bump an etag no reader can distinguish from a real change.
-            // (Serializing costs no more than the `save` it replaces.)
+            // The edit says whether it changed anything; the table is not
+            // serialized twice to find out (#441).
+            if (!edit(table)) return;
+            // A shard table is already JSON-native — it is stored unencoded
+            // — so one stringify IS what a `saveText` store wants (#238).
             const json = JSON.stringify(table);
-            if (json === before) return;
             try {
-                // A shard table is already JSON-native — it is stored
-                // unencoded — so the string the compare just produced IS
-                // what the store wants. Handing over the object instead
-                // would make the adapter serialize it a third time (#238).
-                if (this.#storage.saveText) {
-                    await this.#storage.saveText(REMINDER_TYPE, shard, json, etag);
-                } else {
-                    await this.#storage.save(REMINDER_TYPE, shard, table, etag);
-                }
+                const next = this.#storage.saveText
+                    ? await this.#storage.saveText(REMINDER_TYPE, shard, json, etag)
+                    : // `save` takes OWNERSHIP of its tree (#25), and this table
+                      // stays cached for the next edit — so the store gets a
+                      // copy. The parse is the price of an adapter without
+                      // `saveText` (memory, file); the CAS stores all have one.
+                      await this.#storage.save(REMINDER_TYPE, shard, JSON.parse(json), etag);
+                this.#cache.set(shard, { table, etag: next });
                 return;
             } catch (error) {
+                // Whatever the failure, the table this attempt edited is no
+                // longer what the store holds.
+                this.#cache.delete(shard);
                 if (!isStorageConflict(error) || attempt >= MUTATE_ATTEMPTS) throw error;
+                // The cached etag lost: someone else writes this shard. Load
+                // before every write until the tick re-primes it.
+                if (cached !== undefined) this.#contended.add(shard);
             }
         }
     }
 
-    async #load(shard: string): Promise<{ table: ReminderTable; etag: string | null }> {
+    /** The store's current record, and the cache primed with it. */
+    async #load(shard: string): Promise<ShardRecord> {
         const record = await this.#storage.load(REMINDER_TYPE, shard);
-        return {
+        const loaded: ShardRecord = {
             table: (record?.state as ReminderTable) ?? {},
             etag: record?.etag ?? null
         };
+        this.#cache.set(shard, loaded);
+        return loaded;
     }
 
     // -----------------------------------------------------------------------
 
+    /**
+     * Every owned shard, CONCURRENTLY (#441). Ticking them one after another
+     * made a tick sixteen round trips long for no reason — the shards are
+     * independent records — and under a pipelining client (ioredis
+     * auto-pipelines same-tick commands) sixteen concurrent loads are one
+     * socket write. Ownership is resolved for all shards first so a placement
+     * that answers asynchronously is asked once per shard, not in sequence.
+     */
     async #tick(): Promise<void> {
-        for (const shard of reminderShardKeys()) {
-            if (!(await this.#ownsShard(shard))) continue;
-            await this.#tickShard(shard);
+        const shards = reminderShardKeys();
+        const owned = await Promise.all(shards.map((shard) => this.#ownsShard(shard)));
+        const results = await Promise.allSettled(
+            shards.filter((_shard, i) => owned[i]).map((shard) => this.#tickShard(shard))
+        );
+        for (const result of results) {
+            if (result.status === 'rejected') throw result.reason;
         }
     }
 
@@ -220,40 +294,48 @@ export class ReminderService implements ActorReminders {
         // it" from "the actor has since set or cleared it" (see `#rearm`).
         const due: Due[] = [];
         let entriesInRecord = 0;
-        await this.#mutate(shard, (table) => {
-            due.length = 0; // the mutation may retry after a CAS conflict
-            entriesInRecord = 0;
-            for (const [id, entries] of Object.entries(table)) {
-                // ONE enumeration per actor record: the scan's own snapshot
-                // is also the pre-deletion count for the gauge below and,
-                // through `remaining`, the emptiness test after it. The
-                // record this walk is longest for is exactly the outgrown
-                // one the gauge exists to name, so it must not pay three
-                // O(n) passes to say so.
-                const names = Object.entries(entries);
-                entriesInRecord += names.length;
-                const nul = id.indexOf('\u0000');
-                if (nul < 0) continue;
-                const ref: ActorRef = { type: id.slice(0, nul), key: id.slice(nul + 1) };
-                let remaining = names.length;
-                for (const [name, entry] of names) {
-                    if (entry.nextDue > now) continue;
-                    if (entry.period !== undefined) {
-                        // Advance past `now` even after long downtime — one
-                        // firing per tick, never a catch-up burst.
-                        let next = entry.nextDue + entry.period;
-                        if (next <= now) next = now + entry.period;
-                        entry.nextDue = next;
-                        due.push({ id, ref, name, advanced: { ...entry } });
-                    } else {
-                        delete entries[name];
-                        remaining--;
-                        due.push({ id, ref, name, advanced: null });
+        // `fresh`: the tick reads the STORE, never this host's cache —
+        // another host may have armed a reminder into this shard since.
+        await this.#mutate(
+            shard,
+            (table) => {
+                due.length = 0; // the mutation may retry after a CAS conflict
+                entriesInRecord = 0;
+                for (const [id, entries] of Object.entries(table)) {
+                    // ONE enumeration per actor record: the scan's own snapshot
+                    // is also the pre-deletion count for the gauge below and,
+                    // through `remaining`, the emptiness test after it. The
+                    // record this walk is longest for is exactly the outgrown
+                    // one the gauge exists to name, so it must not pay three
+                    // O(n) passes to say so.
+                    const names = Object.entries(entries);
+                    entriesInRecord += names.length;
+                    const nul = id.indexOf('\u0000');
+                    if (nul < 0) continue;
+                    const ref: ActorRef = { type: id.slice(0, nul), key: id.slice(nul + 1) };
+                    let remaining = names.length;
+                    for (const [name, entry] of names) {
+                        if (entry.nextDue > now) continue;
+                        if (entry.period !== undefined) {
+                            // Advance past `now` even after long downtime — one
+                            // firing per tick, never a catch-up burst.
+                            let next = entry.nextDue + entry.period;
+                            if (next <= now) next = now + entry.period;
+                            entry.nextDue = next;
+                            due.push({ id, ref, name, advanced: { ...entry } });
+                        } else {
+                            delete entries[name];
+                            remaining--;
+                            due.push({ id, ref, name, advanced: null });
+                        }
                     }
+                    if (remaining === 0) delete table[id];
                 }
-                if (remaining === 0) delete table[id];
-            }
-        });
+                // Something was advanced or deleted iff something was due.
+                return due.length > 0;
+            },
+            true
+        );
         // Persisted first (above); now fire. The CAS is what keeps this
         // at-most-once per tick even if another host ticks the same shard:
         // the conflicting ticker reloads an advanced table and collects
@@ -329,12 +411,14 @@ export class ReminderService implements ActorReminders {
     #rearm(shard: string, failed: readonly Due[]): Promise<void> {
         return this.#mutate(shard, (table) => {
             const nextDue = Date.now() + this.#require().tickMs;
+            let changed = false;
             for (const { id, name, advanced } of failed) {
                 const current = table[id]?.[name];
                 if (advanced === null) {
                     // One-shot: deleted by the tick; absent means untouched.
                     if (current !== undefined) continue;
                     (table[id] ??= {})[name] = { nextDue };
+                    changed = true;
                 } else if (
                     current !== undefined &&
                     current.nextDue === advanced.nextDue &&
@@ -342,9 +426,13 @@ export class ReminderService implements ActorReminders {
                 ) {
                     // Periodic: pull the next firing forward, but never past
                     // the period the tick already scheduled.
-                    current.nextDue = Math.min(current.nextDue, nextDue);
+                    if (nextDue < current.nextDue) {
+                        current.nextDue = nextDue;
+                        changed = true;
+                    }
                 }
             }
+            return changed;
         }).catch((error) => {
             // Storage is down or the CAS lost three times — those wakes ARE
             // lost now, and the counter above already says so. Do not fail
