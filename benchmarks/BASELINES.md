@@ -4169,6 +4169,7 @@ graceful-leave skip fired is inferred from SCAN counts, not counted.
 ## 2026-09-10 · The turn path's promise budget, counted (#438)
 ## 2026-09-10 · The cross-host hop: the HMAC was a threadpool round trip (#440)
 ## 2026-09-10 · The sharded reminder table: one storage op per set (#441)
+## 2026-09-10 · A live read delivers only what changed (#442)
 
 | | |
 |---|---|
@@ -4419,3 +4420,35 @@ second stringify gone and the load gone are both O(table), so the latency
 should roughly halve at every population; the run recorded in the PR says
 what it did on this box, and the bench VM's A/B is the number to quote.
 Nothing here moves the ceiling: a set still rewrites the whole record.
+| Command | `pnpm bench:run live/distinct` — counts, all `exact` |
+
+The 2026-08-14 section put 77–83% of a fan-out host's busy time in one
+`writev` per subscriber per delivery and named two levers: deliver less,
+and carry more subscriptions per connection. The throttle bucket ladder
+(#192) covers the rate. This covers the deliveries that carried nothing: a
+watch re-invokes its read after EVERY mutating turn, and a turn that touched
+state the read never looks at produced a delivery whose bytes were identical
+to the last one — N writes for a value N subscribers already held.
+
+`createSharedWatch` now fingerprints each re-read (`JSON.stringify` over the
+codec-encoded result — what the wire would carry) and drops a push equal to
+the last delivered. The read still runs; only the push is skipped.
+
+| `live/distinct` | `distinct` (default) | `chatty` (`distinct: false`) |
+|---|---:|---:|
+| `emissions_per_unrelated_mutation` | **0** | 1 |
+| `emissions_per_relevant_mutation` | 1 | 1 |
+| `reads_per_mutation` | 1 | 1 |
+
+The `chatty` arm is the control: it shows the read ran and the boundary
+reached the loop, so the zero is the dedupe and not a lost wake. The third
+row is the promise the change makes: deliveries fall, reads do not — a
+mutating turn still costs its re-read, and a design that wanted to skip the
+read would need to know what state the read depends on, which nothing here
+does.
+
+What it is worth is workload-shaped and not measured here: it is exactly the
+fraction of an actor's mutating turns that do not change a given watched
+projection. For `Fanout.current()` in the Tier-3 socket rig every publish
+changes the value, so `sockets/hot-fanout` should not move; a chat room whose
+presence map churns under a watched message list is the shape that does.

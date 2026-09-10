@@ -79,7 +79,11 @@ const PRINCIPAL_MEMO_CAP = 256;
 // Lives in watch-core so the cluster's watch coalescing can normalize
 // throttles identically without importing the activation (#111);
 // re-exported here because this is its historical home.
-import { DEFAULT_WATCH_THROTTLE_MS, declaresPrincipalIndependent } from '../watch-core';
+import {
+    DEFAULT_WATCH_THROTTLE_MS,
+    declaresDistinct,
+    declaresPrincipalIndependent
+} from '../watch-core';
 export { DEFAULT_WATCH_THROTTLE_MS };
 
 /**
@@ -1286,7 +1290,16 @@ export class Activation {
                     };
                 },
                 scheduler: this.#host.scheduler,
-                throttleMs
+                throttleMs,
+                // Distinct deliveries (#442): the codec-encoded result is what
+                // the wire carries, so equal encodings ARE equal deliveries.
+                // `JSON.stringify` over the encoded tree rather than
+                // `canonicalKey`: a key-order difference between two reads of
+                // the same value costs one redundant delivery, never a wrong
+                // dedupe, and the native walk is the cheaper one.
+                ...(declaresDistinct(this.def.__sigxActor, method)
+                    ? { fingerprint: (value: unknown) => JSON.stringify(this.#host.encodeArgs([value])) }
+                    : {})
             },
             () => {
                 this.#watches.delete(key);
