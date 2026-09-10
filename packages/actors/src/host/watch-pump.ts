@@ -42,7 +42,8 @@
 import { HostShutdownError } from '../errors';
 
 interface WatchReadJob {
-    run: () => Promise<unknown>;
+    /** A turn body: the read's value, or a promise of it (#438 — the turn frame is no longer `async`). */
+    run: () => unknown;
     resolve: (value: unknown) => void;
     reject: (error: unknown) => void;
 }
@@ -53,7 +54,7 @@ export interface WatchReadPump {
      * outcome. `seed` marks a loop's FIRST read — establishment — which
      * drains ahead of every pending re-read.
      */
-    schedule(run: () => Promise<unknown>, seed: boolean): Promise<unknown>;
+    schedule(run: () => unknown, seed: boolean): Promise<unknown>;
 }
 
 export interface WatchReadPumpDeps {

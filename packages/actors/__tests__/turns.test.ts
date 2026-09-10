@@ -186,3 +186,50 @@ describe('Turns — interleaved lane', () => {
         expect(log).toEqual(['i:start', 'i:end', 'drained']);
     });
 });
+
+describe('Turns — host-wide TurnLoad accounting', () => {
+    it('inflight rises on run() and returns to zero on success AND failure, both lanes', async () => {
+        const load = { inflight: 0 };
+        const box = new Turns(load);
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        const ok = box.run(() => gate.then(() => 'ok'));
+        const bad = box.run(() => {
+            throw new Error('boom');
+        });
+        const okInterleaved = box.run(() => gate, true);
+        const badInterleaved = box.run(async () => {
+            throw new Error('boom');
+        }, true);
+        expect(load.inflight).toBe(4);
+        expect(box.depth).toBe(4);
+        await expect(badInterleaved).rejects.toThrow('boom');
+        release();
+        await expect(ok).resolves.toBe('ok');
+        await expect(bad).rejects.toThrow('boom');
+        await okInterleaved;
+        expect(load.inflight).toBe(0);
+        expect(box.depth).toBe(0);
+    });
+
+    it('a turn that returns a plain value (no promise) settles and is counted exactly once', async () => {
+        const load = { inflight: 0 };
+        const box = new Turns(load);
+        await expect(box.run(() => 42)).resolves.toBe(42);
+        await expect(box.run(() => 43, true)).resolves.toBe(43);
+        expect(load.inflight).toBe(0);
+        expect(box.depth).toBe(0);
+    });
+
+    it('the tail is never poisoned by a synchronously throwing turn', async () => {
+        const box = new Turns();
+        const boom = box.run(() => {
+            throw new Error('sync');
+        });
+        const next = box.run(() => 'next');
+        await expect(boom).rejects.toThrow('sync');
+        await expect(next).resolves.toBe('next');
+        box.close();
+        await box.drain();
+    });
+});

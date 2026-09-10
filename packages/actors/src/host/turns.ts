@@ -19,6 +19,13 @@
  *
  * Ordering comes from promise resolution, not a queue: `#tail` is a promise
  * that turns chain onto, and `depth` is a counter of unsettled turns.
+ *
+ * The promise budget is deliberate and gated (#438): a serial turn is THREE
+ * promises — the chained start, the settlement that does the bookkeeping,
+ * and the never-rejecting tail — and no closures beyond the two settlement
+ * handlers. `dispatch/warm-turns` counts the microtask turns of one warm
+ * dispatch as an `exact` metric; a `finally`, a `catch` or an `async`
+ * wrapper added here shows up there as +1 or +2 and fails the check.
  */
 import { HostShutdownError } from '../errors';
 
@@ -32,6 +39,8 @@ import { HostShutdownError } from '../errors';
 export interface TurnLoad {
     inflight: number;
 }
+
+const noop = (): void => {};
 
 export class Turns {
     #tail: Promise<unknown> = Promise.resolve();
@@ -81,18 +90,33 @@ export class Turns {
             this.#inflight.add(guard);
             return settled;
         }
-        const result = this.#tail.then(
-            () => turn(),
-            // The previous turn's failure belongs to ITS caller only.
-            () => turn()
+        // `turn` is handed to `then` directly: every caller passes a closure
+        // that ignores its argument, so wrapping it again bought two closures
+        // per turn and nothing else. The previous turn's failure belongs to
+        // ITS caller only, hence the same function in both slots.
+        const result = this.#tail.then(turn, turn);
+        // `then(settle, settleThrow)` rather than `finally(...)` (#438):
+        // `Promise.prototype.finally` allocates its wrapper promise AND, at
+        // settlement, a `Promise.resolve(onFinally()).then(...)` pair — two
+        // more promises and two more microtask turns per turn than a plain
+        // pair of handlers that do the bookkeeping inline. Measured as
+        // `dispatch/warm-turns`, which gates.
+        const settled = result.then(
+            (value) => {
+                this.#depth--;
+                if (load) load.inflight--;
+                return value;
+            },
+            (error) => {
+                this.#depth--;
+                if (load) load.inflight--;
+                throw error;
+            }
         );
-        const settled = result.finally(() => {
-            this.#depth--;
-            if (load) load.inflight--;
-        });
         // The tail must never carry a rejection forward, and must include the
-        // depth decrement so `drain()` observes every turn settled.
-        this.#tail = settled.catch(() => {});
+        // depth decrement so `drain()` observes every turn settled. A shared
+        // `noop` in both slots, not a per-turn `catch` closure.
+        this.#tail = settled.then(noop, noop);
         return settled;
     }
 

@@ -843,9 +843,20 @@ these are known problems** — they are measurements looking for a decision.
    tree), so `memoryStorage` stores it by reference; the load-side clone
    stays, keeping "a stored value never aliases live activation state" true
    from both directions.
-4. **The mailbox allocates ~4 promises per turn.** It is not the dominant cost
+4. ~~**The mailbox allocates ~4 promises per turn.** It is not the dominant cost
    today (see the ladder), so this is lower priority than it looks. **Profile
-   confirms it:** `host/mailbox.ts` is 2.8% of the dispatch profile.
+   confirms it:** `host/mailbox.ts` is 2.8% of the dispatch profile.~~
+   **Fixed (#438):** the 2.8% was the mailbox's *self* time; the promises it
+   allocated were charged to V8's promise machinery and GC, which is why the
+   count moved more than the profile predicted. `Turns.run` now settles with
+   `then(ok, err)` instead of `finally` + `catch` (a `finally` is a wrapper
+   promise plus a `Promise.resolve().then` pair at settlement), the turn
+   frame and `#invoke` are no longer `async` (each was resolving its own
+   promise with the method's — a thenable adoption, two turns apiece), and
+   `#afterTurn` reuses the turn's start time instead of a second
+   `Date.now()`. Gated by the counts, all spread 0: `dispatch/warm-turns`
+   **7 → 3**, `dispatch/warm-turns-deadline` **8 → 4**,
+   `dispatch/always-warm-turns` **4 → 2**. See the 2026-09-10 section.
 5. ~~**Debounce the membership subscriber** — the single highest-value cluster
    fix, and the only measured O(N²).~~
    **Fixed (#26):** `refreshCoalescer` on `@sigx/actors/cluster`, wired into
@@ -4154,3 +4165,63 @@ was lost to a network drop on the laptop driving it (the estate ran
 unattended for ten minutes before the retry scaled it down). The sweep
 counters were not read before the fleet went down, so how often the
 graceful-leave skip fired is inferred from SCAN counts, not counted.
+
+## 2026-09-10 · The turn path's promise budget, counted (#438)
+
+| | |
+|---|---|
+| Machine | 12th Gen Intel Core i9-12900HK, win32/x64, Node v22.22.0 |
+| Build | `dist/*.prod.js` (`--conditions=production`) |
+| Command | `pnpm bench:run dispatch/warm-turns`, `pnpm bench:run always-warm-turns` — counts, so the machine does not matter |
+
+Item 4 of "Things worth investigating" said the mailbox's ~4 promises per
+turn were not worth chasing because `host/mailbox.ts` was 2.8% of the
+dispatch profile. That figure was the file's *self* time. A promise's cost
+is booked elsewhere — in V8's promise machinery and in GC, which the same
+profiles put at 4.3–8.9% of every run — so the count was the honest
+instrument, and it moved further than the profile suggested.
+
+Three shapes were on the serial lane, each paying for a guarantee it did not
+need:
+
+| where | was | now | turns saved |
+|---|---|---|---:|
+| `Turns.run` settlement | `result.finally(dec)` then `settled.catch(noop)` | `result.then(dec, decThrow)` then `settled.then(noop, noop)` | 2 |
+| `Activation.#invoke` | `async`, returning the method's promise | plain, returning it directly | 1 |
+| `Activation.#turn` | `async`, `await`ing the invoke inside `try/finally` | plain; the epilogue rides `result.then(ok, err)` | 1 |
+
+A `finally` is a wrapper promise plus, at settlement, a
+`Promise.resolve(onFinally()).then(...)` pair. An `async` function that
+returns a promise resolves its own promise *with* that promise — a thenable
+adoption, which is a `NewPromiseResolveThenableJob` plus a `then`, two turns
+on top of the caller's own `await`. Neither guarantee was load-bearing: the
+bookkeeping runs in both `then` handlers, a synchronous throw from the
+invoke lands in the same handler an async rejection did, and `Turns.run`
+already invokes the turn inside a `then` handler so nothing can throw
+synchronously into a caller.
+
+| scenario | before | after |
+|---|---:|---:|
+| `dispatch/warm-turns` `microtask_turns` | 7 | **3** |
+| `dispatch/warm-turns-deadline` `microtask_turns` | 8 | **4** |
+| `dispatch/always-warm-turns` `microtask_turns` | 4 | **2** |
+| `microtask_turns_spread`, all three | 0 | 0 |
+
+The deadline path keeps exactly its one extra turn (the `CallDeadlines`
+wrapper promise), and the interleaved lane keeps its one (`Promise.resolve()
+.then(turn)`, the never-synchronous-from-enqueue guarantee) — so the two
+ladders still differ from `warm-turns` by the amount their mechanism costs
+and nothing else.
+
+One clock read also went: `#afterTurn` took a second `Date.now()` per turn
+to stamp `lastActivityMs` with the turn's END; it now reuses the START the
+drop-on-dequeue check already read (plus the measured duration when an
+observer is timing). The only observable difference is a turn that ran
+longer than `idleAfterMs` with nobody observing, which may now be collected
+one sweep earlier once it ends; a running turn was never collectable.
+
+Timings were not the gate and are not quoted: a standalone probe of the
+three shapes in isolation ran 0.65 → 2.07 M mock turns/s, which bounds the
+effect from above — the runtime around the mailbox (placement, admission,
+the deadline registry, the actor method itself) dilutes it, and the
+interleaved A/B on the bench VM is where that number belongs.
