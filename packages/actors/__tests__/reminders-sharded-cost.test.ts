@@ -72,13 +72,16 @@ function counting(inner: ActorStorage = memoryStorage()): { storage: ActorStorag
     return { storage, counts, inner };
 }
 
-function bind(storage: ActorStorage): { service: ReminderService; scheduler: ReturnType<typeof manualScheduler> } {
+function bind(
+    storage: ActorStorage,
+    tickMs = TICK_MS
+): { service: ReminderService; scheduler: ReturnType<typeof manualScheduler> } {
     const service = new ReminderService();
     const scheduler = manualScheduler();
     service.bind({
         storage,
         scheduler,
-        tickMs: TICK_MS,
+        tickMs,
         ownsShard: () => true,
         deliver: async () => {}
     });
@@ -164,6 +167,32 @@ describe('the sharded default, as storage-op counts', () => {
         counts.reset();
         await api.set('c', { due: FAR_MS });
         expect(counts).toMatchObject({ loads: 0, saves: 1 });
+    });
+
+    it('a contended mark expires after one tick period on a host that never ticks the shard', async () => {
+        // A host sets reminders into shards it does not own and never ticks
+        // them, so the mark cannot wait for a tick: it is time-bounded.
+        const tickMs = 40;
+        const { storage, counts, inner } = counting();
+        const { service } = bind(storage, tickMs);
+        const key = keyInShard(6);
+        const api = service.apiFor({ type: 'Waking', key });
+        await api.set('warm', { due: FAR_MS });
+        const record = (await inner.load(REMINDER_TYPE, 'p6')) as ActorStorageRecord;
+        await inner.save(
+            REMINDER_TYPE,
+            'p6',
+            { ...(record.state as Record<string, unknown>), [`Waking${NUL}other`]: { z: { nextDue: Date.now() + FAR_MS } } },
+            record.etag
+        );
+        await api.set('a', { due: FAR_MS }); // the cached etag loses: contended
+        counts.reset();
+        await api.set('b', { due: FAR_MS });
+        expect(counts).toMatchObject({ loads: 1, saves: 1 }); // inside the window: load first
+        await new Promise((r) => setTimeout(r, tickMs + 10));
+        counts.reset();
+        await api.set('c', { due: FAR_MS });
+        expect(counts).toMatchObject({ loads: 0, saves: 1 }); // window over: cached again, no tick ran
     });
 
     it('one shard\'s stalled save holds no other shard\'s set', async () => {

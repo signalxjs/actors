@@ -113,7 +113,8 @@
   to the table this host last loaded or wrote and CAS-saves against its etag
   — the same conflict path as before if anyone else wrote the shard
   meanwhile, and a shard whose cached etag lost a CAS loads before every
-  write until the tick re-primes it. `reminders/arm-cost`
+  write for one tick period, or until the tick re-primes it, whichever is
+  first (a host never ticks the shards it does not own). `reminders/arm-cost`
   `storage_ops_per_set` 2 → 1; `loads_per_empty_tick` stays 16, because the
   tick reads the store — other hosts arm reminders into the shards this host
   owns. `reminderShardKeys()` returns one frozen array.

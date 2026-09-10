@@ -100,14 +100,19 @@ export class ReminderService implements ActorReminders {
      */
     #cache = new Map<string, ShardRecord>();
     /**
-     * Shards whose cached etag lost a CAS. A shard other hosts are writing
-     * would otherwise pay THREE ops per set (a refused save, a reload, a
-     * save) where the uncached path pays two, so once it loses it loads
-     * before every write until the tick's own load re-primes it — a solo
-     * host or a quiet shard costs one op per set, a contended one costs
-     * what it costs today plus one refused save per tick.
+     * Shards whose cached etag lost a CAS, and until when that counts. A
+     * shard other hosts are writing would otherwise pay THREE ops per set
+     * (a refused save, a reload, a save) where the uncached path pays two,
+     * so once it loses it loads before every write — for ONE tick period,
+     * or until the tick's own fresh load re-primes it, whichever is first.
+     * Time-bounded rather than tick-cleared because a host sets reminders
+     * into shards it does not own (shard = hash of the actor id, owner =
+     * rendezvous over the view) and never ticks those, so a tick-cleared
+     * mark would outlive the contention that set it. A solo host or a quiet
+     * shard costs one op per set; a contended one costs what it costs today
+     * plus at most one refused save per tick period.
      */
-    #contended = new Set<string>();
+    #contended = new Map<string, number>();
     #stopTick: (() => void) | null = null;
 
     bind(context: ActorRemindersContext): void {
@@ -221,7 +226,7 @@ export class ReminderService implements ActorReminders {
         // on a fresh load is safe — whether the first attempt started from
         // the cache or from the store.
         for (let attempt = 1; ; attempt++) {
-            const cached = fresh || this.#contended.has(shard) ? undefined : this.#cache.get(shard);
+            const cached = fresh || this.#isContended(shard) ? undefined : this.#cache.get(shard);
             const record = cached ?? (await this.#load(shard));
             if (fresh) this.#contended.delete(shard);
             const { table, etag } = record;
@@ -252,10 +257,22 @@ export class ReminderService implements ActorReminders {
                 this.#cache.delete(shard);
                 if (!isStorageConflict(error) || attempt >= MUTATE_ATTEMPTS) throw error;
                 // The cached etag lost: someone else writes this shard. Load
-                // before every write until the tick re-primes it.
-                if (cached !== undefined) this.#contended.add(shard);
+                // before every write for a tick period, or until a tick
+                // re-primes it.
+                if (cached !== undefined) {
+                    this.#contended.set(shard, Date.now() + this.#require().tickMs);
+                }
             }
         }
+    }
+
+    /** Still inside the window a cached loss opened? Expired marks are dropped on the way. */
+    #isContended(shard: string): boolean {
+        const until = this.#contended.get(shard);
+        if (until === undefined) return false;
+        if (Date.now() < until) return true;
+        this.#contended.delete(shard);
+        return false;
     }
 
     /** The store's current record, and the cache primed with it. */

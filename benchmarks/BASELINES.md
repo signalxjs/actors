@@ -4402,8 +4402,9 @@ against a cached table whose etag went stale is refused by the store and
 replayed on a fresh load, which is exactly what a conflict always was. What
 the cache changes is who pays when a shard has several writers — a refused
 CAS is a third op, not a saved one — so a shard whose cached etag loses is
-marked contended and loads before every write until the tick's own load
-re-primes it. Solo host or quiet shard: one op. Contended shard: what it
+marked contended and loads before every write for one tick period, or until
+the tick's own load re-primes it, whichever comes first — a host sets into
+shards it does not own and never ticks those, so the mark is time-bounded. Solo host or quiet shard: one op. Contended shard: what it
 cost before, plus one refused save per tick. The tick itself never reads the
 cache: other hosts arm reminders into the shards this host owns.
 
