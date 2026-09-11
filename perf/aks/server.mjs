@@ -159,7 +159,7 @@ const providers = (() => {
 
 // The host-to-host link (#203). TCP is the default since 2026-09-11 (BASELINES
 // §2026-09-11); HTTP was the default before that and is what every shape
-// recorded until then was measured over, so `env.transport=http` reproduces one.
+// recorded until then was measured over, so `TRANSPORT=http` reproduces one.
 //
 // A CHAIN, never `tcpTransport()` alone: a single transport is strict, so a
 // peer that publishes no tcp address is unreachable rather than reached over
