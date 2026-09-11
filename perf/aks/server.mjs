@@ -10,7 +10,7 @@
  *   OPS_SECRET          /_sigx/ops bearer token            REQUIRED
  *   SIGX_NAMESPACE      Redis key namespace                default sigx
  *   FETCH_CONNECTIONS   undici pool size per peer origin   default 64
- *   TRANSPORT           http | tcp — host-to-host link      default http
+ *   TRANSPORT           http | tcp — host-to-host link      default tcp (2026-09-11)
  *   HMAC                webcrypto | node — the host-to-host HMAC (#452) default webcrypto
  *   TCP_PORT            listener port when TRANSPORT=tcp    default 7312
  *   MEMBERSHIP          redis | k8s                        default redis
