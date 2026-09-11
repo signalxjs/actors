@@ -4680,8 +4680,8 @@ failures are the same saturation seen from the completion path — a
 publish that waits for a subscriber's turn times out on a host whose loop
 is full — and they are what the generators count as unreported.
 
-Per parent run that is ~60 ms of D8 CPU, ~23 ms per run or child, of
-which 2 ms tasks are 10. The rest is the engine's own bookkeeping — 3.2M
+Per parent run that is ~60 ms of D8 CPU, ~23 ms per run or child; the
+five 2 ms tasks a parent run carries account for 10 ms of it. The rest is the engine's own bookkeeping — 3.2M
 whole-record saves in the eight-shard session, 5 000 a second, each a
 `JSON.stringify` of a run record plus a Redis round trip — and the
 profile's other lines: GC, the hop, the loop. The next lever on the
