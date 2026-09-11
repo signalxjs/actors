@@ -170,7 +170,9 @@ const providers = (() => {
 // measuring this: every per-principal cross-host watch stream PINS one
 // pooled connection for the life of the subscription (#194), and one
 // multiplexed connection per peer has no such arithmetic.
-const TRANSPORT = process.env.TRANSPORT ?? 'http';
+// tcp since 2026-09-11 (BASELINES §2026-09-11): hosts talk TCP; http is the
+// client endpoint and the rolling-deploy fallback. Older shapes were http.
+const TRANSPORT = process.env.TRANSPORT ?? 'tcp';
 if (TRANSPORT !== 'http' && TRANSPORT !== 'tcp') {
     console.error(`[perf-aks] TRANSPORT must be http or tcp, got '${TRANSPORT}'`);
     process.exit(1);

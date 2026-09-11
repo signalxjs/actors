@@ -146,8 +146,12 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
    restart is on the order of 2M commands in bursts that share the client
    with the heartbeat (§2026-07-28).
 6. **The HTTP host-to-host fetch pool.** It was the identity cliff (#194);
-   TCP (#203) multiplexes it away, but the workflow shape has only ever been
-   measured over HTTP.
+   TCP (#203) multiplexes it away. Measured on the engine-bound workflow
+   shape on 2026-09-11: over HTTP the pool saturates past 200 offered
+   (start p99 100+ s, 10k retries, 16k claim conflicts); over TCP the same
+   fleet completes 1.4–1.9× as many runs per second with start p99 under
+   200 ms and sixteen of each. **Hosts run TCP from here; every shape before
+   that date is an HTTP shape.**
 
 ## The roadmap
 

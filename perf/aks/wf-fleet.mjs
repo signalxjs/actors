@@ -316,7 +316,7 @@ async function startHosts(members, { hosts, redisUrl, namespace, basePort, env, 
     // The option wins, the environment is the fallback — the header says
     // `TRANSPORT=tcp` in the environment reaches the hosts, so it must —
     // and anything else is refused before a host is spawned.
-    const transport = env.TRANSPORT ?? process.env.TRANSPORT ?? 'http';
+    const transport = env.TRANSPORT ?? process.env.TRANSPORT ?? 'tcp';
     if (transport !== 'http' && transport !== 'tcp') {
         throw new Error(`[wf-fleet] TRANSPORT must be http or tcp, got '${transport}'`);
     }

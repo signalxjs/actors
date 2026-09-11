@@ -7,10 +7,14 @@ per in-flight request.
 - **`tcpTransport()`** — a `HostTransportFactory` for the `cluster()` plugin.
   Chain it ahead of `httpTransport()` so a rolling deploy stays safe.
 
-On Node this is the recommended transport, and the reason is **socket count**,
-not latency: HTTP's pool sizes to `concurrency × peers`, which is file
-descriptors, kernel buffers and conntrack entries. One connection per peer does
-not change with RTT.
+On Node this is the transport hosts should run on, for latency and CPU per hop
+as much as for socket count. Against tuned HTTP it is ~6× the calls per second
+at a ninth of the p99 per hop, and on a sixteen-host fleet under load it keeps
+start latency under 200 ms at p99 where HTTP's per-peer pool saturates, calls
+time out and retries duplicate directory claims (see the actors repo's
+`benchmarks/BASELINES.md`, 2026-09-11). Socket count is the other reason:
+HTTP's pool sizes to `concurrency × peers` — file descriptors, kernel buffers
+and conntrack entries — where one connection per peer does not change with RTT.
 
 > **This transport belongs on a private network.** It binds **all interfaces**
 > unless you set `host`, and it speaks no TLS — the cluster HMAC authenticates
