@@ -387,8 +387,15 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 - `packages/actors-tcp` → `@sigx/actors-tcp` — a framed TCP
   transport for `@sigx/actors/cluster`: `tcpTransport()`, one multiplexed
   connection per peer instead of HTTP's one per in-flight request. Node-only
-  (`node:net`), zero runtime deps. Justified by socket count, not latency —
-  see `benchmarks/BASELINES.md`. Runs the shared transport conformance suite.
+  (`node:net`), zero runtime deps. **The transport hosts should run on**:
+  measured against tuned HTTP on 2026-09-11 (BASELINES §2026-09-11) it is
+  ~6× the calls/s at a ninth of the p99 per hop on one box, and on a
+  sixteen-host engine-bound ladder it took start p99 from 100+ s to under
+  200 ms with retries and claim conflicts going from thousands to sixteen —
+  HTTP's pool saturates, calls time out, retries duplicate claims. The
+  earlier "socket count, not latency" line came from an A/B taken under the
+  20 ms task burn, which no transport could move. Runs the shared transport
+  conformance suite.
   The one blessed socket transport for hosts: a host-to-host WebSocket
   transport existed and was retired (#151) — an edge runtime should be a
   *client* of the deployment (#99), not a cluster peer, and a WS host

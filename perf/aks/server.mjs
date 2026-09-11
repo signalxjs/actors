@@ -10,7 +10,7 @@
  *   OPS_SECRET          /_sigx/ops bearer token            REQUIRED
  *   SIGX_NAMESPACE      Redis key namespace                default sigx
  *   FETCH_CONNECTIONS   undici pool size per peer origin   default 64
- *   TRANSPORT           http | tcp — host-to-host link      default http
+ *   TRANSPORT           http | tcp — host-to-host link      default tcp (2026-09-11)
  *   HMAC                webcrypto | node — the host-to-host HMAC (#452) default webcrypto
  *   TCP_PORT            listener port when TRANSPORT=tcp    default 7312
  *   MEMBERSHIP          redis | k8s                        default redis
@@ -157,8 +157,9 @@ const providers = (() => {
     process.exit(1);
 })();
 
-// The host-to-host link (#203). HTTP is the default and what every recorded
-// baseline was measured over; `tcp` is the axis this knob exists to price.
+// The host-to-host link (#203). TCP is the default since 2026-09-11 (BASELINES
+// §2026-09-11); HTTP was the default before that and is what every shape
+// recorded until then was measured over, so `TRANSPORT=http` reproduces one.
 //
 // A CHAIN, never `tcpTransport()` alone: a single transport is strict, so a
 // peer that publishes no tcp address is unreachable rather than reached over
@@ -170,7 +171,9 @@ const providers = (() => {
 // measuring this: every per-principal cross-host watch stream PINS one
 // pooled connection for the life of the subscription (#194), and one
 // multiplexed connection per peer has no such arithmetic.
-const TRANSPORT = process.env.TRANSPORT ?? 'http';
+// tcp since 2026-09-11 (BASELINES §2026-09-11): hosts talk TCP; http is the
+// client endpoint and the rolling-deploy fallback. Older shapes were http.
+const TRANSPORT = process.env.TRANSPORT ?? 'tcp';
 if (TRANSPORT !== 'http' && TRANSPORT !== 'tcp') {
     console.error(`[perf-aks] TRANSPORT must be http or tcp, got '${TRANSPORT}'`);
     process.exit(1);

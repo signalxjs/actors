@@ -4495,3 +4495,157 @@ values a read returns is unit-pinned (`watch-fingerprint.test.ts`), and
 Local, contended laptop, informational: `rows=0` 184.6k → 210.3k
 (±18–28%, direction only). The bench VM's A/B on the PR is the figure to
 quote against the −12.6% it is meant to give back.
+
+## 2026-09-11 · The engine without its burn, and the transport it could not see: HTTP vs TCP settled (#203, #391)
+
+| | |
+|---|---|
+| Shape | `wf replicas=16 nodes=4 cpu=1300m sku=Standard_D8ls_v6 image=cf33c54 knobs=FETCH_CONNECTIONS=64,HMAC=webcrypto,TRANSPORT=http|tcp,WF_STATS_APPEND=1,WF_STATS_RING=10000,WF_STATS_SHARDS=4` — the sharded aggregator of §2026-09-10, `WF_TASK_MS=2` (loadgen knob) so the workload's compute is a tenth of what every earlier ladder carried, two generator pods (`parallelism=2`, so 100/250/500 per pod is 200/500/1000 offered) |
+| Driver | `wf-load` dispatched from the Actions runner, 60 s rungs, HTTP then TCP on the same image twelve minutes apart (runs 34602903504, 34604876010) |
+| Also | a Tier-2 CPU profile of the hosts at the 20 ms knee, the Tier-2 `cluster2/transport-decision` per-hop numbers, the socket-axis repeat of §2026-08-13, five local repetitions of the per-hop scenario |
+| Why | The user has said from the start that hosts should talk TCP. The record said "socket count, not latency" (AGENTS.md, the tcp README) and "TCP does not move the workflow knee" (§2026-09-05). Both were drawn from runs that could not see the transport, and this section replaces them |
+
+### First, what the CPU at the knee actually was
+
+A `--cpu-prof` of four host processes on a 10-core laptop
+(`wf-fleet.mjs hosts=4 sweep=50,100,200`, default mix, 20 ms tasks), at the
+local knee of 36 completed/s with hosts at 93–138% of a core. Of a host's
+busy time:
+
+| share | what |
+|---:|---|
+| 71% | the task burn itself: `node:internal/crypto/hash` digest, `Hash` construction, `createHash` — the sha256 chain `WfCompute` runs for `taskMs` |
+| 19% | garbage collection, almost all of it the burn's own `Hash` objects (one per 64 digests) |
+| 2.8% | `@sigx/serialize` and `@sigx/reactivity` |
+| 1.4% | HTTP (undici, node http, streams) |
+| 1.0% | `@sigx/actors` and the Redis provider |
+| 0.6% | the workflow engine (`perf/aks/src/workflow`) |
+| 0.3% | ioredis |
+
+**Every ladder in this file up to §2026-09-10 measured the workload's
+simulated compute, not the engine.** A parent run with its children burns
+~110 ms of laptop CPU, the D8 cores look about half as fast, and that is
+the whole of the 19 cores sixteen hosts spent at 87 runs/s. The runtime,
+the engine and the transport together were under 5% — which is why the
+§2026-09-05 T3 arm found TCP "identical within noise": nothing it changed
+was on the profile. That A/B was blind, and the conclusion drawn from it
+(and repeated into AGENTS.md, the tcp README and the roadmap) was wrong.
+
+### The engine-bound ladder: HTTP against TCP, same image, same hour
+
+`WF_TASK_MS=2` — a tenth of the burn — on the sharded sixteen-host arm:
+
+| offered | HTTP completed/s · start p50 / p99 · unreported | **TCP** completed/s · start p50 / p99 · unreported |
+|---:|---|---|
+| 200 | 97.4 · 6 / 35 ms · 0 | 61.6 · 4 / 21 ms · 0 |
+| 500 | 85.0 · 79 ms / **127 s** · 9 387 | **159.8** · 6 / **87 ms** · 49 |
+| 1000 | 155.1 · 80 ms / 109 s · 2 736 | **221.3** · 12 / 195 ms · 18 169 |
+
+Over the three rungs, from the hosts' own counters:
+
+| | HTTP | **TCP** |
+|---|---:|---:|
+| dispatch retries | 10 184 | **16** |
+| directory claim conflicts | 16 024 | **16** |
+| aggregator events dropped by the generators | ~60 000 | **0** |
+| rung drains (s) | 59 / 280 / 190 | 128 / 122 / 122 |
+| `transportFallbacks` | 0 | 0 |
+| host CPU peak | 1 114m | 1 097m |
+| Redis CPU peak · ops/s | 32% · 48.7k | 34% · 55.3k |
+
+The 200 rung is the same run on both: 11 597 against 11 590 completions
+from the same arrivals, order p50/p99 2 012 / 2 042 against 2 012 / 2 029
+ms; the rung's completed/s differs only because TCP's drain window ran
+longer on a few stragglers. Past 200 the transport is the difference. On
+HTTP the per-peer fetch pool saturates, calls time out, retries re-issue
+work and the duplicate claims show up as sixteen thousand conflicts; the
+fleet then needs three to five minutes to work off sixty seconds of
+arrivals, and the generators lose track of sixty thousand completions
+while their drain calls time out. On TCP one multiplexed connection per
+peer has no pool to saturate: sixteen retries, sixteen conflicts, nothing
+dropped, every rung drained in two minutes, and start latency stayed under
+200 ms at p99 where HTTP's was over 100 s. At 1000 offered TCP's limit
+moved on to the four aggregator shards, which refused 47 847 publishes —
+the next knob, `WF_STATS_SHARDS=8`, and no longer the transport's problem.
+
+**Same hosts, same CPU peak, 1.4–1.9× the completed runs per second and
+three orders of magnitude fewer failures. That is the transport.**
+
+### The hop itself, Tier 2
+
+`BENCH_TIER2=1 pnpm bench:run cluster2/transport-decision` on the laptop
+(one run, contended, timings informational):
+
+| | tuned HTTP | **TCP** |
+|---|---:|---:|
+| calls/s | 15 337 | **89 470** |
+| p99 per call | 12.2 ms | **1.30 ms** |
+| TCP handles | 65 | **3** |
+
+Five runs on the same box, back to back, for the repetition the timings
+need (the Bench VM runs the Tier-1 suite only; `cluster2/*` is opt-in and
+never part of `pnpm bench`, so a dispatch of `bench.yml` carries no row
+for it):
+
+| run | tuned HTTP calls/s · p99 | **TCP** calls/s · p99 |
+|---:|---:|---:|
+| 1 | 15 337 · 12.18 ms | 89 470 · 1.30 ms |
+| 2 | 15 804 · 10.60 ms | 89 336 · 1.30 ms |
+| 3 | 15 689 · 11.41 ms | 91 508 · 1.31 ms |
+| 4 | 15 641 · 9.99 ms | 92 432 · 1.28 ms |
+| 5 | 15 722 · 12.96 ms | 92 972 · 1.28 ms |
+
+Five of five in the same direction, with HTTP's p99 swinging 10–13 ms
+between runs and TCP's holding 1.28–1.31: **5.8× the calls per second at
+an eighth to a tenth of the tail, over 3 handles instead of 65.** The
+counts (handles, bytes) gate in this tier and the timings are
+informational by the tier's own rule — five agreeing runs is what makes
+them quotable here.
+
+### The socket axis, repeated as §2026-08-13 asked
+
+That section found TCP's delivery p50 halved at 5 000 subscribers but its
+throughput disagreeing in sign between rungs, and said the claim needed
+repetition before anyone edited it. The repeat, on the sixteen-host D8
+shape (`socket.enabled=true socket.sessions=true`, one subscriber pod,
+`mode=hot`, 30 s rungs), HTTP then TCP on the same image seven minutes
+apart (runs 34606564296, 34607234629; `tcpHosts` 0 then 16):
+
+| subscribers | transport | connected | deliveries/s | p50 | p99 | every publish to every subscriber |
+|---:|---|---:|---:|---:|---:|---|
+| 5 000 | http | 5 000 | 37 678 | 62.9 ms | 76.3 ms | yes |
+| 5 000 | **tcp** | 5 000 | **39 668** | **53.4 ms** | **67.8 ms** | yes |
+| 10 000 | http | 10 000 | 52 633 | 69.5 ms | 149.9 ms | yes |
+| 10 000 | **tcp** | 10 000 | **54 510** | **53.6 ms** | **116.8 ms** | yes |
+
+No sign disagreement this time: TCP delivers 4–5% more per second and
+15–23% lower at the median and the tail at both rungs, with zero connect
+failures, subscription errors or drops on either. Sixteen D8 hosts no
+longer show the connection failures three D2 hosts showed at 250 in
+August, so the socket axis is client-bound here and the hop is a smaller
+share of it than on the workflow axis — which is why the margin is a
+fifth rather than a multiple. The direction is the same.
+
+### The verdict, and what changes
+
+Hosts run TCP. The perf chart's default is `env.transport: tcp` from this
+PR; every shape recorded before 2026-09-11 is an HTTP shape and says so in
+its string, and a comparison against one must pass `env.transport=http` to
+`ws-up` (the host reads it as `TRANSPORT=http`).
+AGENTS.md, the tcp package's README and the roadmap now give the reason
+as latency and CPU per hop as well as socket count. HTTP stays what it
+was designed to be: the client-facing endpoint and the rolling-deploy
+fallback a chained `[tcpTransport(), httpTransport()]` falls back to.
+
+The row in §2026-09-05's lessons table, "TCP does not move the workflow
+knee — #203 stays a socket-count justification", stands as history and is
+superseded here: it measured a fleet whose CPU was 90% synthetic burn.
+
+### What this does not say
+
+One 60-second rung per point on each transport. The 200 rung's
+completed/s gap is a drain artefact, not a signal. `WF_TASK_MS=2` is the
+engine-bound shape, not a product workload: a real activity that waits on
+I/O costs neither the burn nor the loop, and lands between the two shapes
+measured. The generators still start at most ~700 runs/s per pair of pods
+(1000 offered read 687–714 started/s), so the 1000 rung is a 700 rung.
