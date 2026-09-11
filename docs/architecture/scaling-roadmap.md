@@ -67,6 +67,13 @@ Every figure below is recorded in `BASELINES.md` under the dated section named.
   keyspace; now one host sweeps a departure, and the rollout window's
   profile is the workload's own — Redis peaked at 35% of a core instead of
   83%. The rung's throughput did not move either way.
+- **The engine-bound ceiling on sixteen 1300m hosts is ~300 parent runs a
+  second** — ~800 runs and children, ~4 000 transitions — at 2 ms tasks
+  over TCP with eight aggregator shards, the hosts at 88% and Redis at 47%
+  (§2026-09-11). Sixteen shards buy nothing: the hosts reach 96% and start
+  dying. Per parent run that is ~60 ms of D8 CPU with 10 ms of task work
+  in it; the rest is persistence (5 000 whole-record saves a second), GC,
+  the hop and the loop. The next lever is the run's own saves.
 - **Failure is exercised, not argued.** The in-process three-host suite
   kills the owner of a run while it sleeps on a durable reminder, on a
   volatile timer, mid fan-out, mid wait, and kills the aggregator
