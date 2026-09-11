@@ -4649,3 +4649,44 @@ engine-bound shape, not a product workload: a real activity that waits on
 I/O costs neither the burn nor the loop, and lands between the two shapes
 measured. The generators still start at most ~700 runs/s per pair of pods
 (1000 offered read 687–714 started/s), so the 1000 rung is a 700 rung.
+
+### Eight and sixteen shards on TCP: the ceiling is the fleet's cores
+
+The arm the TCP run pointed at — more aggregator shards — on the same
+engine-bound shape (`WF_TASK_MS=2`, TCP, image cf33c54), three generator
+pods so the offered rate reaches 1 500 (runs 34613937960, 34615658733):
+
+| offered | 4 shards (above) | **8 shards** | **16 shards** |
+|---:|---:|---:|---:|
+| 600 | — | 159 · start p99 234 ms · 0 stuck · 0 unreported | 282 · start p99 43 ms · 0 · 0 |
+| 1 050 | 221 @1000 · 18k unreported | **305** · p99 977 ms · 0 stuck · 30k unreported | 308 · p99 4.5 s · **461 stuck** · 33k unreported · **3 hosts killed** |
+| 1 500 | — | 296 · p99 357 ms · 0 stuck · 15k unreported | 334 · p99 320 ms · 0 stuck · 21k unreported |
+| host CPU peak | 84% | **88%** | **96%** |
+| Redis CPU peak · ops/s | 34% · 55k | 47% · 79k | 62% · 89k |
+| publish failures | 47 847 | 117 621 | 147 602 |
+
+Completed runs per second in the 60-second window plus its drain. Three
+generators start at most ~1 050 runs/s between them, so the 1 500 rung is
+a 1 050 rung with a longer tail.
+
+**Sixteen 1300m hosts complete ~300 parent runs a second — with their 1.6
+children each, ~800 runs and 4 000 transitions a second — and at that
+rate they are full.** Eight shards get there with the hosts at 88% and
+nothing stuck; sixteen shards buy nothing more, push the hosts to 96% and
+Redis to 62%, and at 1 050 offered three hosts were liveness-killed and
+461 runs stranded: the probe-timeout failure mode of §2026-09-08, now on
+ordinary hosts at full CPU rather than on a singleton. The publish
+failures are the same saturation seen from the completion path — a
+publish that waits for a subscriber's turn times out on a host whose loop
+is full — and they are what the generators count as unreported.
+
+Per parent run that is ~60 ms of D8 CPU, ~23 ms per run or child, of
+which 2 ms tasks are 10. The rest is the engine's own bookkeeping — 3.2M
+whole-record saves in the eight-shard session, 5 000 a second, each a
+`JSON.stringify` of a run record plus a Redis round trip — and the
+profile's other lines: GC, the hop, the loop. The next lever on the
+workflow axis is therefore the run's persistence, not the aggregator and
+not the transport: fewer or smaller saves per transition (the product
+engine's event log, `ctx.append`, exists for exactly this and has never
+been measured at Tier 3), and after that the store, which at 62% of a
+core on sixteen hosts is the first time it has been in sight.
