@@ -4656,14 +4656,14 @@ The arm the TCP run pointed at — more aggregator shards — on the same
 engine-bound shape (`WF_TASK_MS=2`, TCP, image cf33c54), three generator
 pods so the offered rate reaches 1 500 (runs 34613937960, 34615658733):
 
-| offered | 4 shards (above) | **8 shards** | **16 shards** |
+| offered | 4 shards (the TCP run above; its 1 000 rung) | **8 shards** | **16 shards** |
 |---:|---:|---:|---:|
-| 600 | — | 159 · start p99 234 ms · 0 stuck · 0 unreported | 282 · start p99 43 ms · 0 · 0 |
-| 1 050 | 221 @1000 · 18k unreported | **305** · p99 977 ms · 0 stuck · 30k unreported | 308 · p99 4.5 s · **461 stuck** · 33k unreported · **3 hosts killed** |
-| 1 500 | — | 296 · p99 357 ms · 0 stuck · 15k unreported | 334 · p99 320 ms · 0 stuck · 21k unreported |
+| 600 | not run | 159 completed/s · start p99 234 ms · 0 stuck · 0 unreported | 282 completed/s · start p99 43 ms · 0 stuck · 0 unreported |
+| 1 050 | 221 completed/s (at 1 000 offered) · start p99 195 ms · 0 stuck · 18 169 unreported | **305 completed/s** · start p99 977 ms · 0 stuck · 30 428 unreported | 308 completed/s · start p99 4.5 s · **461 stuck** · 33 429 unreported · **3 hosts killed** |
+| 1 500 | not run | 296 completed/s · start p99 357 ms · 0 stuck · 14 620 unreported | 334 completed/s · start p99 320 ms · 0 stuck · 21 484 unreported |
 | host CPU peak | 84% | **88%** | **96%** |
 | Redis CPU peak · ops/s | 34% · 55k | 47% · 79k | 62% · 89k |
-| publish failures | 47 847 | 117 621 | 147 602 |
+| publish failures over the run | 47 847 | 117 621 | 147 602 |
 
 Completed runs per second in the 60-second window plus its drain. Three
 generators start at most ~1 050 runs/s between them, so the 1 500 rung is
