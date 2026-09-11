@@ -157,9 +157,9 @@ const providers = (() => {
     process.exit(1);
 })();
 
-// The host-to-host link (#203). TCP is the default since 2026-09-11; HTTP was
-// the default before that and what every shape recorded until then
-// baseline was measured over; `tcp` is the axis this knob exists to price.
+// The host-to-host link (#203). TCP is the default since 2026-09-11 (BASELINES
+// §2026-09-11); HTTP was the default before that and is what every shape
+// recorded until then was measured over, so `env.transport=http` reproduces one.
 //
 // A CHAIN, never `tcpTransport()` alone: a single transport is strict, so a
 // peer that publishes no tcp address is unreachable rather than reached over
