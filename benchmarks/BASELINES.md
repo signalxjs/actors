@@ -4630,7 +4630,8 @@ fifth rather than a multiple. The direction is the same.
 
 Hosts run TCP. The perf chart's default is `env.transport: tcp` from this
 PR; every shape recorded before 2026-09-11 is an HTTP shape and says so in
-its string, and a comparison against one must pass `env.transport=http`.
+its string, and a comparison against one must pass `env.transport=http` to
+`ws-up` (the host reads it as `TRANSPORT=http`).
 AGENTS.md, the tcp package's README and the roadmap now give the reason
 as latency and CPU per hop as well as socket count. HTTP stays what it
 was designed to be: the client-facing endpoint and the rolling-deploy
