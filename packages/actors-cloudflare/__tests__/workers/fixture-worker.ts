@@ -4,7 +4,7 @@
  * Everything here is shipped code — `createHostDurableObject`,
  * `createWorkerHandler`, the placement, the host — running on real workerd.
  */
-import { defineActor } from '@sigx/actors';
+import { actor, defineActor } from '@sigx/actors';
 import { defineActorApp } from '@sigx/actors/host';
 import {
     createHostDurableObject,
@@ -32,6 +32,13 @@ export const Counter = defineActor({
         /** Cross-actor: must reach the OTHER object, not activate a copy here. */
         async bumpPeer(key: string) {
             return ctx.actor(Counter, key).increment(1);
+        },
+        /**
+         * The AMBIENT seam — the path a `.with({ context })` hop takes. Must
+         * reach the other object even when that object booted last (#456).
+         */
+        async bumpPeerAmbient(key: string): Promise<number> {
+            return actor(Counter, key).increment(1);
         },
         /** A payload big enough to probe the platform's per-value limit. */
         async fill(bytes: number) {

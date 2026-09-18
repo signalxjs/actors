@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`runWithHost(host, fn)` on `@sigx/actors/host`** (#456): runs `fn` with
+  `host` as the AMBIENT host, so `actor()` / `publishTopic()` inside it —
+  across awaits, timers and detached work — resolve through that host rather
+  than the last one started. `currentHost()` / `peekHost()` consult the scope
+  first and fall back to the global `host.start()` stamps, so one host per
+  process behaves exactly as before. `host` may be a thunk, for a request that
+  enters the scope before its host has booted (`undefined` falls back to the
+  global). The scope is an `AsyncLocalStorage`, loaded lazily the way
+  reentrancy loads it; without one, `fn` runs unscoped (dev-warned). Root
+  entry +32 B, `/app` +36 B (budgets 4.8 KB and 6.75 KB).
+
+### Changed
+
+- The dev warning "a second host was started while one is already running"
+  no longer fires for a host started inside a host scope — several hosts per
+  process is the design there (one per Durable Object), not a mistake.
+
 ## [0.10.0] - 2026-09-18
 
 ### Added

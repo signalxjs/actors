@@ -7,10 +7,16 @@
  * `app.host` is null — so `app.start()` must be awaited before delegating.
  * That is enough boilerplate, with enough ways to get it subtly wrong, to be
  * worth owning.
+ *
+ * Each request runs inside the Worker host's HOST SCOPE (#456): objects of
+ * the same script can share this isolate, each stamping the last-wins
+ * global, and an ambient `actor()` in a Worker route would otherwise run
+ * that object's actor locally, in the Worker's context.
  */
-import type { ActorStorage } from '@sigx/actors';
+import type { ActorStorage, Host } from '@sigx/actors';
 import {
     defineActorApp,
+    runWithHost,
     type ActorApp,
     type ActorAppOptions
 } from '@sigx/actors/host';
@@ -95,6 +101,9 @@ export function createWorkerHandler<Env = unknown>(
     options: WorkerHandlerOptions<Env>
 ): WorkerHandler<Env> {
     let started: Promise<(request: Request) => Promise<Response>> | null = null;
+    /** Set once booted; a request entering the scope before then reads the global. */
+    let host: Host | undefined;
+    const scope = (): Host | undefined => host;
 
     const boot = async (env: Env): Promise<(request: Request) => Promise<Response>> => {
         const base: ActorAppOptions = { storage: unhostedStorage() };
@@ -170,20 +179,22 @@ export function createWorkerHandler<Env = unknown>(
             }
         }
         const handler = createFetchHandler(app, options.fetch);
-        await app.start();
+        host = await app.start();
         return handler;
     };
 
     return {
-        async fetch(request: Request, env: Env): Promise<Response> {
-            // Memoized per isolate, and a rejection is never cached — a
-            // failed start stays retryable on the next request rather than
-            // poisoning the isolate for its lifetime.
-            const handler = await (started ??= boot(env).catch((error: unknown) => {
-                started = null;
-                throw error;
-            }));
-            return handler(request);
+        fetch(request: Request, env: Env): Promise<Response> {
+            return runWithHost(scope, async () => {
+                // Memoized per isolate, and a rejection is never cached — a
+                // failed start stays retryable on the next request rather
+                // than poisoning the isolate for its lifetime.
+                const handler = await (started ??= boot(env).catch((error: unknown) => {
+                    started = null;
+                    throw error;
+                }));
+                return handler(request);
+            });
         }
     };
 }
