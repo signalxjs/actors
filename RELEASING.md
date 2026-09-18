@@ -1,13 +1,15 @@
 # Releasing
 
-All twelve `@sigx/actors*` packages release together, on one version, from one
-tag. Publishing is done by CI over npm **trusted publishing** (OIDC) — there is
+Every published `@sigx/actors*` package — the list in `scripts/publish.js` —
+releases together, on one version, from one tag. `@sigx/actors-workflow` is
+`private` and stays out (a perf test for now, #463); `bump-version.js` still
+moves its version with the rest. Publishing is done by CI over npm **trusted publishing** (OIDC) — there is
 no npm token in this repo, and no workflow references one.
 
 ## One-time setup
 
 Trusted publishing is configured per package on npmjs.com, and it binds to an
-exact `owner/repo` **and** workflow path. For each of the twelve packages, set:
+exact `owner/repo` **and** workflow path. For each published package, set:
 
 - Repository: `signalxjs/actors`
 - Workflow: `.github/workflows/release.yml`
@@ -47,9 +49,9 @@ through CI with provenance like the rest.
    pnpm version:set 0.2.0      # …or an exact version
    ```
 
-   This rewrites `version` in all twelve manifests **and** the cross-package
-   `peerDependencies` ranges that point at them. Both halves matter: the eleven
-   sibling packages peer on `@sigx/actors`, and publishing them against a stale
+   This rewrites `version` in every package manifest **and** the cross-package
+   `peerDependencies` ranges that point at them. Both halves matter: every
+   sibling package peers on `@sigx/actors`, and publishing them against a stale
    range means demanding a version that is no longer `latest`.
 
    It deliberately leaves `workspace:` specifiers alone — `@sigx/actors-cli`
@@ -67,7 +69,7 @@ through CI with provenance like the rest.
 
    ```sh
    pnpm typecheck && pnpm lint && pnpm test && pnpm build
-   pnpm verify:pack            # packs all twelve, installs them, import-smokes each entry
+   pnpm verify:pack            # packs every published package, installs them, import-smokes each entry
    pnpm publish:dry
    ```
 

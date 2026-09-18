@@ -36,7 +36,8 @@ const rootDir = join(__dirname, '..');
 // @sigx/actors-cli takes a real (not peer) dependency on it — the one pair
 // here that is not independent, so it is the one pair whose order matters.
 // Everything after them is independent and sits alphabetically. Examples and
-// benchmarks are private and stay out. Other SignalX packages (router, store,
+// benchmarks are private and stay out, and so does @sigx/actors-workflow
+// (private: a perf test for now, #463). Other SignalX packages (router, store,
 // ssg, daisyui, runtime-terminal, etc.) live in their own repos under
 // https://github.com/signalxjs and are published from there.
 const PACKAGES = [
@@ -52,7 +53,6 @@ const PACKAGES = [
     'packages/actors-sqlite',
     'packages/actors-surreal',
     'packages/actors-tcp',
-    'packages/actors-workflow',
     'packages/actors-ws',
 ];
 

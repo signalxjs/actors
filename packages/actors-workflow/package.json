@@ -1,5 +1,6 @@
 {
     "name": "@sigx/actors-workflow",
+    "private": true,
     "version": "0.9.2",
     "description": "Durable workflows for @sigx/actors \u2014 data-defined runs, one actor per run",
     "type": "module",
