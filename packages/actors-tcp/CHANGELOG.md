@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Fixed
 
 - **A concurrent first activation no longer applies calls twice, or hangs**

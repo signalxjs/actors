@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **Socket sessions on the host drill-down and in the Hosts table (#166).**

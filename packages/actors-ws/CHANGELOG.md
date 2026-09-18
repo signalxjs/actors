@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **`attachActorSocket({ maxBufferedBytes })`** (#258) — the session's new
