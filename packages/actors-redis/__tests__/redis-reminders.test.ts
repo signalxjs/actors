@@ -86,7 +86,7 @@ describe.skipIf(!REDIS_URL)('redisReminders', () => {
         expect(await client.hlen(periods)).toBe(1);
         expect((await client.smembers(actor)).sort()).toEqual(['beat', 'once']);
         // The score is the server clock plus the delay, in ms.
-        const [, score] = await client.zrange(due, 0, '0', 'WITHSCORES');
+        const [, score] = await client.zrange(due, 0, 0, 'WITHSCORES');
         expect(Number(score)).toBeGreaterThan(Date.now() + 3_500_000);
         expect(Number(score)).toBeLessThan(Date.now() + 3_700_000);
         await api.clear('once');
