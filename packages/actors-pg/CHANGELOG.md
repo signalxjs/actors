@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **`pgStorage` implements `appendText`** (#312): a `log text[] NOT NULL

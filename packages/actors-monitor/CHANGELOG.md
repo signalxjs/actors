@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **`HostView.sockets` — the host's socket sessions, when it published them

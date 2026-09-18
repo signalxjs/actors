@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **`cluster({ hmac })` and `nodeHmac()`** (#440): the host-to-host HMAC is a

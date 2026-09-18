@@ -2,8 +2,8 @@
 
 Every published `@sigx/actors*` package — the list in `scripts/publish.js` —
 releases together, on one version, from one tag. `@sigx/actors-workflow` is
-`private` and stays out (a perf test for now, #463); `bump-version.js` still
-moves its version with the rest. Publishing is done by CI over npm **trusted publishing** (OIDC) — there is
+`private` and stays out (a perf test for now, #463); `bump-version.js` skips
+its version and moves only its peer range. Publishing is done by CI over npm **trusted publishing** (OIDC) — there is
 no npm token in this repo, and no workflow references one.
 
 ## One-time setup

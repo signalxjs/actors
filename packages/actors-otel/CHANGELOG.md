@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **Admission and pool families** (#384): `overload_refusals_total` and

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-18
+
 ### Added
 
 - **`durableObjectStorage` implements `appendText`** (#375) — `ctx.append`
