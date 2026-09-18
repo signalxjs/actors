@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **An ambient `actor()` hop between two Durable Objects in one isolate ran
+  the callee inside the caller** (#456). Every object's host stamped the one
+  last-wins global, so `actor(def, key)` — the path a `.with({ context })`
+  call takes — inside object A resolved through whichever object booted
+  last; when that was the callee's, its `isSelf` answered true and the
+  callee's actor ran in A's execution context on the callee's storage:
+  "Cannot perform I/O on behalf of a different Durable Object", the callee
+  reset, and a `ctx.save()` in flight lost. `createHostDurableObject` now runs
+  `fetch`, `alarm` and the three hibernation handlers in the object's own
+  host scope (`runWithHost` from `@sigx/actors/host`), and
+  `createWorkerHandler` runs each request in the Worker host's — so a Worker
+  route's ambient hop reaches the object too. A subclass handler that hops
+  ambiently before delegating to `super` wraps itself in
+  `runWithHost(await this.host(), …)`. `ctx.actor()` was never affected.
+
 ## [0.10.0] - 2026-09-18
 
 ### Added

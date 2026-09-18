@@ -4,6 +4,7 @@
  * the root entry never imports it.
  */
 export { createHost, type CreateHostOptions, type HostDefaults } from './host';
+export { runWithHost } from './scope';
 export {
     defineActorApp,
     type ActorApp,
