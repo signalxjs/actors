@@ -50,8 +50,8 @@ through CI with provenance like the rest.
    ```
 
    This rewrites `version` in every package manifest **and** the cross-package
-   `peerDependencies` ranges that point at them. Both halves matter: the eleven
-   sibling packages peer on `@sigx/actors`, and publishing them against a stale
+   `peerDependencies` ranges that point at them. Both halves matter: every
+   sibling package peers on `@sigx/actors`, and publishing them against a stale
    range means demanding a version that is no longer `latest`.
 
    It deliberately leaves `workspace:` specifiers alone — `@sigx/actors-cli`
