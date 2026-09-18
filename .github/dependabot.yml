@@ -5,6 +5,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # ioredis 6 declares `class … extends String` at import, which halves
+      # string hashing for the whole process on Node 22 (#468).
+      - dependency-name: ioredis
+        update-types: ["version-update:semver-major"]
+      # undici 8 does not load on Node 20, and 20.19 is still the floor (#199).
+      - dependency-name: undici
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development

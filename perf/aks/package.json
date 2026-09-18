@@ -20,11 +20,11 @@
         "@sigx/server": "catalog:",
         "ioredis": "^5.4.1",
         "undici": "^7.16.0",
-        "ws": "^8.18.0"
+        "ws": "^8.21.3"
     },
     "devDependencies": {
         "@sigx/actors-cli": "workspace:*",
-        "@sigx/cli": "^0.9.0",
-        "typescript": "^6.0.3"
+        "@sigx/cli": "^0.11.0",
+        "typescript": "^7.0.2"
     }
 }
