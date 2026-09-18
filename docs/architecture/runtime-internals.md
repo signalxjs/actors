@@ -194,8 +194,12 @@ reload under `retryQueuedOnConflict`. The fast path needs two things — a
 record to append to (`#etag !== null`) and the storage seam
 (`ActivationHost.appendStateText`, present only when the storage implements
 `appendText`); missing either, the append **is a full save**: same fold,
-same result, the O(state) cost `save()` has always had. `fileStorage` and
-`durableObjectStorage` decline the seam, so every append there is a save.
+same result, the O(state) cost `save()` has always had. `fileStorage`
+declines the seam, so every append there is a save. `durableObjectStorage`
+implements it (#375) with one key per entry under the record
+(`<record>␀log␀<ordinal>`, zero-padded for `storage.list` order) and the
+current etag in `<record>␀head`, so an append never rewrites the snapshot;
+it needs `DurableStorage.list`, and declines the seam without it.
 
 Version bookkeeping is honest about what an append makes durable: the entry.
 `#savedVersion` advances to the append's version only when the version before
