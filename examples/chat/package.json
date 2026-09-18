@@ -17,11 +17,11 @@
         "@sigx/server": "catalog:",
         "@sigx/server-renderer": "catalog:",
         "sigx": "catalog:",
-        "ws": "^8.21.1"
+        "ws": "^8.21.3"
     },
     "devDependencies": {
         "@sigx/vite": "catalog:",
-        "typescript": "^6.0.3",
-        "vite": "^8.0.3"
+        "typescript": "^7.0.2",
+        "vite": "^8.3.0"
     }
 }
