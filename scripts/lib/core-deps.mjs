@@ -110,3 +110,20 @@ export function findInlineCoreDeps(repoRoot) {
 export function formatInlineCoreDeps(hits) {
     return hits.map((h) => `${h.pkg} ${h.field}["${h.dep}"] = "${h.spec}" (must be "catalog:")`);
 }
+
+/**
+ * The catalog spec a core entry should carry once aligned to `range`
+ * (`^X.Y.0`). An entry already `^X.Y.Z` for the same minor is KEPT: it still
+ * pins one minor, which is all the single-copy guarantee needs, and its patch
+ * floor is deliberate — it names the release an import first exists on
+ * (`deepTrack` needs `@sigx/reactivity` 0.15.3). Rewriting it to `^X.Y.0` is
+ * how a core-sync PR proposed dropping that floor (#459). Anything else — a
+ * different minor, a wide range, an exact or tilde pin, a prerelease — is
+ * rewritten to `range`.
+ */
+export function alignSpec(current, range) {
+    const want = /^\^(\d+)\.(\d+)\.0$/.exec(range);
+    const have = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(current.trim());
+    if (want && have && have[1] === want[1] && have[2] === want[2]) return current;
+    return range;
+}

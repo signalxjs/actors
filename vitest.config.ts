@@ -31,7 +31,10 @@ export default defineConfig({
             // measurement, not an assertion. Their REPORTING is a different
             // matter: the A/B report is what a reviewer acts on in CI without
             // seeing the numbers behind it, so it is held to the usual bar.
-            'benchmarks/__tests__/**/*.test.ts'
+            'benchmarks/__tests__/**/*.test.ts',
+            // The catalog tooling (sync:core, verify:catalog). A wrong answer
+            // there opens a PR that looks routine and loosens a pin (#459).
+            'scripts/__tests__/**/*.test.ts'
         ],
         // The workers pool has its own config, its own runtime and its own
         // CI job (wrangler needs Node >= 22, this matrix includes 20). These

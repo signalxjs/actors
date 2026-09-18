@@ -14,7 +14,9 @@
  *   node scripts/sync-core.mjs --check     # exit 1 if a change WOULD be made (CI drift guard)
  *
  * It rewrites only CORE packages (published from signalxjs/core) to `^X.Y.0`
- * (== `>=X.Y.0 <X.(Y+1).0`, one minor — the single-copy guarantee). It never
+ * (== `>=X.Y.0 <X.(Y+1).0`, one minor — the single-copy guarantee). An entry
+ * already `^X.Y.Z` on the target minor is left alone: its patch floor is
+ * deliberate (#459). It never
  * touches sibling-ecosystem entries (`@sigx/router`, `@sigx/lynx-*`, …) that may
  * also live in the catalog. Formatting and comments are preserved (line-based
  * edit). It does NOT run install/build/test — CI (core-sync.yml) does that and
@@ -30,7 +32,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CORE_PACKAGES, findInlineCoreDeps, formatInlineCoreDeps } from './lib/core-deps.mjs';
+import { CORE_PACKAGES, alignSpec, findInlineCoreDeps, formatInlineCoreDeps } from './lib/core-deps.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const wsPath = join(repoRoot, 'pnpm-workspace.yaml');
@@ -133,9 +135,10 @@ const out = lines.map((line) => {
     if (!CORE_PACKAGES.has(name)) return line; // leave sibling entries alone
     const ver = dqVal ?? sqVal ?? uqVal;
     const valQ = dqVal !== undefined ? '"' : sqVal !== undefined ? "'" : '';
-    if (ver === range) return line; // already aligned
-    changes.push({ name, from: ver, to: range });
-    return `${ind}${nameQ}${name}${nameQ}: ${valQ}${range}${valQ}${trailing ?? ''}`;
+    const next = alignSpec(ver, range);
+    if (next === ver) return line; // already aligned (a patch floor inside the minor is kept)
+    changes.push({ name, from: ver, to: next });
+    return `${ind}${nameQ}${name}${nameQ}: ${valQ}${next}${valQ}${trailing ?? ''}`;
 });
 
 if (changes.length === 0) {
