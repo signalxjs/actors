@@ -85,8 +85,32 @@ export const Counter = defineActor({
     })
 });
 
+/** An append-only log (#375): every step is `ctx.append`, a checkpoint a full save. */
+export const Journal = defineActor({
+    type: 'Journal',
+    allowAnonymous: true,
+    state: () => ({ steps: [] as string[], checkpoints: 0 }),
+    applyEntry: (state: { steps: string[] }, entry: unknown) => {
+        state.steps.push((entry as { step: string }).step);
+    },
+    methods: (ctx) => ({
+        async step(step: string) {
+            await ctx.append({ step });
+            return ctx.state.steps.length;
+        },
+        async checkpoint() {
+            ctx.state.checkpoints++;
+            await ctx.save();
+            return ctx.state.checkpoints;
+        },
+        async read() {
+            return ctx.state.steps;
+        }
+    })
+});
+
 export class TestHost extends createHostDurableObject<Env>({
-    actors: [Counter],
+    actors: [Counter, Journal],
     namespace: (env) => env.ACTORS,
     // A short retry cadence so `reminders.test.ts` can watch a failed
     // dispatch come back on the real alarm (#326) — 30s is the default.
@@ -97,7 +121,7 @@ export class TestHost extends createHostDurableObject<Env>({
 }) {}
 
 export default createWorkerHandler<Env>({
-    actors: [Counter],
+    actors: [Counter, Journal],
     namespace: (env) => env.ACTORS,
     // Both termination modes on one deployment — the two paths differ by
     // arity, so they compose. The Worker-terminated mounts ride the app

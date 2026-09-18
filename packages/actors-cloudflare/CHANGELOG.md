@@ -4,6 +4,24 @@
 
 ### Added
 
+- **`durableObjectStorage` implements `appendText`** (#375) — `ctx.append`
+  on a Durable Object is now O(entry) instead of a full save per append.
+  Each appended entry is its own key under the record
+  (`<record>␀log␀<ordinal>`, the ordinal zero-padded so
+  `storage.list({ prefix })` returns them in append order), and the
+  record's current etag moves to a `<record>␀head` key, so an append never
+  rewrites the snapshot. A full save compacts (deletes the head and the log
+  in the same gated write), a clear removes all three, and `load` returns
+  the log for the host to replay through `applyEntry`. Records written by an
+  earlier version load unchanged (no head, empty log). `DurableStorage`
+  gains an OPTIONAL `list`; a storage without it keeps the previous answer —
+  no `appendText`, a full save per append. The real `DurableObjectStorage`
+  has it, so `createHostDurableObject()` gets the append path with no
+  configuration. The shared conformance suite now runs its six append cases
+  against this adapter (three `saveText` skips remain, by design), and a
+  workerd test pins the layout on a real object. Bundle: +146 B brotli
+  (budget 5 KB → 5.25 KB).
+
 - **`durableObjectsHosted()`** (#362) — a plugin that installs nothing and
   only narrows: `ActorPlugin<Record<never, never>, never>`, so an `app`
   factory doing `defineActorApp(base).use(durableObjectsHosted())` gets the

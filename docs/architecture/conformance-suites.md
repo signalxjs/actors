@@ -78,9 +78,10 @@ and — env-gated like everything else against a live server — `pgStorage`,
 
 **Skips are for the optional paths only, and a harness can forbid them.**
 `saveText` and `appendText` are optional on the seam, so a storage without
-one reports a skip on that path's cases — `memoryStorage` wants the tree,
-`fileStorage` and `durableObjectStorage` would rewrite the record whole on an
-append, and those are legitimate answers. But absence is also exactly what a
+one reports a skip on that path's cases — `memoryStorage` and
+`durableObjectStorage` want the tree (no `saveText`), `fileStorage` would
+rewrite the record whole on an append (no `appendText`), and those are
+legitimate answers. But absence is also exactly what a
 *decorator* produces when it returns a fixed three-method literal (the
 decorator rule on `ActorStorage`): the host quietly falls back — two-walk
 saves, a full save per append — and nothing says so. A harness sets
@@ -89,7 +90,8 @@ member, and that path's cases then FAIL when it is missing rather than skip.
 The in-package run drives `metrics()` over an adapter with both, with both
 flags set, so a decorator dropping either member is a red case, not a green
 skip; and the runs that legitimately skip pin their skip COUNT (three text
-cases, six append cases), so a required case that started skipping, or an
+cases, six append cases; `durableObjectStorage` implements the append path
+since #375 and pins three), so a required case that started skipping, or an
 optional path an adapter quietly gained, both fail.
 
 The sabotage table in `packages/actors/__tests__/storage-conformance.test.ts`
