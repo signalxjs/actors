@@ -246,7 +246,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6.0.10
 
@@ -334,7 +334,7 @@ jobs:
       # fetch-depth 0: the base side is materialized from this clone (a
       # worktree on the interleaved path, an in-place checkout on the queue
       # path), so both commits must be in it.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.head || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
