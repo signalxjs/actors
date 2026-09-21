@@ -23,7 +23,7 @@
         "@sigx/server-renderer": "catalog:",
         "ioredis": "^5.4.1",
         "sigx": "catalog:",
-        "undici": "^7.16.0"
+        "undici": "^7.29.1"
     },
     "devDependencies": {
         "@sigx/vite": "catalog:",
