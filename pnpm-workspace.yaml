@@ -43,7 +43,7 @@ catalog:
   # than the two-walk pair it replaces — the floor names the version the
   # feature is true on (#238, #265).
   "@sigx/serialize": ^0.15.6
-  "@sigx/server": ^0.15.0
+  "@sigx/server": ^1.0.0
   "@sigx/server-renderer": ^0.15.0
   "@sigx/vite": ^0.15.0
   "sigx": ^0.15.0
