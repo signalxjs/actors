@@ -16,8 +16,8 @@ catalogs:
       specifier: ^0.15.0
       version: 0.15.6
     '@sigx/serialize':
-      specifier: ^0.15.6
-      version: 0.15.6
+      specifier: ^1.0.0
+      version: 1.0.0
     '@sigx/server':
       specifier: ^0.15.0
       version: 0.15.6
@@ -123,7 +123,7 @@ importers:
         version: 0.15.6
       '@sigx/serialize':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/server':
         specifier: 'catalog:'
         version: 0.15.6
@@ -157,7 +157,7 @@ importers:
         version: 0.15.6
       '@sigx/serialize':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/server':
         specifier: 'catalog:'
         version: 0.15.6
@@ -250,7 +250,7 @@ importers:
         version: 0.15.6
       '@sigx/serialize':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/server':
         specifier: 'catalog:'
         version: 0.15.6
@@ -594,7 +594,7 @@ importers:
         version: 0.15.6
       '@sigx/serialize':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/server':
         specifier: 'catalog:'
         version: 0.15.6
@@ -631,7 +631,7 @@ importers:
         version: 0.15.6
       '@sigx/serialize':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/server':
         specifier: 'catalog:'
         version: 0.15.6
@@ -1717,6 +1717,9 @@ packages:
 
   '@sigx/serialize@0.15.6':
     resolution: {integrity: sha512-bO5fbcdtAQ9GE9v2YSYqX3eln5zcVSXjVfqKupXMEn/nsR5Ol/9i0hNNsQmZLgBQYIHASBErfr9W+roI0iDqIg==}
+
+  '@sigx/serialize@1.0.0':
+    resolution: {integrity: sha512-CC6dqVlAmPZ5j8oBp/tNOGEJET7UftGXa+VQmvf+BK/vKoYuwQlCBCqLdAmeb2xKXz3TMjbNrXPaGnE5bhAC2Q==}
 
   '@sigx/server-renderer@0.15.6':
     resolution: {integrity: sha512-C/RokTB7rLAHo9AN5XRKCL9dfeKTEpeDc2rQxfJHN7CEjp8qbjUbXIPtOZk6UODK6ynkv43bN8EUBbvUXjrtSQ==}
@@ -3314,6 +3317,8 @@ snapshots:
       '@sigx/runtime-core': 0.15.6
 
   '@sigx/serialize@0.15.6': {}
+
+  '@sigx/serialize@1.0.0': {}
 
   '@sigx/server-renderer@0.15.6':
     dependencies:
