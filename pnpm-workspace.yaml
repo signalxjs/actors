@@ -45,5 +45,5 @@ catalog:
   "@sigx/serialize": ^0.15.6
   "@sigx/server": ^0.15.0
   "@sigx/server-renderer": ^0.15.0
-  "@sigx/vite": ^0.15.0
+  "@sigx/vite": ^1.0.0
   "sigx": ^0.15.0
