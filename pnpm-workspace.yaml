@@ -44,6 +44,6 @@ catalog:
   # feature is true on (#238, #265).
   "@sigx/serialize": ^0.15.6
   "@sigx/server": ^0.15.0
-  "@sigx/server-renderer": ^0.15.0
+  "@sigx/server-renderer": ^1.0.0
   "@sigx/vite": ^0.15.0
   "sigx": ^0.15.0
