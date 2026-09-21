@@ -7,8 +7,8 @@ settings:
 catalogs:
   default:
     '@sigx/reactivity':
-      specifier: ^0.15.3
-      version: 0.15.6
+      specifier: ^1.0.0
+      version: 1.0.0
     '@sigx/runtime-core':
       specifier: ^0.15.0
       version: 0.15.6
@@ -120,7 +120,7 @@ importers:
         version: link:../../packages/actors-ws
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.6
@@ -154,7 +154,7 @@ importers:
         version: link:../../packages/actors
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.6
@@ -185,7 +185,7 @@ importers:
         version: link:../../packages/actors-monitor
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/runtime-core':
         specifier: 'catalog:'
         version: 0.15.6
@@ -244,7 +244,7 @@ importers:
     devDependencies:
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/runtime-core':
         specifier: 'catalog:'
         version: 0.15.6
@@ -342,7 +342,7 @@ importers:
         version: link:../actors
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/runtime-core':
         specifier: 'catalog:'
         version: 0.15.6
@@ -387,7 +387,7 @@ importers:
         version: link:../actors
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/vite':
         specifier: 'catalog:'
         version: 0.15.6(@sigx/server-renderer@0.15.6)(@sigx/server@0.15.6)(sigx@0.15.6)(vite@8.3.0(@types/node@26.6.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
@@ -591,7 +591,7 @@ importers:
         version: link:../../packages/actors-ws
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.6
@@ -628,7 +628,7 @@ importers:
         version: link:../../packages/actors-redis
       '@sigx/reactivity':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.6
@@ -1702,6 +1702,10 @@ packages:
 
   '@sigx/reactivity@0.15.6':
     resolution: {integrity: sha512-giPOQXP+5ZHUTjhzIA0638EiO2UlsjmXexSVP3h8O4RZXGIssswm5W6njh76nZwBNYa0CcgwPRdFBnfxYEr/aw==}
+    engines: {node: ^20.19.0 || >=22.12.0}
+
+  '@sigx/reactivity@1.0.0':
+    resolution: {integrity: sha512-lMEyxbCpt1ZrLDtez4JYZB1Kb/Z/T7eMfCQjPKZLoEJw0q3iNpJ5vbIkBXvKbbK1x+N2SdvQygS8bp0YOdHzLw==}
     engines: {node: ^20.19.0 || >=22.12.0}
 
   '@sigx/runtime-core@0.15.6':
@@ -3297,6 +3301,8 @@ snapshots:
       '@sigx/terminal': 0.12.0
 
   '@sigx/reactivity@0.15.6': {}
+
+  '@sigx/reactivity@1.0.0': {}
 
   '@sigx/runtime-core@0.15.6':
     dependencies:
