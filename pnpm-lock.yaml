@@ -10,8 +10,8 @@ catalogs:
       specifier: ^0.15.3
       version: 0.15.6
     '@sigx/runtime-core':
-      specifier: ^0.15.0
-      version: 0.15.6
+      specifier: ^1.0.0
+      version: 1.0.0
     '@sigx/runtime-dom':
       specifier: ^0.15.0
       version: 0.15.6
@@ -188,7 +188,7 @@ importers:
         version: 0.15.6
       '@sigx/runtime-core':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0(@sigx/reactivity@0.15.6)
       '@sigx/runtime-dom':
         specifier: 'catalog:'
         version: 0.15.6
@@ -247,7 +247,7 @@ importers:
         version: 0.15.6
       '@sigx/runtime-core':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0(@sigx/reactivity@0.15.6)
       '@sigx/serialize':
         specifier: 'catalog:'
         version: 0.15.6
@@ -345,7 +345,7 @@ importers:
         version: 0.15.6
       '@sigx/runtime-core':
         specifier: 'catalog:'
-        version: 0.15.6
+        version: 1.0.0(@sigx/reactivity@0.15.6)
       '@sigx/runtime-dom':
         specifier: 'catalog:'
         version: 0.15.6
@@ -1708,6 +1708,12 @@ packages:
     resolution: {integrity: sha512-mr6c833GwDcSr0rZcp6nOg+CzyRRWkZew2cHKWdfDkaxiNnUiHSE02owBJGJvE8cgxF1WpSQAPdgpdOiJZCsIQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
 
+  '@sigx/runtime-core@1.0.0':
+    resolution: {integrity: sha512-AreTnUCI9WBxTeNrNA4PIf4BfNk83VlZRRc2KX0bVlKrGHLwmIcD/COoeVjOSS+g+sCiJE7XaraVZDCfPR7w2A==}
+    engines: {node: ^20.19.0 || >=22.12.0}
+    peerDependencies:
+      '@sigx/reactivity': ^1.0.0
+
   '@sigx/runtime-dom@0.15.6':
     resolution: {integrity: sha512-G5hiSpGwJHZW8zwz0Kxveo/KBq3R9CmaoNSE+9TZ4UXQJWR6Lp8Do1T8w8VxxpQfL1Z5J4eflWKf1yyNnaXWKw==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -1717,6 +1723,9 @@ packages:
 
   '@sigx/serialize@0.15.6':
     resolution: {integrity: sha512-bO5fbcdtAQ9GE9v2YSYqX3eln5zcVSXjVfqKupXMEn/nsR5Ol/9i0hNNsQmZLgBQYIHASBErfr9W+roI0iDqIg==}
+
+  '@sigx/serialize@1.0.0':
+    resolution: {integrity: sha512-CC6dqVlAmPZ5j8oBp/tNOGEJET7UftGXa+VQmvf+BK/vKoYuwQlCBCqLdAmeb2xKXz3TMjbNrXPaGnE5bhAC2Q==}
 
   '@sigx/server-renderer@0.15.6':
     resolution: {integrity: sha512-C/RokTB7rLAHo9AN5XRKCL9dfeKTEpeDc2rQxfJHN7CEjp8qbjUbXIPtOZk6UODK6ynkv43bN8EUBbvUXjrtSQ==}
@@ -3303,6 +3312,11 @@ snapshots:
       '@sigx/reactivity': 0.15.6
       '@sigx/serialize': 0.15.6
 
+  '@sigx/runtime-core@1.0.0(@sigx/reactivity@0.15.6)':
+    dependencies:
+      '@sigx/reactivity': 0.15.6
+      '@sigx/serialize': 1.0.0
+
   '@sigx/runtime-dom@0.15.6':
     dependencies:
       '@sigx/reactivity': 0.15.6
@@ -3314,6 +3328,8 @@ snapshots:
       '@sigx/runtime-core': 0.15.6
 
   '@sigx/serialize@0.15.6': {}
+
+  '@sigx/serialize@1.0.0': {}
 
   '@sigx/server-renderer@0.15.6':
     dependencies:
