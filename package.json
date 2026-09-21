@@ -63,7 +63,7 @@
         "typescript": "^7.0.2",
         "vite": "^8.3.0",
         "vitest": "^4.1.5",
-        "yaml": "^2.9.0"
+        "yaml": "^2.9.1"
     },
     "keywords": [
         "SignalX",

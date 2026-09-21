@@ -22,7 +22,7 @@
         "surrealdb": "^2.0.8"
     },
     "devDependencies": {
-        "@types/pg": "^8.11.10",
+        "@types/pg": "^8.23.1",
         "typescript": "^7.0.2"
     }
 }

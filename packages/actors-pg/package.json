@@ -48,7 +48,7 @@
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
         "@types/node": "^26.6.1",
-        "@types/pg": "^8.11.10",
+        "@types/pg": "^8.23.1",
         "pg": "^8.23.0",
         "typescript": "^7.0.2",
         "vite": "^8.3.0"

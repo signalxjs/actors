@@ -52,7 +52,7 @@
         "@sigx/vite": "catalog:",
         "typescript": "^7.0.2",
         "vite": "^8.3.0",
-        "wrangler": "^4.134.0"
+        "wrangler": "^4.135.0"
     },
     "publishConfig": {
         "access": "public"
