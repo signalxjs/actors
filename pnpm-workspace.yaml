@@ -33,7 +33,7 @@ catalog:
   # must NOT depend on the umbrella, whose first line imports
   # `@sigx/runtime-dom/platform` and so drags a renderer into anything that
   # touches it. Same single-copy reasoning as the entries around it.
-  "@sigx/runtime-dom": ^0.15.0
+  "@sigx/runtime-dom": ^1.0.0
   # 0.15.6 is the floor, not 0.15.0: the save path imports
   # `stringifyWithHandlers` from the `@sigx/serialize/stringify` SUBPATH
   # (added in 0.15.5 by signalxjs/core#663 — a subpath missing from the
