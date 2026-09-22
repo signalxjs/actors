@@ -10,6 +10,13 @@
  * accepting sockets under a different tag composes, and one that overrides
  * the handlers must delegate tagged sockets back through `super`.
  *
+ * Every handler runs inside the object's own HOST SCOPE (#456): an isolate
+ * holds several objects of the class, each with a host, and the ambient
+ * seam alone is last-wins — an ambient `actor()` here would otherwise
+ * resolve through the object that booted last and run ITS actor inside this
+ * object's execution. A subclass handler that hops ambiently before
+ * delegating to `super` wraps itself in `runWithHost(await this.host(), …)`.
+ *
  * `cloudflare:workers` is deliberately NOT imported. Extending Cloudflare's
  * `DurableObject` base is only needed for RPC entrypoints and `ctx.props`;
  * `fetch` and `alarm` work on a plain class. Importing it would make this
@@ -21,7 +28,8 @@ import {
     type ActorApp,
     type ActorAppOptions,
     type HostDefaults,
-    reminderTaskLiveness
+    reminderTaskLiveness,
+    runWithHost
 } from '@sigx/actors/host';
 import {
     handleHostRequestForRuntime,
@@ -183,6 +191,11 @@ export function createHostDurableObject<Env = unknown>(
         readonly #state: DurableObjectStateLike;
         readonly #env: Env;
         #starting: Promise<Started> | null = null;
+        /** Set once booted; read by the host scope every handler runs in. */
+        #host: Host | undefined;
+        /** A thunk, so a handler can enter the scope before the boot it
+         *  awaits — a read in that window falls back to the global. */
+        readonly #scope = (): Host | undefined => this.#host;
         /** Live sessions by socket. NOT persistent — an eviction empties it,
          *  which is exactly what the 1012 cold-wake close detects. */
         readonly #sessions = new Map<DurableWebSocketLike, ActorSocketSession>();
@@ -275,6 +288,7 @@ export function createHostDurableObject<Env = unknown>(
             );
 
             const host = await app.start();
+            this.#host = host;
             return {
                 host,
                 app,
@@ -327,7 +341,11 @@ export function createHostDurableObject<Env = unknown>(
             return (await this.#ready()).host;
         }
 
-        async fetch(request: Request): Promise<Response> {
+        fetch(request: Request): Promise<Response> {
+            return runWithHost(this.#scope, () => this.#fetch(request));
+        }
+
+        async #fetch(request: Request): Promise<Response> {
             if (
                 options.socket &&
                 request.headers.get('upgrade')?.toLowerCase() === 'websocket'
@@ -362,7 +380,11 @@ export function createHostDurableObject<Env = unknown>(
             });
         }
 
-        async alarm(): Promise<void> {
+        alarm(): Promise<void> {
+            return runWithHost(this.#scope, () => this.#alarm());
+        }
+
+        async #alarm(): Promise<void> {
             // Booting first is required, not defensive: `onAlarm()` throws if
             // the host has not bound its reminders, and an alarm can be the
             // FIRST thing an evicted object sees.
@@ -501,7 +523,11 @@ export function createHostDurableObject<Env = unknown>(
             this.#sessions.delete(ws);
         }
 
-        async webSocketMessage(ws: DurableWebSocketLike, message: unknown): Promise<void> {
+        webSocketMessage(ws: DurableWebSocketLike, message: unknown): Promise<void> {
+            return runWithHost(this.#scope, () => this.#webSocketMessage(ws, message));
+        }
+
+        #webSocketMessage(ws: DurableWebSocketLike, message: unknown): void {
             if (!this.#ownsSocket(ws)) return;
             if (typeof message !== 'string') {
                 // Text JSON is the protocol; same 1003 posture as the other
@@ -532,7 +558,11 @@ export function createHostDurableObject<Env = unknown>(
             session.handle(message);
         }
 
-        async webSocketClose(ws: DurableWebSocketLike): Promise<void> {
+        webSocketClose(ws: DurableWebSocketLike): Promise<void> {
+            return runWithHost(this.#scope, () => this.#webSocketClose(ws));
+        }
+
+        #webSocketClose(ws: DurableWebSocketLike): void {
             // THE #47 fix, in one line: the session tears down inside the
             // object that owns the actor, so `iterator.return()` reaches the
             // watch locally and `keptAlive` clears — there is no stub
@@ -541,9 +571,11 @@ export function createHostDurableObject<Env = unknown>(
             this.#dropSession(ws);
         }
 
-        async webSocketError(ws: DurableWebSocketLike): Promise<void> {
-            if (!this.#ownsSocket(ws)) return;
-            this.#dropSession(ws);
+        webSocketError(ws: DurableWebSocketLike): Promise<void> {
+            return runWithHost(this.#scope, () => {
+                if (!this.#ownsSocket(ws)) return;
+                this.#dropSession(ws);
+            });
         }
     };
 }

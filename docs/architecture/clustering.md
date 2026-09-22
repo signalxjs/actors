@@ -443,3 +443,14 @@ Two traps recorded there because both are silent:
 - **A DO stub is never cached.** It is an I/O object bound to the request that
   created it, so reusing one across requests makes every later call
   "unreachable".
+- **The ambient host is scoped per request (#456).** An isolate holds several
+  objects of one class, each with its own host, and the `__SIGX_ACTOR_HOST__`
+  global is last-wins — so an ambient `actor()` inside object A resolved
+  through whichever object booted last, whose `isSelf` then ran ITS actor
+  inside A: "Cannot perform I/O on behalf of a different Durable Object", and
+  the callee reset. The seam therefore reads a per-request host scope first
+  (`runWithHost` on `@sigx/actors/host`, an `AsyncLocalStorage` kept on
+  `globalThis`) and the global only as the fallback; every handler the object
+  and the Worker own enters it. `ctx.actor()` never had the problem — it
+  dispatches through the activating host. Only workerd enforces the I/O
+  ownership, so the regression pin lives in `__tests__/workers/host-scope.test.ts`.

@@ -8,7 +8,7 @@
  * reminder table — and only the platform is faked.
  */
 import { describe, expect, it } from 'vitest';
-import { defineActor } from '@sigx/actors';
+import { actor, defineActor } from '@sigx/actors';
 // The runtime's own encoder, not a hand-rolled stand-in: a test that spells
 // the URL differently from the client cannot catch the client getting it
 // wrong.
@@ -43,6 +43,10 @@ const Counter = defineActor({
         },
         async bumpPeer(key: string) {
             return ctx.actor(Counter, key).increment(1);
+        },
+        /** The AMBIENT seam — the path `.with({ context })` hops take (#456). */
+        async bumpPeerAmbient(key: string): Promise<number> {
+            return actor(Counter, key).increment(1);
         },
         async armIn(ms: number) {
             await ctx.reminders.set('wake', { due: ms });
@@ -103,6 +107,8 @@ function fakeState(name: string): DurableObjectStateLike & {
 function harness(appFactory?: Parameters<typeof createHostDurableObject>[0]['app']) {
     const states = new Map<string, ReturnType<typeof fakeState>>();
     const hosts = new Map<string, HostDurableObjectInstance>();
+    /** Requests each object received through its stub, by object name. */
+    const fetches = new Map<string, number>();
 
     const Host = createHostDurableObject<Env>({
         actors: [Counter],
@@ -115,6 +121,7 @@ function harness(appFactory?: Parameters<typeof createHostDurableObject>[0]['app
         get: (id) => ({
             fetch(input: string | Request, init?: RequestInit) {
                 const name = id.name!;
+                fetches.set(name, (fetches.get(name) ?? 0) + 1);
                 let host = hosts.get(name);
                 if (!host) {
                     const state = fakeState(name);
@@ -156,7 +163,7 @@ function harness(appFactory?: Parameters<typeof createHostDurableObject>[0]['app
         return body.data;
     };
 
-    return { states, hosts, namespace, env, worker, call, invoke, Host };
+    return { states, hosts, fetches, namespace, env, worker, call, invoke, Host };
 }
 
 describe('createHostDurableObject + createWorkerHandler', () => {
@@ -191,6 +198,56 @@ describe('createHostDurableObject + createWorkerHandler', () => {
         const bMap = h.states.get(`Counter${SEP}b`)!.map;
         expect([...bMap.keys()]).toContain(`sigx:state${SEP}Counter${SEP}b`);
         expect([...aMap.keys()]).not.toContain(`sigx:state${SEP}Counter${SEP}b`);
+    });
+
+    it('sends an AMBIENT actor() hop to the callee object, whichever booted last (#456)', async () => {
+        // One host per object and one global seam: without a per-request
+        // scope, the ambient actor() inside A resolved through B's host
+        // (booted last), whose placement answers isSelf for B — so B's actor
+        // ran inside A's execution, never reaching B's object. On workerd
+        // that is a cross-object I/O error and a reset object; here it shows
+        // as a hop that never arrives.
+        const h = harness();
+        const b = `Counter${SEP}b`;
+        await h.invoke('Counter#increment', ['a', 1]);
+        await h.invoke('Counter#increment', ['b', 1]);
+        const before = h.fetches.get(b)!;
+
+        await expect(h.invoke('Counter#bumpPeerAmbient', ['a', 'b'])).resolves.toBe(2);
+        expect(h.fetches.get(b)).toBe(before + 1);
+        await expect(h.invoke('Counter#read', ['b'])).resolves.toBe(2);
+    });
+
+    it('sends an AMBIENT actor() hop from a Worker route to the object (#456)', async () => {
+        // The Worker half of the same exposure: once an object in the isolate
+        // has stamped the global, a Worker route's ambient hop ran that
+        // object's actor locally, in the Worker's context.
+        const h = harness();
+        const c = `Counter${SEP}c`;
+        const worker = createWorkerHandler<Env>({
+            actors: [Counter],
+            namespace: (e) => e.ACTORS,
+            fetch: {
+                origin: false,
+                fallback: async () => Response.json(await actor(Counter, 'c').increment(1))
+            }
+        });
+        const post = (path: string, args: readonly unknown[]): Promise<Response> =>
+            worker.fetch(
+                new Request(`https://edge.test${path}`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ args })
+                }),
+                h.env
+            );
+        // Boots the Worker's host FIRST, then object c — c stamps last.
+        expect((await post(`/_sigx/actor/${encodeSymbolPath('Counter#increment')}`, ['c', 1])).ok).toBe(true);
+        const before = h.fetches.get(c)!;
+
+        const res = await post('/route', []);
+        expect(await res.json()).toBe(2);
+        expect(h.fetches.get(c)).toBe(before + 1);
     });
 
     it('streams NDJSON from the object through the Worker', async () => {
