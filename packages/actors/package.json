@@ -112,7 +112,7 @@
         "@sigx/server": "catalog:",
         "@sigx/server-renderer": "catalog:",
         "@sigx/vite": "catalog:",
-        "@types/node": "^26.6.1",
+        "@types/node": "^26.6.2",
         "sigx": "catalog:",
         "typescript": "^7.0.2",
         "undici": "^7.29.1",
