@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-23
+
 ### Changed
 
 - **BREAKING — requires core 1.0** (#450): the `@sigx/reactivity` peer is
