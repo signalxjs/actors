@@ -71,7 +71,7 @@
         "@sigx/args": "^0.13.0",
         "@sigx/cli": "^0.12.0",
         "@sigx/vite": "catalog:",
-        "@types/node": "^26.6.1",
+        "@types/node": "^26.6.2",
         "typescript": "^7.0.2",
         "vite": "^8.3.0"
     },
