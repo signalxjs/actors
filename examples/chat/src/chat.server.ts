@@ -10,7 +10,7 @@
  * same expression the browser writes, with no HTTP hop, and the app's
  * default policy still runs against this request.
  */
-import { requirePrincipal, serverFn, ServerFnError } from '@sigx/server';
+import { requirePrincipal, serverFn, ServerFnError, type ServerFnHandlerArgs } from '@sigx/server';
 import { actor } from '@sigx/actors';
 import { RoomActor } from './room.actor';
 import { cookieFor, currentUser } from './session';
@@ -23,7 +23,7 @@ import type { ChatUser } from './server-app';
  */
 export const me = serverFn({
     allowAnonymous: true,
-    handler: async (rq): Promise<string | null> => currentUser(rq)
+    handler: async ({ rq }): Promise<string | null> => currentUser(rq)
 });
 
 /**
@@ -33,7 +33,7 @@ export const me = serverFn({
  */
 export const signIn = serverFn({
     allowAnonymous: true, // deliberate: this IS the sign-in
-    handler: async (rq, input: { name: string }): Promise<string> => {
+    handler: async ({ rq, input }: ServerFnHandlerArgs<{ name: string }>): Promise<string> => {
         const name = input.name.trim();
         if (!/^[\w-]{1,32}$/.test(name)) {
             throw new ServerFnError(400, 'name must be 1-32 letters, digits, _ or -');
@@ -49,7 +49,7 @@ export const signIn = serverFn({
 
 export const signOut = serverFn({
     allowAnonymous: true,
-    handler: async (rq): Promise<null> => {
+    handler: async ({ rq }): Promise<null> => {
         rq.responseHeaders.append('set-cookie', 'user=; Path=/; HttpOnly; Max-Age=0');
         return null;
     }
@@ -58,7 +58,10 @@ export const signOut = serverFn({
 export const postMessage = serverFn({
     // No `use:` — the app's default policy already requires an authenticated
     // caller, so an anonymous request never reaches this handler.
-    handler: async (rq, input: { room: string; text: string }): Promise<number> => {
+    handler: async ({
+        rq,
+        input
+    }: ServerFnHandlerArgs<{ room: string; text: string }>): Promise<number> => {
         // From the session, not the client. `requirePrincipal` throws 401
         // rather than returning a nullable, so `from` cannot be forged and
         // cannot silently be `undefined`.

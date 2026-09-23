@@ -95,10 +95,13 @@ session** (the recommended default; `perf/app/src/chat.server.ts` is a working
 instance). The client never names the actor:
 
 ```ts
+import { requirePrincipal, serverFn, type ServerFnHandlerArgs } from '@sigx/server';
+import { actor } from '@sigx/actors';
+
 export const postMessage = serverFn({
     // No `use:` — the app's default policy already requires an authenticated
     // caller, and `authenticate` has already resolved them.
-    handler: async (rq, input: { room: string; text: string }) => {
+    handler: async ({ rq, input }: ServerFnHandlerArgs<{ room: string; text: string }>) => {
         // From the session, not the client. `requirePrincipal` throws 401
         // rather than returning a nullable, so `from` cannot be forged and
         // cannot silently be `undefined`.

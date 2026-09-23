@@ -295,7 +295,8 @@ under write-behind, that is lost data.
 
 **What the walk COSTS is `@sigx/reactivity`'s to own.** `deepTrack` is core's
 own `watch(deep)` traversal, exported on `@sigx/reactivity/internals` for this
-caller (signalxjs/core#651) — hence the `^0.15.3` floor. It used to be a
+caller (signalxjs/core#651, first released in 0.15.3 — the reason the
+catalog carried a patch floor until the 1.0 line). It used to be a
 private copy here, carrying a comment that divergence from upstream would be
 divergence in what counts as a change; it diverged exactly that way, and one
 mutating turn over 200-row state cost ~1.2 ms (#124). **Do not re-inline it.**

@@ -24,7 +24,7 @@
     },
     "devDependencies": {
         "@sigx/actors-cli": "workspace:*",
-        "@sigx/cli": "^0.11.0",
+        "@sigx/cli": "^0.12.0",
         "typescript": "^7.0.2"
     }
 }

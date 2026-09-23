@@ -22,7 +22,7 @@
  * Mount beside the public endpoint on the same listener:
  * `matchesHostRequest(req) ? handleHostRequest(req, {...}) : ...`
  */
-import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
+import { ServerFnError, type ServerFnContext } from '@sigx/server';
 import {
     handleServerFnRequest,
     type ServerFnRequestOptions
@@ -45,6 +45,7 @@ import {
     type HostReportOptions
 } from './stats';
 import { parseWatchOptions, WATCH_SYMBOL_PREFIX } from './watch-symbol';
+import { serverFnWrapper } from '../server-fn-wrapper';
 import { relayStream } from '../stream-relay';
 import { canonicalSymbol, symbolFromPathname } from '../wire-symbol';
 import { toHostWireError } from './wire-errors';
@@ -387,26 +388,26 @@ function createRuntimeResolver(
     // The ops channel. Synthesized once, and answered WITHOUT a `prepare()`:
     // the guard already authenticated symbol + callId, and there is no ref
     // to route, no deadline to re-anchor and no activation to dispatch to.
-    const statsFn = {
-        __sigxName: HOST_STATS_METHOD,
+    const statsFn = serverFnWrapper({
+        kind: 'fn',
         // The internal mount authenticates with the per-request HMAC, not
         // with a principal, so every wrapper here declares anonymity —
         // otherwise core's identity gate (which now runs for EVERY wire
         // request) would 401 host-to-host traffic. Authorization already
         // happened at the public edge; see this file's header.
-        __sigxAnon: true as const,
+        anon: true,
         // The wire sends `[ref.key, ...args]`, so what the collector asked
         // for is `args[1]`. Forwarded rather than dropped, which is how the
         // caller gets to say "and the actor list, please" — the responder
         // clamps whatever it is told.
-        __sigxFn: (_rq: unknown, _info: unknown, args: unknown[] = []) =>
+        invoke: async (_rq, _info, args = []) =>
             runtime.dispatch(
                 { type: HOST_STATS_TYPE, key: HOST_STATS_METHOD },
                 HOST_STATS_METHOD,
                 args.slice(1),
                 { callChain: [], callId: HOST_STATS_METHOD }
             )
-    };
+    });
     return (symbol: string) => {
         if (symbol === HOST_STATS_SYMBOL) {
             // Still the RUNTIME's call whether it offers the ops channel.
@@ -486,12 +487,11 @@ function synthesize(
     // pump, the same cancellation path, the same error mapping. Only the
     // runtime call and one extra leading argument differ.
     if (mode !== 'unary') {
-        return {
-            __sigxName: method,
-            __sigxStream: true,
+        return serverFnWrapper({
+            kind: 'stream',
             /** HMAC-authenticated mount — see `HOST_STATS_METHOD` above. */
-            __sigxAnon: true as const,
-            __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
+            anon: true,
+            invoke: async (rq, _info, args) => {
                 const { ref, rest, call } = prepare(rq, args);
                 const iterable =
                     mode === 'watch'
@@ -512,14 +512,14 @@ function synthesize(
                     signal: rq.abortSignal
                 });
             }
-        };
+        });
     }
 
-    return {
-        __sigxName: method,
+    return serverFnWrapper({
+        kind: 'fn',
         /** HMAC-authenticated mount — see `HOST_STATS_METHOD` above. */
-        __sigxAnon: true as const,
-        __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
+        anon: true,
+        invoke: async (rq, _info, args) => {
             const { ref, rest, call } = prepare(rq, args);
             try {
                 return await runtime.dispatch(ref, method, rest, call);
@@ -527,7 +527,7 @@ function synthesize(
                 throw toServerFnError(error);
             }
         }
-    };
+    });
 }
 
 /** The shared validator, in this mount's error currency. */

@@ -41,7 +41,7 @@ this package renders its verdicts and re-derives none of them, which is what
 keeps it from disagreeing with the CLI.
 
 Peer dependencies: `@sigx/actors` (≥ 0.9), plus `@sigx/runtime-core`,
-`@sigx/runtime-dom` and `@sigx/reactivity` (all ≥ 0.15).
+`@sigx/runtime-dom` and `@sigx/reactivity` (all ≥ 1.0.1).
 
 npm ≥ 7 and pnpm ≥ 8 install peers automatically, so the install line above is
 usually all you need — but that is a package-manager default, not a

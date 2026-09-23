@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — requires core 1.0** (#450): `@sigx/terminal` is `^0.13.0`,
+  the release built on core 1.0, in step with `@sigx/actors`. No API change
+  in this package.
+
 ## [0.10.0] - 2026-09-18
 
 ### Added

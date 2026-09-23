@@ -55,7 +55,7 @@
     },
     "dependencies": {
         "@sigx/actors-monitor": "workspace:^",
-        "@sigx/terminal": "^0.12.0"
+        "@sigx/terminal": "^0.13.0"
     },
     "peerDependencies": {
         "@sigx/actors": "^0.10.0",
@@ -68,8 +68,8 @@
     },
     "devDependencies": {
         "@sigx/actors": "workspace:*",
-        "@sigx/args": "^0.12.0",
-        "@sigx/cli": "^0.11.0",
+        "@sigx/args": "^0.13.0",
+        "@sigx/cli": "^0.12.0",
         "@sigx/vite": "catalog:",
         "@types/node": "^26.6.1",
         "typescript": "^7.0.2",

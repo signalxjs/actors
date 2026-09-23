@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — requires core 1.0** (#450): the `@sigx/runtime-core`,
+  `@sigx/runtime-dom` and `@sigx/reactivity` peers are `^1.0.1`, in step
+  with `@sigx/actors`. No API change in this package.
+
 ## [0.10.0] - 2026-09-18
 
 ### Added

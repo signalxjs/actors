@@ -1,9 +1,9 @@
 /**
- * Suite-wide test identity (rfc-server-v4, 0.15 migration row 10).
+ * Suite-wide test identity (rfc-server-v4, core's 0.15 migration row 10).
  *
- * The runtime is FAIL-CLOSED since core 0.15: with no server app stamped in
- * the process, every operation that does not declare `allowAnonymous: true`
- * answers 401 before it dispatches. That is the correct production posture
+ * The runtime is FAIL-CLOSED since core 0.15, and still is on 1.0: with no
+ * server app stamped in the process, every operation that does not declare
+ * `allowAnonymous: true` answers 401 before it dispatches. That is the correct production posture
  * and the whole point of the revision — but almost none of these suites are
  * about authentication. They test the wire envelope, cluster placement,
  * streaming, reminders, topics. Left unconfigured they would all fail 401
@@ -40,24 +40,22 @@ export const TEST_PRINCIPAL: TestPrincipal = { id: 'test-principal' };
  *
  * The one thing the suite-wide stamp makes untestable is the unconfigured
  * process itself — and that state has observable behaviour worth pinning:
- * the fail-closed deny, and the registration warning that explains it. This
- * removes the seam entry rather than stamping an empty config, because an
- * empty config IS configured and behaves differently.
+ * the fail-closed deny. This removes the stamp rather than stamping an empty
+ * config, because an empty config IS configured and behaves differently.
+ *
+ * Through `stubServerApp`, never by writing the global: core stamps it
+ * non-enumerable and frozen (#634), and a hand-written restore would put back
+ * an enumerable property core never wrote. Stamping `undefined` is how core's
+ * own stamp removes the global, and the returned restore re-stamps whatever
+ * was there before — including nothing, which is what keeps an app stamped
+ * INSIDE `fn` from leaking into every later test in the file.
  */
 export async function withoutServerApp<T>(fn: () => T | Promise<T>): Promise<T> {
-    const seam = globalThis as { __SIGX_SERVER_APP__?: unknown };
-    // Restore PRESENCE, not just value: if the process had no app and `fn`
-    // stamps one (any `stubServerApp` call inside it does), restoring only a
-    // non-undefined previous would leave that stamp behind and silently
-    // configure every later test in the file.
-    const had = '__SIGX_SERVER_APP__' in seam;
-    const previous = seam.__SIGX_SERVER_APP__;
-    delete seam.__SIGX_SERVER_APP__;
+    const restore = stubServerApp(undefined as never);
     try {
         return await fn();
     } finally {
-        if (had) seam.__SIGX_SERVER_APP__ = previous;
-        else delete seam.__SIGX_SERVER_APP__;
+        restore();
     }
 }
 

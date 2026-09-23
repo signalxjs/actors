@@ -14,7 +14,6 @@ import {
 import { stringifyWithHandlers } from '@sigx/serialize/stringify';
 import { mergeCallBag } from '../call-context-bag';
 import { isActorDefinition } from '../define';
-import { hasAuthorization, serverAppConfigured } from '../guards';
 import { clearHost, stampHost } from '../seam';
 import { introspectionMember, isIntrospectionProp } from '../proxy-introspection';
 import { assertTopic } from '../topics';
@@ -317,29 +316,14 @@ class HostImpl implements Host {
                             "the other's callers — rename one of them."
                     );
                 }
-                if (!hasAuthorization(def) && !serverAppConfigured()) {
-                    // POLARITY FLIPPED for rfc-server-v4: the runtime is
-                    // fail-closed now, so an actor declaring nothing is
-                    // DENIED rather than exposed. The warning stopped being
-                    // a security alarm and became a UX aid — "your calls
-                    // will 401, here is why" — which is also why it only
-                    // fires when no server app is configured: with one, the
-                    // app default is the answer and there is nothing wrong.
-                    //
-                    // Still NOT `__DEV__`-gated. The Vite
-                    // `requireAuthorization` build error sees only
-                    // first-party source and only exists if you use the
-                    // plugin; a plain `createHost` + `createActorHandler`
-                    // deployment and any actor arriving from a package both
-                    // bypass it. One string per registered type, at startup.
-                    console.warn(
-                        `[sigx actors] actor "${def.type}" declares no \`authorize\` policy and ` +
-                            'no server app is configured in this process, so every call to it ' +
-                            'will be DENIED (401). Configure one with createServerApp({ ' +
-                            'authenticate, … }), declare `authorize:`, or mark it ' +
-                            '`allowAnonymous: true` if it is deliberately public.'
-                    );
-                }
+                // No registration-time auth warning (#450). An actor that
+                // declares nothing, in a process with no server app, is
+                // DENIED — fail-closed — and core's prelude says why, once
+                // per process, at the first deny. The warning that used to
+                // sit here had to peek at core's `__SIGX_SERVER_APP__`
+                // global to know whether an app default would decide
+                // instead, which core's seam registry records as a
+                // violation; core 1.0 offers no public accessor for it.
                 this.#registry.set(def.type, def);
                 this.#resolved.set(def.type, def);
             }
