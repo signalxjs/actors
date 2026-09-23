@@ -342,7 +342,8 @@ const SHARD_TONE: Record<ShardStatus['state'], Tone> = {
  */
 export function ShardGrid(props: { shards: readonly ShardStatus[]; emptyText: string }) {
     if (props.shards.length === 0) return <p class="sxad-empty">{props.emptyText}</p>;
-    return [
+    return (
+        <>
         <div class="sxad-shards">
             {props.shards.map((shard) => (
                 <span
@@ -356,12 +357,13 @@ export function ShardGrid(props: { shards: readonly ShardStatus[]; emptyText: st
                     {shard.label}
                 </span>
             ))}
-        </div>,
+        </div>
         <p class="sxad-legend">
             reminder shards — claimed · <b>UNCLAIMED (nothing is ticking them)</b> · claimed twice
             (views have diverged)
         </p>
-    ];
+        </>
+    );
 }
 
 /* -- misc ------------------------------------------------------------------ */

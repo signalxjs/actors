@@ -469,8 +469,9 @@ describe.skipIf(!ready)('infra: the app works end to end', () => {
 });
 
 describe.skipIf(!ready)('infra: the serverFn id the load ladder drives still resolves', () => {
-    // `postMessage_fn_<hash>` is emitted by the build, and the hash moves.
-    // `edge-ladder.mjs` used to carry one pasted in, and it had rotted from
+    // The id is emitted by the build: the stable `<id>/<name>` key since
+    // core 1.0, a moving `postMessage_fn_<hash>` before it. `edge-ladder.mjs`
+    // used to carry a hashed one pasted in, and it had rotted from
     // `…_6c5508cb` to `…_2b42ef63` unnoticed — silently, because a stale id
     // 404s, a 404 is CHEAPER than a real write, and `infra/write-mix` reads
     // the difference as extra throughput rather than as a broken run. One

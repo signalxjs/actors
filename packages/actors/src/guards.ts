@@ -117,30 +117,6 @@ export function isInternalActor(def: AnyActorDefinition): boolean {
     return def.__sigxActor.internal === true;
 }
 
-/** Does this definition decide its own access, either way? */
-export function hasAuthorization(def: AnyActorDefinition): boolean {
-    const opts = def.__sigxActor;
-    if (opts.allowAnonymous === true) return true;
-    const declared = opts.authorize;
-    // An empty array is NOT a declaration — it would vacuously allow, which
-    // is the stricter reading actors has always taken (`extract.ts`).
-    return declared ? (Array.isArray(declared) ? declared.length > 0 : true) : false;
-}
-
-/**
- * Is a server app stamped in this process? A read-only peek at core's
- * documented seam (`docs/seams.md` → `__SIGX_SERVER_APP__`).
- *
- * Used ONLY to decide whether the registration warning would tell the
- * developer anything — never for an access decision, which is core's job
- * and stays fail-closed regardless of what this returns.
- */
-export function serverAppConfigured(): boolean {
-    return (
-        (globalThis as { __SIGX_SERVER_APP__?: unknown }).__SIGX_SERVER_APP__ !== undefined
-    );
-}
-
 /**
  * The full pipeline for one entry point: app middleware → authenticate →
  * identity gate → authorization, with the instance as the resource.

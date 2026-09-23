@@ -1,7 +1,8 @@
 /**
  * `@sigx/actors/server` — the actor wire endpoint, as a thin delegation to
  * core's `handleServerFnRequest`. The endpoint duck-types whatever
- * `resolve(symbol)` returns (anything carrying `__sigxFn`), so a
+ * `resolve(symbol)` returns (anything carrying a `__sigx` descriptor —
+ * `server-fn-wrapper.ts`), so a
  * runtime-synthesized wrapper per actor method inherits the entire serverFn
  * stack: origin policy, content-type gate, body caps, the wire codec,
  * `ServerFnError` masking, `onError`, timeouts, NDJSON streaming, and the
@@ -13,7 +14,7 @@
  * REAL path separator and a type may hold slashes of its own, so the symbol
  * spans several segments and the LAST one is the method (`wire-symbol.ts`).
  */
-import { ServerFnError, type ServerFnContext, type ServerFnInfo } from '@sigx/server';
+import { ServerFnError, type ServerFnContext } from '@sigx/server';
 import {
     handleServerFnRequest,
     type ServerFnRequestOptions
@@ -31,6 +32,7 @@ import {
     ACTOR_OWNER_HEADER,
     stripRoutePath
 } from '../route';
+import { serverFnWrapper } from '../server-fn-wrapper';
 import { relayStream } from '../stream-relay';
 import { canonicalSymbol } from '../wire-symbol';
 import { toClientError } from './client-error';
@@ -407,10 +409,9 @@ export function createActorResolver(
  * so one rejection cannot fail the whole connection.
  */
 function synthesizeLive(host: Host, maxSubscriptions?: number): unknown {
-    return {
-        __sigxName: 'subscribe',
-        __sigxStream: true,
-        __sigxFn: (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) =>
+    return serverFnWrapper({
+        kind: 'stream',
+        invoke: (rq, _info, args) =>
             Promise.resolve(
                 subscribeAll(
                     host,
@@ -419,7 +420,7 @@ function synthesizeLive(host: Host, maxSubscriptions?: number): unknown {
                     maxSubscriptions === undefined ? {} : { maxSubscriptions }
                 )
             )
-    };
+    });
 }
 
 function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
@@ -442,14 +443,14 @@ function notFound(symbol: string, type?: string): unknown {
         ? `no actor type "${type}" is registered with this host — is it registered, ` +
           `and are the client and server builds from the same deploy?`
         : `expected a "Type#method" symbol.`;
-    return {
-        __sigxName: symbol,
-        __sigxFn: () => {
+    return serverFnWrapper({
+        kind: 'fn',
+        invoke: async () => {
             throw new ServerFnError(404, `Unknown actor "${symbol}" — ${detail}`, {
                 kind: 'method-not-found'
             });
         }
-    };
+    });
 }
 
 function synthesize(
@@ -470,12 +471,12 @@ function synthesize(
     // the definition lookup so an unknown TYPE still gets the unknown-type
     // answer, reserved method or not.
     if (method.startsWith('$sigx:')) {
-        return {
-            __sigxName: method,
-            __sigxFn: () => {
+        return serverFnWrapper({
+            kind: 'fn',
+            invoke: async () => {
                 throw toClientError(new ActorMethodNotFoundError(def.type, method));
             }
-        };
+        });
     }
     const isStream = def.streamNames.includes(method);
     const onMiss = options.onMiss ?? 'proxy';
@@ -595,21 +596,20 @@ function synthesize(
     };
 
     if (isStream) {
-        return {
-            __sigxName: method,
-            __sigxStream: true,
+        return serverFnWrapper({
+            kind: 'stream',
             // Core's endpoint runs the prelude (middleware → authenticate →
             // identity gate) BEFORE decoding, and reads this flag to know
             // whether a null principal may pass. Without it an
             // `allowAnonymous` actor would 401 on the wire while working
             // in-process — the transport asymmetry v4 exists to prevent.
-            ...(def.__sigxActor.allowAnonymous === true ? { __sigxAnon: true as const } : {}),
+            anon: def.__sigxActor.allowAnonymous === true,
             // Resolves to an async ITERATOR, not a generator: `streamResponse`
             // calls `return()` on client disconnect, and a generator parked at
             // `yield*` would queue that instead of forwarding it — stranding
             // the activation's teardown and leaking its keep-alive ref. See
             // `relayStream`.
-            __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
+            invoke: async (rq, _info, args) => {
                 const { key, rest, call } = await prepare(rq, args);
                 const iterable = host.dispatchStream!(
                     { type: def.type, key },
@@ -622,13 +622,13 @@ function synthesize(
                     signal: rq.abortSignal
                 });
             }
-        };
+        });
     }
 
     /**
      * A `reads:` declaration turns the wrapper into a GET target, and core's
-     * endpoint does the rest: it accepts GET only for a wrapper carrying both
-     * flags, decodes `?args=` through the same codec and pollution-safe
+     * endpoint does the rest: it accepts GET only for a wrapper whose
+     * descriptor carries `read`, decodes `?args=` through the same codec and pollution-safe
      * reviver as a body, caps the query length, emits this `Cache-Control` on
      * a 2xx and `no-store` otherwise, and appends `Vary: Cookie` unless the
      * declaration opted into shared caches.
@@ -644,11 +644,11 @@ function synthesize(
     // build both work from OWN keys; this has to agree with them.
     const read = declared && Object.hasOwn(declared, method) ? declared[method] : undefined;
 
-    return {
-        __sigxName: method,
-        ...(def.__sigxActor.allowAnonymous === true ? { __sigxAnon: true as const } : {}),
-        ...(read ? { __sigxGet: true as const, __sigxCacheControl: cacheControl(read) } : {}),
-        __sigxFn: async (rq: ServerFnContext, _info: ServerFnInfo, args: unknown[]) => {
+    return serverFnWrapper({
+        kind: 'fn',
+        anon: def.__sigxActor.allowAnonymous === true,
+        ...(read ? { cacheControl: cacheControl(read) } : {}),
+        invoke: async (rq, _info, args) => {
             const { key, rest, call } = await prepare(rq, args);
             try {
                 return await host.dispatch({ type: def.type, key }, method, rest, call);
@@ -656,7 +656,7 @@ function synthesize(
                 throw toClientError(error);
             }
         }
-    };
+    });
 }
 
 /**

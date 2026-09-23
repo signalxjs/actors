@@ -966,6 +966,14 @@ the load driven from a VM in the same region.
 > The move also **pins** the workload. An edit to an actor body in `perf/app`
 > is now a deliberate baseline invalidation rather than a side effect of
 > tidying an example, which is what it was while the two were the same file.
+>
+> **2026-09-23 — core 1.0 (#450): the write path's URL changed, the body did
+> not.** rfc-server-v5 routes a serverFn by its stable key, so `write-mix`
+> now posts to `/_sigx/fn/sigx-perf-app/src/chat.server.ts/postMessage`
+> instead of the hashed `postMessage_fn_<hash>` id — a longer path, derived
+> from the build by `post-fn.mjs` as before. The handler's signature moved to
+> `({ input, rq })`; its body is byte-identical. Any shift in `write-mix`
+> across this line is core's endpoint, not the workload.
 
 | | |
 |---|---|

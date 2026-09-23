@@ -228,7 +228,7 @@ export function routePath(base: string, token: string | null, symbol: string): s
  * (`handleActorRequest`) and the Node one (`createActorHandler`) alike. A
  * mount that skips it hands core `r/{token}/{Type}#{method}` as the symbol,
  * which resolves to the unknown-actor wrapper: a 404 for an authenticated
- * caller, and — because that wrapper carries no `__sigxAnon` — a 401 for an
+ * caller, and — because that wrapper's descriptor is not `anon` — a 401 for an
  * `allowAnonymous` actor, on the routed path only (#93).
  */
 export function stripRoutePath(pathname: string, base: string): string | null {

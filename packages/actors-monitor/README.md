@@ -18,7 +18,7 @@ state.start();
 
 Browser-safe: no renderer, no `node:` import, no DOM. `@sigx/actors` is an
 **optional** peer (types only), so HTTP mode works with no actor runtime
-installed. `@sigx/reactivity` (≥ 0.15.3) is the one runtime peer.
+installed. `@sigx/reactivity` (≥ 1.0.1) is the one runtime peer.
 
 **One rule matters more than the rest.** A counter going backwards is a
 `reset()` or a host restart, and it must produce a **gap** — not a negative

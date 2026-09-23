@@ -592,8 +592,8 @@ async function load(args) {
     await loadVmUp();
     const cookie = mintCookie();
     const b64 = Buffer.from(readFileSync(join(here, 'edge-ladder.mjs'))).toString('base64');
-    // POST_FN comes from the BUILD — the id is hashed and moves, and a
-    // stale one 404s every write while looking like extra throughput.
+    // POST_FN comes from the BUILD — the key moves with the file path, and
+    // a stale one 404s every write while looking like extra throughput.
     const env = ['ROOMS=64', 'WORKERS=4', 'DURATION_MS=20000', 'LADDER=32,64,128,256,512',
         `POST_FN=${postMessageFnId()}`,
         ...args].map((kv) => `export ${kv}`).join('\n');

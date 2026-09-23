@@ -38,6 +38,7 @@ import {
     StatusGrid,
     Trend,
     fitCell,
+    type JSXElement,
     type Model,
     type TableColumn
 } from '@sigx/terminal';
@@ -103,7 +104,7 @@ function wrappedAlerts(state: DashboardState, pane: Pane): Alert[] {
 }
 
 /** A banner for whatever is currently wrong, plus a blank — or nothing. */
-function alerts(state: DashboardState, pane: Pane): unknown[] {
+function alerts(state: DashboardState, pane: Pane): JSXElement[] {
     const lines = wrappedAlerts(state, pane);
     if (lines.length === 0) return [];
     return [
@@ -135,7 +136,7 @@ function hostColor(status: string): string | undefined {
  * rather than wrapped in a `Col`, so its height is `lines.length + 2`
  * exactly — which is what makes every table's budget honest.
  */
-function block(title: string, lines: readonly string[], pane: Pane, color = 'dim'): unknown[] {
+function block(title: string, lines: readonly string[], pane: Pane, color = 'dim'): JSXElement[] {
     if (lines.length === 0) return [];
     return [
         <br />,
@@ -287,18 +288,21 @@ function series(
     format: (value: number | null) => string,
     color: string,
     polarity: 'higher-is-better' | 'higher-is-worse' | 'neutral' = 'higher-is-worse'
-): unknown {
+): JSXElement {
     const values = source.values();
     const current = source.latest();
     const previous = values.length > 1 ? (values[values.length - 2] ?? null) : null;
     return (
         <Row gap={1}>
             <Col>
+                {/* Copied, here and at every `DataTable` below: @sigx/terminal
+                    0.13 types these props as mutable arrays, and the monitor
+                    hands out readonly ones. Neither side writes. */}
                 <Sparkline
                     label={label}
                     labelWidth={LABEL_WIDTH}
                     width={width}
-                    values={values}
+                    values={[...values]}
                     color={color}
                     pad
                 />
@@ -316,7 +320,7 @@ function percentiles(
     scale: number,
     width: number,
     color: string
-): unknown {
+): JSXElement {
     return (
         <BarChart
             items={percentileItems(snapshot)}
@@ -431,7 +435,7 @@ export function HostsScreen(props: { state: DashboardState; cursor?: Model<numbe
                     nodeLabels(snapshot.hosts),
                     snapshot.hosts.some((host) => host.sockets !== null)
                 )}
-                rows={snapshot.hosts}
+                rows={[...snapshot.hosts]}
                 model={props.cursor}
                 width={pane.width - TABLE_GUTTER}
                 height={tableRows(pane, spent)}
@@ -487,7 +491,7 @@ export function GrainsScreen(props: { state: DashboardState; cursor?: Model<numb
             {snapshot.activations ? (
                 <DataTable
                     columns={grainColumns}
-                    rows={actors}
+                    rows={[...actors]}
                     model={props.cursor}
                     width={pane.width - TABLE_GUTTER}
                     height={tableRows(pane, spent)}
@@ -637,7 +641,7 @@ export function HostScreen(props: { state: DashboardState; hostId: string; pane?
             {host.activations ? (
                 <DataTable
                     columns={grainColumns}
-                    rows={actors}
+                    rows={[...actors]}
                     width={pane.width - TABLE_GUTTER}
                     height={tableRows(pane, spent)}
                     identity={(actor: ActivationInfo) => `${actor.type}/${actor.key}`}

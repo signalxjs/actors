@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — requires core 1.0** (#450). Every `@sigx/*` core peer is now
+  `^1.0.1` (rfc-server-v5, signalxjs/core#692); the 0.15 line is no longer
+  supported. What the core side of the move means for an app is core's
+  [1.0 server-functions migration][core-1.0-serverfn]; for code written
+  against actors, the visible parts are:
+  - **Policies read `op.input`, not `op.args`** — core removed `args` from
+    `ServerPolicyOp`. An actor operation passes no input, so `op.input` is
+    `undefined` there; `op.resource` (`{ kind, type, key, method }`) is
+    unchanged and remains the way to decide per instance.
+  - **`op.fn.symbol` for an actor operation is still `Type#method`**, on
+    every transport. Core's "the symbol is the stable `<id>/<name>` key"
+    applies to serverFns; an actor call's identity is its own.
+  - A **serverFn beside actors** takes one object: `handler({ input, rq })`
+    (`examples/chat/src/chat.server.ts`).
+- **The wire wrappers carry core's `__sigx` descriptor.** Both endpoints —
+  the public actor mount and the HMAC-authenticated host-to-host mount —
+  answer core's `resolve(key)` with an object whose frozen `__sigx`
+  (`{ kind, invoke, anon, form, read? }`) replaces the `__sigxFn` /
+  `__sigxName` / `__sigxStream` / `__sigxGet` / `__sigxCacheControl` /
+  `__sigxAnon` stamps core no longer reads. The wire format is unchanged:
+  `POST {base}/{Type}/{method}` with `{"args": [key, ...args]}`, GET reads
+  on `reads:` methods, NDJSON streams, 404 for an unknown actor.
+
+[core-1.0-serverfn]: https://github.com/signalxjs/core/blob/main/docs/migrations/1.0-serverfn.md
+
+### Removed
+
+- **The registration-time warning for an actor that declares no
+  authorization in a process with no server app** (#450). Deciding whether
+  to fire it meant reading core's `__SIGX_SERVER_APP__` global directly,
+  which core's seam registry records as a violation, and core 1.0 has no
+  public "is an app configured?" accessor. Nothing about access changed:
+  such an actor is still DENIED (401, fail-closed), and core's prelude
+  still explains why — once per process, at the first deny, naming the
+  method.
+
 ## [0.10.0] - 2026-09-18
 
 ### Added

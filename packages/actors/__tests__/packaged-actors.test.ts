@@ -60,28 +60,34 @@ describe('a package can ship actors the app registers', () => {
         }
     });
 
-    it('warns when a packaged actor declares no authorization decision', async () => {
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('denies a packaged actor that declares no authorization decision', async () => {
         // The consuming app's `requireAuthorization` build gate never sees
-        // package source, so this is the only place the omission can be
-        // caught — and under the fail-closed runtime the warning is a UX aid
-        // ("these calls will be DENIED") rather than a security alarm.
+        // package source, so a package actor that declares nothing reaches
+        // the runtime unchecked — and the runtime is fail-closed: in a
+        // process with no server app, every wire call to it is a 401. Core's
+        // prelude explains the deny (once per process); actors itself stays
+        // quiet at registration, because telling "no app" from "the app
+        // default decides" meant reading core's app global (#450).
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const ungated = {
             ...Presence,
             type: 'acme/ungated',
             __sigxActor: { ...Presence.__sigxActor, allowAnonymous: undefined }
         } as unknown as typeof Presence;
-        // The warning only fires with NO server app configured: with one,
-        // its default policy IS the answer for an actor that declares
-        // nothing, and warning would be noise. The suite stamps an app for
-        // every other test, so this one takes it away.
         await withoutServerApp(async () => {
             const app = defineActorApp({ defaults: quiet }).withActors([ungated]);
             try {
-                await app.start();
-                expect(warn).toHaveBeenCalledWith(
-                    expect.stringContaining('declares no `authorize` policy')
+                const host = await app.start();
+                expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('authorize'));
+                const response = await handleActorRequest(
+                    new Request(`${ENDPOINT}/acme/ungated/setOnline`, {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ args: ['a', true] })
+                    }),
+                    { host, origin: false }
                 );
+                expect(response.status).toBe(401);
             } finally {
                 await app.stop();
                 warn.mockRestore();

@@ -290,7 +290,7 @@ describe('a declared read over GET', () => {
         expect(undeclared.headers.get('allow')).toBe('POST');
 
         // A stream cannot be GET even though `reads` would refuse to name one:
-        // the endpoint checks `__sigxStream` independently.
+        // the endpoint checks the descriptor's `kind` independently.
         const stream = await get(host, 'Product#feed', ['p1']);
         expect(stream.status).toBe(405);
     });

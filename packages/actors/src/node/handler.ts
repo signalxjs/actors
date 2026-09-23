@@ -59,7 +59,7 @@ export function createActorHandler(options: ActorHandlerOptions): NodeRequestHan
         // WinterCG mount. Skipping it made core read
         // `r/{token}/{Type}#{method}` as the symbol: a 404 for an
         // authenticated caller, and a 401 for an `allowAnonymous` actor,
-        // since the unknown-actor wrapper carries no `__sigxAnon` and core's
+        // since the unknown-actor wrapper's descriptor is not `anon` and core's
         // identity gate runs before the wrapper is ever invoked. `route:
         // 'hash'` is the CLIENT DEFAULT, so that was every anonymous actor
         // call on a Node deployment (#93).

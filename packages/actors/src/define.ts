@@ -241,9 +241,9 @@ function validateReads(
         }
         if (streamNames.includes(method)) {
             // A stream is a sequence, not a cacheable representation, and the
-            // endpoint refuses `__sigxGet` on one anyway (405). Better to say
-            // so at definition time than to ship a declaration that silently
-            // does nothing.
+            // endpoint refuses a GET on a stream descriptor anyway (405).
+            // Better to say so at definition time than to ship a declaration
+            // that silently does nothing.
             throw new Error(`${where} is a \`streams:\` method — a stream cannot be cached.`);
         }
         // `Cache-Control`'s delta-seconds are NON-NEGATIVE INTEGERS (RFC 9111
