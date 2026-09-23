@@ -95,6 +95,9 @@ session** (the recommended default; `perf/app/src/chat.server.ts` is a working
 instance). The client never names the actor:
 
 ```ts
+import { requirePrincipal, serverFn, type ServerFnHandlerArgs } from '@sigx/server';
+import { actor } from '@sigx/actors';
+
 export const postMessage = serverFn({
     // No `use:` — the app's default policy already requires an authenticated
     // caller, and `authenticate` has already resolved them.
