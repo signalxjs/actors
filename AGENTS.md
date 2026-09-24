@@ -144,8 +144,9 @@ agents the issue-first flow below is required.)
      them in order. That is why the required checks are not strict: there is
      no "update branch" step, so don't rebase a PR just to make it current, and
      don't race `main` with a plain `gh pr merge`.
-   - `ci.yml`'s `merge_group` trigger is what makes the checks run on the
-     queue's ref. Never remove it, or queued PRs wait forever.
+   - This repo has no required status checks yet, so the queue merges without
+     waiting on CI. If you make a check required, the workflow that produces
+     it must also trigger on `merge_group`, or queued PRs wait forever for it.
    - The squash commit takes the PR title plus ` (#<pr>)` as its subject and
      the PR description as its body (repo settings). Write both as the commit
      you want on `main`. Explicit `--subject`/`--body` does not apply to queue
