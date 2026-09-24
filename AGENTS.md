@@ -87,14 +87,14 @@ agents the issue-first flow below is required.)
    doesn't re-trigger on its own, re-request it: `gh pr edit <pr> --add-reviewer @copilot`.
    Repeat until Copilot has no remaining actionable feedback.
 
-   **Then resolve the threads.** Where the repo's ruleset sets
-   `required_review_thread_resolution` (check with
-   `gh api repos/signalxjs/actors/rules/branches/main`), a PR carrying an
-   unresolved **inline** comment cannot merge however green it is — with a
-   merge queue it silently never enqueues, and `gh pr checks` shows nothing
-   wrong. Pushing the fix does not resolve a thread, and neither does replying
-   at PR level. There is no `gh pr` porcelain — reply on each thread and
-   resolve it over GraphQL:
+   **Then resolve the threads.** The sigx-standard ruleset sets
+   `required_review_thread_resolution`, so a PR with an unresolved **inline**
+   comment cannot merge, even with every check green. It silently never enters
+   the merge queue, and `gh pr checks` shows nothing wrong. Resolve each thread
+   you address. For one you deliberately decline, reply with the reason, then
+   resolve it. Pushing the fix does not resolve a thread, and neither does
+   replying at PR level. There is no `gh pr` porcelain — reply on each thread
+   and resolve it over GraphQL:
    ```sh
    # list the open threads
    gh api graphql -f query='query { repository(owner:"signalxjs", name:"actors") {
@@ -113,22 +113,53 @@ agents the issue-first flow below is required.)
      resolveReviewThread(input:{threadId:$t}){ thread { isResolved } } }' -f t="<thread-id>"
    ```
 
-6. **Merge it yourself.** Once Copilot's feedback is resolved, CI is green, and —
-   for user-facing changes — the docs issue is filed on the docs repo and linked
-   from the PR (see "Documentation"), merge (squash — repo rules block merge
-   commits) and clean up:
+6. **Queue the merge yourself.** Once Copilot's feedback is resolved (threads
+   included), the PR's checks are green, and, for user-facing changes, the
+   docs issue is filed on the docs repo and linked from the PR (see
+   "Documentation"), add the PR to `main`'s **merge queue**:
    ```sh
    pr=123                                     # your PR number (digits only)
    gh pr checks "$pr"                         # must be all green first
-   gh pr merge "$pr" --squash --delete-branch \
-     --subject "$(gh pr view "$pr" --json title -q .title) (#$pr)" \
-     --body "$(gh pr view "$pr" --json body -q .body)"
+   gh pr merge "$pr" --squash --auto          # NOT --delete-branch: rejected
+                                              # outright when a queue is enabled.
+                                              # The queue deletes the branch itself.
    ```
-   Pass `--subject`/`--body` explicitly, exactly as above — GitHub appends
-   `Co-authored-by:` trailers to every message it generates itself (in **all**
-   squash-message modes, even PR_TITLE/PR_BODY) whenever a branch-commit author
-   differs from the merging account; an explicit message is used verbatim, so
-   no trailers. If you used a worktree, remove it afterward: `pnpm wt rm <name>`.
+   Check the non-required jobs too (e.g. `coverage`, `e2e`). The queue waits
+   only on the required checks, so it merges without them.
+
+   Then confirm the PR actually entered the queue. Armed auto-merge is not the
+   same thing:
+   ```sh
+   gh api graphql -f query='query { repository(owner:"signalxjs", name:"actors") {
+     pullRequest(number:'"$pr"') {
+       mergeStateStatus mergeQueueEntry { state position } } } }'
+   ```
+   `mergeQueueEntry: null` with `mergeStateStatus: BLOCKED` and every check
+   green means something the checks don't show is blocking it. In practice that
+   is an unresolved review thread (step 5). The PR just sits there until you
+   clear it.
+
+   How the queue works:
+   - It tests queued PRs in groups against the latest `main` and squash-merges
+     them in order. That is why the required checks are not strict: there is
+     no "update branch" step, so don't rebase a PR just to make it current, and
+     don't race `main` with a plain `gh pr merge`.
+   - This repo has no required status checks yet, so the queue merges without
+     waiting on CI. If you make a check required, the workflow that produces
+     it must also trigger on `merge_group`, or queued PRs wait forever for it.
+   - The squash commit takes the PR title plus ` (#<pr>)` as its subject and
+     the PR description as its body (repo settings). Write both as the commit
+     you want on `main`. Explicit `--subject`/`--body` does not apply to queue
+     merges.
+   - If the queue evicts a PR, there is a real conflict (usually a CHANGELOG
+     `[Unreleased]` entry). Rebase on `main`, keep both sides, push, and
+     enqueue again. Making the CHANGELOG entry the PR's last commit keeps that
+     window small.
+   - GitHub writes the queue's commit message itself, and it appends
+     `Co-authored-by:` trailers when a branch commit's author differs from the
+     merging account. So keep every commit on your branch authored by you.
+
+   If you used a worktree, remove it once the PR has landed: `pnpm wt rm <name>`.
 
 ## Build, Test, Lint
 
