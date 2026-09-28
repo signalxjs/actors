@@ -19,7 +19,7 @@
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "ioredis": "^5.4.1",
-        "undici": "^7.29.1",
+        "undici": "^7.30.0",
         "ws": "^8.21.3"
     },
     "devDependencies": {
