@@ -15,8 +15,8 @@
         "@sigx/actors-cloudflare": "workspace:*"
     },
     "devDependencies": {
-        "@cloudflare/workers-types": "^5.20260918.1",
+        "@cloudflare/workers-types": "^5.20260925.2",
         "typescript": "^7.0.2",
-        "wrangler": "^4.134.0"
+        "wrangler": "^4.140.0"
     }
 }
