@@ -12,7 +12,8 @@ import type { ActorStorage } from '@sigx/actors';
 import {
     defineActorApp,
     type ActorApp,
-    type ActorAppOptions
+    type ActorAppOptions,
+    type Host
 } from '@sigx/actors/host';
 import { createFetchHandler, type FetchHandlerOptions } from '@sigx/actors/server';
 import {
@@ -89,14 +90,30 @@ export interface WorkerHandlerOptions<Env = unknown> {
 
 export interface WorkerHandler<Env> {
     fetch(request: Request, env: Env, ctx?: unknown): Promise<Response>;
+    /**
+     * Build and start the app for `env` if this isolate has none yet, and
+     * resolve to its running host — the SAME memo `fetch` uses, so a
+     * `boot()` followed by (or racing) a `fetch()` builds once, and a
+     * rejection is never cached: the next `boot()` or `fetch()` retries.
+     *
+     * For a Worker that serves routes BESIDE the actor mount and makes
+     * ambient `actor(def, key)` hops from them (#457): on a cold isolate
+     * whose first request is such a route, no host is running yet, so
+     * `await handler.boot(env)` before the route runs.
+     */
+    boot(env: Env): Promise<Host>;
 }
 
 export function createWorkerHandler<Env = unknown>(
     options: WorkerHandlerOptions<Env>
 ): WorkerHandler<Env> {
-    let started: Promise<(request: Request) => Promise<Response>> | null = null;
+    interface Started {
+        readonly handler: (request: Request) => Promise<Response>;
+        readonly host: Host;
+    }
+    let started: Promise<Started> | null = null;
 
-    const boot = async (env: Env): Promise<(request: Request) => Promise<Response>> => {
+    const build = async (env: Env): Promise<Started> => {
         const base: ActorAppOptions = { storage: unhostedStorage() };
         const app = options.app?.(base) ?? defineActorApp(base);
         if (!app.hasActors) {
@@ -170,20 +187,27 @@ export function createWorkerHandler<Env = unknown>(
             }
         }
         const handler = createFetchHandler(app, options.fetch);
-        await app.start();
-        return handler;
+        const host = await app.start();
+        return { handler, host };
     };
+
+    // Memoized per isolate, and a rejection is never cached — a failed
+    // start stays retryable on the next request (or boot) rather than
+    // poisoning the isolate for its lifetime. `fetch` and `boot` share this
+    // one memo, so neither can build a second app beside the other's.
+    const ensure = (env: Env): Promise<Started> =>
+        (started ??= build(env).catch((error: unknown) => {
+            started = null;
+            throw error;
+        }));
 
     return {
         async fetch(request: Request, env: Env): Promise<Response> {
-            // Memoized per isolate, and a rejection is never cached — a
-            // failed start stays retryable on the next request rather than
-            // poisoning the isolate for its lifetime.
-            const handler = await (started ??= boot(env).catch((error: unknown) => {
-                started = null;
-                throw error;
-            }));
+            const { handler } = await ensure(env);
             return handler(request);
+        },
+        async boot(env: Env): Promise<Host> {
+            return (await ensure(env)).host;
         }
     };
 }

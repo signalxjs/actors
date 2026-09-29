@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`createWorkerHandler()` returns `boot(env): Promise<Host>`** (#457) —
+  builds and starts the Worker's app for `env` if the isolate has none
+  yet and resolves to its running host, through the SAME memo `fetch`
+  uses: a `boot()` followed by, or racing, a `fetch()` builds the app
+  once, and a failed boot is still never cached, so the next `boot()` or
+  `fetch()` retries. For a Worker serving routes beside the actor mount
+  (auth, MCP) that make ambient `actor(def, key)` hops: on a cold isolate
+  whose first request is such a route there was no host running, and
+  `actor()` threw `no host is running`. `await handler.boot(env)` before
+  the route replaces the synthetic-request or rebuild-the-app workarounds.
+  `WorkerHandler` gains the method.
+
 ## [0.10.0] - 2026-09-18
 
 ### Added

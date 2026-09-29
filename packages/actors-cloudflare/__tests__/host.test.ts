@@ -360,3 +360,90 @@ describe('unhostedStorage', () => {
         );
     });
 });
+
+describe('createWorkerHandler().boot (#457)', () => {
+    /**
+     * A handler whose `app` factory counts builds and whose `namespace` can
+     * be told to fail, over the same fake objects as `harness()`.
+     */
+    function counted() {
+        const h = harness();
+        let builds = 0;
+        let failNext = 0;
+        const worker = createWorkerHandler<Env>({
+            actors: [Counter],
+            namespace: (e) => {
+                if (failNext > 0) {
+                    failNext--;
+                    throw new Error('binding missing');
+                }
+                return e.ACTORS;
+            },
+            app: (base) => {
+                builds++;
+                return defineActorApp(base);
+            },
+            fetch: { origin: false }
+        });
+        const request = (): Request =>
+            new Request(`https://edge.test/_sigx/actor/${encodeSymbolPath('Counter#increment')}`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ args: ['a', 1] })
+            });
+        return {
+            env: h.env,
+            worker,
+            request,
+            builds: () => builds,
+            failOnce: () => void (failNext = 1)
+        };
+    }
+
+    it('returns the running host', async () => {
+        const c = counted();
+        const host = await c.worker.boot(c.env);
+        expect(host).toBeTruthy();
+        // A running host, not a description: an ambient hop from a route
+        // outside the mount routes through it to the object.
+        await expect(host.actor(Counter, 'a').increment(4)).resolves.toBe(4);
+        // The same host on a second boot — the memo, not a rebuild.
+        await expect(c.worker.boot(c.env)).resolves.toBe(host);
+    });
+
+    it('boot() then fetch() builds the app once', async () => {
+        const c = counted();
+        await c.worker.boot(c.env);
+        const res = await c.worker.fetch(c.request(), c.env);
+        expect(res.status).toBe(200);
+        expect(c.builds()).toBe(1);
+    });
+
+    it('concurrent boot() and fetch() build the app once', async () => {
+        const c = counted();
+        const [host, res] = await Promise.all([
+            c.worker.boot(c.env),
+            c.worker.fetch(c.request(), c.env)
+        ]);
+        expect(host).toBeTruthy();
+        expect(res.status).toBe(200);
+        expect(c.builds()).toBe(1);
+    });
+
+    it('does not cache a failed boot — the next boot retries', async () => {
+        const c = counted();
+        c.failOnce();
+        await expect(c.worker.boot(c.env)).rejects.toThrow('binding missing');
+        await expect(c.worker.boot(c.env)).resolves.toBeTruthy();
+        expect(c.builds()).toBe(2);
+    });
+
+    it('does not cache a failed boot — the next fetch retries', async () => {
+        const c = counted();
+        c.failOnce();
+        await expect(c.worker.boot(c.env)).rejects.toThrow('binding missing');
+        const res = await c.worker.fetch(c.request(), c.env);
+        expect(res.status).toBe(200);
+        expect(c.builds()).toBe(2);
+    });
+});
