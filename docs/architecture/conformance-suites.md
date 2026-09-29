@@ -5,7 +5,7 @@ the assertions.
 
 Adding a provider or a transport means writing a *harness*, not a test matrix.
 
-## Where they live, and why you cannot import them
+## Where they live, and which you can import
 
 | Subpath | Suite | Covers |
 |---|---|---|
@@ -15,15 +15,22 @@ Adding a provider or a transport means writing a *harness*, not a test matrix.
 | `@sigx/actors/testing` | `storageConformance` | `ActorStorage` implementations and decorators (#65) |
 | `@sigx/actors/testing` | `remindersConformance` | `ActorReminders` implementations (#385) |
 
-All are **workspace-only**: wired by the tsconfig and vitest path aliases, and
-deliberately **absent from `package.json` exports**. They cannot be imported
-from outside this repo until someone decides to promote them, which is a
-deliberate one-way door — publishing a test suite means supporting its shape.
+`@sigx/actors/testing` is **published** (#491): a provider package outside
+this repo — an out-of-repo `ActorStorage` adapter, say — imports
+`storageConformance` from npm and runs the same cases the in-repo adapters
+do. That was the deliberate one-way door: publishing a test suite means
+supporting its shape, so the case descriptors, harness types and
+`ConformanceSkip` are public API now, and changing them is a breaking change
+like any other export.
 
-Everything else in `packages/actors/package.json` `exports` is public API.
-These are the exception, and `@sigx/actors/cluster/frames` and
-`@sigx/actors/socket-wire` are the mirror image: published *precisely* so
-out-of-repo transports can build on them.
+`@sigx/actors/cluster/testing` is still **workspace-only**: wired by the
+tsconfig and vitest path aliases, and deliberately **absent from
+`package.json` exports**. It cannot be imported from outside this repo until
+someone decides to promote it too.
+
+`@sigx/actors/cluster/frames` and `@sigx/actors/socket-wire` are published
+for the same reason as `./testing`: *precisely* so out-of-repo transports can
+build on them.
 
 `socketTransportConformance` follows `transportConformance`'s incumbent rule
 one seam up: it runs against `fetchTransport()` — which shipped first, and

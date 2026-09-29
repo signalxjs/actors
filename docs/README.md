@@ -26,7 +26,7 @@ allowed to, which is exactly why they are here rather than on the site.
 | [`architecture/runtime-internals.md`](architecture/runtime-internals.md) | Activation, turns, what runs outside one, deadlock detection |
 | [`architecture/wire-and-frames.md`](architecture/wire-and-frames.md) | Mounts, envelope, reserved names, the frame codec |
 | [`architecture/clustering.md`](architecture/clustering.md) | Membership, directory, placement resolution, rebalancing |
-| [`architecture/conformance-suites.md`](architecture/conformance-suites.md) | The workspace-only suites every provider runs |
+| [`architecture/conformance-suites.md`](architecture/conformance-suites.md) | The shared suites every provider runs (`./testing` published, `./cluster/testing` workspace-only) |
 
 ## Process
 

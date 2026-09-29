@@ -273,7 +273,7 @@ To run an example/app: `pnpm --filter <package-name> dev`.
 
 ## Packages
 
-- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Eleven
+- `packages/actors` → `@sigx/actors` — the virtual-actor runtime. Twelve
   runtime entries (plus types-only `./vite-client`): `.` (defineActor + isomorphic `actor()`,
   `defineWorker` — stateless multi-activation pure-compute pools: always
   local, no directory claim, up to `maxLocal` concurrent members per
@@ -304,15 +304,18 @@ To run an example/app: `pnpm --filter <package-name> dev`.
   `SocketRequest`/`SocketReply` plus the codec and pollution-safe parse;
   published for out-of-repo adapters, and deliberately NOT the cluster
   frames: no field for a principal, no envelope, no inbound calls), `./vite`
-  (`sigxActors()` plugin). Two further subpaths are **workspace-only** — wired
-  by tsconfig/vitest aliases and deliberately absent from `package.json`
-  exports: `./cluster/testing` (`transportConformance`) and `./testing`
-  (`bootstrapConformance`, `socketTransportConformance` — the client
-  `ActorTransport` suite of #99, run by `fetchTransport` and
+  (`sigxActors()` plugin), and `./testing` — the shared conformance suites,
+  PUBLISHED (#491) so a provider package outside this repo runs the same
+  cases (framework-free descriptors, no test-runner import; their shape is
+  public API now): `bootstrapConformance`, `socketTransportConformance` —
+  the client `ActorTransport` suite of #99, run by `fetchTransport` and
   `@sigx/actors-ws` — `storageConformance`, the `ActorStorage` suite of
   #65, run by every storage adapter in the repo, and
   `remindersConformance`, the `ActorReminders` suite of #385, run by the
-  sharded default and every provider package).
+  sharded default and every provider package. One further subpath is
+  **workspace-only** — wired by tsconfig/vitest aliases and deliberately
+  absent from `package.json` exports: `./cluster/testing`
+  (`transportConformance`).
 - `packages/actors-redis` → `@sigx/actors-redis` — Redis (≥7) providers:
   `redisCluster` (membership and the actor directory) for
   `@sigx/actors/cluster`, `redisStorage` (etag-CAS `ActorStorage` —
