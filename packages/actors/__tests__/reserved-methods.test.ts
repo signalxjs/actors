@@ -1,5 +1,5 @@
 /**
- * Runtime-reserved methods (#240) — the public mount must not dispatch them.
+ * Runtime-reserved methods — the public mount must not dispatch them.
  *
  * `$sigx:reminder` (and every future `$sigx:*` delivery) is invoked by the
  * runtime itself: the reminder service delivers it, and remote hosts reach it

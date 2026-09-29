@@ -123,7 +123,7 @@ export interface MonitorSnapshot {
      * The POLLED host's own metrics — not the cluster's.
      *
      * Kept distinct from `cluster.totals.metrics` because the two are
-     * different facts and the whole complaint behind #121 was a dashboard
+     * different facts and the whole complaint behind the labelling was a dashboard
      * printing them adjacently with nothing saying which was which. Null
      * when `metrics()` is not attached, which is real and common.
      */

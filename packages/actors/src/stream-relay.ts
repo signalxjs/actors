@@ -9,7 +9,7 @@
  * it never forwards `return()` inward, and the activation's own teardown — the
  * thing that releases its keep-alive ref — is never reached.
  *
- * That is the same trap #120 fixed inside the activation, reappearing one
+ * That is the same trap already fixed inside the activation, reappearing one
  * level up. The cost is identical and just as quiet: a departed consumer
  * leaves `keptAlive` set, which does not merely delay idle collection, it
  * EXEMPTS the activation from it (`local-host.ts`: `if (a.idle &&

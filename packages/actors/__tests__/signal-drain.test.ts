@@ -1,7 +1,7 @@
 /**
  * Graceful shutdown drains the HTTP EDGE, not just the actors.
  *
- * The bug this pins was measured on a real cluster (#142): a rolling
+ * The bug this pins was measured on a real cluster: a rolling
  * restart under load lost 122 calls out of ~1.7M, all connection-level and
  * none in the actor layer. An orchestrator's preStop sleep and
  * readiness-503 only steer NEW connections away; sockets already in a
@@ -236,7 +236,7 @@ describe('a failed drain', () => {
 
 describe('the listener stays open until the drain finishes', () => {
     it('does NOT close early — closing early is what causes the resets', async () => {
-        // Pins the finding from #150, which reverted an earlier "close the
+        // Pins the later finding that reverted an earlier "close the
         // listener first" fix. On Node >= 19 `close()` also destroys IDLE
         // connections, and "idle" from the server's side includes a socket
         // the client is at that instant writing its next request onto. So

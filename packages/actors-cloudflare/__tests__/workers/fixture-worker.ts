@@ -46,7 +46,7 @@ export const Counter = defineActor({
         async woke() {
             return ctx.state.woke;
         },
-        /** Reschedules from inside the handler — the #140 re-entrancy shape. */
+        /** Reschedules from inside the handler — the re-entrancy shape `gate.test.ts` measures. */
         async armRescheduling() {
             ctx.state.reschedule = true;
             await ctx.save();

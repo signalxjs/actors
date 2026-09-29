@@ -157,7 +157,7 @@ export const DEFAULT_STREAM_PING_MS = 30_000;
 const PING_LINE = new TextEncoder().encode('{"ping":1}\n');
 
 /**
- * Re-wrap a streaming response so silence produces bytes (#178).
+ * Re-wrap a streaming response so silence produces bytes.
  *
  * At the BYTE layer, deliberately, rather than inside each stream generator:
  * core owns the NDJSON envelope, the actor's generator owns the values, and
@@ -251,7 +251,7 @@ function withKeepalive(response: Response, pingMs: number): Response {
         cancel(reason) {
             disarm();
             // Forwarded, so the actor's generator still sees the disconnect
-            // and releases its keep-alive — the #184 chain runs through here.
+            // and releases its keep-alive — the disconnect chain runs through here.
             return reader.cancel(reason);
         }
     });

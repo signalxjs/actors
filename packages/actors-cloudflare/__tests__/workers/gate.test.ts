@@ -1,7 +1,7 @@
 /**
  * What `blockConcurrencyWhile` ACTUALLY does, measured rather than assumed.
  *
- * Both of these were asserted in #139/#140 from reasoning about the platform.
+ * Both of these were asserted earlier from reasoning about the platform.
  * One of them was wrong, and the fake used there could not have told us:
  * modelling the gate as a non-reentrant queue produced a deadlock that the
  * real gate does not have. These tests pin the real behaviour so the next
@@ -17,7 +17,7 @@ declare module 'cloudflare:test' {
 
 describe('the real blockConcurrencyWhile', () => {
     it('PERMITS re-entry — it does not deadlock', async () => {
-        // #140 claimed the opposite, and restructured `onAlarm()` around it.
+        // An earlier change claimed the opposite, and restructured `onAlarm()` around it.
         // The restructure is still right (see below), but not for this
         // reason: a nested call resolves normally.
         const stub = env.ACTORS.get(env.ACTORS.idFromName('gate-reentry'));
@@ -34,7 +34,7 @@ describe('the real blockConcurrencyWhile', () => {
     });
 
     it('BREAKS the object when its callback throws', async () => {
-        // This half of #140 was right, and it is why an expected, diagnosable
+        // This half of that earlier claim was right, and it is why an expected, diagnosable
         // failure (`this Durable Object hosts a different actor`) is returned
         // as a value and raised only once the gate has closed.
         const stub = env.ACTORS.get(env.ACTORS.idFromName('gate-throw'));

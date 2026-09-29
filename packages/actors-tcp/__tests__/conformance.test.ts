@@ -2,7 +2,7 @@
  * The transport conformance suite, run over real TCP.
  *
  * This is the whole point of the suite existing before this package did: the
- * cases were written against `httpTransport()` in #94, so they describe the
+ * cases were written against `httpTransport()` first, so they describe the
  * contract rather than this transport's habits. Everything here either passes
  * unchanged or names a real difference.
  *

@@ -1,5 +1,5 @@
 /**
- * The envelope's optional `bag` field (#246) — the request-context bag on
+ * The envelope's optional `bag` field — the request-context bag on
  * the host-to-host wire.
  *
  * Same postures as `tp`/`ow` (see envelope-traceparent.test.ts): additive

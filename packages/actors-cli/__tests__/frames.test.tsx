@@ -75,7 +75,7 @@ describe('rendered frames', () => {
     });
 
     it('Host drill-down', () => {
-        // What selecting a row in the Hosts table now opens. Before #121 it
+        // What selecting a row in the Hosts table now opens. Before the drill-down it
         // could not exist: a `HostReport` carried no metrics, no health and
         // no actors for a peer, so the cursor moved and nothing changed.
         const focused = demoState();

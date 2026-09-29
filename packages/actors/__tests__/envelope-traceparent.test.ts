@@ -1,5 +1,5 @@
 /**
- * The envelope's optional `tp` (traceparent) field — issue #245.
+ * The envelope's optional `tp` (traceparent) field.
  *
  * Two postures are pinned here. **Additive**: an envelope without the field
  * is byte-identical to what this build shipped before the field existed, and

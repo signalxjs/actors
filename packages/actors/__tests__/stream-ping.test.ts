@@ -1,5 +1,5 @@
 /**
- * Keepalive on the per-actor stream path (#178).
+ * Keepalive on the per-actor stream path.
  *
  * `$live` has pinged since it shipped, because a page's live connection is
  * mostly quiet and every intermediary between a browser and a host reaps an

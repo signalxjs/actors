@@ -114,7 +114,7 @@ describe('before the first snapshot', () => {
 describe('OverviewPanel', () => {
     it('says WHICH scope its numbers are, before showing any of them', () => {
         const view = mount(<OverviewPanel state={demoState()} />);
-        // The #121 failure was a right number under no label at all.
+        // The failure this guards was a right number under no label at all.
         expect(view.text()).toContain('cluster · 2 host(s)');
         view.unmount();
     });

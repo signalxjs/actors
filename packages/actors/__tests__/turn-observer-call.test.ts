@@ -1,5 +1,5 @@
 /**
- * `ActorTurnObserver`'s trailing `call` parameter — issue #245.
+ * `ActorTurnObserver`'s trailing `call` parameter.
  *
  * The parameter is what lets an observer correlate a turn with the dispatch
  * that caused it (`callId`, `traceparent`) — the seam a tracing exporter

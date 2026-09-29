@@ -41,7 +41,7 @@ export function watchSymbol(type: string, method: string): string {
  * REFUSED rather than defaulted when malformed. A non-finite `throttleMs`
  * reaching the watch loop compares false against every bound and disables
  * throttling outright — the same fail-open shape as the `metrics()` caps
- * (#109), where the wrong value looks like healthy behaviour right up until
+ * where the wrong value looks like healthy behaviour right up until
  * it does not. `status` rides the error so both wire paths answer 400.
  *
  * Lives here rather than in either endpoint because both must agree: a

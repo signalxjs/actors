@@ -1,5 +1,5 @@
 /**
- * activationCountPolicy (#241) — load-aware placement.
+ * activationCountPolicy — load-aware placement.
  *
  * The contract: `choose()` is sync, reads only a cached load view refreshed
  * out of band, degrades to random when un-attached or data-less, and is

@@ -541,7 +541,7 @@ describe('cluster: milestone 2 — failover & directory hygiene', () => {
         // `hosts.length === 0` already means "solo / not started" elsewhere
         // in placement. Fencing on it would turn a membership store failing
         // over to a cold replica into every host fencing at once — every pod
-        // failing liveness, the whole cluster gone (#141).
+        // failing liveness, the whole cluster gone.
         const hub = memoryClusterHub();
         const providers = hub.providers();
         const placement = clusterPlacement({

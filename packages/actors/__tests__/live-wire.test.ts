@@ -434,7 +434,7 @@ describe('$live over the wire', () => {
 
 // ---------------------------------------------------------------------------
 // The context bag on the $live edge: the per-subscription guard still runs
-// against the request and may stamp it (#246), but a watch read is a SHARED
+// against the request and may stamp it, but a watch read is a SHARED
 // turn and never sees a bag — not even its own edge stamp (#137). One
 // subscriber or many, `$live` or in-process, `ctx.bag` inside the watched
 // method is the empty bag; the stamp reaches unary calls only.

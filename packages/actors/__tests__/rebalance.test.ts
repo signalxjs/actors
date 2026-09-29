@@ -1,5 +1,5 @@
 /**
- * placement.rebalance() and cluster({ rebalance }) (#241).
+ * placement.rebalance() and cluster({ rebalance }).
  *
  * The contract: one round is total (a report, never a throw), sheds only
  * this host's own excess down to the cluster mean, bounded by maxMoves,

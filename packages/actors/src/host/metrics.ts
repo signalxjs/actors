@@ -2,7 +2,7 @@
  * `metrics()` — pull-based observability, built almost entirely from seams
  * that already existed.
  *
- * The design follows issue #38: counters you READ, not a push pipeline and
+ * The design: counters you READ, not a push pipeline and
  * no metrics-library dependency. `snapshot()` is the whole consumer API, so
  * a `/metrics` route, a stats actor, or a test assertion all use the same
  * thing.

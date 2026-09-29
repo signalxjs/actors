@@ -294,7 +294,7 @@ describe('health: fatal checks fail liveness', () => {
     // a check can declare the process UNRECOVERABLE (`fatal: true`), and
     // then liveness — not just readiness — must fail, because a restart is
     // the only medicine and the kubelet is the one holding it. Found on
-    // AKS (#141): a fenced host sat live-200/ready-503 forever and the
+    // AKS: a fenced host sat live-200/ready-503 forever and the
     // cluster stayed dead until a human restarted the pods.
     it('ready:false alone keeps liveness 200 (drain, do not restart)', async () => {
         const plugin = health();

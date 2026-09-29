@@ -7,7 +7,7 @@
  * trend arrow — is `@sigx/terminal` 0.11's now, so the screens compose
  * upstream components directly instead of going through a local wrapper.
  *
- * `Line` survives because the trap that produced #121 has not gone away:
+ * `Line` survives because the trap that produced unlabelled lines has not gone away:
  * `Text` is a SPAN — terminal-zero calls it "deliberately INLINE, unlike
  * every other component" — so consecutive `Text` siblings share a line, and
  * a `Text` following a block element joins THAT block's line. (`Heading` is

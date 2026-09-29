@@ -11,7 +11,7 @@ export const reviver = (key: string, value: unknown): unknown =>
     DANGEROUS_KEYS.has(key) ? undefined : value;
 
 /**
- * Pollution-safe `JSON.parse` that keeps V8's fast parser (#218).
+ * Pollution-safe `JSON.parse` that keeps V8's fast parser.
  *
  * Passing ANY reviver forces a JS-level walk of every parsed node — measured
  * 5–10.7× slower than a plain parse. So: pre-scan the text, and only take the

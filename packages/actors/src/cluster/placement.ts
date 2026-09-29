@@ -1864,7 +1864,7 @@ class ClusterPlacementImpl implements ClusterPlacement {
      * - **A non-empty view.** `hosts.length === 0` already means "solo / not
      *   started" throughout placement. Fencing on it would turn a membership
      *   store failing over to a cold replica into EVERY host fencing at
-     *   once — every pod failing liveness, the cluster gone (#141).
+     *   once — every pod failing liveness, the cluster gone.
      * - **Self seen at least once.** Protects join ordering, and any
      *   provider whose view legitimately excludes self.
      * - **A fresh read.** A cached view that merely lags must never be the

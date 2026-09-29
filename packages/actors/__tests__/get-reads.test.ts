@@ -1,5 +1,5 @@
 /**
- * GET-cacheable actor reads (#11) — the `reads:` declaration, end to end.
+ * GET-cacheable actor reads — the `reads:` declaration, end to end.
  *
  * The point is traffic that never reaches an actor: a declared read answers
  * from a browser, CDN or reverse-proxy cache, which no amount of turn

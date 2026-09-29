@@ -4,7 +4,7 @@
  *
  * The heading says so rather than sitting unlabelled under a screen of
  * cluster totals: this list comes from one host, not from the fan-out, and
- * mistaking it for the fleet's is the #121 failure in miniature.
+ * mistaking it for the fleet's is the unlabelled-scope failure in miniature.
  */
 import { component } from '@sigx/runtime-core';
 import { alertLines, polledLabel } from '@sigx/actors-monitor';

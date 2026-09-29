@@ -4,8 +4,8 @@
  * Both directions of a link share this: the dialer and the acceptor run the
  * same demultiplexer, so a connection carries calls in either direction and
  * the socket count stays at one per peer rather than one per in-flight
- * request. That collapse is the entire reason this package exists — after
- * #96 and #98, per-call HMAC turned out to be worth 1.19× over a real
+ * request. That collapse is the entire reason this package exists — once measured,
+ * per-call HMAC turned out to be worth 1.19× over a real
  * socket, so latency is *not* the argument; file descriptors are.
  *
  * Three things here are easy to get wrong and are called out where they

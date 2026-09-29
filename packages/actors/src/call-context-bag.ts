@@ -1,5 +1,5 @@
 /**
- * The request-context bag (#246): a small, string-only key/value bag on
+ * The request-context bag: a small, string-only key/value bag on
  * `ActorCallContext`, stamped at the server edge (typically by a guard),
  * inherited by `ctx.actor` / `ctx.publish` hops, and carried host-to-host on
  * the envelope. This module owns the DEVELOPER-facing vocabulary — stamp,

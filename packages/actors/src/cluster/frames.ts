@@ -149,7 +149,7 @@ function encodeWithPrefix(frame: Frame, prefixBytes: number): Uint8Array {
  * Decode a length-prefix-free frame body. `reviver` is the codec's
  * prototype-pollution-safe reviver — a payload is never parsed without its
  * protection. Under the default reviver `parseWireWith` takes the guarded
- * fast path (pre-scan, then plain `JSON.parse` — #218); a custom codec
+ * fast path (pre-scan, then plain `JSON.parse`); a custom codec
  * reviver runs on every node, always.
  */
 export function decodeFrameBody(

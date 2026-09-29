@@ -1,7 +1,7 @@
 /**
  * The drill-down, and the labelling around it.
  *
- * Two failures this covers, both from #121:
+ * Two failures this covers:
  *
  * **The cursor led nowhere.** Selecting a host moved a highlight and
  * changed nothing else, because the fan-out carried no per-host detail to

@@ -7,7 +7,7 @@
  * that describe the whole fleet, then the four series, then the three
  * histograms against ONE axis.
  *
- * Two labelling rules do the real work here, and both are #121's:
+ * Two labelling rules do the real work here, and both are about scope:
  *
  *   - cluster-wide numbers when the fan-out produced them, this host's
  *     otherwise — with the heading saying WHICH. Printing one under a label

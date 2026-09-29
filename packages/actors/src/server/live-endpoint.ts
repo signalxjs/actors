@@ -486,7 +486,7 @@ export function subscribeAll(
      * than actors mutate, so that is the common path, not the edge.
      *
      * Setting `closed` and waking the loop first lets it unwind on its own;
-     * the queued `return()` then lands normally. (The same shape as #71's
+     * the queued `return()` then lands normally. (The same shape as the
      * `ctx.changes()` deadlock, which is not fixable this way because the
      * parked generator there is the user's.)
      */
