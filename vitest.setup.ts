@@ -44,7 +44,7 @@ export const TEST_PRINCIPAL: TestPrincipal = { id: 'test-principal' };
  * config, because an empty config IS configured and behaves differently.
  *
  * Through `stubServerApp`, never by writing the global: core stamps it
- * non-enumerable and frozen (#634), and a hand-written restore would put back
+ * non-enumerable and frozen (signalxjs/core#634), and a hand-written restore would put back
  * an enumerable property core never wrote. Stamping `undefined` is how core's
  * own stamp removes the global, and the returned restore re-stamps whatever
  * was there before — including nothing, which is what keeps an app stamped
