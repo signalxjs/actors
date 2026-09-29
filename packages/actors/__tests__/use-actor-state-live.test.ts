@@ -370,3 +370,82 @@ describe('useActorState({ live: true })', () => {
         expect(wire).not.toContain('$live#subscribe');
     });
 });
+
+describe('useActorState({ live: true }) inside a toggled component (#494)', () => {
+    // The live overlay used to register its `onUnmounted` from INSIDE
+    // `onMounted`, where the current instance is not the reading component:
+    // on the app's first mount there is none (the hook is dropped), and on a
+    // later mount it is the PARENT. Either way the subscription outlived the
+    // component — one leaked per mount. An app-level unmount hides that (it
+    // tears the channel down wholesale), so these toggle a child while the
+    // app stays up. One starts hidden (every mount is a LATER mount), the
+    // other starts shown (the first mount is the app's own).
+    async function toggleCounts(startShown: boolean): Promise<number[]> {
+        const host = await startHost();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            let open = 0;
+            const base = transportFor(host)!.transport as Parameters<typeof fetchTransport>[0];
+
+            const show = signal({ on: startShown });
+            const Page = component(() => {
+                const state = useActorState(RoomRef, () => ['k', 'count'] as const, { live: true });
+                return () => `count: ${String(state.value)}`;
+            });
+            const Shell = component(() => () => (show.on ? Page({}) : null));
+
+            const el = document.createElement('div');
+            document.body.appendChild(el);
+            const app = defineApp(Shell({})).use(
+                actorsPlugin({
+                    transport: {
+                        ...fetchTransport(base),
+                        name: 'counting-live',
+                        live: () => ({
+                            subscribe: () => {
+                                open++;
+                                let closed = false;
+                                return () => {
+                                    if (closed) return;
+                                    closed = true;
+                                    open--;
+                                };
+                            }
+                        })
+                    },
+                    live: fast
+                })
+            ) as App<unknown>;
+            mounted.push(app);
+            app.mount(el as never);
+
+            const counts: number[] = [];
+            if (startShown) {
+                await vi.waitFor(() => expect(open).toBe(1), { timeout: 2000 });
+                counts.push(open);
+                show.on = false;
+                await vi.waitFor(() => expect(open).toBe(0), { timeout: 2000 });
+            }
+            counts.push(open);
+            for (let i = 0; i < 3; i++) {
+                show.on = true;
+                await vi.waitFor(() => expect(open).toBe(1), { timeout: 2000 });
+                counts.push(open);
+                show.on = false;
+                await vi.waitFor(() => expect(open).toBe(0), { timeout: 2000 });
+                counts.push(open);
+            }
+            return counts;
+        } finally {
+            warn.mockRestore();
+        }
+    }
+
+    it('closes its subscription each time the component unmounts', async () => {
+        expect(await toggleCounts(false)).toEqual([0, 1, 0, 1, 0, 1, 0]);
+    });
+
+    it('closes it too when the component was there on the app\'s first mount', async () => {
+        expect(await toggleCounts(true)).toEqual([1, 0, 1, 0, 1, 0, 1, 0]);
+    });
+});

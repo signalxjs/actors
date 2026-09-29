@@ -15,6 +15,12 @@
   initialises state writes once and keeps working. Interleaved methods are
   not checked: their runs overlap other turns, so a write can't be traced
   to the watch.
+- **`useActorState(…, { live: true })` closes its subscription when its
+  component unmounts** (#494). The live overlay registered its `onUnmounted`
+  from inside `onMounted`, where the current instance is not the reading
+  component — none on the app's first mount, the parent on a later one — so
+  a component toggled in and out leaked one live subscription (and its
+  key-watching effect) per mount. The hook is now registered at setup level.
 
 ## [0.11.0] - 2026-09-23
 

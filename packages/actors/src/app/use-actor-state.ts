@@ -317,9 +317,15 @@ function liveView(
         );
     };
 
+    // Both hooks at SETUP level, the runner held here between them. Calling
+    // `onUnmounted` from inside `onMounted` would register it on whatever
+    // instance is current during the mount pass — none on the app's first
+    // mount, the parent on a later one — so the subscription outlived its
+    // component (#494). Same shape as the cells registration above.
+    let runner: ReturnType<typeof effect> | null = null;
     onMounted(() => {
         let subscribed: string | null = null;
-        const runner = effect(() => {
+        runner = effect(() => {
             const tuple = keyOf();
             const canonical = tuple ? JSON.stringify(tuple) : null;
             // Tracked on purpose: a settle of the cell's own is newer
@@ -337,11 +343,12 @@ function liveView(
                 }
             });
         });
-        onUnmounted(() => {
-            runner.stop();
-            stop?.();
-            stop = null;
-        });
+    });
+    onUnmounted(() => {
+        runner?.stop();
+        runner = null;
+        stop?.();
+        stop = null;
     });
 
     /**
