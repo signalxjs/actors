@@ -444,7 +444,7 @@ export interface ActorStorageRecord {
  * slower.
  *
  * Every rule above is pinned by `storageConformance` in `@sigx/actors/testing`
- * (workspace-only) — run it against a new adapter before trusting it.
+ * — run it against a new adapter before trusting it.
  */
 export interface ActorStorage {
     load(type: string, key: string): Promise<ActorStorageRecord | null>;

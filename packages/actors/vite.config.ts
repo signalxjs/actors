@@ -17,6 +17,7 @@ const base = defineLibConfig({
         cluster: 'src/cluster/index.ts',
         'cluster-frames': 'src/cluster/frames.ts',
         'socket-wire': 'src/socket-wire.ts',
+        testing: 'src/testing/index.ts',
         vite: 'src/vite/index.ts'
     },
     // The un-scoped `sigx` umbrella is matched too, though nothing here

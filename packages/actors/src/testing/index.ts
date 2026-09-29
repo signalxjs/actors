@@ -2,8 +2,10 @@
  * `@sigx/actors/testing` — the shared conformance suites a provider package
  * runs against its own harness.
  *
- * Alias-only inside this workspace (no `package.json` exports entry), the same
- * standing policy as `@sigx/actors/cluster/testing`.
+ * Published (#491): a provider package outside this repo runs the same
+ * suites, e.g. `storageConformance` against its own `ActorStorage`. That makes
+ * the case descriptors public API. `@sigx/actors/cluster/testing` is still
+ * workspace-only (tsconfig/vitest alias, no `package.json` exports entry).
  *
  * The reminders suite (#385) drives every `ActorReminders` provider through
  * one list of outcomes — the five providers had each re-pinned the seam.

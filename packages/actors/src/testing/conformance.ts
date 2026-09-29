@@ -7,9 +7,10 @@
  * means" is a readable list rather than an archaeology exercise across N
  * packages' test files.
  *
- * These subpaths are wired by tsconfig/vitest aliases only; they are
- * deliberately absent from `package.json` exports, so they cannot yet be
- * imported from outside this workspace.
+ * `@sigx/actors/testing` is a published entry (#491), so these shapes are
+ * public API. `@sigx/actors/cluster/testing` is still wired by
+ * tsconfig/vitest aliases only and cannot be imported from outside this
+ * workspace.
  */
 
 /** A case that could not run here, and why — reported, never silently passed. */

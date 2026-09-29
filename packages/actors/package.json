@@ -66,6 +66,12 @@
             "production": "./dist/socket-wire.prod.js",
             "import": "./dist/socket-wire.js"
         },
+        "./testing": {
+            "types": "./dist/testing/index.d.ts",
+            "development": "./dist/testing.js",
+            "production": "./dist/testing.prod.js",
+            "import": "./dist/testing.js"
+        },
         "./vite": {
             "types": "./dist/vite/index.d.ts",
             "import": "./dist/vite.js"
