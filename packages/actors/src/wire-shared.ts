@@ -24,7 +24,7 @@ function extraHandlers(): readonly TypeHandler[] {
 export const encodeWire = (value: unknown): unknown => encodeWithHandlers(value, extraHandlers());
 export const reviveWire = (value: unknown): unknown => reviveWithHandlers(value, extraHandlers());
 
-// The pollution-safe reviver and the guarded fast-path parse (#218) live in
+// The pollution-safe reviver and the guarded fast-path parse live in
 // their own dependency-free module so `./cluster/frames` can import them
 // without this module's `@sigx/serialize` graph; re-exported here so every
 // existing importer is unchanged.

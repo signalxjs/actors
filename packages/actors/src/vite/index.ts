@@ -406,8 +406,8 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
             const stale = peekDevHost();
             if (stale) void stale.stop({ timeoutMs: 5_000 }).catch(() => {});
 
-            // Create the dev host EAGERLY (before the first document render
-            // — the #304 bug class): through the SSR module runner so the
+            // Create the dev host EAGERLY (before the first document render)
+            // and through the SSR module runner so the
             // host the render's actor() sees via the seam is the same module
             // family the render runs in.
             const hostReady = createDevHost(server).catch((error: unknown) => {
@@ -444,7 +444,7 @@ export function sigxActors(options: SigxActorsOptions = {}): Plugin {
                     // production entry imports, so storage, placement, codec
                     // handlers, defaults and plugins are the same in both.
                     // Loaded through the SSR runner for module-graph identity
-                    // with the render (the #304 bug class).
+                    // with the render.
                     const appModule = (await devServer.ssrLoadModule(options.app)) as {
                         app?: DevApp;
                         default?: DevApp;

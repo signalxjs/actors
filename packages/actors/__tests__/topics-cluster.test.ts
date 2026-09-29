@@ -1,5 +1,5 @@
 /**
- * Topics across hosts (#239) — a publish is ordinary dispatches through
+ * Topics across hosts — a publish is ordinary dispatches through
  * placement, so a remotely-owned subscriber rides the internal transport
  * (HMAC and all) with zero topic-specific wire machinery. These tests pin
  * exactly that: remote delivery, the cost model (one remote dispatch per

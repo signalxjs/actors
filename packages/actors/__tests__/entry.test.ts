@@ -274,7 +274,7 @@ describe('actor() entry', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The context bag on the in-process transport (#246): a guard's stamp is
+// The context bag on the in-process transport: a guard's stamp is
 // lifted from the request's locals after runGuards, `.with({ bag })` merges
 // over it (explicit wins), and the detached case degrades to an empty bag.
 

@@ -1,5 +1,5 @@
 /**
- * Context-bag propagation across a cluster (#246), end to end: the
+ * Context-bag propagation across a cluster, end to end: the
  * `.with({ bag })` escape hatch sets it, the envelope's `bag` field carries
  * it host-to-host, `ctx.actor` relays it through an intermediate actor, and
  * `ctx.publish` hands it to every topic subscriber. The wire.test suite

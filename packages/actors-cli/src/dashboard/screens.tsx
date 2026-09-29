@@ -149,7 +149,7 @@ const blockHeight = (lines: readonly string[]): number => (lines.length === 0 ? 
 
 // `scopeOf`, `polledLabel` and `coverageNote` are `@sigx/actors-monitor`'s
 // (#239). What a number is ABOUT — this host or the fleet, and whether the
-// fleet's total covers all of it — is the work #121 exists over, and it is
+// fleet's total covers all of it — is the work those helpers exist for, and it is
 // not a terminal question: the failure it fixes was never a wrong number, it
 // was a right one under no label at all, sitting directly beneath one of a
 // different scope. A second renderer must inherit those strings, not re-word
@@ -167,7 +167,7 @@ export function OverviewScreen(props: { state: DashboardState; pane?: Pane }) {
     const metrics = snapshot.metrics;
     // Cluster-wide numbers when the fan-out produced them, this host's
     // otherwise — and the heading says which, because printing one under a
-    // label that means the other is the whole complaint behind #121.
+    // label that means the other is the whole complaint the labelling answers.
     const clusterMetrics = snapshot.cluster?.totals.metrics ?? null;
     const clusterCalls = clusterMetrics?.calls ?? null;
     const latencyMs = clusterMetrics?.latencyMs ?? metrics?.latencyMs ?? null;

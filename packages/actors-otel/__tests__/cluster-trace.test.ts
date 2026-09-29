@@ -1,5 +1,5 @@
 /**
- * The join test — issue #245's headline behaviour: a call crossing a
+ * The join test — the headline behaviour: a call crossing a
  * host-to-host hop appears as ONE trace, the caller's CLIENT span and the
  * owner host's SERVER span sharing a trace id, joined by the envelope's
  * `tp` field. Each host has its own provider and exporter, as two real

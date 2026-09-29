@@ -8,7 +8,7 @@
  * (`@sigx/actors-otel/prometheus`) precisely so a Prometheus-only consumer
  * never touches the optional `@opentelemetry/api` peer.
  *
- * Cardinality rule (issue #245): labels are actor `type` and `method` only —
+ * Cardinality rule: labels are actor `type` and `method` only —
  * both already bounded by the digest and folded into `'(other)'`. Actor KEYS
  * can be personal data and never appear here, the same rule `clusterStats`
  * detail clamps follow.

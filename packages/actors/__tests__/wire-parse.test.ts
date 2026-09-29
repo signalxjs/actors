@@ -1,5 +1,5 @@
 /**
- * The guarded wire parse (#218): `parseWire` skips the prototype-pollution
+ * The guarded wire parse: `parseWire` skips the prototype-pollution
  * reviver — which disables V8's fast JSON parser — whenever no dangerous key
  * can be present in the text. These tests pin the safety contract the guard
  * must preserve: byte-for-byte equivalence with `JSON.parse(text, reviver)`.

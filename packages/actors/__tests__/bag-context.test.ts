@@ -1,5 +1,5 @@
 /**
- * `ctx.bag` semantics on the activation (#246): frozen, per-read (turn-
+ * `ctx.bag` semantics on the activation: frozen, per-read (turn-
  * correct), and empty in the contexts that deliberately do NOT inherit it —
  * detached task bodies and volatile timer ticks, the same rule as
  * `traceparent`.

@@ -107,7 +107,7 @@ describe('cluster ops: clusterStats', () => {
             // ticks that shard, two means views have diverged.
             expect(report.reminderShards[shard]).toHaveLength(1);
         }
-        // The #82 finding, made visible: how many hosts do reminder work.
+        // The reminder-shard finding, made visible: how many hosts do reminder work.
         const working = new Set(Object.values(report.reminderShards).flat());
         expect(working.size).toBeGreaterThan(1);
         expect(working.size).toBeLessThanOrEqual(3);
@@ -278,7 +278,7 @@ describe('cluster ops: counters', () => {
         expect(loser.wrongHostRedirects).toBe(1);
     });
 
-    it('membership changes are counted — the store-load signal from #82', async () => {
+    it('membership changes are counted — the store-load signal', async () => {
         const cluster = await createCluster(3, { actors: [Counter] });
         running = cluster;
         // Host 0 was present for hosts 1 and 2 joining.
@@ -444,7 +444,7 @@ describe('cluster ops: readiness', () => {
         // Leaving = draining = alive (restart would abort the handoff).
         // Fenced = membership lost for THIS host identity, every activation
         // refused, and no way back — a fenced pod that stays "live" is a
-        // zombie no orchestrator will ever fix (#141: an outage of the
+        // zombie no orchestrator will ever fix (an outage of the
         // membership store left the whole cluster dead until a human
         // restarted the pods).
         const cluster = await createCluster(2, {

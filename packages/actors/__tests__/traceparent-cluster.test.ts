@@ -1,5 +1,5 @@
 /**
- * Traceparent propagation across a cluster — issue #245, end to end and
+ * Traceparent propagation across a cluster — end to end and
  * with no tracing library anywhere: a caller-side `useDispatch` middleware
  * stamps the context, the envelope's `tp` field carries it host-to-host,
  * `ctx.actor` relays it through an intermediate actor, and the owner host's

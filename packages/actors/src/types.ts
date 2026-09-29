@@ -84,7 +84,7 @@ export interface ActorCallContext {
      */
     readonly oneWay?: true;
     /**
-     * The request-context bag (#246): a small, string-only key/value bag
+     * The request-context bag: a small, string-only key/value bag
      * stamped at the server edge (typically a guard calling `stampCallBag`),
      * read by methods via `ctx.bag`, inherited by `ctx.actor`/`ctx.publish`
      * hops, and carried host-to-host on the envelope (`bag`, additive within

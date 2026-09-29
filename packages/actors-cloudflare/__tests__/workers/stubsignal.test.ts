@@ -17,7 +17,7 @@ const SEP = '\u0000';
  * no public endpoint — so nothing else can be blamed.
  */
 // SKIPPED because it FAILS and documents why: the abort never reaches the
-// object. Kept as the evidence behind #187 rather than deleted — it is the
+// object. Kept as the evidence rather than deleted — it is the
 // narrowest reproduction there is, and the first thing to re-run against any
 // proposed fix (or against a future workerd that closes the gap).
 describe.skip('stub.fetch honours its signal', () => {

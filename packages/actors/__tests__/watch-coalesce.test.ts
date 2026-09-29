@@ -181,7 +181,7 @@ describe('cross-host watch coalescing', () => {
             h.hosts[1]!.activations().some((x) => x.key === 'last' && x.keptAlive);
         await vi.waitFor(() => expect(owned()).toBe(false), { timeout: 1000 });
 
-        // The entry is GONE, not cached: a fresh subscriber opens stream #2.
+        // The entry is GONE, not cached: a fresh subscriber opens stream 2.
         const c = h.hosts[0]!.dispatchWatch!(ref, 'read', [], call().call)[Symbol.asyncIterator]();
         expect((await c.next()).value).toBe(1);
         expect(delta().remote).toBe(2);
@@ -299,23 +299,23 @@ describe('cross-host watch coalescing', () => {
         const delta = deltas(h);
         const ref = { type: 'Counter', key: 'latch' } as const;
 
-        // Entry #1: one subscriber, opened and fully closed.
+        // Entry 1: one subscriber, opened and fully closed.
         const s1 = call();
         const it1 = h.hosts[0]!.dispatchWatch!(ref, 'read', [], s1.call)[Symbol.asyncIterator]();
         await it1.next();
         await it1.return?.();
         expect(delta()).toEqual({ remote: 1, joined: 0, inbound: 1 });
 
-        // Entry #2 takes the same key.
+        // Entry 2 takes the same key.
         const it2 = h.hosts[0]!.dispatchWatch!(ref, 'read', [], call().call)[Symbol.asyncIterator]();
         await it2.next();
         expect(delta().remote).toBe(2);
 
-        // Replay the stale teardown of subscriber #1 in both spellings.
+        // Replay the stale teardown of subscriber 1 in both spellings.
         await it1.return?.();
         s1.abort.abort();
 
-        // Entry #2 is untouched: a third subscriber JOINS it (no new
+        // Entry 2 is untouched: a third subscriber JOINS it (no new
         // stream) and mutations still arrive.
         const it3 = h.hosts[0]!.dispatchWatch!(ref, 'read', [], call().call)[Symbol.asyncIterator]();
         expect((await it3.next()).value).toBe(1);

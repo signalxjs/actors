@@ -1,5 +1,5 @@
 /**
- * The request-context bag's WIRE half (#246): caps, shape validation and
+ * The request-context bag's WIRE half: caps, shape validation and
  * the peer-input sanitizer — everything the envelope and the endpoints
  * need, with no developer-facing error strings, so the cluster and frames
  * entries pay for validation and nothing else. The stamp/merge vocabulary

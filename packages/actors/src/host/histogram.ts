@@ -4,7 +4,7 @@
  * Constraints that decide the design: it records on every turn, so `record()`
  * must be O(1) with no allocation; it runs for the life of a process, so
  * memory must be bounded regardless of how many samples arrive; and it must
- * bring no dependency (issue #38: "pull-based counters first; no
+ * bring no dependency (the design brief: "pull-based counters first; no
  * metrics-library dependency").
  *
  * Keeping raw samples — what the benchmark suite does — is wrong here for

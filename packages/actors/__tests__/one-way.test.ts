@@ -1,5 +1,5 @@
 /**
- * One-way calls (`.with({ oneWay: true })`) — issue #246.
+ * One-way calls (`.with({ oneWay: true })`).
  *
  * The contract under test: the dispatch resolves at ACCEPTANCE (enqueue into
  * the target activation; remotely, the transport reply after the receiving

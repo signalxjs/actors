@@ -5,7 +5,7 @@
  * particular have been load-bearing since the package shipped and had never
  * met the platform: that the platform clears an alarm before invoking
  * `alarm()` (which is the entire reason `rearm(consumed)` exists), and that
- * holding the concurrency gate across delivery deadlocks the object (#140).
+ * holding the concurrency gate across delivery deadlocks the object.
  */
 import {
     env,
@@ -82,7 +82,7 @@ describe('reminders on the real alarm API', () => {
         // Rescheduling from `onReminder` is the documented pattern, and it
         // takes the concurrency gate from inside delivery.
         //
-        // #140 restructured `onAlarm()` claiming the real gate would deadlock
+        // An earlier change restructured `onAlarm()` claiming the real gate would deadlock
         // here. It does NOT — `gate.test.ts` measures that directly. The
         // three-phase split is still right, because holding a Durable
         // Object's gate across an arbitrary user callback blocks every other

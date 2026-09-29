@@ -1,5 +1,5 @@
 /**
- * The envelope's optional `ow` (one-way) flag — issue #246.
+ * The envelope's optional `ow` (one-way) flag.
  *
  * Same two postures as `tp` (see envelope-traceparent.test.ts). **Additive**:
  * a normal call's envelope is byte-identical to pre-field builds, and both

@@ -1,5 +1,5 @@
 /**
- * The context-bag vocabulary (#246): stamp, lift, merge, validate, sanitize.
+ * The context-bag vocabulary: stamp, lift, merge, validate, sanitize.
  *
  * The posture under test: DEVELOPER input (stampCallBag, .with({ bag }))
  * throws on violation — their code, their stack — while PEER input

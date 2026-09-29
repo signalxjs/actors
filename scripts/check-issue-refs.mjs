@@ -29,7 +29,14 @@
  *   node scripts/check-issue-refs.mjs <path>...     # check specific paths
  *
  * A file in `EXEMPT_FILES` is skipped even under an explicit directory, but
- * naming the file itself as a `<path>` checks it — an explicit ask wins.
+ * naming the file itself as a `<path>` checks it — an explicit ask wins. The
+ * same goes for anything under a `__snapshots__/` directory.
+ *
+ * A CHANGELOG is checked only down to its `## [0.1.0]` heading. That release
+ * predates the public repo, so every `#N` in it is a tracker number; each
+ * CHANGELOG says so in a note at the top, and published history is not
+ * rewritten to satisfy a lint (#122). Everything above that heading is
+ * checked like any other file.
  *
  * Both checks need the repository's issue list, so **neither can run without
  * the GitHub API** — there is no useful offline subset. Without a token or a
@@ -53,16 +60,16 @@ const REPO = 'signalxjs/actors';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * Paths under the guard. This list is deliberately narrower than the repo:
- * the CHANGELOGs and `packages/` still carry pre-promotion numbers that need
- * a judgement pass (#122), and a check that starts red is a check people
- * learn to ignore. Widen it as each area is cleaned — that is the point of
- * it being a list.
+ * Paths under the guard. Each joined once its pre-promotion numbers had been
+ * through a judgement pass — `packages/` last (#122) — because a check that
+ * starts red is a check people learn to ignore. A new area joins the same
+ * way: cleaned first, then listed.
  */
 const DEFAULT_PATHS = [
     'benchmarks',
     'docs',
     'examples',
+    'packages',
     'perf',
     'scripts',
     '.github',
@@ -78,6 +85,16 @@ const DEFAULT_PATHS = [
  * whether the numbers in them happen to resolve is noise either way.
  */
 const EXEMPT_FILES = new Set(['.github/pull_request_template.md']);
+
+/**
+ * Rendered output, not prose: a vitest snapshot records what a component
+ * printed, and a `#5` in a table row is a rank, not a reference. Editing the
+ * snapshot to please this check would break the test that owns it.
+ */
+const EXEMPT_DIRS = /(^|\/)__snapshots__\//;
+
+/** Where a CHANGELOG's tracker-numbered history starts; see the header. */
+const PRE_PUBLIC_RELEASE = /^## \[0\.1\.0\]/;
 
 const args = process.argv.slice(2);
 const list = args.includes('--list');
@@ -100,7 +117,8 @@ function trackedFiles() {
         .split('\0')
         .filter(Boolean)
         .filter((f) => !/pnpm-lock|\.(svg|png|ico|jpg|jpeg|gif|woff2?)$/i.test(f))
-        .filter((f) => !EXEMPT_FILES.has(f) || named.has(f));
+        .filter((f) => !EXEMPT_FILES.has(f) || named.has(f))
+        .filter((f) => !EXEMPT_DIRS.test(f) || named.has(f));
 }
 
 /**
@@ -125,7 +143,12 @@ function collect() {
         } catch {
             continue; // unreadable or binary — nothing to check
         }
-        text.split('\n').forEach((line, i) => {
+        let lines = text.split('\n');
+        if (path.posix.basename(file) === 'CHANGELOG.md') {
+            const cut = lines.findIndex((l) => PRE_PUBLIC_RELEASE.test(l));
+            if (cut !== -1) lines = lines.slice(0, cut);
+        }
+        lines.forEach((line, i) => {
             for (const m of line.matchAll(REF)) {
                 const { qualified, num } = m.groups;
                 if (qualified) {
@@ -153,13 +176,19 @@ function highestNumber() {
     return r.items[0].number;
 }
 
-function exists(n) {
-    try {
-        gh(`repos/${REPO}/issues/${n}`);
-        return true;
-    } catch {
-        return false;
-    }
+/**
+ * Every issue and PR number in the repo, from one paginated listing (the
+ * issues endpoint returns pull requests too). One request per distinct ref
+ * was fine for the docs; with `packages/` guarded it is a couple of hundred
+ * per run, which a CI token's rate limit notices.
+ */
+function existingNumbers() {
+    const out = execFileSync(
+        'gh',
+        ['api', '--paginate', `repos/${REPO}/issues?state=all&per_page=100`, '--jq', '.[].number'],
+        { encoding: 'utf8', maxBuffer: 1e8 }
+    );
+    return new Set(out.split('\n').filter(Boolean).map(Number));
 }
 
 const { refs, skipped } = collect();
@@ -176,8 +205,10 @@ console.log(`checking ${numbers.length} distinct refs across ${roots.join(', ')}
 if (numbers.length === 0) process.exit(0);
 
 let max = null;
+let known = null;
 try {
     max = highestNumber();
+    known = existingNumbers();
 } catch (err) {
     if (requireApi) {
         console.error('✗ could not reach the GitHub API, and --require-api is set.');
@@ -197,7 +228,7 @@ for (const n of numbers) {
         failures.push({ n, why: `above the repo's highest number (#${max}) — stale by construction`, where });
         continue;
     }
-    if (!exists(n)) failures.push({ n, why: 'does not resolve (404)', where });
+    if (!known.has(n)) failures.push({ n, why: 'does not resolve (404)', where });
 }
 
 if (failures.length === 0) {

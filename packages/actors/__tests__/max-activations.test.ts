@@ -1,5 +1,5 @@
 /**
- * defaults.maxActivations (#16) — the LRU capacity shed.
+ * defaults.maxActivations — the LRU capacity shed.
  *
  * The contract: a SOFT cap enforced by the sweeper. Excess activations are
  * shed least-recently-used first with reason 'capacity'; busy or held

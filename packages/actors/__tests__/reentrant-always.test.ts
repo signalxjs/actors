@@ -1,5 +1,5 @@
 /**
- * `reentrant: 'always'` and `methodReentrancy` (#15) — full interleaving.
+ * `reentrant: 'always'` and `methodReentrancy` — full interleaving.
  *
  * The contract under test: interleavable turns launch immediately (they
  * neither wait for in-flight turns nor are waited for), serial turns stay

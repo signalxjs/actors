@@ -476,7 +476,7 @@ describe('actor wire (client proxy ↔ real endpoint)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The context bag at the public edge (#246): a guard stamps it on the
+// The context bag at the public edge: a guard stamps it on the
 // request, the endpoint lifts it into the call context AFTER the guard
 // chain, and the method reads it via ctx.bag. Never from a request header —
 // a client-settable bag would be an authorization bypass.

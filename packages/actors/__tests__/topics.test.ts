@@ -1,5 +1,5 @@
 /**
- * Topics (#239) — actor-to-actor pub/sub, single host.
+ * Topics — actor-to-actor pub/sub, single host.
  *
  * The contract under test: implicit `subscriptions:` on the definition,
  * best-effort at-most-once delivery as ordinary dispatches of the reserved
