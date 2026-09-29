@@ -35,13 +35,13 @@ describe('watching a mutating method (#497)', () => {
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, idleAfterMs: 60_000, callTimeoutMs: 0 }
         });
-        const it = host.dispatchWatch!(ref, 'bump', [], call, { throttleMs: 0 })[Symbol.asyncIterator]();
+        const watching = host.dispatchWatch!(ref, 'bump', [], call, { throttleMs: 0 })[Symbol.asyncIterator]();
         const pulls: unknown[] = [];
         let failure: unknown = null;
         try {
             for (let i = 0; i < 5; i++) {
                 const r = await Promise.race([
-                    it.next(),
+                    watching.next(),
                     new Promise<IteratorResult<unknown>>((resolve) =>
                         setTimeout(() => resolve({ done: true, value: 'idle' }), 200)
                     )
@@ -52,7 +52,7 @@ describe('watching a mutating method (#497)', () => {
         } catch (error) {
             failure = error;
         }
-        await it.return?.(undefined);
+        await watching.return?.(undefined);
 
         // Nothing but the subscription touched the actor. Before #497 the
         // watch drove itself (7 writes in this window, unbounded in general).
@@ -71,11 +71,11 @@ describe('watching a mutating method (#497)', () => {
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, idleAfterMs: 60_000, callTimeoutMs: 0 }
         });
-        const it = host.dispatchWatch!(ref, 'total', [], call, { throttleMs: 0 })[Symbol.asyncIterator]();
-        expect((await it.next()).value).toBe(0);
+        const watching = host.dispatchWatch!(ref, 'total', [], call, { throttleMs: 0 })[Symbol.asyncIterator]();
+        expect((await watching.next()).value).toBe(0);
         await host.dispatch(ref, 'bump', [], call);
-        expect((await it.next()).value).toBe(1);
-        await it.return?.(undefined);
+        expect((await watching.next()).value).toBe(1);
+        await watching.return?.(undefined);
         await host.stop({ timeoutMs: 2000 });
     });
 
@@ -86,11 +86,11 @@ describe('watching a mutating method (#497)', () => {
             scheduler: manualScheduler(),
             defaults: { sweepIntervalMs: 60_000, reminderTickMs: 60_000, idleAfterMs: 60_000, callTimeoutMs: 0 }
         });
-        const it = host.dispatchWatch!(ref, 'label', [], call, { throttleMs: 0 })[Symbol.asyncIterator]();
-        expect((await it.next()).value).toBe('counter-k:0');
+        const watching = host.dispatchWatch!(ref, 'label', [], call, { throttleMs: 0 })[Symbol.asyncIterator]();
+        expect((await watching.next()).value).toBe('counter-k:0');
         await host.dispatch(ref, 'bump', [], call);
-        expect((await it.next()).value).toBe('counter-k:1');
-        await it.return?.(undefined);
+        expect((await watching.next()).value).toBe('counter-k:1');
+        await watching.return?.(undefined);
         await host.stop({ timeoutMs: 2000 });
     });
 
