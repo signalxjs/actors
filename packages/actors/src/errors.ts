@@ -21,6 +21,7 @@ export type ActorErrorKind =
     | 'unplaceable'
     | 'fenced'
     | 'watch-declaration'
+    | 'watch-mutation'
     | 'overloaded';
 
 export interface ActorErrorShape extends Error {
@@ -131,6 +132,33 @@ export class ActorWatchDeclarationError extends ActorError {
                 `run per subscriber at the entry point, outside any turn.`
         );
         this.name = 'ActorWatchDeclarationError';
+    }
+}
+
+/**
+ * A watched method wrote actor state (#497).
+ *
+ * A watch re-runs its method after every turn that mutated state, so a watched
+ * method that itself mutates is its own trigger: each read produces the next
+ * change, and the loop re-runs it once per throttle window for as long as
+ * anyone is subscribed. One subscription became an unbounded stream of writes
+ * that no caller issued. Thrown when two CONSECUTIVE reads of one watch both
+ * wrote: a read that lazily initialises state writes once and settles, so it
+ * keeps working. The writes that tripped this stay; the watch stops repeating
+ * them.
+ *
+ * Detected on the serial lane only: an interleaved read overlaps other turns,
+ * so a write seen during it cannot be attributed to it.
+ */
+export class ActorWatchMutationError extends ActorError {
+    constructor(type: string, method: string) {
+        super(
+            'watch-mutation',
+            `[sigx actors] "${type}.${method}" wrote actor state while serving a watch. A ` +
+                `watch re-runs its method after every change, so a mutating method would ` +
+                `trigger itself indefinitely. Watch a read, and call the mutation instead.`
+        );
+        this.name = 'ActorWatchMutationError';
     }
 }
 

@@ -37,6 +37,7 @@ const ACTOR_ERROR_KINDS = new Set<string>([
     'unplaceable',
     'fenced',
     'watch-declaration',
+    'watch-mutation',
     'overloaded'
 ]);
 
