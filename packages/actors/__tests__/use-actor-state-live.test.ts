@@ -370,3 +370,63 @@ describe('useActorState({ live: true })', () => {
         expect(wire).not.toContain('$live#subscribe');
     });
 });
+
+describe('useActorState({ live: true }) inside a toggled component (#494)', () => {
+    it('closes its subscription each time the component unmounts', async () => {
+        // The live overlay used to register its `onUnmounted` from INSIDE
+        // `onMounted`, where the current instance is not the reading
+        // component: on the app's first mount there is none (the hook is
+        // dropped), and on a later mount it is the PARENT. Either way the
+        // subscription outlived the component — one leaked per mount. An
+        // app-level unmount hides that (it tears the channel down wholesale),
+        // so this toggles a child while the app stays up.
+        const host = await startHost();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        let open = 0;
+        const base = transportFor(host)!.transport as Parameters<typeof fetchTransport>[0];
+
+        const show = signal({ on: false });
+        const Page = component(() => {
+            const state = useActorState(RoomRef, () => ['k', 'count'] as const, { live: true });
+            return () => `count: ${String(state.value)}`;
+        });
+        const Shell = component(() => () => (show.on ? Page({}) : null));
+
+        const el = document.createElement('div');
+        document.body.appendChild(el);
+        const app = defineApp(Shell({})).use(
+            actorsPlugin({
+                transport: {
+                    ...fetchTransport(base),
+                    name: 'counting-live',
+                    live: () => ({
+                        subscribe: () => {
+                            open++;
+                            let closed = false;
+                            return () => {
+                                if (closed) return;
+                                closed = true;
+                                open--;
+                            };
+                        }
+                    })
+                },
+                live: fast
+            })
+        ) as App<unknown>;
+        mounted.push(app);
+        app.mount(el as never);
+
+        const counts: number[] = [open];
+        for (let i = 0; i < 3; i++) {
+            show.on = true;
+            await vi.waitFor(() => expect(open).toBe(1), { timeout: 2000 });
+            counts.push(open);
+            show.on = false;
+            await vi.waitFor(() => expect(open).toBe(0), { timeout: 2000 });
+            counts.push(open);
+        }
+        expect(counts).toEqual([0, 1, 0, 1, 0, 1, 0]);
+        warn.mockRestore();
+    });
+});
