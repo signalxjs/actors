@@ -58,6 +58,12 @@ const SMOKE_ENTRIES = {
     '@sigx/actors-otel': '@sigx/actors-otel/prometheus',
 };
 
+// Subpaths smoke-imported IN ADDITION to each package's entry above. A
+// published test suite is imported only by provider packages OUTSIDE this
+// repo, which never see the workspace aliases, so a broken exports entry
+// would otherwise reach nobody here first (#491).
+const EXTRA_SMOKE_ENTRIES = ['@sigx/actors/testing'];
+
 const sandbox = join(tmpdir(), `sigx-actors-verify-pack-${Date.now()}`);
 const tarballDir = join(sandbox, 'tarballs');
 const appDir = join(sandbox, 'app');
@@ -330,7 +336,10 @@ function main() {
     };
     writeFileSync(join(appDir, 'package.json'), JSON.stringify(appPkg, null, 2));
 
-    const entries = packed.map((p) => SMOKE_ENTRIES[p.name] ?? p.name);
+    const entries = [
+        ...packed.map((p) => SMOKE_ENTRIES[p.name] ?? p.name),
+        ...EXTRA_SMOKE_ENTRIES
+    ];
     writeFileSync(
         join(appDir, 'smoke.mjs'),
         [
