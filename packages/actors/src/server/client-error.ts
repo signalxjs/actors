@@ -19,6 +19,11 @@ export function toClientError(error: unknown): unknown {
             return new ServerFnError(404, error.message, { kind: error.kind });
         case 'state-conflict':
             return new ServerFnError(409, error.message, { kind: error.kind });
+        case 'watch-mutation':
+            // The CALLER chose to watch a method that writes (#497): a
+            // request error, not a server fault. The message names only the
+            // type and method the client itself subscribed to.
+            return new ServerFnError(400, error.message, { kind: error.kind });
         case 'host-shutdown':
             return new ServerFnError(503, error.message, { kind: error.kind });
         case 'call-timeout': {

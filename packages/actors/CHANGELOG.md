@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A watch on a method that writes no longer runs it forever** (#497). A
+  watch re-runs its method after every change to the actor's state, so
+  watching a method that writes (over `$live`, the socket, or
+  `host.dispatchWatch`) made each run trigger the next. One subscription
+  kept writing once per throttle window, 20 times a second at the default,
+  for as long as it stayed open, with no caller issuing those writes. Now,
+  when two consecutive watch runs both write, the watch fails with the new
+  `watch-mutation` error kind (a 400 to clients). A read that lazily
+  initialises state writes once and keeps working. Interleaved methods are
+  not checked: their runs overlap other turns, so a write can't be traced
+  to the watch.
+
 ## [0.11.0] - 2026-09-23
 
 ### Changed

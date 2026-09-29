@@ -277,6 +277,14 @@ surprise:
   IPs are not disclosed to clients.
 - **Public-mount errors are masked; peer errors are not.** The split is
   deliberate.
+- **A watch cannot drive writes.** A client may subscribe to any method it
+  may call, and the watch loop re-runs that method after every change, so a
+  method that writes would re-trigger itself indefinitely. Two consecutive
+  watch reads that both write fail the watch with a `watch-mutation` error (a
+  400 on the wire, #497), so one subscription costs at most two writes. A
+  read that lazily initialises state writes once and keeps working. This
+  covers serial-lane methods; an interleaved method's reads overlap other
+  turns and are not checked.
 - **`$sigx:*` symbols are refused on the public mount**, answering identically
   to an unknown method so the reserved namespace cannot be probed.
 - **Wire JSON is parsed with a prototype-pollution guard** on every wire-facing
