@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`@sigx/actors/testing` is a published entry** (#491). The shared
+  conformance suites — `storageConformance`, `remindersConformance`,
+  `bootstrapConformance`, `socketTransportConformance` and `BOOTSTRAP_RACERS`,
+  plus their harness types and `ConformanceCase`/`ConformanceSkip` — now
+  import from npm, so a provider package outside this repo runs the same
+  cases the in-repo adapters do:
+  `import { storageConformance } from '@sigx/actors/testing'`. The cases are
+  framework-free descriptors with a `run()` that throws, so any test runner
+  drives them. Their shape is now public API.
+  `@sigx/actors/cluster/testing` (`transportConformance`) stays
+  workspace-only.
+
 ### Fixed
 
 - **A watch on a method that writes no longer runs it forever** (#497). A
