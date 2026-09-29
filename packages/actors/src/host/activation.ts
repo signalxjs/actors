@@ -106,18 +106,9 @@ const kWatchBase = Symbol('sigx.watch.base');
  */
 const kWatchDeclared = Symbol('sigx.watch.declared');
 
-/**
- * Set by the serial-lane turn when a watch read wrote actor state (#497). One
- * record per shared entry, reset before each read; the invoke wrapper fails
- * the watch when two reads IN A ROW wrote — a read that lazily initialises
- * state writes once and settles, a read that mutates is its own trigger.
- */
-const kWatchWrote = Symbol('sigx.watch.wrote');
-
 interface WatchInvokeCall extends ActorCallContext {
     [kWatchBase]?: string;
     [kWatchDeclared]?: { method: string; violated: Error | null };
-    [kWatchWrote]?: { wrote: boolean };
 }
 
 /**
@@ -1173,20 +1164,12 @@ export class Activation {
             : undefined;
         const teardown = new AbortController();
         const { deadline: _creatorDeadline, ...chain } = call;
-        // Declared up here, beside `invokeCall`, so the turn sees the record;
-        // only serial-lane reads carry it (see `#turnNow`).
-        const interleave =
-            this.#interleaveAll ||
-            (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
-        const wrote = interleave ? undefined : { wrote: false };
-        let wroteLast = false;
         const invokeCall: WatchInvokeCall = {
             ...chain,
             bag: EMPTY_CALL_BAG,
             abortSignal: teardown.signal,
             [kWatchBase]: base,
-            ...(declared ? { [kWatchDeclared]: declared } : {}),
-            ...(wrote ? { [kWatchWrote]: wrote } : {})
+            ...(declared ? { [kWatchDeclared]: declared } : {})
         };
         // Per-read context: `invokeCall` plus this read's deadline. Spread
         // only when there is one to add — a host without `callTimeoutMs`
@@ -1207,6 +1190,12 @@ export class Activation {
         // read turns (#180). Interleaved methods keep the direct path —
         // they never contend on the serial lane, and folding them into the
         // batch would ADD the serialization they opted out of.
+        const interleave =
+            this.#interleaveAll ||
+            (this.#interleaveMethods !== null && this.#interleaveMethods.has(method));
+        // #497: did the last serial-lane read write? See `#watchReadTurn`.
+        const wrote = { wrote: false };
+        let wroteLast = false;
         let seeded = false;
         const shared = createSharedWatch(
             {
@@ -1218,12 +1207,13 @@ export class Activation {
                     const seed = !seeded;
                     seeded = true;
                     const turnCall = readCall();
-                    if (wrote !== undefined) wrote.wrote = false;
+                    wrote.wrote = false;
                     try {
                         let value: unknown;
                         if (interleave) {
                             value = await this.enqueueSystem(method, args, turnCall);
                         } else if (this.turns.depth === 0) {
+                            const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
                             // Uncontended fast path: zero depth means no turn
                             // is queued OR running — so no drain turn either,
                             // and a drain turn is the only thing that can hold
@@ -1232,7 +1222,10 @@ export class Activation {
                             // nothing to be fair TO) and skips the pump's
                             // per-job bookkeeping — the single-watch hot path
                             // (`streams/live-watch`) measurably cares.
-                            value = await this.enqueueSystem(method, args, turnCall);
+                            value = await this.turns.run(
+                                () => this.#watchReadTurn(method, args, turnCall, enqueuedAt, wrote),
+                                false
+                            );
                         } else {
                             this.#watchPump ??= createWatchReadPump({
                                 enqueueTurn: (body) => this.turns.run(body),
@@ -1240,7 +1233,7 @@ export class Activation {
                             });
                             const enqueuedAt = this.#host.onTurn ? performance.now() : 0;
                             value = await this.#watchPump.schedule(
-                                () => this.#turn(method, args, turnCall, enqueuedAt),
+                                () => this.#watchReadTurn(method, args, turnCall, enqueuedAt, wrote),
                                 seed
                             );
                         }
@@ -1256,14 +1249,12 @@ export class Activation {
                         // re-triggering itself — fail rather than run it once
                         // per throttle window for as long as anyone watches.
                         // One write is allowed (a lazy init settles).
-                        if (wrote !== undefined) {
-                            const now = wrote.wrote;
-                            wrote.wrote = false;
-                            if (now && wroteLast) {
-                                throw new ActorWatchMutationError(this.ref.type, method);
-                            }
-                            wroteLast = now;
+                        const now = wrote.wrote;
+                        wrote.wrote = false;
+                        if (now && wroteLast) {
+                            throw new ActorWatchMutationError(this.ref.type, method);
                         }
+                        wroteLast = now;
                         // #221: a completed read of an UNDECLARED method —
                         // report whether it stayed identity-blind so the
                         // host can hint at the missing declaration. After
@@ -1622,6 +1613,38 @@ export class Activation {
      *  - the epilogue runs exactly once, after the method settles, in the
      *    order the async `finally` ran it: observer first, `#afterTurn` last.
      */
+    /**
+     * A serial-lane watch read, recording whether it wrote (#497). The loop
+     * re-runs a watched method after every change, so a write here is its own
+     * next trigger; the invoke wrapper decides what that means.
+     *
+     * Kept OFF `#turnNow`, which every turn runs, and measured by `#version`
+     * rather than `#dirty`: the turn's own epilogue folds the dirty mark into
+     * the version, and on the serial lane nothing else runs in between.
+     * Out-of-turn dirt is folded first so it is not blamed on the read, and a
+     * pending reload (which bumps the version itself) records nothing.
+     */
+    #watchReadTurn(
+        method: string,
+        args: readonly unknown[],
+        call: ActorCallContext,
+        enqueuedAt: number,
+        wrote: { wrote: boolean }
+    ): unknown {
+        if (this.#reloadPending) return this.#turn(method, args, call, enqueuedAt);
+        this.#consumeDirty();
+        const before = this.#version;
+        const result = this.#turn(method, args, call, enqueuedAt);
+        if (isPromiseLike(result)) {
+            return result.then((value) => {
+                if (this.#version > before) wrote.wrote = true;
+                return value;
+            });
+        }
+        if (this.#version > before) wrote.wrote = true;
+        return result;
+    }
+
     #turn(
         method: string,
         args: readonly unknown[],
@@ -1661,16 +1684,6 @@ export class Activation {
         this.#currentCall = call;
         const end = (failed: boolean): void =>
             this.#endTurn(method, call, started, startedAt, timing, observer, enqueuedAt, failed);
-        // Did this watch read write (#497)? The loop re-runs a watched method
-        // after every change, so a write here is its own next trigger; the
-        // invoke wrapper decides what that means. Serial lane only — an
-        // interleaved read overlaps other turns, whose writes it could not be
-        // told apart from (it never carries the record). Pending out-of-turn
-        // dirt is folded first so the flag measures THIS turn; the boundary
-        // still notifies it, since `#afterTurn` compares `#version` against
-        // `#notifiedVersion`.
-        const wrote = (call as WatchInvokeCall)[kWatchWrote];
-        if (wrote !== undefined) this.#consumeDirty();
         let result: unknown;
         try {
             // On an interleaving activation the invoke runs under the call
@@ -1687,7 +1700,6 @@ export class Activation {
         if (isPromiseLike(result)) {
             return result.then(
                 (value) => {
-                    if (wrote !== undefined && this.#dirty) wrote.wrote = true;
                     end(false);
                     return value;
                 },
@@ -1697,7 +1709,6 @@ export class Activation {
                 }
             );
         }
-        if (wrote !== undefined && this.#dirty) wrote.wrote = true;
         end(false);
         return result;
     }
