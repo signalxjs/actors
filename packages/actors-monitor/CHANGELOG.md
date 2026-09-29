@@ -81,7 +81,7 @@
   Two things moved that were previously private to the terminal screens, and
   both are judgements a second renderer must not re-make: `alertLines` (what
   is wrong, worst first) with `scopeOf` / `polledLabel` / `coverageNote` (what
-  a number is ABOUT — the #121 work), and `shardStates` (a reminder shard with
+  a number is ABOUT), and `shardStates` (a reminder shard with
   no claimant is an incident; one with two is merely a divergence). Alerts now
   carry a severity (`'danger' | 'warn'`) rather than a `@sigx/terminal` theme
   colour.

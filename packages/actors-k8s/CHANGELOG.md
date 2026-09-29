@@ -1,5 +1,10 @@
 # Changelog
 
+> `#N` references in the `[0.1.0]` entries below are numbers from the
+> private tracker this repo was promoted from. They do not refer to issues
+> in this repository (some land on an unrelated public issue), so read those
+> entries by their text, not their links.
+
 ## [Unreleased]
 
 ## [0.5.0] - 2026-08-07

@@ -1,5 +1,10 @@
 # Changelog
 
+> `#N` references in the `[0.1.0]` entries below are numbers from the
+> private tracker this repo was promoted from. They do not refer to issues
+> in this repository (some land on an unrelated public issue), so read those
+> entries by their text, not their links.
+
 ## [Unreleased]
 
 ## [0.11.0] - 2026-09-23
@@ -590,7 +595,7 @@
   **Behaviour change — `ctx.bag` is the empty bag inside every watch read,
   including its own edge stamp.** A method read through `$live`, the socket
   or an in-process watch never sees a bag, with one subscriber or many;
-  #246's `stampCallBag` still runs per subscription (authorization is per
+  `stampCallBag` still runs per subscription (authorization is per
   subscriber) but reaches unary calls only. A read that needs per-request
   context is not a shareable read — a plain method or a `streams:` entry is
   per caller by construction. Principal handling (#121, #138) is unchanged;
