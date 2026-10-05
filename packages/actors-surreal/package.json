@@ -38,7 +38,7 @@
         "@sigx/actors": "workspace:*",
         "@sigx/vite": "catalog:",
         "@types/node": "^26.6.1",
-        "surrealdb": "^2.0.8",
+        "surrealdb": "^2.0.9",
         "typescript": "^7.0.2",
         "vite": "^8.3.0"
     },
@@ -47,6 +47,6 @@
     },
     "peerDependencies": {
         "@sigx/actors": "^0.11.0",
-        "surrealdb": "^2.0.8"
+        "surrealdb": "^2.0.9"
     }
 }

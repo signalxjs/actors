@@ -19,8 +19,8 @@
         "@sigx/serialize": "catalog:",
         "@sigx/server": "catalog:",
         "ioredis": "^5.4.1",
-        "undici": "^7.29.1",
-        "ws": "^8.21.3"
+        "undici": "^7.30.0",
+        "ws": "^8.22.0"
     },
     "devDependencies": {
         "@sigx/actors-cli": "workspace:*",
